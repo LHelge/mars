@@ -7,7 +7,7 @@ Working conventions for any agent or human changing this repository. The product
 1. **Documentation is part of the change.** Any change to behaviour, an endpoint, a schema, a config variable, a container contract or a tool description updates the document that describes it in the same commit: `SPEC.md` for endpoints, streams, event schemas and MCP tools; `docs/data-model.md` for tables; `ARCHITECTURE.md` for lifecycle, recovery, git, secrets and engine behaviour; `README.md` for configuration and operation; a new ADR in `docs/decisions/` when a real alternative was rejected. A change that resolves an entry in `docs/open-questions.md` deletes that entry.
 2. **Issue tracking**: use Bears for all issue tracking, through the `bears` MCP server (`list_ready` to find work, `start_task` to claim, `complete_task` to complete). The `bea` CLI is the fallback when the MCP server is not available. No markdown TODO lists.
 3. **Planning**: break significant changes into an epic with sub-tasks (`create_task` with `type: epic`, then `create_task` with `parent`) and link dependencies with `add_dependency`. Tasks cite the section of the document they implement.
-4. **Secrets never appear in code, tests, fixtures, logs, events or documentation.** Test fixtures use obviously fake values.
+4. **Do not put real credentials in code, tests, fixtures or documentation, or copy them from credential handling into operational logs or orchestrator-generated events, except for the intentional email fallback below.** Test fixtures use obviously fake values. Agent/tool output and user-provided transcript content may contain secrets; v1 stores and displays that content without automatic secret redaction (ADR 0027). This does not permit the orchestrator to include credential values in its own diagnostics. When `RESEND_API_KEY` is unset, `LogEmailClient` must log complete invitation and password-reset links, including their tokens, at `info` so local development works without email configuration (ADR 0026). This exception does not permit logging other credentials or logging these links through the configured email provider.
 
 ## Project overview
 
@@ -50,21 +50,22 @@ Git is never a crate: all git operations shell out to the `git` binary through `
 - `src/prelude/`: `AppState`, `Config`, `Claims`, `Error`, `Result`. Every module does `use crate::prelude::*`.
 - `src/models/`: domain types with their validation and a per-model error enum (`UserError`, `TaskError`, ...). No SQL.
 - `src/repositories/`: all SQL, one `XRepository<'a>` struct per aggregate borrowing `&PgPool`. Use `sqlx::query!`/`query_as!` (compile-time checked). Scoped mutations put the scope in the `WHERE` clause (`... WHERE id = $1 AND project_id = $2`), never mutate by id and check afterwards.
+- Tracker writes share one transaction per operation and lock the project row before authoritative reads/checks, mutations and event allocation. Repository helpers accept that transaction rather than committing independently. Session event batches lock their session row; combined writes take the project lock first. Acquire any git lock before database project locks, never the reverse (ADR 0021).
 - `src/routes/`: one module per resource exporting `routes() -> Router<AppState>`, nested under `/api`. Request and response DTOs are private to the route module; response DTOs exist when the shape differs from the model.
 - `src/engine/`, `src/agent/`, `src/git/`, `src/secrets/`, `src/email/`: each exposes a trait, a production implementation and a mock. `AppState` holds them as `Arc<dyn Trait>`. Mocks are compiled behind the `integration-tests` cargo feature and expose `as_any()` for downcasting in tests.
 - `src/session/`: `SessionOwner` tasks, launcher, recovery, registry.
-- `src/events/`: `AgentEvent`, `TaskEvent`, translation helpers, notify fan-out.
+- `src/events/`: `AgentEvent`, `TaskEvent`, translation helpers, notify fan-out. Issue `pg_notify` inside the same transaction as the corresponding event/state writes; PostgreSQL delivers it after commit. The shared listener then broadcasts the wake signal. Do not issue a separate post-commit notification write (ADR 0028).
 - `src/cron/`: periodic jobs, each a method on `CronService`, each failure logged and retried next interval.
 
 **Error handling**: one `Error` enum in `src/prelude/error.rs` with `#[from]` variants for `sqlx::Error`, `ClaimsError`, each model error, `EngineError`, `GitError`, `SecretsError`, `EmailError`, plus `NotFound`, `Forbidden`, `Conflict(String)`, `BadRequest(String)`, `Internal(String)`. `impl IntoResponse for Error` maps to `{ "status": <u16>, "error": "<message>" }`; internal errors log with `tracing::error!` and return a generic message. `Result<T>` is `std::result::Result<T, Error>`. Functions return `Result`; `unwrap`/`expect` only in tests and at startup. MCP tool handlers map `Error` to MCP error codes in `src/mcp/error.rs`.
 
-**Logging**: `tracing` with structured fields (`session_id = %id`), never string-formatted ids. Never log secret values, tokens, or event payloads at `info` or above.
+**Logging**: `tracing` with structured fields (`session_id = %id`), never string-formatted ids. Never log secret values or tokens except invitation/password-reset links emitted by `LogEmailClient` when email is unconfigured (mandatory rule 4; ADR 0026). Never log event payloads at `info` or above. Session transcript files and persisted agent output follow the separate no-redaction contract in ADR 0027; they are not operational tracing logs. Keep the fallback links usable, not redacted; ordinary request/error logs and `ResendClient` must not log them.
 
 **Migrations**: `sqlx migrate add -r <name>` creates a paired `.up.sql`/`.down.sql` in `orchestrator/migrations/`. Migrations run automatically at startup. Every `.down.sql` fully reverses its `.up.sql`. `docs/data-model.md` is updated in the same commit. Enum values are only added, never removed or renamed.
 
 **SQLx offline mode**: after changing any query, run `cargo sqlx prepare` in `orchestrator/` and commit `.sqlx/`. CI and the Docker build run with `SQLX_OFFLINE=true`. A build that fails with "no cached data for this query" means `.sqlx/` is stale.
 
-**Environment**: see `.env.example` for every variable; `Config::from_env()` fails fast with the missing variable's name.
+**Environment**: `README.md`, "Configuration", is the current variable contract; the implementation must provide `.env.example` with the same variables. `Config::from_env()` fails fast with the name of any missing required variable and applies documented defaults and optional behavior for the rest.
 
 ## Frontend conventions
 
@@ -72,7 +73,7 @@ Git is never a crate: all git operations shell out to the `git` binary through `
 
 - Functional components with hooks only; named exports.
 - All API calls go through `src/services/`; components never call `fetch`. Use `apiGet`/`apiPost`/`apiPut`/`apiPatch`/`apiDelete` from `services/apiClient.ts`, which attaches the access token and refreshes once on 401.
-- Server state through TanStack Query; session transcript and task board state through the Zustand stores in `src/session/` and `src/tasks/`. Never keep raw event arrays in state; fold events as they arrive (`SPEC.md`, "Frontend").
+- Server state through TanStack Query; session transcript and task board state through the Zustand stores in `src/session/` and `src/tasks/`. Never keep raw event arrays in state. Fold session transcript events as they arrive; task events invalidate the board's REST snapshot and trigger its coalesced refresh path (ADR 0022; `SPEC.md`, "Frontend").
 - `useAuth()` for auth state, `useFormSubmit()` for form loading and error state.
 - Shared layouts: `AuthLayout`, `PageLayout`. Shared UI: `FormField`, `SubmitButton`, `Alert`, `LoadingState`, `EmptyState`, `SectionHeader`. Protected routes use `ProtectedRoute`, admin routes `AdminRoute`.
 - Types in `src/types/` mirror the shapes in `SPEC.md` exactly, field names in `snake_case` as the API sends them.
@@ -81,11 +82,13 @@ Git is never a crate: all git operations shell out to the `git` binary through `
 ## API conventions
 
 - Plural nouns under `/api`; nested sub-resources for project-scoped things (`/projects/{id}/sessions`); verbs for actions (`/sessions/{id}/stop`).
-- 201 with body for creates, 204 for deletes, 200 otherwise, 202 for accepted asynchronous inputs. Errors are `{ "status", "error" }`.
+- Default to 201 with body for creates, 204 for deletes, 200 otherwise, and 202 for accepted asynchronous inputs; explicit endpoint contracts in `SPEC.md` take precedence. Errors are `{ "status", "error" }`; git conflicts additionally include `conflicts`.
 - Bare JSON, no envelopes. Timestamps RFC 3339. Ids UUID strings.
 - Any new endpoint, message or event kind is added to `SPEC.md` in the same commit.
 
 ## Running locally
+
+These commands apply once the implementation, images and `.env.example` exist; the repository currently contains only the design documents. The socket commands below assume Linux.
 
 **Postgres**:
 
@@ -101,7 +104,7 @@ systemctl --user enable --now podman.socket
 export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock
 ```
 
-With Docker instead: `export DOCKER_HOST=unix:///var/run/docker.sock`. Nothing else differs.
+With Docker instead: `export DOCKER_HOST=unix:///var/run/docker.sock`. The supported Docker uid contract also requires running the orchestrator as uid 1000 with a data directory owned by that uid; see `ARCHITECTURE.md`, "Uid contract".
 
 **Orchestrator**:
 
@@ -111,7 +114,7 @@ cp ../.env.example ../.env   # then edit
 cargo run                    # runs migrations, listens on API_PORT and MCP_PORT
 ```
 
-`DATA_DIR_HOST` must point at a directory the current user owns; when running the orchestrator directly on the host it is the same path as `DATA_DIR` (default `./data`).
+`DATA_DIR_HOST` must point at a directory the current user owns; when running the orchestrator directly on the host it is the same path as `DATA_DIR` (default `./data`, made absolute at startup). Set `MCP_URL=http://host.containers.internal:7001/mcp` (Docker: `host.docker.internal`, plus `SESSION_EXTRA_HOSTS=host.docker.internal:host-gateway`) so session containers can reach the MCP listener on the host. On macOS the data directory must lie under a path the Podman machine shares with its VM (the home directory by default).
 
 **Session image**:
 

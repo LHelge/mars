@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Superseded by the current [git credential transport contract](../../ARCHITECTURE.md#git-model) for passing credentials through `-c`: that is argv. The wrapper uses a temporary mode-0600 config selected through `GIT_CONFIG_GLOBAL` and deletes it after use; shelling out to git remains the decision.
+
 ## Context
 
 Rust has two mature options for git: `git2` (libgit2 bindings) and `gitoxide`. Both avoid process spawning and give typed APIs. Both also lag the `git` binary on features (alternates handling, credential helpers, partial clone, `fetch --prune` edge cases, `http.extraHeader`) and libgit2 has a history of subtle behavioural differences in merges and rebases.

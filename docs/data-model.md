@@ -9,7 +9,7 @@ Conventions used throughout:
 - Enumerations are Postgres `ENUM` types. Adding a value is a migration (`ALTER TYPE ... ADD VALUE`); values are never removed or renamed.
 - Foreign keys declare their `ON DELETE` behaviour explicitly.
 - Postgres 18 is assumed. `UNIQUE NULLS NOT DISTINCT` (Postgres 15+) is used where a nullable column takes part in a uniqueness rule.
-- Secrets are never stored in plaintext anywhere in the database, including log or event payloads.
+- Managed credential values are encrypted in the `secrets` table and are not copied by credential handling into diagnostics or generated event metadata. Agent/tool output and user-provided content are stored without automatic secret redaction in v1, so event payloads may contain plaintext credentials (ADR 0027).
 
 Postgres is the only system of record. The orchestrator also owns a filesystem volume (`/data`) holding git mirrors, session working copies and transcript logs; that volume is durable working storage, not a database, and everything the UI shows is reconstructible from Postgres plus that volume. See `ARCHITECTURE.md`, "Storage".
 
@@ -37,6 +37,7 @@ erDiagram
     secrets ||--o{ secret_uses : audited
     tasks ||--o{ task_dependencies : "depends on"
     tasks ||--o{ task_comments : has
+    tasks ||--o{ task_handoffs : publishes
     tasks ||--o{ task_sessions : "touched by"
     sessions ||--o{ task_sessions : touched
 ```
@@ -46,7 +47,7 @@ erDiagram
 | Type | Values | Notes |
 | --- | --- | --- |
 | `project_status` | `cloning`, `ready`, `error` | `cloning` is set at creation; the clone job moves it to `ready` or `error`. |
-| `profile_kind` | `conversational`, `ephemeral` | v1 launches only `conversational`; `ephemeral` exists so future roles are rows, not migrations. |
+| `profile_kind` | `conversational`, `ephemeral` | `conversational` sessions take input over stdin and are parked and resumed; `ephemeral` sessions run one prompt and end. Users launch both in v1; automatic launching of ephemeral sessions is post-v1. |
 | `agent_backend` | `claude` | Which CLI adapter drives sessions of this profile. A second backend is added as a new value by migration. |
 | `session_state` | `creating`, `running`, `parked`, `done`, `failed` | State machine in `ARCHITECTURE.md`, "Session lifecycle". Only conversational sessions use `parked`; an ephemeral session goes to `done` when its result arrives. |
 | `task_state_kind` | `queue`, `human`, `terminal` | What a project-defined task state means to the orchestrator; see `task_states`. The states themselves are rows, not enum values. |
@@ -67,10 +68,18 @@ There is no self-registration. The `users` migration seeds one administrator (`u
 | `username` | `TEXT` | NOT NULL, UNIQUE | 3–32 chars, validated in the model. |
 | `email` | `TEXT` | NOT NULL, UNIQUE | Stored lower-cased and trimmed. Comes from the invite, so it is known to be deliverable. |
 | `password_hash` | `TEXT` | NOT NULL | Argon2id PHC string. Never serialised. |
-| `must_change_password` | `BOOLEAN` | NOT NULL DEFAULT FALSE | While true, every endpoint except login, logout, `GET /users/me` and the password change returns 403 (`SPEC.md`, "Authentication"). |
+| `auth_version` | `BIGINT` | NOT NULL DEFAULT 0, CHECK (`auth_version >= 0`) | Included in access-token claims; incremented atomically on every password change or reset. Compared with the current user on requests and stream authorization checks. Internal; not part of the `User` DTO. |
+| `must_change_password` | `BOOLEAN` | NOT NULL DEFAULT FALSE | While true, every endpoint except login, logout, refresh, `GET /users/me` and the password change returns 403 (`SPEC.md`, "Authentication"). |
 | `admin` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Admins invite users and manage them. |
+| `notify_email` | `BOOLEAN` | NOT NULL DEFAULT TRUE | Receive escalation emails (`SPEC.md`, "Task board"). |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | Set by the repository on every update. |
+
+User deletion and changes to `users.admin` preserve at least one administrator. Before authoritative reads or writes, these operations acquire the same transaction-scoped database advisory lock for administrator membership; after waiting, re-read the current administrator count and reject a deletion or demotion that would leave none. Hold the lock through commit, and acquire it before any user-row or project locks needed by the operation. This is a repository invariant, not a per-row `CHECK`. A failed check rolls back the entire operation. Self-deletion is separately prohibited; self-demotion is allowed if another administrator remains. Validation must cover concurrent demotions and deletion racing with demotion, as well as the single-request cases.
+
+Password changes and resets atomically update `password_hash`, clear `must_change_password`, increment `auth_version`, revoke all of the user's existing refresh tokens and invalidate outstanding reset tokens. Self-service changes also insert a replacement refresh token before commit; reset-link and admin-for-another-user changes issue no replacement. Deleting the user cascades both token tables; access-token validation rejects the now-missing user. Demotion changes authorization through current-user checks without incrementing `auth_version` (ADR 0025).
+
+Login, refresh, reset-link issuance, password changes and reset-token consumption lock the user row before locking or writing that user's token rows. Re-read and validate credentials under that lock. Expensive password hashing may happen beforehand, but an earlier password check must be revalidated against the locked row before issuing credentials. For token-based requests, an initial unlocked lookup may locate the user; re-read and validate the token after locking the user. Thus a refresh either commits before a password change and is revoked by it, or observes revocation and fails. Return credentials only after commit. Ordinary request authorization reads current user state without taking this mutation lock.
 
 ### `refresh_tokens`
 
@@ -103,11 +112,11 @@ An admin invites an email address; the invitee follows the emailed link, chooses
 | `accepted_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
-Indexes: `user_invites_open_email_idx ON user_invites (email) WHERE accepted_at IS NULL`, `user_invites_expires_at_idx (expires_at)`. Inviting an email that already belongs to a user is refused with a conflict. A background reaper deletes expired, unaccepted invites.
+Indexes: UNIQUE `user_invites_open_email_idx ON user_invites (email) WHERE accepted_at IS NULL`, `user_invites_expires_at_idx (expires_at)`. Inviting an email that already belongs to a user is refused with a conflict. A background reaper deletes expired, unaccepted invites.
 
 ### `password_reset_tokens`
 
-Single-use tokens sent by email.
+Single-use tokens sent by email. Successful password changes and resets invalidate every outstanding reset token for that user by setting `used_at`; consuming a reset link, changing the password and revoking logins commit together. A token must be unexpired and have null `used_at` when revalidated under the user lock.
 
 | Column | Type | Constraints |
 | --- | --- | --- |
@@ -124,19 +133,20 @@ Indexes on `(user_id)` and `(expires_at)`. A background reaper deletes expired r
 
 ### `projects`
 
-A project is one git repository, mirrored under `/data/projects/<id>/repo.git`.
+A project is one git repository, stored as a bare project repository under `/data/projects/<id>/repo.git`. Its upstream-tracking refs, Mars integration heads and session refs are separate (ADR 0017); the term "mirror" elsewhere is shorthand for this repository, not an exact copy of upstream refs.
 
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
 | `id` | `UUID` | PK | Also the directory name under `/data/projects/`. |
 | `name` | `TEXT` | NOT NULL, UNIQUE | Display name, 1–100 chars. |
 | `remote_url` | `TEXT` | NOT NULL | `https://` URL only in v1. Never contains credentials; see `secrets`. |
-| `default_branch` | `TEXT` | NOT NULL | Discovered from the remote `HEAD` during cloning unless given. |
+| `default_branch` | `TEXT` | NULL; CHECK (`status <> 'ready' OR default_branch IS NOT NULL`) | Supplied by the caller or discovered from the remote `HEAD` during cloning. May be null while discovery is pending or has failed; readiness requires a resolvable integration head. |
 | `status` | `project_status` | NOT NULL DEFAULT `'cloning'` | |
 | `status_message` | `TEXT` | NULL | Human-readable reason when `status = 'error'`. |
 | `created_by` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |
 | `last_fetched_at` | `TIMESTAMPTZ` | NULL | Updated by the periodic mirror fetch. |
 | `max_attempts` | `SMALLINT` | NOT NULL DEFAULT 3, CHECK 1–20 | How many claims a task may go through in one state before a release sends it to the project's human state instead. See `tasks`. |
+| `next_task_number` | `INTEGER` | NOT NULL DEFAULT 1 | Counter for `tasks.number`, taken with `UPDATE ... RETURNING` inside the task insert transaction, which serialises concurrent inserts on the project row. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
@@ -201,17 +211,22 @@ One agent instance. The row outlives the container: a session may be relaunched 
 | `id` | `UUID` | PK | Also the directory name under `/data/sessions/`. |
 | `project_id` | `UUID` | NOT NULL, FK `projects(id)` ON DELETE CASCADE | |
 | `profile_id` | `UUID` | NOT NULL, FK `agent_profiles(id)` ON DELETE RESTRICT | |
+| `kind` | `profile_kind` | NOT NULL | Copied from the profile at launch. Ephemeral sessions are never parked, resumed or retried. |
 | `created_by` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | The launching user; determines the `user` secret scope. |
-| `title` | `TEXT` | NULL | Optional user-given label. |
+| `title` | `TEXT` | NULL | Optional label; defaults to the task's title or the first line of the first message (`SPEC.md`, "Sessions"). |
 | `task_id` | `UUID` | NULL, FK `tasks(id)` ON DELETE SET NULL | The task the session was launched for, if any; the launch claims it in the same transaction. Added by the `tasks` migration because `tasks` references `sessions`. |
+| `handoff_id` | `UUID` | NULL, FK `task_handoffs(id)` ON DELETE SET NULL | Hand-off used to choose the initial checkout when launched for a task without an explicit base override. Its commit is stored in `base_ref`. Added by the `tasks` migration. |
 | `state` | `session_state` | NOT NULL DEFAULT `'creating'` | |
 | `base_ref` | `TEXT` | NOT NULL | Branch, tag or commit the session clone started from. |
 | `branch` | `TEXT` | NOT NULL | Always `session/<id>`; stored so it is queryable. |
 | `container_id` | `TEXT` | NULL | Engine container id of the current or last container. NULL once removed. |
 | `cli_session_id` | `TEXT` | NULL | The CLI's own session id from its init event. Needed for resume. |
-| `mcp_token_hash` | `TEXT` | NOT NULL, UNIQUE | SHA-256 of the per-session MCP bearer token. |
+| `mcp_token_hash` | `TEXT` | NOT NULL, UNIQUE | SHA-256 of a fresh random MCP bearer token for each process launch, including resume/retry. Initial hash is stored at session creation; replacement hash commits before the new process starts. Unchanged when adopting an already-running process after an orchestrator restart. The raw token is written to `mcp.json`, never recovered from this hash (ADR 0029). |
 | `last_seq` | `BIGINT` | NOT NULL DEFAULT 0 | Cache of the highest committed `events.seq`; the truth is `MAX(events.seq)`. |
 | `last_activity_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | Advanced on every event; the idle reaper reads it. |
+| `cost_usd` | `DOUBLE PRECISION` | NOT NULL DEFAULT 0 | Accumulated from `result` events (`ARCHITECTURE.md`, "Cost accounting"). |
+| `input_tokens` | `BIGINT` | NOT NULL DEFAULT 0 | Same. |
+| `output_tokens` | `BIGINT` | NOT NULL DEFAULT 0 | Same. |
 | `error` | `TEXT` | NULL | Reason for `failed`. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 | `parked_at` | `TIMESTAMPTZ` | NULL | Set on each transition to `parked`. |
@@ -223,15 +238,17 @@ The MCP bearer token is generated at creation, written into the session's `mcp.j
 
 ### `events`
 
-Append-only. The UI's source of truth for a session. `seq` is monotonic per session and is derived from the table at insert time, never from an in-memory counter:
+Append-only. The UI's source of truth for a session. `seq` is monotonic per session and is derived from the table at insert time, never from an in-memory counter. Every writer begins a transaction and locks the existing session row before reading the sequence or transcript offset (ADR 0021):
 
 ```sql
+SELECT id FROM sessions WHERE id = $1 FOR UPDATE;
+
 INSERT INTO events (session_id, seq, ts, kind, payload)
 SELECT $1, COALESCE(MAX(seq), 0) + 1, $2, $3, $4 FROM events WHERE session_id = $1
 RETURNING seq;
 ```
 
-The primary key makes a concurrent duplicate fail rather than reorder; the writer retries on unique violation. In practice each session has exactly one writer task (see `ARCHITECTURE.md`, "Session owner task").
+The lock statement and insert are separate statements in the same `READ COMMITTED` transaction, so a waiting writer reads the previous writer's committed events after acquiring the lock. The owner, git handlers, launcher, recovery and reaper all use this repository path. A native line's complete event batch and its offset, plus `last_seq` and other affected session counters, commit together. A primary-key collision indicates a writer bypassed the locking contract or another implementation defect; roll back and surface an error, without retrying only part of the batch. A combined tracker/session transaction locks the project row before this session row; an event-only transaction never acquires a project lock afterwards.
 
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
@@ -243,11 +260,17 @@ The primary key makes a concurrent duplicate fail rather than reorder; the write
 
 Constraints: `PRIMARY KEY (session_id, seq)`. No other indexes; all reads are by `session_id` and a `seq` range.
 
-Row size: tool results are stored in full up to 256 KiB per event; larger results are truncated in the payload with `truncated: true` and the full text remains in the transcript file on the session volume.
+Row size: tool results are stored in full up to 256 KiB per event; larger results are truncated in the payload with `truncated: true` and the full text remains in the transcript file on the session volume. Neither path automatically redacts secrets. The encryption contract for `secrets` does not cover credential values printed into event payloads or transcripts (ADR 0027).
 
 ## Tasks
 
 The shared tracker, project-scoped. Agents reach it through MCP, users through the REST API, both write the same rows. The design is in `ARCHITECTURE.md`, "Task tracker" and ADR 0016: a task's state is the queue it waits in, the set of states is defined per project, and the lease says which session is working on it right now.
+
+### Tracker mutation transactions
+
+All tracker mutations use one `READ COMMITTED` transaction per logical operation and acquire `SELECT id FROM projects WHERE id = $1 FOR UPDATE` before authoritative validation reads or writes (ADR 0021). Validation runs in subsequent statements after acquiring the lock. This includes task/state/dependency/comment changes, profile served states, claim/release, hand-off publication, launch-for-task, background jobs and deletions that affect tracker rows. Helpers receive the same transaction; no related update or event is committed separately.
+
+While holding the lock, allocate task numbers from `projects.next_task_number`, check cycles and leases, apply the mutation, recompute affected dependants/parents, and append all resulting project events with successive `MAX(seq)+1` values. Commit all changes together; on failure roll back all of them. Different projects use different rows and can proceed independently. Multi-project operations lock project rows in UUID order. If git is involved, acquire its per-project lock(s) first and finish git preparation before opening the tracker transaction; never acquire a git lock from inside that transaction. Combined tracker/session writes acquire the project row before session row locks.
 
 ### `task_states`
 
@@ -266,7 +289,7 @@ Constraints and indexes:
 
 - `UNIQUE (project_id, name)`.
 - Partial unique index `task_states_one_human_idx ON task_states (project_id) WHERE kind = 'human'`: at most one human state per project.
-- The repository refuses to delete the human state, the last terminal state, or any state a task is in (`tasks.state_id` is `ON DELETE RESTRICT`).
+- The repository refuses to delete the human state, the last queue state, the last terminal state, or any state a task is in (`tasks.state_id` is `ON DELETE RESTRICT`).
 - The default state for a new task is the `queue` state with the lowest position.
 
 Default set, created with the project:
@@ -298,19 +321,20 @@ Constraint: `PRIMARY KEY (profile_id, state_id)`. Both rows must belong to the s
 | --- | --- | --- | --- |
 | `id` | `UUID` | PK | |
 | `project_id` | `UUID` | NOT NULL, FK `projects(id)` ON DELETE CASCADE | |
-| `number` | `INTEGER` | NOT NULL | Per-project human-readable number, assigned as `MAX(number)+1` inside the insert transaction. Agents and the API accept it wherever a task id is accepted. |
+| `number` | `INTEGER` | NOT NULL | Per-project human-readable number, taken from `projects.next_task_number` inside the insert transaction. Agents and the API accept it wherever a task id is accepted. |
 | `title` | `TEXT` | NOT NULL | 1–200 chars. |
 | `description` | `TEXT` | NOT NULL DEFAULT `''` | Markdown. |
 | `state_id` | `UUID` | NOT NULL, FK `task_states(id)` ON DELETE RESTRICT | The queue the task is in. Set by the repository to the project's default state when the caller gives none. |
 | `priority` | `SMALLINT` | NOT NULL DEFAULT 2, CHECK 0–3 | `0` critical, `1` high, `2` medium, `3` low. Claimable tasks are ordered by priority, then number. |
-| `blocked` | `BOOLEAN` | NOT NULL DEFAULT FALSE | True while any `blocks` dependency is in a non-terminal state. Stored, not derived; recomputed by the orchestrator (see below). A blocked task is not claimable in any state. |
+| `blocked` | `BOOLEAN` | NOT NULL DEFAULT FALSE | True while any `blocks` dependency or any child is in a non-terminal state. Stored, not derived; recomputed by the orchestrator (see below). A blocked task is not claimable in any state. |
 | `labels` | `TEXT[]` | NOT NULL DEFAULT `'{}'` | Free-form tags, each 1–32 chars matching the state-name pattern. Filterable; carry no behaviour in v1. |
-| `parent_id` | `UUID` | NULL, FK `tasks(id)` ON DELETE SET NULL | The epic this task belongs to. One level: a task with children cannot itself get a parent. |
+| `parent_id` | `UUID` | NULL, FK `tasks(id)` ON DELETE SET NULL | The epic this task belongs to. One level: a task with children cannot itself get a parent, and a task with a parent cannot receive children. |
 | `assignee_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | The person who should look at it, mostly for the human state. |
 | `lease_holder_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | Session currently working on the task. NULL means nobody. |
 | `lease_since` | `TIMESTAMPTZ` | NULL | When the current holder claimed it; NULL iff `lease_holder_session_id` is NULL. |
 | `attempts` | `SMALLINT` | NOT NULL DEFAULT 0 | Claims since the task last changed state. Incremented on claim, reset to 0 on every state change. |
 | `needs_human_reason` | `TEXT` | NULL | Why the task was last escalated; set by the `needs_human` tool and by the reaper. |
+| `current_handoff_id` | `UUID` | NULL, FK `task_handoffs(id)` ON DELETE SET NULL | Current immutable code hand-off; must belong to this task (repository check). Added after `task_handoffs` is created. |
 | `created_by_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |
 | `created_by_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
@@ -322,13 +346,13 @@ Constraints and indexes:
 - `UNIQUE (project_id, number)`.
 - `CHECK ((lease_holder_session_id IS NULL) = (lease_since IS NULL))`.
 - `CHECK (priority BETWEEN 0 AND 3)`.
-- `CHECK (parent_id <> id)`; the parent must belong to the same project (repository check).
+- `CHECK (parent_id <> id)`; the parent must belong to the same project, have no parent itself, and the child must have no children of its own, including terminal children (repository checks on creation and re-parenting under the project lock).
 - `tasks_project_state_idx (project_id, state_id, priority, number)` for the board.
 - `tasks_claimable_idx (project_id, state_id, priority, number) WHERE NOT blocked AND lease_holder_session_id IS NULL` for the `ready` tool.
 - `tasks_lease_holder_idx (lease_holder_session_id) WHERE lease_holder_session_id IS NOT NULL` for the stuck-task reaper.
 - `tasks_parent_idx (parent_id)`.
 
-Claiming is a single atomic statement (ADR 0016):
+Claiming is a single atomic update within the project-locked mutation transaction (ADRs 0016 and 0021):
 
 ```sql
 UPDATE tasks
@@ -338,7 +362,7 @@ SET lease_holder_session_id = $2,
     updated_at = NOW()
 WHERE id = $1
   AND project_id = $3
-  AND state_id = ANY($4)          -- the claiming profile's served states; every queue state for a launch from the UI
+  AND state_id = ANY($4)          -- the claiming profile's served states; every non-terminal state for a launch from the UI
   AND NOT blocked
   AND lease_holder_session_id IS NULL
 RETURNING *;
@@ -346,11 +370,13 @@ RETURNING *;
 
 Zero rows returned means the claim lost; the caller gets a conflict, never a partial state.
 
-A **hand-off** is a state change. In one transaction the orchestrator sets `state_id`, clears the lease, resets `attempts`, sets or clears `closed_at` according to the new state's kind, recomputes `blocked` on every dependant when a terminal state is entered or left, and writes the `task_events` row.
+A **hand-off** changes to a different state. Assigning the current `state_id` preserves the lease, `attempts` and `closed_at` and emits no state-change event; other supplied changes still apply. Code publication with an unchanged state is rejected. In one transaction the orchestrator sets `state_id`, clears the lease, resets `attempts`, sets or clears `closed_at` according to the new state's kind, recomputes `blocked` on every dependant when a terminal state is entered or left, and writes the `task_events` row. When code is published or forwarded, that same transaction also inserts `task_handoffs` and its required `task_comments` row, updates `current_handoff_id`, upserts the relevant source/calling session links, and emits the comment event. The immutable git ref is prepared first; the transaction rechecks state, holder and the previous current-hand-off id before publishing (`ARCHITECTURE.md`, "Code hand-offs"). A plain state move, release or automatic parent closure leaves `current_handoff_id` unchanged.
 
 A **release** clears the lease and keeps the state. When the release comes from an agent (`release` tool) or from the reaper and `attempts` has reached `projects.max_attempts`, the same transaction moves the task to the project's human state instead, sets `needs_human_reason`, and writes a system comment. A release by a user never escalates.
 
-The `blocked` flag is stored so that the claimable query is a plain indexed read and so that the transition to unblocked can emit a `TaskEvent`. The orchestrator recomputes it for every dependant inside the same transaction that adds or removes a `blocks` dependency, or moves a task into or out of a terminal state.
+The `blocked` flag is stored so that the claimable query is a plain indexed read and so that the transition to unblocked can emit a `TaskEvent`. The orchestrator recomputes it for every dependant inside the same transaction that adds or removes a `blocks` dependency, moves a task into or out of a terminal state, or deletes a prerequisite. Before deleting a task, capture its surviving dependants and parent; after the foreign-key cascades, recompute their flags from the remaining edges and children in the same transaction. Emit `dependency_removed` for surviving dependants whose edges were removed, plus `blocked`/`unblocked` on flag changes.
+
+A **parent** is blocked by its open children exactly as by `blocks` dependencies; the flag is recomputed when a child is created, deleted, re-parented or changes state. When the last non-terminal child of a non-terminal parent enters a terminal state, the same transaction moves the parent to the project's terminal state with the lowest position, clears its lease, sets `closed_at` and writes a `state_changed` event with actor `system`. Parents are never reopened automatically.
 
 ### `task_dependencies`
 
@@ -360,7 +386,9 @@ The `blocked` flag is stored so that the claimable query is a plain indexed read
 | `depends_on_task_id` | `UUID` | NOT NULL, FK `tasks(id)` ON DELETE CASCADE | |
 | `kind` | `task_dependency_kind` | NOT NULL DEFAULT `'blocks'` | `blocks`: `task_id` is not claimable until `depends_on_task_id` is terminal. `discovered_from`: `task_id` was created while working on `depends_on_task_id`; provenance only. `related`: informational. |
 
-Constraints: `PRIMARY KEY (task_id, depends_on_task_id)`, `CHECK (task_id <> depends_on_task_id)`. Both tasks must belong to the same project (enforced in the repository, since a cross-table check needs a trigger). Cycles among `blocks` edges are rejected in the repository with a recursive CTE before insert; the other kinds are not checked for cycles and never affect `blocked`.
+Constraints: `PRIMARY KEY (task_id, depends_on_task_id, kind)`, `CHECK (task_id <> depends_on_task_id)`. Both tasks must belong to the same project (enforced in the repository, since a cross-table check needs a trigger). Cycles among `blocks` edges are rejected in the repository with a recursive CTE after locking the project row and before insert in the same transaction. Thus concurrent reciprocal edges cannot both pass their checks. The other kinds are not checked for cycles and never affect `blocked`. Different kinds may coexist for the same task pair; edge removal includes `kind` so removing a blocker does not erase provenance.
+
+On MCP task creation, resolve `discovered_from` within this transaction: infer the sole held task, omit provenance when none is held, and require an explicit origin when several are held. A supplied origin must be held by the calling session in the same project. Reject ambiguous or invalid input before creating any task or edge. The parent link suffices when the origin equals the new task’s parent; otherwise insert a `discovered_from` edge, even if a `blocks` edge already connects the same pair (`SPEC.md`, `create_task`).
 
 Index: `task_dependencies_depends_on_idx (depends_on_task_id)` for "who is waiting on me".
 
@@ -380,9 +408,33 @@ The agent-to-agent (and human-to-agent) communication channel.
 
 Constraint: exactly one author column is set when `system` is false, none when it is true; enforced at insert time in the repository, since either author may later become NULL through `ON DELETE SET NULL`. Index: `task_comments_task_idx (task_id, created_at)`.
 
+### `task_handoffs`
+
+An immutable record of code passed between workers, including review status for that exact commit (ADR 0018). Publishing a new revision starts unreviewed; forwarding copies the current record's source and commit, and either carries its review attribution forward or records an explicit new review decision. No current branch tip is substituted. Rows are immutable except for foreign keys becoming null on deletion; there is no individual delete endpoint.
+
+| Column | Type | Constraints | Notes |
+| --- | --- | --- | --- |
+| `id` | `UUID` | PK | Commit retained at `refs/handoffs/<id>` in the project's bare repository. |
+| `task_id` | `UUID` | NOT NULL, FK `tasks(id)` ON DELETE CASCADE | Project derived from the task. |
+| `source_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | Original producing session; required when first publishing, copied when forwarding. |
+| `source_branch` | `TEXT` | NOT NULL | Snapshot of the original `session/<id>` branch name, retained after session deletion. |
+| `commit` | `TEXT` | NOT NULL | Full git object id validated as a commit in this project repository. |
+| `comment_id` | `UUID` | NULL, FK `task_comments(id)` ON DELETE SET NULL | Required at creation and belongs to this task; the comment describes work, checks or review findings. |
+| `review_status` | `TEXT` | NOT NULL DEFAULT `'unreviewed'`, CHECK in (`unreviewed`, `approved`, `changes_requested`) | Applies only to `commit`. |
+| `reviewed_by_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | Authenticated reviewer, if a user. |
+| `reviewed_by_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | Authenticated reviewer, if a session. |
+| `reviewed_at` | `TIMESTAMPTZ` | NULL | Carried forward with an existing decision. |
+| `created_by_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | Actor publishing or forwarding this record. |
+| `created_by_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | Actor publishing or forwarding this record. |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
+
+Repository validation requires all referenced tasks, comments and sessions to belong to the same project. Exactly one creation actor is present on insertion. For an explicit review decision, exactly one reviewer is set from the caller and `reviewed_at` is set; an unreviewed record has no reviewer or review time. Forwarding preserves attribution even when a prior reviewer has since been deleted. New revision publication never carries an old approval, even when the supplied commit is the same. Index: `task_handoffs_task_idx (task_id, created_at)`.
+
+The current record is selected through `tasks.current_handoff_id`, not timestamps. Historical rows and their git refs survive source-session deletion. Task/project deletion removes their hand-off refs under the project git lock; cleanup retries remove orphan refs left by interrupted deletion or failed publication. Session launch selects and records the current hand-off in the same transaction as claiming the task, and persists the chosen commit in `sessions.base_ref`.
+
 ### `task_sessions`
 
-Which sessions touched which tasks. A row is upserted whenever a session claims, updates, comments on, releases or hands off a task, and when a session is launched for a task.
+Which sessions worked on which tasks. A row is upserted when a session successfully creates, claims, changes, comments on, releases, escalates or hands off a task, and when a session is launched for a task. A user publishing a code hand-off also links its source session. The link for the directly changed task commits in the same transaction as the change and its events. Preserve `first_touched_at` on conflict and advance `last_touched_at` only for an actual change. Read-only calls, rejected operations and updates with no effective changes neither create links nor advance either timestamp (ADR 0030).
 
 | Column | Type | Constraints |
 | --- | --- | --- |
@@ -395,18 +447,20 @@ Constraint: `PRIMARY KEY (task_id, session_id)`. Index: `task_sessions_session_i
 
 ### `task_events`
 
-The project-scoped `TaskEvent` stream, delivered over SSE. Same append-only, derived-`seq` discipline as `events`, keyed by project. Changes to `task_states` are also written here (kind `states_changed`, `task_id` NULL) so a connected board learns about new columns.
+The project-scoped `TaskEvent` stream, delivered over SSE. It records actual tracker changes, not tool invocations: reads, rejected operations and updates with no effective change add no rows (ADR 0030). Append-only, with `seq` allocated as `MAX(seq)+1` for this project while holding the project row lock in the tracker mutation transaction. Writers never allocate outside that lock or publish an event in a separate transaction from its change. Changes to `task_states` are also written here (kind `states_changed`, `task_id` NULL) so a connected board learns about new columns.
 
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
 | `project_id` | `UUID` | NOT NULL, FK `projects(id)` ON DELETE CASCADE | |
 | `seq` | `BIGINT` | NOT NULL | Monotonic per project; used as the SSE `id`. |
 | `ts` | `TIMESTAMPTZ` | NOT NULL | |
-| `task_id` | `UUID` | NULL, FK `tasks(id)` ON DELETE SET NULL | |
+| `task_id` | `UUID` | NULL; deliberately no FK to `tasks` | Original task UUID, retained after task deletion. NULL only for project-wide events such as `states_changed`. |
 | `kind` | `TEXT` | NOT NULL | `TaskEvent` kind; see `SPEC.md`. |
 | `payload` | `JSONB` | NOT NULL | |
 
-Constraint: `PRIMARY KEY (project_id, seq)`. The row is written in the same transaction as the task change it describes, then `NOTIFY task_events, '<project_id>:<seq>'` fires after commit.
+Constraint: `PRIMARY KEY (project_id, seq)`. The row and the task change it describes are written in one transaction, which also executes `SELECT pg_notify('task_events', '<project_id>:<seq>')`. PostgreSQL delivers the notification only after that transaction commits; rollback discards it (ADR 0028).
+
+The repository validates the event's task belongs to the project while the task still exists, under the project mutation lock. Deleting a task captures its id and writes the `deleted` event in the same transaction as the deletion; neither that event nor earlier events lose their task identity. Historical events are not rewritten or deleted when a task is removed. The project FK still cascades all event history when the project itself is deleted (ADR 0022).
 
 ## Secrets
 
@@ -446,22 +500,24 @@ Audit of which secret was resolved into which session.
 | --- | --- | --- |
 | `id` | `BIGINT` | PK, `GENERATED ALWAYS AS IDENTITY` |
 | `secret_id` | `UUID` | NOT NULL, FK `secrets(id)` ON DELETE CASCADE |
-| `session_id` | `UUID` | NOT NULL, FK `sessions(id)` ON DELETE CASCADE |
+| `session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE CASCADE |
+| `user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL |
+| `purpose` | `TEXT` | NOT NULL; `launch` or `git` |
 | `at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() |
 
-Indexes: `secret_uses_secret_idx (secret_id, at DESC)`, `secret_uses_session_idx (session_id)`. A row is written for every injected secret on every launch, including relaunches of parked sessions. Orchestrator-only uses (the git credential provider) are also recorded, with the session that triggered the git operation.
+Indexes: `secret_uses_secret_idx (secret_id, at DESC)`, `secret_uses_session_idx (session_id) WHERE session_id IS NOT NULL`. A row with `purpose = 'launch'` and `session_id` set is written for every injected secret on every launch, including relaunches of parked sessions. Uses by the git credential provider are recorded with `purpose = 'git'` and whichever of `session_id` (MCP tool) or `user_id` (REST) asked; the mirror-fetch job sets neither.
 
 ## Notifications (LISTEN/NOTIFY channels)
 
-Not tables, but part of the schema contract. Payloads are small and are wake signals only (ADR 0005).
+Not tables, but part of the schema contract. Payloads are small and are wake signals only (ADR 0005, with transaction ordering corrected by ADR 0028). Call `pg_notify` on the transaction that writes the corresponding rows, using bound parameters. PostgreSQL delivers notifications only after successful commit and discards them on rollback; there is no separate post-commit notification write.
 
-| Channel | Payload | Sent when |
+| Channel | Payload | Issued within |
 | --- | --- | --- |
-| `session_events` | `<session_id>:<seq>` | After an `events` row commits. |
-| `task_events` | `<project_id>:<seq>` | After a `task_events` row commits. |
-| `session_state` | `<session_id>:<state>` | After `sessions.state` changes. |
+| `session_events` | `<session_id>:<seq>` | The transaction inserting the session event batch. |
+| `task_events` | `<project_id>:<seq>` | The transaction inserting the task event batch and its task changes. |
+| `session_state` | `<session_id>:<state>` | The transaction changing `sessions.state`. |
 
-Consumers treat a notification as "there may be new rows after the last `seq` you saw" and always read from the table.
+For a batch, one notification per affected event stream may carry its highest sequence; consumers treat it as "there may be new rows after the last `seq` you saw" and always read from the table. The shared listener fans out delivered notifications after commit. Cursor replay, deduplication and periodic safety reads remain required for lost notifications or disconnected listeners.
 
 ## Migration list for v1
 
@@ -471,7 +527,7 @@ Migrations are created with `sqlx migrate add -r <name>` and applied automatical
 2. `users` — `users` (including the seeded admin row), `refresh_tokens`, `user_invites`, `password_reset_tokens`.
 3. `projects` — `projects`, `agent_profiles`, `project_shared_dirs`.
 4. `sessions` — `sessions`, `events`.
-5. `tasks` — `task_states`, `profile_states`, `tasks`, `task_dependencies`, `task_comments`, `task_sessions`, `task_events`, and `ALTER TABLE sessions ADD COLUMN task_id`.
+5. `tasks` — `task_states`, `profile_states`, `tasks`, `task_dependencies`, `task_comments`, `task_handoffs`, `task_sessions`, `task_events`, then `ALTER TABLE tasks ADD COLUMN current_handoff_id` and `ALTER TABLE sessions ADD COLUMN task_id, ADD COLUMN handoff_id` with their foreign keys. The down migration removes these referencing columns before dropping the tables.
 6. `secrets` — `secrets`, `secret_uses`.
 
 Each `.down.sql` drops exactly what its `.up.sql` created, in reverse order.

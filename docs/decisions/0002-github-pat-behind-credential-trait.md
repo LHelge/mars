@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Superseded by the current [git credential transport contract](../../ARCHITECTURE.md#git-model) for the `-c`/no-disk claim: credentials are placed in a temporary mode-0600 config selected through `GIT_CONFIG_GLOBAL`, then deleted. Credential values must not appear in argv; the provider-trait decision is unchanged.
+
 ## Context
 
 The orchestrator needs to clone, fetch and push private repositories. Three options were considered:

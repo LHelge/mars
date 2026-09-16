@@ -42,13 +42,13 @@ flowchart LR
 | orchestrator | The only stateful service. Serves the REST API, WebSocket and SSE endpoints on the API listener, and the MCP endpoint on a separate listener. Owns every session as a long-lived task. Talks to the container engine and runs `git`. | Runs as an unprivileged user. Holds the engine socket. Attached to both networks. |
 | postgres | The only system of record. | Version 18. Not reachable from session containers. |
 | nginx | Serves the built frontend, proxies `/api` and `/ws` to the orchestrator. | Does not proxy the MCP listener. Configured for WebSocket upgrade and unbuffered SSE. |
-| session container | One per session. Runs the agent CLI under an entrypoint that tees its output to the session volume. | Never gets the engine socket. On the internal network only. Unprivileged user. |
+| session container | One per session. Runs the agent CLI under an entrypoint that writes its output to the session volume. | Never gets the engine socket. On the internal MCP network and the separate egress network. Unprivileged user. |
 
 ### Networks
 
-Two compose networks. `mars-frontend` connects nginx, the orchestrator and Postgres. `mars-sessions` is declared `internal: true` for the routing that compose controls, and connects the orchestrator and every session container. The orchestrator's MCP listener binds on all interfaces but is only reachable through `mars-sessions` because nginx never forwards to it and the host does not publish its port.
+Three networks. `mars-frontend` connects nginx, the orchestrator and Postgres. `mars-sessions` is declared `internal: true` (no gateway, no masquerading) and connects the orchestrator and every session container; it exists only so that sessions can reach the MCP listener. `mars-egress` is an ordinary bridge network with outbound internet that connects session containers and nothing else, because the model API and package registries are on the internet. A session container is attached to both (see "Session container specification"). The orchestrator's MCP listener binds on all interfaces but is only reachable through `mars-sessions` because nginx never forwards to it and the host does not publish its port.
 
-Session containers currently have outbound internet through the engine's default masquerading, because the model API and package registries are on the internet. Restricting egress to an allow-list is a hardening step, not a v1 requirement; the network is still `internal` in the sense that nothing on the host or the frontend network can reach a session container, and session containers cannot reach Postgres or nginx.
+Nothing on the host or the frontend network can reach a session container, and session containers cannot reach Postgres or nginx. Restricting egress on `mars-egress` to an allow-list is a hardening step, not a v1 requirement. The orchestrator creates both session networks at startup if they do not exist (names from `SESSION_NETWORK_INTERNAL` and `SESSION_NETWORK_EGRESS`, defaults `mars-sessions` and `mars-egress`), so a development orchestrator running outside compose needs no manual network setup.
 
 ## Trust boundaries
 
@@ -79,10 +79,20 @@ flowchart TB
 Three boundaries matter:
 
 1. **User to orchestrator.** Users exist only through invites from an admin (ADR 0013); they authenticate with username and password and receive a short-lived JWT access token plus an HTTP-only refresh cookie (see `SPEC.md`, "Authentication"). Every user is trusted with every project; the `admin` flag exists for inviting and managing users only. Authorisation questions of the form "may this user see this project" do not exist in v1.
-2. **Agent to orchestrator.** A session container talks to the orchestrator only through MCP, authenticated by a per-session bearer token generated at session creation. The token identifies the session; from it the orchestrator derives the project, the profile and therefore which tools the agent may call. Agents never self-identify.
-3. **Agent to everything else.** The container is the permission boundary (ADR 0012). Inside it the agent runs with the CLI's bypass-permissions mode. It can read and write its session volume, read the project mirror, reach the internet, and call MCP. It cannot reach the engine, Postgres, nginx or sessions of other projects, and it holds no git credentials. Sessions of the same project share the CLI state directory and the project's declared shared directories (ADR 0015) and nothing else.
+2. **Agent to orchestrator.** A session container talks to the orchestrator through MCP, authenticated by a per-session bearer token generated afresh for each process launch (ADR 0029). The token identifies the session; from it the orchestrator derives the project, the profile and therefore which tools the agent may call. Agents never self-identify.
+3. **Agent to everything else.** The container is the intended permission boundary (ADR 0012), with the accepted git-execution vulnerability below (ADR 0019). Inside it the agent runs with the CLI's bypass-permissions mode. It can read and write its session volume, read the project mirror, reach the internet, and call MCP. Its configured container access excludes the engine, Postgres, nginx and sessions of other projects, and it is not given git credentials. Sessions of the same project share the CLI state directory and the project's declared shared directories (ADR 0015). These restrictions do not guarantee containment if agent-controlled git configuration executes inside the orchestrator.
 
 The orchestrator container is the high-value target. It runs as an unprivileged user, its root filesystem is read-only where the engine allows, it contains `git` and nothing else beyond the binary, and the engine socket is the only privileged thing it holds. Under rootless Podman that socket is itself unprivileged on the host.
+
+### User authentication and revocation
+
+User access tokens include `auth_version`, matched against the current user on every authenticated request. Password changes and resets increment this version and revoke refresh tokens in one transaction; self-service changes issue a replacement pair for the current browser. Authorization uses the database's current administrator role and password-change flag. A deleted user cannot authenticate. Login, refresh and password/reset-token mutations serialize on the user row so credential issuance cannot race past revocation (ADR 0025; exact API and transaction contracts in `SPEC.md` and `docs/data-model.md`).
+
+Open WebSocket and SSE connections retain the existing rule that ordinary JWT expiry does not interrupt them. They recheck account existence, login version and the password-change gate at their existing heartbeat ticks; WebSocket also checks before accepting application messages or terminal input. Invalid authorization closes the connection and its terminal attachment, without stopping agent sessions. Revocation may take one heartbeat interval to end passive streaming. Failed authorization refresh returns the browser to login; a self-service password change reconnects using its replacement credentials. This uses database checks, with no token blacklist or revocation broadcast service.
+
+### Known v1 vulnerability: git execution outside the session container
+
+The agent can edit its checkout's local git configuration. When the orchestrator runs git against that checkout, execution-capable settings such as `core.fsmonitor` can cause agent-controlled commands to run with orchestrator privileges, potentially exposing application secrets, project data and the engine socket. This is an accepted, unresolved v1 vulnerability (ADR 0019). Git operations remain in the orchestrator; a restricted helper container or equivalent isolation is deferred until after v1. Reference clones and subprocess argument arrays are not a complete mitigation. The ordinary audited REST/MCP flows describe intended operations, not a guarantee that exploitation of this path would be audited.
 
 ## Storage
 
@@ -91,21 +101,23 @@ Postgres holds every fact the UI displays. The `/data` volume holds working stat
 ```
 /data
 ├── projects/<project_id>/
-│   ├── repo.git/                 bare mirror of the remote, gc disabled; mounted RO at the same path
+│   ├── repo.git/                 bare project repository: upstream tracking, integration heads and session refs; gc disabled; mounted RO
 │   ├── claude/                   CLI state dir (CLAUDE_CONFIG_DIR), shared by the project's sessions; mounted RW at the same path
 │   │   └── projects/-session-work/
 │   │       ├── <cli_session_id>.jsonl   one transcript per session
 │   │       └── memory/                  the CLI's auto memory, shared by the project's sessions
 │   └── shared/<name>/            project shared directories, mounted RW at their container path
-└── sessions/<session_id>/
-    ├── work/                     git clone, mounted RW at /session/work
-    ├── home/                     the agent's HOME, mounted RW at /session/home
-    ├── log/
-    │   └── stream.jsonl          native CLI output, tee'd by the entrypoint
-    └── mcp.json                  CLI MCP config with the session's bearer token
+├── sessions/<session_id>/
+│   ├── work/                     git clone, mounted RW at /session/work
+│   ├── home/                     the agent's HOME, mounted RW at /session/home
+│   ├── log/
+│   │   ├── stream.jsonl          native CLI stdout, redirected there by the entrypoint
+│   │   └── stderr.log            native CLI stderr
+│   └── mcp.json                  CLI MCP config with the session's bearer token, mounted RO at /session/mcp.json
+└── tmp/                          temporary clones for merge/rebase and the startup probe; emptied by orphan cleanup
 ```
 
-`/data` is mounted at `/data` in the orchestrator container and, for the parts a session needs, at the same absolute path in session containers. The orchestrator additionally needs to know the host path of the volume (`DATA_DIR_HOST`) because bind-mount sources given to the engine are host paths. `git clone --reference` records the mirror's absolute path in the session clone's alternates file, which is why the mirror must be mounted at the same path in the session container as the orchestrator sees it (ADR 0001).
+`/data` in this document is shorthand for `DATA_DIR`, the path at which the orchestrator itself sees the volume: `/data` in the compose deployment, or any directory the developer owns when the orchestrator runs on the host with `cargo run`. The orchestrator additionally needs the host path of the same directory (`DATA_DIR_HOST`, equal to `DATA_DIR` when running on the host) because bind-mount sources given to the engine are host paths. The parts a session needs are mounted into session containers at the orchestrator's path (`DATA_DIR/projects/<id>/repo.git` and so on), never at the host path: `git clone --reference` records the mirror's absolute path as the orchestrator saw it in the session clone's alternates file, so the mirror must appear at that same path inside the container (ADR 0001). The full mount list is in "Session container specification".
 
 **Per-project CLI state.** The CLI's state directory is per project, not per session (ADR 0015). Every session runs with `cwd = /session/work`, so the CLI files transcripts, memory and project settings under the same encoded-path subdirectory; sharing the directory per project turns that into project memory, while sharing it more widely would merge the memory of unrelated projects. Transcripts are named by CLI session id, so co-locating them is harmless, and several CLI processes on one state directory is the ordinary single-machine situation. Everything else under `HOME` (shell history, tool caches) stays per session.
 
@@ -145,14 +157,15 @@ orchestrator/
 
 ### Session owner task
 
-Each session in state `running` is owned by exactly one tokio task, the `SessionOwner`. It is the only writer of that session's `events` rows and the only writer to the CLI's stdin. Its loop:
+Each session in state `running` is owned by exactly one tokio task, the `SessionOwner`. It is the only writer to the CLI's stdin and the only reader of the transcript file. It is not the only writer of the session's `events` rows: git operations, recovery, the launcher and the reaper insert `git`, `state_change` and `launch_warning` events through the same repository call, whether or not an owner exists. Its loop:
 
-1. Tail `log/stream.jsonl` from the recorded offset; for every complete line, translate it through the backend adapter into zero or more `AgentEvent`s, append each to `events` with the next `seq` and the line's end offset, then `NOTIFY session_events`.
+1. Tail `log/stream.jsonl` from the recorded offset; for every complete line, translate it through the backend adapter into zero or more `AgentEvent`s, append each to `events` with the next `seq` and the line's end offset, and issue `pg_notify` for `session_events` in that same transaction. Postgres delivers the notification only after commit (ADR 0028).
 2. Receive input messages from the `SessionRegistry` channel (user messages, answers, stop requests), serialise them and write them to the container's attached stdin. Inputs are recorded as `user_message` events before being written, so history shows them even if the write fails.
 3. Watch the container: on exit, emit a `state_change` event and transition the session to `parked` (clean exit or SIGINT-stopped) or `failed` (non-zero exit outside a stop request; see "Session lifecycle" for the exact rule).
-4. Track `last_activity_at`; the idle reaper (a cron job, not the owner) parks conversational sessions idle longer than the profile's `idle_timeout_secs` and fails ephemeral ones as stalled (see "Task tracker").
+4. Track `last_activity_at`; the idle reaper (a cron job, not the owner) parks conversational sessions idle longer than the profile's `idle_timeout_secs` and fails ephemeral ones as stalled (see "Task tracker"). Idle is measured from the last event, so one long tool call with no output counts as idle; parking only between turns is a post-v1 tuning.
+5. Fold every `result` event into the session's cost and token counters (see "Cost accounting").
 
-The owner never holds an in-memory event counter. `seq` is derived in the insert statement; a duplicate-key error means another writer exists, which is a bug that the owner surfaces by failing the session rather than by retrying silently.
+No writer holds an in-memory event counter. Every event writer first locks the session row in its database transaction, then derives `seq` in the insert statement (`docs/data-model.md`, `events`; ADR 0021). A complete native line's translated events, transcript offset and session counters commit together. Concurrent writers wait for that row lock instead of racing for the same sequence. A unique violation is an invariant failure: roll back and surface a repository error, never retry only part of a batch. The transcript offset is rechecked under the lock before appending a translated line.
 
 ## Session lifecycle
 
@@ -177,9 +190,11 @@ stateDiagram-v2
 | `running` | CLI process alive; `SessionOwner` attached. Any task it holds stays held. | running | yes |
 | `parked` | No process. Resumable with `--resume` at any time. Default rest state of a conversational session. Held tasks stay held. | removed | yes, triggers relaunch |
 | `done` | Ended by a user or policy, or an ephemeral session whose `result` arrived. Not resumable through the UI; branch remains in the mirror. Held tasks are released. | removed | no |
-| `failed` | Last launch or run failed; `sessions.error` says why (`stalled` for an ephemeral session the idle reaper gave up on). A retry moves it to `parked` then relaunches. Held tasks are released. | removed | retry only |
+| `failed` | Last launch or run failed; `sessions.error` says why (`stalled` for an ephemeral session the idle reaper gave up on). A retry of a conversational session moves it to `parked` and relaunches; an ephemeral session is not retried, a new one is launched instead. Held tasks are released. | removed | retry only (conversational) |
 
-Inputs arriving while `creating` or `parked` are queued in the registry and delivered once the CLI has emitted its init event, so from the frontend's point of view a session always accepts messages.
+For conversational sessions, inputs arriving while `creating` or `parked` are queued in the registry and delivered once the CLI has emitted its init event. Ephemeral sessions accept only their launch prompt, never additional input.
+
+These input queues are in memory in v1. Acceptance and a recorded `user_message` do not guarantee delivery across an orchestrator restart; the known limitation is documented under "Input delivery across restarts" (ADR 0020).
 
 ### Launch sequence
 
@@ -196,28 +211,34 @@ sequenceDiagram
     participant C as session container
 
     U->>API: POST /projects/{id}/sessions {profile_id, base_ref, message?, task_id?}
-    API->>API: insert session (creating) and claim task_id in one transaction, generate MCP token, write mcp.json
+    API->>API: generate fresh MCP token; insert session (creating) with its hash and claim task_id in one transaction
     API-->>U: 201 {session}
-    API->>SO: spawn owner
-    SO->>G: clone --reference mirror --branch base_ref work; checkout -b session/<id>  (fresh only)
+    API->>SO: spawn owner with launch token (never returned to UI)
+    SO->>SO: write mcp.json using launch token; on resume first generate a new token and persist its hash
+    SO->>G: fetch --prune mirror  (fresh only; skipped if fetched < 30 s ago)
+    SO->>G: resolve base_ref; clone --reference mirror --no-checkout work; fetch selected ref; checkout -b session/<id> at resolved commit  (fresh only)
     SO->>SEC: resolve profile.secrets for (global, project, user)
     SEC-->>SO: env map (orchestrator-only excluded); secret_uses rows written
     SO->>E: create container (image, mounts incl. CLI state dir and shared dirs, env, labels, network, runtime)
     SO->>E: start; attach stdin
-    E->>C: entrypoint runs CLI | tee log/stream.jsonl
+    E->>C: entrypoint execs CLI, stdout >> log/stream.jsonl
     SO->>SO: tail stream.jsonl from offset 0 (fresh) or last offset (resume)
     C-->>SO: system/init {session_id}
     SO->>API: state running, cli_session_id stored
     SO->>C: flush queued inputs on stdin (the generated task message first, if launched for a task)
 ```
 
-The profile's system prompt is passed on every launch with `--append-system-prompt`; the CLI does not persist it across resumes. The MCP config is passed explicitly with `--mcp-config /session/mcp.json` on every launch.
+The profile's current system prompt is passed on every launch with `--append-system-prompt`; `--system-prompt-snapshot off` prevents a resumed conversation from reusing an older prompt snapshot. The MCP config is passed explicitly with `--mcp-config /session/mcp.json` on every launch. Each actual process launch, including resume and conversational retry, uses a fresh MCP token; both its stored hash and config file must be ready before starting the container (ADR 0029; "MCP design"). A fresh launch fetches the mirror first to refresh upstream-tracking refs; this never moves Mars's integration branches. The default base is the Mars integration branch named by `default_branch`; choosing `origin/<branch>` explicitly starts from the latest fetched upstream version. A fetch failure (upstream unreachable) is recorded as a `launch_warning` and the launch continues from the mirror as it is. For an ephemeral session the queued-input step does not exist: the generated task message and the user's message form the `-p` prompt.
 
 ### Stop semantics
 
 A stop request from the UI sends `SIGINT` to the CLI process (through `docker kill --signal`), which ends the current turn cleanly and lets the CLI write its `result`. If the process has not exited after the grace period (`STOP_GRACE_SECS`, default 20) the owner sends `SIGTERM`, which the CLI treats as a hard stop (exit 143, turn unfinished). Either way the session becomes `parked`. The owner records which signal ended the run in the `state_change` event so the UI can say "stopped" versus "killed".
 
 Ending a session (`done`) is the same stop followed by a final fetch of the session branch into the mirror and removal of the container. The session directory is kept until the session is deleted.
+
+### Cost accounting
+
+Every `result` event carries the CLI's `total_cost_usd` and `usage`. The owner accumulates them into `sessions.cost_usd`, `input_tokens` and `output_tokens` in the same transaction that inserts the event, and the session DTO exposes them. Whether the CLI reports these per turn or cumulatively for the process is one of the adapter's verification items (`docs/open-questions.md`); the accumulation rule follows from the answer (sum per-turn values, or add the increase over the previous `result` of the same run). Clients can derive per-project totals by summing the counters returned by the session-list API; there is no aggregate-cost endpoint or cost table.
 
 ## Agent process model
 
@@ -238,8 +259,9 @@ pub trait AgentBackend: Send + Sync {
 Conversational sessions run one long-lived process:
 
 ```
-claude \
+claude --print \
   --output-format stream-json --input-format stream-json --verbose \
+  --forward-subagent-text --system-prompt-snapshot off \
   [--include-partial-messages] \
   --permission-mode bypassPermissions --permission-prompts none \
   --mcp-config /session/mcp.json \
@@ -248,19 +270,19 @@ claude \
   [--resume <cli_session_id>]
 ```
 
-Ephemeral sessions run `claude -p "<prompt>"` with the same output, permission, MCP and prompt flags. When `result` arrives the owner runs the fetch-back, stops the container and marks the session `done`; an ephemeral session is never parked and never resumed. Follow-up work is a new session (which can start from the finished session's branch as `base_ref`).
+Ephemeral sessions run `claude -p "<prompt>"` with the same output, permission, MCP and prompt flags and without `--input-format stream-json`; the prompt is the generated task message (when launched for a task) followed by the user's `message`, and nothing is written to stdin afterwards. When `result` arrives the owner runs the fetch-back, stops the container and marks the session `done`; an ephemeral session is never parked, resumed or retried. Follow-up work is a new session (which can start from the finished session's branch as `base_ref`). In v1 users launch ephemeral sessions by hand ("run once" on a task, or from the project page with a message); the dispatcher that launches them automatically is post-v1.
 
 `--include-partial-messages` is added when the profile's `partial_messages` flag is set. The flag defaults to true for conversational profiles and false for ephemeral ones: unattended agents do not need it, and whole-message granularity produces fewer rows.
 
-`--bare` is not used in v1. Verified against the CLI documentation: bare mode never reads OAuth credentials, so `CLAUDE_CODE_OAUTH_TOKEN` does not work with it, and it also skips the repository's `CLAUDE.md`, `.mcp.json`, hooks, skills and plugins. Non-bare mode gives the desired split of responsibilities: the repository owns "how we work here" through its `CLAUDE.md` and `.mcp.json`, the profile owns "what this agent's job is" through its system prompt. The cost is that a non-bare `-p` session connects every server in the repository's `.mcp.json` without a trust prompt, which is acceptable because the container is the boundary. A per-profile `--bare` option for API-key-backed sessions was considered and left out of v1; it is one column if a need appears. Whether the pinned CLI version supports `--strict-mcp-config` (load only `--mcp-config` servers) is checked during the adapter task and adopted if present.
+`--bare` is not used in v1. Verified against the CLI documentation: bare mode never reads OAuth credentials, so `CLAUDE_CODE_OAUTH_TOKEN` does not work with it, and it also skips the repository's `CLAUDE.md`, `.mcp.json`, hooks, skills and plugins. Non-bare mode gives the desired split of responsibilities: the repository owns "how we work here" through its `CLAUDE.md` and `.mcp.json`, the profile owns "what this agent's job is" through its system prompt. The cost is that a non-bare `-p` session connects every server in the repository's `.mcp.json` without a trust prompt, which is acceptable because the container is the boundary. A per-profile `--bare` option for API-key-backed sessions was considered and left out of v1; it is one column if a need appears. `--strict-mcp-config` is documented, but enabling it would also suppress repository-owned `.mcp.json` servers. The adapter task must verify this interaction before changing the MCP-loading contract; see `docs/open-questions.md`.
 
 The CLI's state directory is relocated onto the project's data directory with `CLAUDE_CONFIG_DIR=/data/projects/<project_id>/claude` so that transcripts survive container replacement, `--resume <cli_session_id>` finds them, and the CLI's auto memory is shared by every session of the project (see "Storage", ADR 0015). `cli_session_id` is taken from the `session_id` field of the `system`/`init` event. Should the id ever fail to resume, the transcript file path (`/data/projects/<project_id>/claude/projects/-session-work/<id>.jsonl`; the CLI encodes the working directory `/session/work` as `-session-work`) can be passed to `--resume` instead; the owner tries the id first.
 
 Credentials: `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is injected like any other secret the profile declares. The launcher refuses to start a session whose resolved environment contains both, because the CLI's precedence rules would silently pick the API key. Token lifetime is not managed: when the CLI fails to authenticate, the translator emits an `error` event with `fatal: true` that names the secret that was injected (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`) and its scope, the session is parked, and the user replaces the secret and sends the next message.
 
-Permissions are full auto: `--permission-mode bypassPermissions` plus `--permission-prompts none` so nothing ever waits for an answer. Denials (from tool allow-lists in the repository's settings, or from the CLI's own safety rules) arrive as `permission_denied` system messages and are listed in `result.permission_denials`; both are translated to `permission_denied` events.
+Permissions are full auto: `--permission-mode bypassPermissions` plus `--permission-prompts none` so nothing ever waits for an answer. `--permission-prompts none` requires Claude Code 2.1.259 or later; the CLI version is pinned by the adapter task once one is tested end to end, and is recorded in the session image tag. Denials (from tool allow-lists in the repository's settings, or from the CLI's own safety rules) arrive as `permission_denied` system messages and are listed in `result.permission_denials`; both are translated to `permission_denied` events.
 
-Subagent messages carry `parent_tool_use_id`. The translator keeps it on every event it emits so the frontend can nest a subagent's transcript under the tool call that started it.
+Both launch modes use `--print` for the streaming protocol, `--forward-subagent-text` to include subagent text and thinking, and `--system-prompt-snapshot off` to apply current profile prompts on resume. These flags are documented in the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference); their combined behavior is verified by the pinned-version adapter probe. Subagent messages carry `parent_tool_use_id`. The translator keeps it on every event it emits so the frontend can nest a subagent's transcript under the tool call that started it.
 
 ### Input encoding
 
@@ -278,10 +300,42 @@ Session images are built from `images/claude/Dockerfile`; v1 ships that one imag
 
 - an unprivileged user `agent` (uid 1000) with `HOME=/session/home`; the CLI always runs as this user, never as root, which also sidesteps any restriction the CLI may place on bypass-permissions mode under root;
 - the CLI on `PATH`, pinned to a version recorded in the image tag;
-- `git`, `tee`, and whatever toolchain the project needs (profiles choose images, so a project can build its own on top of the base);
-- the entrypoint `/usr/local/bin/mars-entrypoint`, which `cd`s to `/session/work`, sets up the environment, and `exec`s the command given by the orchestrator with stdout piped through `tee -a /session/log/stream.jsonl` and stderr appended to `/session/log/stderr.log`.
+- `git` and whatever toolchain the project needs (profiles choose images, so a project can build its own on top of the base);
+- the entrypoint `/usr/local/bin/mars-entrypoint`, which `cd`s to `/session/work`, sets up the environment, and `exec`s the command given by the orchestrator with stdout redirected (appending) to `/session/log/stream.jsonl` and stderr to `/session/log/stderr.log`. The CLI is therefore PID 1 of the container and receives `SIGINT`/`SIGTERM` from `kill` directly. ADR 0010's `tee` is realised as a redirect because nothing reads the container's own stdout: the orchestrator tails the file and the attach stream carries only stdin. If the engine tests show a signal not reaching PID 1 on either engine, the container is created with `Init: true` and the entrypoint stays the same.
 
 The entrypoint is the place where the tmpfs-file-plus-export-and-unset secrets pattern goes when it is adopted (see "Secrets", "Injection").
+
+A second image, `images/stub/`, honours the same contract for end-to-end tests. Its "CLI" is a script that emits a `system`/`init` line, then replays a fixture transcript (`stream-json` lines, one turn per line read from stdin, or the whole file under `-p`), and exits cleanly on `SIGINT`. It needs no model credentials, so Playwright and the session-owner tests run against real containers.
+
+### Session container specification
+
+The launcher builds every container from the inputs below and nothing else. `DATA_DIR` is the orchestrator's path to the volume and `DATA_DIR_HOST` the host's (see "Storage"); `<sid>` and `<pid>` are the session and project ids.
+
+| Field | Value |
+| --- | --- |
+| Image | `profile.image`, pulled at launch if absent; a pull failure fails the launch with the engine's message in `sessions.error`. |
+| Name | `mars-session-<sid>` |
+| Labels | `mars.session_id`, `mars.project_id`, `mars.profile_id` |
+| User | `1000:1000`, the image's `agent`; see "Uid contract". |
+| Working directory | `/session/work` |
+| Command | the backend's launch command; the image entrypoint wraps it. |
+| Environment | `HOME=/session/home`, `CLAUDE_CONFIG_DIR=DATA_DIR/projects/<pid>/claude`, `MARS_SESSION_ID=<sid>`, `MARS_PROJECT_ID=<pid>`, `MARS_TASK_ID=<task id>` (only when launched for a task), then the resolved secrets. |
+| Stdin | `OpenStdin: true`, `StdinOnce: false`, `Tty: false`, `AttachStdin: true`; stdout and stderr are not attached. |
+| Binds (host source → container target) | `DATA_DIR_HOST/sessions/<sid>/work → /session/work` rw; `…/home → /session/home` rw; `…/log → /session/log` rw; `…/mcp.json → /session/mcp.json` ro; `DATA_DIR_HOST/projects/<pid>/repo.git → DATA_DIR/projects/<pid>/repo.git` ro; `DATA_DIR_HOST/projects/<pid>/claude → DATA_DIR/projects/<pid>/claude` rw; one `DATA_DIR_HOST/projects/<pid>/shared/<name> → <container_path>` rw per shared directory, parents before children. |
+| Root filesystem | writable (`ReadonlyRootfs: false`). The container is disposable and agents install tools into it. |
+| Networks | created on `SESSION_NETWORK_INTERNAL`; connected to `SESSION_NETWORK_EGRESS` before start. |
+| Extra hosts | the entries in `SESSION_EXTRA_HOSTS`, if any (development: `host.containers.internal:host-gateway`). |
+| Security | `CapDrop: ["ALL"]`, `SecurityOpt: ["no-new-privileges"]`, `Privileged: false`. |
+| User namespace | `UsernsMode: "keep-id:uid=1000,gid=1000"` on Podman; unset on Docker. |
+| Runtime | `profile.runtime` when set. |
+| Resource limits | none in v1; `Memory` and `NanoCpus` are reserved for profile columns later. |
+| Restart policy | none; the orchestrator relaunches. |
+
+Anything not in this table is left at the engine default, and a field is added only after the engine tests pass on both engines (see "Engine adapter").
+
+**Uid contract.** Every file under `DATA_DIR` must be readable and writable by both the orchestrator and the CLI without ownership fix-ups. The image's `agent` user is uid 1000. Under rootless Podman the container is created with `keep-id:uid=1000,gid=1000`, which maps the host user running Podman (the service user, whatever its uid) to uid 1000 inside the container, so files the CLI writes are owned by the service user on the host. Under Docker there is no user-namespace mapping, so the orchestrator itself must run as uid 1000: the compose file sets `user: "1000:1000"` on the orchestrator service and `DATA_DIR_HOST` must be owned by uid 1000. The startup probe verifies the outcome on either engine: a file written by a probe container must be owned by the orchestrator's own uid.
+
+**Development on the host.** With `cargo run` on the host, `DATA_DIR` equals `DATA_DIR_HOST`, session containers mount the volume at that same path, and the MCP listener is reached through the host gateway: `MCP_URL=http://host.containers.internal:7001/mcp` (Docker: `host.docker.internal`) and, where the engine does not add the name itself, `SESSION_EXTRA_HOSTS=host.containers.internal:host-gateway`. `MCP_URL` is the URL the launcher writes into `mcp.json`; its default, `http://orchestrator:<MCP_PORT>/mcp`, is for compose. On macOS the engine runs in a VM, so `DATA_DIR_HOST` must lie under a directory the Podman machine or Docker Desktop shares with the VM; the startup probe catches a path that is not shared.
 
 ## Durability and recovery
 
@@ -289,12 +343,18 @@ The transcript file on the session volume is the source of truth for what the CL
 
 Every `events` row stores, inside its payload under `_offset`, the byte offset just past the native line that produced it. The owner reads the file from the last committed offset, so after any interruption it resumes exactly where the database says it stopped. Because a native line may produce several events, the offset is only advanced on the last event of a line, and all events of a line are inserted in one transaction.
 
+### Input delivery across restarts
+
+v1 accepts disruption to incoming messages when the orchestrator restarts (ADR 0020). Registry queues are not durable, and there is no persistent delivery status between recording `user_message` and writing CLI stdin. A queued message can be lost, a transcript entry can exist for a message never delivered, and a crash around the write can leave it unclear whether the agent received or acted on the input. Manual resubmission can repeat work.
+
+Keep the existing input path for v1: no durable input queue, delivery-status UI, or restart-safe input deduplication. Recovery and reconnect replay stored output events but do not automatically resend inputs from history or client pending state. Operators inspect the conversation and decide whether to resend. The existing transcript-file recovery and container adoption remain required; this limitation does not apply to ordinary browser disconnection while the orchestrator continues running.
+
 ### Restart procedure
 
 On start the orchestrator:
 
 1. Runs migrations.
-2. Lists containers with the label `mars.session_id` through the engine. For each one whose session row is `running`, it re-creates a `SessionOwner`, reattaches stdin, and resumes tailing from `MAX(_offset)` of that session's events. If the container is gone, the session is marked `parked` with a `state_change` event saying so.
+2. Lists containers with the label `mars.session_id` through the engine. For each one whose session row is `running`, it re-creates a `SessionOwner`, reattaches stdin, and resumes tailing from `MAX(_offset)` of that session's events. Adoption leaves the existing MCP token hash and configuration unchanged because the process is already running (ADR 0029). If the container is gone, the session is marked `parked` with a `state_change` event saying so.
 3. Marks every session in `creating` as `failed` with reason `orchestrator restarted during creation`; the user can retry.
 4. Starts the cron jobs (mirror fetch, idle reaper, stuck-task reaper, token cleanup).
 
@@ -310,23 +370,27 @@ sequenceDiagram
     participant FE as Frontend
 
     FE->>WS: GET /ws/sessions/{id}?after=41&token=...
+    WS->>WS: subscribe to session_events fan-out
     WS->>PG: SELECT ... WHERE seq > 41 ORDER BY seq
     WS-->>FE: events 42..57 (replay)
-    WS->>WS: subscribe to session_events fan-out
+    SO->>PG: BEGIN
     SO->>PG: INSERT events (seq 58)
-    SO->>PG: NOTIFY session_events '<id>:58'
-    PG-->>WS: notification
+    SO->>PG: SELECT pg_notify('session_events', '<id>:58')
+    SO->>PG: COMMIT
+    PG-->>WS: notification (delivered after commit)
     WS->>PG: SELECT ... WHERE seq > 57
     WS-->>FE: event 58
 ```
 
-The handler subscribes before it replays, so a row committed during the replay is either included in the replay or triggers a read afterwards; the client dedupes on `seq`. Older history (before `after`) is fetched over paginated REST with `seq` as the cursor. A periodic safety read (every 30 seconds) covers a lost notification. The same pattern, keyed by project, serves `TaskEvent`s over SSE with `Last-Event-ID` as the cursor.
+Writers issue `pg_notify` on the same database transaction as the event rows and related state updates. PostgreSQL delivers it only on successful commit and discards it on rollback. A shared Postgres listener forwards delivered notifications to the in-process broadcast channels; writers do not broadcast before commit or send a second notification afterwards. Batches may notify once per affected stream with the highest committed sequence. Notifications remain wake signals, not event payloads (ADR 0028).
+
+The handler subscribes before it replays, so a row committed during the replay is either included in the replay or triggers a read afterwards; the client dedupes on `seq`. Older history (before `after`) is fetched over paginated REST with `seq` as the cursor. A periodic safety read (every 30 seconds) covers a lost notification. The same pattern, keyed by project, serves `TaskEvent`s over SSE with `Last-Event-ID` as the cursor. The SSE handler establishes its notification subscription before opening the response. The task board then loads REST data and uses events as refresh signals, following ADR 0022; task event identities survive task deletion.
 
 Input is single-writer: the WebSocket handler forwards inputs to the session's owner through the registry, which serialises them. An answer to a prompt event carries `reply_to: <seq>`; if the owner has already consumed that prompt (any later input was accepted, or the turn ended) the answer is rejected with an `input_rejected` message on the socket rather than being written to the CLI.
 
 ## Git model
 
-Worktrees are not used (ADR 0001). All git operations shell out to the `git` binary (ADR 0011). No session container ever holds a credential or pushes (ADR 0007).
+Worktrees are not used (ADR 0001). All git operations shell out to the `git` binary (ADR 0011). No session container ever holds a credential or pushes (ADR 0007). The repository called the "mirror" throughout these documents is a bare project repository, not an exact upstream mirror: upstream-tracking refs, Mars integration branches and session refs have separate ownership (ADR 0017).
 
 ```mermaid
 flowchart LR
@@ -336,27 +400,37 @@ flowchart LR
     W2[session work clone<br/>branch session/b]
     T[temp clone for merge/rebase]
 
-    UP -- "clone --mirror, fetch --prune (periodic)" --> M
+    UP -- "fetch --prune into refs/remotes/origin/* (periodic)" --> M
     M -- "clone --reference (alternates)" --> W1
     M -- "clone --reference (alternates)" --> W2
     W1 -- "fetch work session/a:refs/sessions/a" --> M
     W2 -- "fetch work session/b:refs/sessions/b" --> M
-    M -- "clone --shared" --> T
+    M -- "clone --shared + explicit fetch of selected refs" --> T
     T -- "merge/rebase, then push back" --> M
     M -- "push (orchestrator only, credential from provider)" --> UP
 ```
 
-**Project clone.** `git clone --mirror <remote_url> /data/projects/<id>/repo.git` as a background job. Immediately after, the mirror gets `gc.auto=0`, `gc.pruneExpire=never`, and its fetch refspec is narrowed to `+refs/heads/*:refs/heads/*` and `+refs/tags/*:refs/tags/*` so that `refs/sessions/*` survives `fetch --prune`. The `default_branch` is read from the mirror's `HEAD`. A cron job runs `git fetch --prune` on every ready mirror every `MIRROR_FETCH_INTERVAL` (default 10 minutes) and updates `last_fetched_at`.
+**Project clone.** A background job runs `git init --bare /data/projects/<id>/repo.git`, adds the upstream as `origin`, and configures its fetch refspecs as `+refs/heads/*:refs/remotes/origin/*` and `+refs/tags/*:refs/tags/*`. It sets `gc.auto=0`, `gc.pruneExpire=never`, and leaves `remote.origin.mirror` unset; neither fetch nor push uses `--mirror`. The job discovers the remote's symbolic `HEAD` with `git ls-remote --symref origin HEAD` (unless the user supplied `default_branch`). After the first fetch, it seeds a Mars integration head under `refs/heads/<branch>` for each fetched upstream branch and sets the bare repository's `HEAD` to the default integration branch. Subsequent fetches update or prune only upstream-tracking refs and tags, never integration heads or `refs/sessions/*`. A cron job runs `git fetch --prune origin` on every ready mirror every `MIRROR_FETCH_INTERVAL_SECS` (default 600) and updates `last_fetched_at`; a fresh session launch and `POST /projects/{id}/fetch` run the same fetch on demand.
 
-**Session clone.** `git clone --reference /data/projects/<pid>/repo.git --branch <base_ref> /data/projects/<pid>/repo.git /data/sessions/<sid>/work` when `base_ref` is a branch or tag; for a commit id the clone uses the default branch and then checks out the commit. Then `git checkout -b session/<sid>`. The clone's `user.name`/`user.email` are set to the launching user's name and email so commits are attributed. The work directory is mounted RW at `/session/work`; the mirror is mounted RO at its own path so the alternates file resolves.
+**Ref ownership.** `refs/remotes/origin/<branch>` records the last fetched upstream commit; `refs/heads/<branch>` is Mars's integration branch and changes only through an explicit integration operation; `refs/sessions/<sid>` records a session's synced work. `refs/handoffs/<id>` retains the immutable commit named by a task hand-off (ADR 0018); it is never a mutation target or push source, and is selected for a task merge through the hand-off id. A fetch must preserve an unpushed merge on an integration branch, even if upstream moves or deletes that branch. API names are `origin/<branch>` for upstream tracking and `<branch>` for integration heads; fully qualified refs disambiguate names. Upstream-tracking refs are read-only merge sources and rebase/diff bases. For example, merging `origin/main` into `main` explicitly incorporates fetched upstream changes. Only integration heads and session refs can be mutation targets or push sources.
+
+**Session clone.** Resolve `base_ref` to a commit in the project repository, then run `git clone --reference /data/projects/<pid>/repo.git --no-checkout /data/projects/<pid>/repo.git /data/sessions/<sid>/work` and create `session/<sid>` at that commit. Supported bases are integration heads, upstream-tracking refs, tags, session refs and commit ids present in the project repository. Fetch a selected named ref explicitly before checkout: an ordinary clone does not copy `refs/sessions/*` or the source repository's upstream-tracking refs. Commit-id bases are accessible through the reference object's alternates. The clone's `user.name`/`user.email` are set to the launching user's name and email so commits are attributed. The work directory is mounted RW at `/session/work`; the mirror is mounted RO at its own path so the alternates file resolves. The clone's `origin` is the mirror, so an agent can `git fetch origin` and rebase or merge locally by itself; ordinary remote-tracking branches in this clone track Mars's integration heads. Reading the mirror's upstream or session refs requires an explicit refspec. The agent cannot push to the mirror. Getting work out of a session (fetch-back, merge, rebase, push) is the orchestrator's alone.
 
 **Fetch-back.** On session end, on an explicit "sync" from the UI, and before any `merge`, `rebase` or `push` involving the session, the orchestrator runs `git -C <mirror> fetch /data/sessions/<sid>/work session/<sid>:refs/sessions/<sid>` (force). Nothing in the container triggers this; the agent just commits.
 
-**Merge, rebase, push.** These never operate on the mirror directly, because a bare mirror has no work tree and a failed merge must not leave state behind. The orchestrator creates a temporary clone of the mirror (`git clone --shared`) in `/data/tmp/`, performs the operation there, and on success pushes the resulting refs back into the mirror and, for `push`, from the mirror to upstream. Conflicts abort the operation, delete the temp clone, and return the list of conflicting paths to the caller. After a successful `rebase` of a session branch, the orchestrator also updates the session's work clone (`git fetch mirror refs/sessions/<sid>` followed by `git reset --hard` only if the work tree is clean, otherwise the session is told to reconcile through a `user_message` event).
+**Merge, rebase, push.** Merge and rebase run in a temporary clone (`git clone --shared`) in `/data/tmp/`; the orchestrator explicitly fetches the selected source and target refs from the project repository into temporary local refs before operating. It must not assume an ordinary clone includes `refs/sessions/*` or `refs/remotes/origin/*`. On success it writes back only the intended integration head or session ref with an explicit refspec. Conflicts abort the operation, delete the temp clone, and return the list of conflicting paths to the caller. After a successful `rebase` of a session branch, the orchestrator also updates the session's work clone (`git fetch origin refs/sessions/<sid>` followed by `git reset --hard` only if the work tree is clean, otherwise the operation reports that checkout reconciliation is required in its `git` outcome event (a transcript event alone does not deliver input to the CLI)).
+
+A push sends exactly the selected integration head or session ref to `refs/heads/<remote_branch>` upstream with an explicit refspec, never a mirror push. If upstream has advanced incompatibly, a normal push returns a conflict (HTTP 409 / MCP `conflict`) and retains all local refs; the caller can fetch, integrate the upstream changes and retry. Existing explicitly requested force-push behavior is unchanged. A failed push never rolls back a successful local merge.
+
+A task merge selects `{task_id, handoff_id}` instead of a live `source` branch. Under the project git lock it verifies that this is the task's current hand-off and that its review status is `approved`, then merges that hand-off's pinned commit. It does not fetch a newer session tip as the source. A stale or unapproved hand-off returns a conflict without updating the target. The final current-hand-off check and target-ref write are serialized against task hand-off changes under the same project git lock. Generic branch merges remain available as explicit user or profile-authorized git operations; they do not record task review approval.
+
+**Serialization.** One per-project asynchronous lock covers orchestrator operations that mutate the project repository: initialization, upstream fetch, session fetch-back, hand-off publication, merge, rebase and push, including their dependent fetches and write-back. Composite operations acquire it once and hold it through completion; helpers do not reacquire it. Fresh launch holds it through base resolution and clone setup, and project deletion uses the same lock. Task deletion also acquires this lock before removing hand-off refs. An operation also changing tracker data acquires the git lock before the database project lock, and that project lock before session or task row locks (ADR 0021). Git preparation precedes the short tracker transaction, which revalidates before publishing; a transaction holding the project row must never wait for the git lock. This prevents cron, REST and MCP operations from racing over refs or removing a repository in use. It does not serialize commands an agent runs inside its own checkout. Ref resolutions for read-only diffs are captured under the lock so the operation uses fixed commits.
+
+**Diff.** `GET /projects/{pid}/git/diff` runs `git diff --numstat` and `git diff` from `merge-base(base, head)` to `head` directly against the mirror (read-only, no temporary clone), after a fetch-back when `head` is a session. This internal fetch-back emits no separate `git` event: otherwise the panel's refresh-on-git-event rule would repeatedly trigger itself. Explicit sync actions retain their outcome events. Supplying `handoff_id` instead of `head` selects that project's retained hand-off commit and never syncs a moving branch. The patch is truncated above 1 MiB with `truncated: true`. This is what the session view's "Changes" panel and the task's revision view show.
 
 **Commit identity.** Commits made inside a session carry the launching user's name and email. Commits the orchestrator creates (merge commits) carry the bot identity from `GIT_BOT_NAME` and `GIT_BOT_EMAIL`, obtained through `GitCredentialProvider::commit_identity`, with a `Requested-By: user:<id>` or `Requested-By: session:<id>` trailer naming who asked. A future GitHub App provider substitutes the app's bot identity without touching callers.
 
-**Credentials.** Every command that touches upstream gets its credential from `GitCredentialProvider` (ADR 0002) and passes it as `-c http.extraHeader=Authorization: Basic <base64(x-access-token:PAT)>` on the child process only. The remote URL stored in `projects.remote_url` never contains a credential, and the token never appears in argv (`-c` values are visible in `ps`; the wrapper therefore writes the header into a temporary config file passed through `GIT_CONFIG_GLOBAL` with `0600` permissions, deleted after the command). Only the orchestrator ever runs these commands.
+**Credentials.** Every command that touches upstream gets its credential from `GitCredentialProvider` (ADR 0002). The wrapper writes `http.extraHeader = Authorization: Basic <base64(x-access-token:PAT)>` into a temporary config file with `0600` permissions, selects it through the child process's `GIT_CONFIG_GLOBAL`, and deletes it after the command. The remote URL stored in `projects.remote_url` never contains a credential. Do not pass the header through `-c`: those values are argv and visible in process listings. Only the orchestrator runs these commands.
 
 ## Secrets
 
@@ -381,17 +455,19 @@ flowchart LR
 
 **Injection.** v1 injects secrets as container environment variables, which the engine stores in the container's config and which `docker inspect` can show to anyone with the engine socket (only the orchestrator has it). The hardening step, documented here so the entrypoint contract already leaves room for it, is: mount a tmpfs at `/run/secrets`, have the orchestrator write one file per secret through `docker cp` or an exec before starting the CLI, and have the entrypoint `export` each file's content into the environment and then `unset`-proof it by deleting the files, so the values exist only in the CLI process's environment and never in the container config.
 
-**Never logged.** Secret values are `zeroize`d after use, are never part of any event payload, and tracing spans carry names only.
+**Credential handling and transcripts.** The orchestrator zeroizes its temporary credential buffers after use, uses secret names only in tracing spans, and does not copy credential values into operational logs or its own generated event metadata. The intentional invitation/reset-link logging exception remains as specified in ADR 0026.
+
+Agent/tool output and user-provided transcript content are different: commands can print injected environment variables or credentials from files, and users can paste secrets into messages. v1 preserves that content through the existing transcript, event storage and UI paths without automatic secret detection or redaction (ADR 0027). Normal translation, payload limits and backend-provided redaction still apply. Consequently, transcript files, event rows and their backups may contain plaintext credentials; encryption of the `secrets` table does not encrypt copies emitted into those records. There is no v1 guarantee that transcripts or events are secret-free.
 
 ## MCP design
 
 The orchestrator serves MCP with `rmcp` over Streamable HTTP on its own listener (`MCP_PORT`, default 7001) so that nginx cannot accidentally expose it and so that a firewall rule can later restrict it to the sessions network. The path is `/mcp`.
 
-**Authentication.** Every request carries `Authorization: Bearer <session token>`. The middleware hashes the token, looks up `sessions.mcp_token_hash`, and rejects with 401 if missing, or with 403 if the session is `done` or `failed`. The resolved `SessionContext { session_id, project_id, profile }` is attached to the request; tool handlers never take a session id as an argument.
+**Authentication.** Every request carries `Authorization: Bearer <session token>`. The token is generated afresh for each actual process launch; orchestrator adoption of a running process retains its token (ADR 0029). The middleware hashes the token, looks up `sessions.mcp_token_hash`, and rejects with 401 if missing, or with 403 if the session is `done` or `failed`. The resolved `SessionContext { session_id, project_id, profile }` is attached to the request; tool handlers never take a session id as an argument.
 
 **Tool exposure.** The `tools/list` response for a session contains the task-tracker tools always, and the git tools only if named in the profile's `mcp_tools`. A call to an unlisted tool returns an MCP error, not a silent no-op. Tool descriptions are short and opinionated; the exact text is in `SPEC.md`, "MCP tool contracts".
 
-**Side effects.** Every tool call is written as a `task_events` row (for tracker tools) or a session `tool_call`-style audit event (for git tools) before the response is returned, attributed to the session. The `task_sessions` link table is upserted on every tracker mutation.
+**Side effects.** Successful tracker changes write their `TaskEvent` rows and upsert the calling session's `task_sessions` link for the directly changed task in the same mutation transaction, before returning success. Read-only calls such as `ready` and `get_task`, rejected operations, and updates with no effective change write neither tracker events nor session-task links and do not advance touch timestamps. `list_session_branches` is also read-only and emits no `git` event. Git operations retain their existing session `git` outcome events; these are separate from tracker history. Ordinary backend-reported tool calls/results may still appear in the session transcript, including reads and failures. No separate persistent audit log of MCP reads is added in v1 (ADR 0030).
 
 **Per-session config file.** `/data/sessions/<sid>/mcp.json`:
 
@@ -407,29 +483,50 @@ The orchestrator serves MCP with `rmcp` over Streamable HTTP on its own listener
 }
 ```
 
-The server is named `mars-orchestrator` rather than `mars` to reduce the chance of a repository's own `.mcp.json` shadowing it; the launcher emits a `launch_warning` if the `init` event does not list it as connected. The hostname `orchestrator` resolves on the sessions network. The file is regenerated on every launch from the stored hash only if the token is rotated; otherwise it is left as written at creation.
+The server is named `mars-orchestrator` rather than `mars` to reduce the chance of a repository's own `.mcp.json` shadowing it; the launcher emits a `launch_warning` if the `init` event does not list it as connected. The URL is `MCP_URL` (default `http://orchestrator:<MCP_PORT>/mcp`); the hostname `orchestrator` resolves on the sessions network, and a development orchestrator running on the host sets it to the host gateway instead (see "Session container specification"). The file is regenerated from a fresh cryptographically random token on every actual launch, resume or conversational retry. The database stores only its SHA-256 hash; the original token cannot be reconstructed from that hash.
+
+Serialize preparation through the existing per-session launch path, with no old session process still running. On first creation, generate the token before inserting the session row and pass it to the owner for this launch. On relaunch, generate a new token and commit its replacement hash before starting the process. Write the matching `mcp.json` through a temporary file and atomic replacement before container creation; the raw token is never returned through the API or included in operational logs. If hash persistence or config preparation fails, do not start the process; use the existing launch-failure path. Database and file writes are not one transaction, but no new process starts until both are ready. A subsequent launch attempt generates another fresh token, so it does not need to recover an interrupted preparation.
+
+When the orchestrator restarts and adopts an already-running process, it leaves the stored hash and config unchanged; rotating them would invalidate the credentials held by that process. Rotation on the next actual launch replaces the old hash, causing subsequent requests with the old token to fail authentication. No encrypted token column or hash-to-token recovery mechanism is added.
 
 ## Task tracker
 
-The tracker is how agents hand work to each other and to people. It is modelled on Beads: a dependency-aware issue list that agents query for work they can start, with comments as the channel for context. Beads syncs a per-checkout store through git because every agent has its own copy; here every agent talks to one orchestrator and Postgres is the single store, so the atomic update in `docs/data-model.md` does the job that a merge would (ADR 0016). Four ideas carry the design.
+The tracker is how agents hand work to each other and to people. It is modelled on Beads: a dependency-aware issue list that agents query for work they can start, with comments as the channel for context. Beads syncs a per-checkout store through git because every agent has its own copy; here every agent talks to one orchestrator and Postgres is the single store (ADRs 0016 and 0021).
 
-**State is a queue, defined per project.** A task's state names the queue it is waiting in. Each agent profile declares which states it serves, and the MCP `ready` tool returns claimable tasks in those states only. That is the whole role mechanism: a planner is a conversational profile that serves `backlog` and hands tasks to `ready`; an implementer serves `ready` and hands to `review`; a reviewer serves `review` and hands to `merge`, or back to `ready` with a comment saying why; a merger serves `merge` and closes. None of those names are hard-coded. A project's states are rows (`task_states`) with a `kind` that tells the orchestrator what it needs to know: `queue` states are where agents pick work up, the one `human` state is where escalations land, `terminal` states close a task and satisfy dependencies. Every project starts with `backlog`, `ready`, `review`, `merge`, `needs_human`, `done`, `cancelled` and can change the list from the project page.
+**One mutation at a time per project.** Every tracker writer starts a database transaction, locks the project row with `SELECT ... FOR UPDATE`, and only then reads authoritative state and validates the operation in subsequent statements under `READ COMMITTED`. Task changes, claims/releases, dependencies, comments, task-state configuration, profile served states, hand-offs, launch-for-task and reaper/parent updates all use this path. Relevant session, user, profile or project deletion also coordinates tracker changes through it rather than relying on uncoordinated cascades. An operation affecting several projects acquires their project rows in UUID order; if git locks are needed, acquire those in the same order before the database locks.
 
-**The lease is the worker.** There is no in-progress state. A task in `ready` with a lease holder is being implemented; the same task in `review` with a holder is being reviewed. Claiming is one atomic statement that succeeds for exactly one session (ADR 0009's mechanism, kept). A hand-off is a state change by the holder, which clears the lease in the same transaction, so a task is never both held and waiting in a new queue. A holder that cannot finish gives the task back with `release`, which keeps the state. Users are bound by none of this in the UI: they can move, release and edit anything, and a move by a user hands off just like one by an agent.
+Cycle checks, parent rules, task-number allocation, lease decisions, recomputed `blocked` flags, comments, session links and the full batch of `TaskEvent` rows are part of that one transaction. Helpers share the transaction. Nothing is broadcast before commit; rollback exposes none of the changes or their events. Concurrent requests for the same project wait; another project's mutations and ordinary reads can proceed. Keep transactions short: git preparation runs beforehand under the git lock, and engine, email and model operations run outside the tracker transaction. This uses the existing Postgres connection pool and project row, with no new queue service. Session-only event writers lock their session row; combined tracker/session operations take the project lock first and never reverse that order.
+
+**State is a queue, defined per project.** A task's state names the queue it is waiting in. Each agent profile declares which states it serves, and the MCP `ready` tool returns claimable tasks in those states only. That is the whole role mechanism: a planner is a conversational profile that serves `backlog` and hands tasks to `ready`; an implementer serves `ready` and hands to `review`; a reviewer serves `review` and hands to `merge`, or back to `ready` with a comment saying why; a merger serves `merge` and closes. None of those names are hard-coded. A project's states are rows (`task_states`) with a `kind` that tells the orchestrator what it needs to know: `queue` states are where agents pick work up, the one `human` state is where escalations land, `terminal` states close a task and satisfy dependencies. Every project starts with `backlog`, `ready`, `review`, `merge`, `needs_human`, `done`, `cancelled` and can change the list from the project page. The project must retain at least one queue state, exactly one human state and at least one terminal state; deletion of the last queue or terminal state is rejected.
+
+**The lease is the worker.** There is no in-progress state. A task in `ready` with a lease holder is being implemented; the same task in `review` with a holder is being reviewed. Claiming is one atomic statement that succeeds for exactly one session (ADR 0009's mechanism, kept). A hand-off changes to a different state; assigning the current state preserves the lease, attempt count and closure timestamp. A state change by the holder clears the lease in the same transaction, so a task is never both held and waiting in a new queue. A holder that cannot finish gives the task back with `release`, which keeps the state. Users are bound by none of this in the UI: they can move, release and edit anything, and a move by a user hands off just like one by an agent.
+
+**Code hand-offs.** A state change can include a `handoff` input that publishes a committed revision or forwards the current hand-off, together with a required comment describing the work, checks and next step (ADR 0018; shapes in `SPEC.md`). A new revision identifies its source session and full commit id. The orchestrator syncs that session branch, requires the fetched tip to match the requested commit, and pins the commit at `refs/handoffs/<new id>` before committing the state change. It never creates a commit on the agent's behalf or includes uncommitted files. The source branch may advance later; the hand-off keeps the exact published revision. Forwarding uses the current hand-off id and retains its source session, branch and commit, so a reviewer does not accidentally replace the implementation with the reviewer's own branch. It creates a new retained ref at that same commit without syncing or requiring the original session to still exist.
+
+Git and Postgres cannot share a transaction. Under the project git lock, publication first validates the task's state, holder and current hand-off, then syncs and creates the immutable ref. A database transaction locks the project row before the task, rechecks those values and the caller's authority, and atomically writes the hand-off, its comment, the new current-hand-off pointer, lease release, state change and task events. A sync failure or stale task returns an error with the task and lease unchanged. A crash before the database commit may leave an unreferenced hand-off ref; it cannot publish a task whose commit is missing. The orphan cleanup job removes hand-off refs without matching database rows while holding the project git lock. Committed hand-off refs survive session deletion and remain until their task or project is deleted. Failed publication is safe to retry after reading the task's current state.
+
+**Review approval.** Forwarding may explicitly record `approved` or `changes_requested`; the decision's actor and time are recorded separately from the forwarding actor. Without a new review decision, forwarding retains the existing review status and attribution. Publishing a new revision always starts `unreviewed`, including after a rebase; prior approvals remain in history and never transfer automatically. Moving a card to a state named `merge` does not itself approve anything: state names remain configurable and roles remain profile behavior. The UI's task-merge action and the MCP merge tool's task form require the current hand-off to be approved and merge only its pinned commit. Planning-only state changes require no code hand-off; an ordinary state move leaves the current hand-off unchanged and neither approves it nor picks up new code. Automatic parent closure and lease releases likewise leave it unchanged.
 
 **Liveness comes from the session, not from tool calls.** A lease has no TTL. It is valid while its holder is alive, where alive means the session is `creating`, `running`, or `parked`. `parked` counts because a parked conversational session is waiting for a person, and a planner that talks with a user for two hours without touching the tracker must not lose its task. Dead means `done` or `failed`. Two jobs enforce this. The idle reaper already parks a conversational session that has produced no event for the profile's `idle_timeout_secs`; for an ephemeral session the same silence means stalled, and the reaper stops the container and marks the session `failed` with error `stalled`. The stuck-task reaper then releases every lease whose holder is `done` or `failed`, with reason `session_ended` or `stalled`, and writes a system comment on the task. Ending a session from the UI releases its leases immediately; the reaper is the backstop.
 
 **Attempts and escalation.** `attempts` counts claims since the task last changed state; a claim increments it, a hand-off resets it. When a release (by the agent or by the reaper) finds `attempts` at the project's `max_attempts` (default 3), the task goes to the project's `human` state instead of back into its queue, with the reason recorded and an `escalated` event. Three implementers failing on one task therefore produces one item in `needs_human` with three comments explaining what went wrong, not a fourth attempt. A review loop (reviewer rejects, implementer retries) is not capped by this counter because each rejection is a state change; the reviewer's prompt and the comment history are what stop it.
 
-**Launching a session for a task.** `POST /projects/{pid}/sessions` takes an optional `task_id`. The launch inserts the session and claims the task in one transaction, records the task on the session, and delivers a generated first message naming the task before any user-supplied message. A launch by a user ignores the profile's served states, since the user chose the pairing; the task must merely be unheld, unblocked and non-terminal. A launch that fails in `creating` releases the task when the session becomes `failed`. This is the v1 way of putting an agent on a specific task: open a backlog item with a planner, open a review item with a reviewer, both from the task's detail view.
+**Launching a session for a task.** `POST /projects/{pid}/sessions` takes an optional `task_id`. The launch inserts the session and claims the task in one transaction, records the task on the session, and delivers a generated first message naming the task before any user-supplied message. A launch by a user ignores the profile's served states, since the user chose the pairing; the task must merely be unheld, unblocked and non-terminal. A task in the human state qualifies: a person handing an escalated task back to an agent, with a comment saying what was decided, is the intended way out of that state. A launch that fails in `creating` releases the task when the session becomes `failed`. This is the v1 way of putting an agent on a specific task: open a backlog item with a planner, open a review item with a reviewer, run an ephemeral implementer once on a ready item, all from the task's detail view.
 
-**Blocked is stored.** A `blocks` dependency on a non-terminal task marks the dependant `blocked`, which excludes it from `ready` in every state. The flag is recomputed for all dependants in the same transaction that adds or removes a `blocks` edge or moves a task into or out of a terminal state, and each flip emits a `blocked` or `unblocked` event. The other dependency kinds, `discovered_from` (written automatically when a holder creates a task) and `related`, are provenance for agents reading a task and never affect readiness.
+When `base_ref` is omitted and the task has a current hand-off, launch selects that hand-off's pinned commit, records its id on the session and stores the commit as `base_ref`. Selection and claim use the same locked task row, so the session cannot silently start from a superseded hand-off. An explicit `base_ref` overrides this default; the UI calls out the override, and it confers no review approval. The generated task message includes the hand-off id, source branch, commit, review status and comment. Without a hand-off, the default remains the project's integration branch. An already-running session that calls `claim` receives the hand-off through the returned task, but its checkout is not automatically changed: it must fetch and inspect that exact revision before reviewing or continuing the work.
+
+**Blocked is stored.** A `blocks` dependency on a non-terminal task marks the dependant `blocked`, which excludes it from `ready` in every state. The flag is recomputed for all dependants in the same transaction that adds or removes a `blocks` edge, moves a task into or out of a terminal state, or deletes a prerequisite, and each flip emits a `blocked` or `unblocked` event. On deletion, capture affected dependants before cascading the edges, then recompute from surviving prerequisites and children and emit dependency-removal events in the same transaction. The other dependency kinds, `discovered_from` and `related`, are informational and never affect readiness. Different kinds may coexist for the same task pair and are removed independently.
+
+**Discovery provenance.** When an agent creates a task, infer its origin only if it holds exactly one task. With multiple held tasks it must supply `discovered_from`; a supplied origin must be currently held by that caller in the same project. With no held tasks there is no automatic origin. Validate this under the project lock before insertion. If the origin equals the new task's parent, the parent link suffices; otherwise record a `discovered_from` edge, even when a `blocks` dependency connects the same pair (ADR 0023).
+**Parents.** Nesting is limited to one level, including terminal tasks: a task with children cannot acquire a parent, and a task with a parent cannot receive children. Validate both ends on creation and re-parenting under the project lock; the parent must be a different task in the same project. A task with a non-terminal child is `blocked` in the same way as one with an open `blocks` dependency; the flag is recomputed when a child is created, deleted, re-parented or changes state. When the last non-terminal child of a non-terminal parent enters a terminal state, the same transaction moves the parent to the project's terminal state with the lowest position (`done` by default), clears any lease on it, and writes a `state_changed` event with actor `system`. A parent is never reopened automatically when a child is reopened or added; a user does that. A planner therefore works an epic by claiming it, creating its children, and releasing it wherever it is; the epic closes itself when the children are done.
+
+**Notification.** Every move into the human state, by the `needs_human` tool or by the reaper, sends one email through `EmailClient` (a third message beside invite and password reset) to the task's assignee if it has one, otherwise to every admin, skipping users whose `notify_email` is off. The email names the project, the task, the reason and a link to the task. No other tracker change sends email in v1.
 
 ### After v1: dispatcher and scheduled agents
 
 Nothing in v1 launches a session by itself. Two additions are planned and the model above is shaped so that they touch profiles and jobs only, never the task tables:
 
-- **Dispatcher.** A profile gains `auto_launch` and `max_concurrent`. A job, woken by `task_events` and run on a timer as a fallback, finds profiles with `auto_launch` whose served states contain a claimable task and fewer than `max_concurrent` live sessions, and launches an ephemeral session for the highest-priority such task through the same path as a user launch. Ephemeral sessions become launchable at that point; the MCP surface, the reaper and the attempt limit already cover an unattended agent that fails.
+- **Dispatcher.** A profile gains `auto_launch` and `max_concurrent`. A job, woken by `task_events` and run on a timer as a fallback, finds profiles with `auto_launch` whose served states contain a claimable task and fewer than `max_concurrent` live sessions, and launches an ephemeral session for the highest-priority such task through the same path as a user launch. Users already launch ephemeral sessions by hand; the MCP surface, the reaper and the attempt limit already cover an unattended agent that fails.
 - **Scheduled agents.** A profile gains a cron expression. A job launches an ephemeral session of that profile, without a task, at each tick. The tech-debt scanner that files `ready` tasks once a day and the agent that turns new GitHub issues into `backlog` tasks are instances; both need only `create_task`, and the latter needs GitHub access, which is on the roadmap in `README.md`.
 
 ## Engine adapter
@@ -444,12 +541,15 @@ Nothing in v1 launches a session by itself. Two additions are planned and the mo
 | list with label filter | yes | yes | Recovery lists `mars.session_id`. |
 | bind mounts (`Binds`) | yes | yes | Sources are host paths (`DATA_DIR_HOST`). |
 | nested bind mounts | yes | yes | A shared directory mounted inside `/session/work`; parents are mounted before children. Exercised by the engine tests. |
-| `NetworkMode` = named network | yes | yes | |
+| `NetworkMode` = named network | yes | yes | The internal sessions network, at creation. |
+| connect to a second network before start | yes | yes | The egress network. |
+| image pull | yes | yes | At launch, when the image is absent. |
+| `ExtraHosts` with `host-gateway` | yes | yes (4.x+) | Development on the host only. |
 | `Runtime` (`runsc`, `kata`) | yes | yes if configured in `containers.conf` | |
-| `UsernsMode: keep-id` | ignored | required | Set when `/version` reports Podman. Verified at startup (see below); the orchestrator refuses to run on a Podman that does not honour it. |
+| `UsernsMode: keep-id:uid=1000,gid=1000` | ignored | required | Set when `/version` reports Podman. Verified at startup (see below); the orchestrator refuses to run on a Podman that does not honour it. |
 | memory / cpu limits | yes | yes (cgroup v2 required for rootless) | Kept to `Memory`, `NanoCpus`. |
 | `SecurityOpt`, `CapDrop` | yes | mostly | Only `no-new-privileges` and `CapDrop: ALL` are used. |
-| `ReadonlyRootfs` | yes | yes | Session images that need a writable root use tmpfs mounts instead. |
+| `ReadonlyRootfs` | yes | yes | Available; not used for sessions in v1, which get a writable root. |
 
 Anything outside this table is not used without being verified on both engines first, and the verification is recorded in this table.
 
@@ -459,7 +559,7 @@ Container labels: `mars.session_id`, `mars.project_id`, `mars.profile_id`. Conta
 
 ## Frontend architecture
 
-The frontend is a Vite-built React 19 + TypeScript application served by nginx. It talks to `/api` with TanStack Query for everything request-shaped, holds per-session transcript state in a reducer fed by the session WebSocket, and holds the task board in a reducer fed by the project SSE stream. The raw event list is never kept in state; events are folded as they arrive into `messages` (map plus order), `pendingTools`, and `status`. Component structure and state shapes are in `SPEC.md`, "Frontend".
+The frontend is a Vite-built React 19 + TypeScript application served by nginx. It talks to `/api` with TanStack Query for everything request-shaped and holds per-session transcript state in a reducer fed by the session WebSocket. Transcript events are folded as they arrive into `messages` (map plus order), `pendingTools`, and `status`; raw event arrays are not retained. The task board stores authoritative REST snapshots, with project SSE events triggering a refresh instead of being folded into cards. It subscribes before loading, repeats a load dirtied by incoming changes, and refreshes on reconnect (ADR 0022). Task-board search derives visible cards from the complete project snapshot using title text or an exact task number, without changing the stored snapshot or issuing search requests. Search state is local to the project view and is reapplied after live refreshes (ADR 0031). Component structure and synchronization rules are in `SPEC.md`, "Frontend".
 
 nginx configuration requirements:
 
@@ -478,8 +578,8 @@ One cron service with independent intervals, mirroring the reference layout of a
 | mirror fetch | 10 min | `git fetch --prune` on every `ready` mirror. |
 | idle reaper | 1 min | Park `running` conversational sessions idle beyond their profile's timeout; stop and fail `running` ephemeral sessions idle beyond it (`stalled`). |
 | stuck-task reaper | 1 min | Release tasks held by `done` or `failed` sessions, escalating those at the attempt limit; write the system comment and emit `TaskEvent`s. |
-| token cleanup | 1 h | Delete expired refresh tokens, reset tokens and unaccepted invites. |
+| token cleanup | 1 h | Delete expired refresh tokens, reset tokens, unaccepted invites, and secrets whose scope row no longer exists. |
 | secret rotation | 1 h | Re-wrap rows whose `key_version` is behind the newest key, if any. |
-| orphan cleanup | 1 h | Remove containers labelled `mars.session_id` whose session is `done`/`failed`/missing; delete `/data/tmp` leftovers. |
+| orphan cleanup | 1 h | Remove containers labelled `mars.session_id` whose session is `parked`/`done`/`failed`/missing; delete `/data/tmp` leftovers; under each project's git lock, remove `refs/handoffs/*` with no matching hand-off row. |
 
 Every job logs its outcome and never panics the process; a failing job is retried at its next interval.

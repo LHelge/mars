@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Superseded by [ADR 0028](0028-notify-within-event-transactions.md) for notification transaction ordering: execute `pg_notify` inside the write transaction; PostgreSQL delivers it only after commit. The wake-signal and cursor-read design remains unchanged.
+
 ## Context
 
 WebSocket and SSE subscribers need to learn about new session events and task changes without polling. Postgres `LISTEN/NOTIFY` is available for free. But its payload is capped at 8000 bytes, notifications are dropped if the listener is disconnected, are coalesced when identical inside a transaction, and are not delivered to the sending backend's own uncommitted view. Using it as the transport would lose events.

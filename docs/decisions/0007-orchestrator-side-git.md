@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Superseded by [0017](0017-separate-upstream-and-integration-refs.md) for ref ownership and pruning rationale. Remote writes remain orchestrator-only.
+
 ## Context
 
 Agents produce commits. Somebody has to get them upstream. Letting the agent push directly is the fewest moving parts, but it means the container holds a credential that can write to the remote, and merges happen wherever the agent decides, unaudited. A future "merge agent" role would need the same capabilities under the same controls.

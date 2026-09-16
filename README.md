@@ -19,9 +19,9 @@ Running an agent on a laptop ties it to a terminal, a person, and a machine. Run
 
 The design rests on a few commitments:
 
-- **The container is the permission boundary.** Users are authenticated and trusted; agents run with full auto-permissions inside a container that has its own clone, no git credentials, no engine socket, and an internal network.
-- **Every effect outside the container is audited.** Pushes, merges and task changes go through the orchestrator, attributed to a session or a user.
-- **Nothing is lost when nobody is watching.** The agent's output is written to disk in the container and folded into an append-only event log in Postgres; the UI is a subscriber, never the owner of state.
+- **The container is the intended permission boundary.** Users are authenticated and trusted; agents run with full auto-permissions inside a container that has its own clone and receives no git credentials or engine socket. v1 accepts a known gap in orchestrator-side git operations, described under "Operating notes" below.
+- **Orchestrator actions are audited.** Pushes, merges and task changes through the supported API and MCP tools are attributed to a session or a user. This does not cover exploitation of the known git-execution vulnerability.
+- **Sessions run independently of the browser.** The agent's output is written to disk in the container and folded into an append-only event log in Postgres; the UI is a subscriber, never the owner of state. Delivery of incoming messages across orchestrator restarts has an accepted v1 limitation (ADR 0020).
 - **One event schema.** The frontend never sees a CLI's native output; each backend is translated into the same `AgentEvent` stream.
 - **Task state routes work.** The tracker is modelled on Beads, backed by Postgres instead of a synced store. A task's state is the queue it waits in, each agent profile says which states it serves, and agents hand work to each other by moving tasks between states. A planner turns `backlog` into `ready`, an implementer turns `ready` into `review`, a reviewer sends it on to `merge` or back. States are configured per project; the roles are profiles and prompts, not code.
 
@@ -44,7 +44,7 @@ flowchart LR
 - **orchestrator**: Rust (`axum`, `bollard`, `sqlx`, `rmcp`). Serves the API, owns every session, holds the engine socket, runs `git`. Unprivileged user.
 - **postgres**: the only system of record.
 - **nginx**: serves the built React frontend and proxies `/api` and `/ws`. The MCP endpoint is not proxied.
-- **session containers**: one per session, created by the orchestrator, on an internal network, never given the engine socket.
+- **session containers**: one per session, created by the orchestrator, on an internal network for MCP and a separate egress network for the internet, never given the engine socket.
 
 Rootless Podman is the target engine, reached through its Docker-compatible socket. Docker works with a different `DOCKER_HOST`.
 
@@ -73,9 +73,9 @@ systemctl --user enable --now podman.socket
 echo "unix://$XDG_RUNTIME_DIR/podman/podman.sock"
 ```
 
-The compose file runs the orchestrator with `userns_mode: keep-id` and mounts that socket, so the orchestrator's uid inside the container matches the service user on the host. Session containers also run with `keep-id`; the orchestrator verifies this at startup with a probe container and refuses to start if Podman does not honour it. If `keep-id` is unavailable on your host, the fallback is to run the orchestrator binary as a plain user systemd service instead of a container.
+The compose file runs the orchestrator with `userns_mode: keep-id` and mounts that socket, so the orchestrator's uid inside the container matches the service user on the host. Session containers run with `keep-id:uid=1000,gid=1000`, which maps the service user to the image's `agent` user (uid 1000) whatever the service user's uid is; the orchestrator verifies this at startup with a probe container and refuses to start if Podman does not honour it. If the compatibility API cannot apply `keep-id` to the orchestrator container, it can run as a plain user systemd service. Session containers still require `keep-id:uid=1000,gid=1000` support and must pass the startup probe.
 
-For Docker, use the daemon's socket (`unix:///var/run/docker.sock`) and a user in the `docker` group. Nothing else changes.
+For Docker, use the daemon's socket (`unix:///var/run/docker.sock`) and a user in the `docker` group. The supported Docker deployment uses the default uid mapping, so the orchestrator service runs as uid 1000 (`user: "1000:1000"` in the compose file) and the data directory must be owned by uid 1000. The session uid and data-directory ownership requirements still apply.
 
 ### Configuration
 
@@ -89,6 +89,10 @@ Copy `.env.example` to `.env` and set:
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Database bootstrap. |
 | `DOCKER_HOST` | Engine socket, `unix:///run/user/1000/podman/podman.sock` for rootless Podman. |
 | `DATA_DIR_HOST` | Host path of the data directory; mounted at `/data` in the orchestrator and used as the source of session bind mounts. |
+| `DATA_DIR` | Path at which the orchestrator itself sees the data directory: `/data` in compose, the same as `DATA_DIR_HOST` when running on the host. |
+| `MCP_URL` | URL written into each session's MCP config; default `http://orchestrator:7001/mcp`. On a development host: `http://host.containers.internal:7001/mcp`. |
+| `SESSION_NETWORK_INTERNAL`, `SESSION_NETWORK_EGRESS` | Names of the two session networks (default `mars-sessions`, `mars-egress`); created at startup if missing. |
+| `SESSION_EXTRA_HOSTS` | Optional comma-separated `host:ip` entries added to session containers, e.g. `host.containers.internal:host-gateway` for development. |
 | `SECRETS_MASTER_KEYS` | One or more `<version>=<base64 32-byte key>` entries, comma separated. Or `SECRETS_MASTER_KEY_FILE`. Back this up separately from the database; without it every stored secret is unrecoverable. |
 | `GIT_BOT_NAME`, `GIT_BOT_EMAIL` | Identity for commits the orchestrator creates (merges). |
 | `API_PORT` | Port of the API listener nginx proxies to (default 7000). |
@@ -96,7 +100,7 @@ Copy `.env.example` to `.env` and set:
 | `STOP_GRACE_SECS` | Seconds between SIGINT and SIGTERM when stopping a session (default 20). |
 | `MIRROR_FETCH_INTERVAL_SECS` | How often project mirrors are fetched (default 600). |
 | `SESSION_IMAGE_DEFAULT` | Image used by the default profile of new projects. |
-| `RESEND_API_KEY`, `MAIL_FROM` | Email delivery through Resend, used for invites and password resets. Without an API key the links are written to the orchestrator log instead of sent. |
+| `RESEND_API_KEY`, `MAIL_FROM` | Email delivery through Resend, used for invites and password resets. Without an API key, full usable links including their tokens are intentionally written to the orchestrator log at `info` instead of sent. This supports local development without email configuration; no extra flag is required (ADR 0026). |
 | `RUST_LOG` | Log filter, `info` by default. |
 
 Generate a master key with `openssl rand -base64 32`.
@@ -113,15 +117,26 @@ The orchestrator applies database migrations on startup; the first migration see
 | --- | --- |
 | `admin` | `changeme` |
 
+The fixed bootstrap credentials are intentional for v1: the operator controls initial setup and completes the first-login password change before making the instance available to other users. No separate initial-password setting or setup wizard is required (ADR 0024).
+
+Changing or resetting a user's password invalidates their previous logins. Changing your own password keeps the current browser signed in with new credentials. Deleted users lose access and administrator-role changes apply on subsequent requests; open connections check for revoked logins at their heartbeat ticks (ADR 0025). Running agent sessions continue independently of user logins.
+
 Open `PUBLIC_URL`, log in as `admin`, and you are required to set a new password before anything else works. Then invite your team from the admin page (each invite is a 7-day link sent by email), create a project from a remote URL, and launch a session from its default profile. There is no self-registration.
 
-Work flows through the project's task board. Create a task (it lands in `backlog`), open it in a planning session to break it down, and the resulting `ready` tasks are what an implementer session picks up with its `ready` and `claim` tools. In v1 every session is started by a person, optionally for one task; a task that agents keep failing on ends up in `needs_human` after `max_attempts` (project setting, default 3) with the agents' comments explaining why.
+Work flows through the project's task board. Search across its columns by title or exact task number (`42` or `#42`). Use `Copy link` in a task or session header to reference it in comments or share its direct URL with teammates; opening it requires login. Create a task (it lands in `backlog`), open it in a planning session to break it down, and the resulting `ready` tasks are what an implementer session picks up with its `ready` and `claim` tools. In v1 every session is started by a person, optionally for one task, either as a conversation or as a one-shot run of an ephemeral profile; a task that agents keep failing on ends up in `needs_human` after `max_attempts` (project setting, default 3) with the agents' comments explaining why.
+
+Code hand-offs keep the producing session, branch, exact commit and a comment together. Opening the next session on that task defaults to the handed-over commit, so reviewers see the implementation they were asked to review. Review approval belongs to that commit; submitting a revised commit starts a new review. The task's merge action merges the approved revision, even if the original session branch has since changed.
 
 ### Operating notes
 
+- **Known v1 vulnerability:** git commands run by the orchestrator against an agent-controlled checkout can execute helpers configured by that agent, with the orchestrator's access to secrets, project data and the engine socket. This risk is explicitly accepted for v1; isolating those git operations is deferred. See [ADR 0019](docs/decisions/0019-defer-isolation-of-git-checkout-operations.md). Session containers are not a complete containment guarantee while this remains unresolved.
 - Session working copies, project mirrors and transcripts live under `DATA_DIR_HOST`. Back it up with the database.
+- v1 does not automatically redact secrets from agent/tool output or user messages. Transcripts, event history and their backups may contain credentials printed by commands or pasted into messages; encryption of stored secrets does not cover these copies (ADR 0027).
+- Git fetches refresh the project's upstream-tracking branches (`origin/main`, for example). Mars keeps its integration branches (`main`) separately, so a background fetch cannot discard a merge waiting to be pushed. Merge `origin/main` into `main` explicitly to incorporate upstream changes, then push when ready. A push rejected because upstream changed leaves local work intact. Session reference clones still share history through the read-only project repository.
 - Rotating the secrets master key: add a new `<version>=<key>` entry with a higher version, restart, and let the rotation job re-wrap existing rows; remove the old entry once `GET /api/secrets` shows no row on the old version.
-- Restarting the orchestrator does not stop sessions: running containers are re-adopted and their transcripts resumed from the last committed offset.
+- Restarting the orchestrator does not intentionally stop running containers: they are re-adopted and their transcripts resumed from the last committed offset. **Known v1 issue:** queued incoming messages can be lost, and messages already shown in history may not have reached the agent. Inputs are not automatically resent after restart; inspect the conversation before resubmitting, since the agent may already have acted on a message. This restart-related behavior is accepted for v1 ([ADR 0020](docs/decisions/0020-defer-durable-input-delivery.md)).
+- Each session accumulates cost and token counts from the CLI's result messages; they are shown on the session and can be summed per project from the session-list API responses.
+- Escalations to `needs_human` email the task's assignee, or every admin when there is none; each user can opt out under settings. Without `RESEND_API_KEY` these go to the log like invites.
 - Removing a project removes its mirror, its CLI state directory, its shared directories and every session directory under it.
 - Sessions of one project share the agent CLI's state directory (transcripts, auto memory, installed skills and plugins), so what one session learns is available to the next. Nothing is shared between projects.
 - Shared directories (project page, "Shared directories") mount one directory read-write into every session of a project, so build output is kept once instead of once per session. Which directories are safe to share is per ecosystem: a content-addressed download cache almost always is, build output inside the checkout usually is not. Cargo is the exception because it locks its build directory, so concurrent builds from several sessions queue instead of corrupting each other; the same working-directory path in every session means artifacts are reused across sessions. Starting points:
@@ -151,9 +166,13 @@ mars/
 └── .env.example
 ```
 
-Local development runs Postgres in a container, the orchestrator with `cargo run` against the host's Podman socket, and the frontend with `npm run dev` proxying `/api` and `/ws` to the orchestrator. See `CLAUDE.md` for the exact commands, toolchain and test expectations.
+Local development runs Postgres in a container, the orchestrator with `cargo run` against the host's Podman socket, and the frontend with `npm run dev` proxying `/api` and `/ws` to the orchestrator. Session containers reach the host-run orchestrator's MCP listener through `MCP_URL=http://host.containers.internal:7001/mcp`. See `CLAUDE.md` for the exact commands, toolchain and test expectations.
 
 ## Roadmap after v1
+
+Address the accepted git-execution vulnerability by isolating operations on agent-controlled checkouts from orchestrator privileges (ADR 0019); a restricted git helper container is the current candidate.
+
+Add durable input delivery and recovery handling for messages interrupted by orchestrator restarts, including deduplication and ambiguous delivery (ADR 0020).
 
 A dispatcher that launches ephemeral sessions when a served task state has claimable work, bounded per profile; scheduled agents (a profile run on a cron expression, such as a daily tech-debt scan that files tasks, or an agent that turns GitHub issues into backlog tasks); GitHub App credentials and webhooks; egress restriction for session containers; sandboxed runtimes (gVisor, Kata) per profile; per-project toolchain setup scripts for session images; a second agent backend (GitHub Copilot CLI is the candidate, pending a spike to learn its structured output, stdin protocol and container authentication).
 

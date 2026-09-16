@@ -1,6 +1,8 @@
 # 0012. The container is the permission boundary
 
-Status: accepted
+Status: accepted; the mount list in the decision is extended by 0015 (per-project CLI state directory and shared directories).
+
+Superseded by [0019](0019-defer-isolation-of-git-checkout-operations.md) for the unconditional containment claim: v1 accepts a known path for agent-controlled git configuration to execute with orchestrator privileges. The intended boundary remains the design goal.
 
 ## Context
 

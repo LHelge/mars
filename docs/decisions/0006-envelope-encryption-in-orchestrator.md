@@ -1,6 +1,8 @@
 # 0006. Envelope encryption in the orchestrator
 
-Status: accepted
+Status: accepted; the environment variable is `SECRETS_MASTER_KEYS` (plural, versioned entries) as documented in `README.md`, not the singular name used below.
+
+Superseded by [ADR 0027](0027-defer-transcript-secret-redaction.md) for the blanket claims that plaintext secrets never reach Postgres or event payloads: encryption covers managed credential storage, while arbitrary agent/user content is not automatically redacted.
 
 ## Context
 

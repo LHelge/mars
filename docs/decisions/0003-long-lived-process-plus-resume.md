@@ -1,6 +1,8 @@
 # 0003. Long-lived CLI process, resume for parked sessions
 
-Status: accepted
+Status: accepted; the placement of the CLI state directory (first consequence) is superseded by 0015, which puts it per project rather than per session.
+
+Superseded by the current [launch contract](../../ARCHITECTURE.md#claude-code-invocation) for prompt persistence: the CLI can retain a system-prompt snapshot, so launches use `--system-prompt-snapshot off` with the current profile prompt.
 
 ## Context
 

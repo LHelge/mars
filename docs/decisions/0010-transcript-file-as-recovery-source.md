@@ -1,6 +1,8 @@
 # 0010. Transcript file, not the attach stream, is the recovery source
 
-Status: accepted
+Status: accepted; `tee` is realised as a stdout redirect in the entrypoint so the CLI is PID 1, see `ARCHITECTURE.md`, "Session image".
+
+Superseded by [0020](0020-defer-durable-input-delivery.md) for any implication that incoming message delivery is restart-safe. The recovery guarantee here concerns recorded agent output; incoming input can be lost or have uncertain delivery in v1.
 
 ## Context
 

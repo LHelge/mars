@@ -4,10 +4,14 @@ title: Add task, task-state, hand-off and TaskEvent types and the tasks and task
 status: open
 priority: P0
 created: "2026-09-16T20:40:01.621395700Z"
-updated: "2026-09-16T20:40:01.621395700Z"
+updated: "2026-09-16T20:51:52.376503703Z"
 tags:
   - frontend
   - tracker
+depends_on:
+  - "2f5u2"
+  - h8kw9
+  - xjaah
 parent: gn4y2
 ---
 

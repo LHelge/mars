@@ -4,10 +4,12 @@ title: Add project input validation and ProjectRepository domain queries (status
 status: open
 priority: P1
 created: "2026-09-16T20:28:30.815282444Z"
-updated: "2026-09-16T20:28:30.815282444Z"
+updated: "2026-09-16T20:51:51.836811748Z"
 tags:
   - orchestrator
   - projects
+depends_on:
+  - z4u4e
 parent: pkaee
 ---
 

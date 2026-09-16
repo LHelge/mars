@@ -4,10 +4,12 @@ title: Implement in-memory login throttle and password-reset rate limiter
 status: open
 priority: P1
 created: "2026-09-16T20:28:32.263229827Z"
-updated: "2026-09-16T20:28:32.263229827Z"
+updated: "2026-09-16T20:51:51.672140355Z"
 tags:
   - orchestrator
   - auth
+depends_on:
+  - p5tsd
 parent: qacxf
 ---
 

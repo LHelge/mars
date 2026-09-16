@@ -4,11 +4,13 @@ title: Define the ContainerEngine trait, EngineError and engine domain types
 status: open
 priority: P0
 created: "2026-09-16T20:26:29.486214325Z"
-updated: "2026-09-16T20:26:29.486214325Z"
+updated: "2026-09-16T20:51:51.714769744Z"
 tags:
   - orchestrator
   - engine
   - core
+depends_on:
+  - sywed
 parent: naqhy
 ---
 

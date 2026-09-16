@@ -4,10 +4,12 @@ title: Add credential queries to UserRepository and RefreshTokenRepository, incl
 status: open
 priority: P0
 created: "2026-09-16T20:27:42.652342083Z"
-updated: "2026-09-16T20:27:42.652342083Z"
+updated: "2026-09-16T20:51:51.650535941Z"
 tags:
   - orchestrator
   - auth
+depends_on:
+  - p5tsd
 parent: qacxf
 ---
 

@@ -4,11 +4,15 @@ title: "Add the E2E stack script: Postgres, stub image, orchestrator with integr
 status: open
 priority: P0
 created: "2026-09-16T20:40:46.823541657Z"
-updated: "2026-09-16T20:40:46.823541657Z"
+updated: "2026-09-16T20:51:52.438958064Z"
 tags:
   - frontend
   - infra
   - tests
+depends_on:
+  - cgdc2
+  - gn4y2
+  - qgj33
 parent: "6s8j7"
 ---
 

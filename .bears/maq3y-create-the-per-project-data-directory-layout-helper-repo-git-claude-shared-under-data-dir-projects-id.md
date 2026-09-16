@@ -4,11 +4,13 @@ title: Create the per-project data-directory layout helper (repo.git, claude/, s
 status: open
 priority: P1
 created: "2026-09-16T20:27:57.433928689Z"
-updated: "2026-09-16T20:27:57.433928689Z"
+updated: "2026-09-16T20:51:51.874873087Z"
 tags:
   - orchestrator
   - projects
   - docs
+depends_on:
+  - z4u4e
 parent: pkaee
 ---
 

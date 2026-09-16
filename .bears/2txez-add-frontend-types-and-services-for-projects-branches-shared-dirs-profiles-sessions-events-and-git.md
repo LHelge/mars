@@ -4,12 +4,15 @@ title: Add frontend types and services for projects, branches, shared dirs, prof
 status: open
 priority: P0
 created: "2026-09-16T20:40:42.646403323Z"
-updated: "2026-09-16T20:40:42.646403323Z"
+updated: "2026-09-16T20:51:52.315209963Z"
 tags:
   - frontend
   - sessions
   - projects
   - git
+depends_on:
+  - "2f5u2"
+  - h8kw9
 parent: cgdc2
 ---
 

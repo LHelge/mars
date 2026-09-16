@@ -4,10 +4,13 @@ title: Add a `healthcheck` subcommand to the orchestrator binary for compose hea
 status: open
 priority: P1
 created: "2026-09-16T20:40:34.048883391Z"
-updated: "2026-09-16T20:40:34.048883391Z"
+updated: "2026-09-16T20:51:52.518436176Z"
 tags:
   - orchestrator
   - infra
+depends_on:
+  - s52qg
+  - "2f5u2"
 parent: "5czwa"
 ---
 

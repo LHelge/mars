@@ -4,11 +4,14 @@ title: Add stream token authentication (?token=) and periodic re-authorization s
 status: open
 priority: P0
 created: "2026-09-16T20:44:23.709611292Z"
-updated: "2026-09-16T20:44:23.709611292Z"
+updated: "2026-09-16T20:51:52.036638938Z"
 tags:
   - orchestrator
   - realtime
   - auth
+depends_on:
+  - s52qg
+  - "5h3y4"
 parent: h8kw9
 ---
 

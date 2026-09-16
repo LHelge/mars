@@ -4,12 +4,14 @@ title: Define TaskEvent, TaskActor and the API Task, TaskDetail, Comment and Han
 status: open
 priority: P0
 created: "2026-09-16T20:39:58.382423897Z"
-updated: "2026-09-16T20:39:58.382423897Z"
+updated: "2026-09-16T20:51:52.106460720Z"
 tags:
   - orchestrator
   - tracker
   - realtime
   - docs
+depends_on:
+  - pkaee
 parent: "5h3y4"
 ---
 

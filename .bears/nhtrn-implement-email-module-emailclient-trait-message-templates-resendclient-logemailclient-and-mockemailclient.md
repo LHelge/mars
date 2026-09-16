@@ -4,10 +4,12 @@ title: "Implement email module: EmailClient trait, message templates, ResendClie
 status: open
 priority: P1
 created: "2026-09-16T20:26:45.506118046Z"
-updated: "2026-09-16T20:26:45.506118046Z"
+updated: "2026-09-16T20:51:51.610732009Z"
 tags:
   - orchestrator
   - auth
+depends_on:
+  - p5tsd
 parent: qacxf
 ---
 

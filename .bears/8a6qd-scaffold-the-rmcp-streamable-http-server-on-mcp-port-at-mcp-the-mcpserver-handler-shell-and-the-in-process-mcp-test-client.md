@@ -4,11 +4,13 @@ title: Scaffold the rmcp Streamable HTTP server on MCP_PORT at /mcp, the McpServ
 status: open
 priority: P0
 created: "2026-09-16T20:41:32.384628065Z"
-updated: "2026-09-16T20:41:32.384628065Z"
+updated: "2026-09-16T20:51:52.204993472Z"
 tags:
   - orchestrator
   - mcp
   - tests
+depends_on:
+  - xjaah
 parent: qgj33
 ---
 

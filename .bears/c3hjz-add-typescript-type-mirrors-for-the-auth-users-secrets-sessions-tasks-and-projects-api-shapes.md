@@ -4,9 +4,11 @@ title: Add TypeScript type mirrors for the auth, users, secrets, sessions, tasks
 status: open
 priority: P1
 created: "2026-09-16T20:39:01.349288704Z"
-updated: "2026-09-16T20:39:01.349288704Z"
+updated: "2026-09-16T20:51:52.273242623Z"
 tags:
   - frontend
+depends_on:
+  - t36d2
 parent: "2f5u2"
 ---
 

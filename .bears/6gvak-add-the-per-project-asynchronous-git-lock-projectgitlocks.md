@@ -4,10 +4,12 @@ title: Add the per-project asynchronous git lock (ProjectGitLocks)
 status: open
 priority: P0
 created: "2026-09-16T20:27:28.658116156Z"
-updated: "2026-09-16T20:27:28.658116156Z"
+updated: "2026-09-16T20:51:51.797975551Z"
 tags:
   - orchestrator
   - git
+depends_on:
+  - t36d2
 parent: z4u4e
 ---
 

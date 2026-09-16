@@ -4,10 +4,12 @@ title: Author the stub's default stream-json fixture transcript
 status: open
 priority: P1
 created: "2026-09-16T20:28:06.022145935Z"
-updated: "2026-09-16T20:28:06.022145935Z"
+updated: "2026-09-16T20:51:51.756527261Z"
 tags:
   - images
   - tests
+depends_on:
+  - sywed
 parent: deex5
 ---
 

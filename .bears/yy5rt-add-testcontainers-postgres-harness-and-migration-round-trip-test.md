@@ -4,11 +4,13 @@ title: Add testcontainers Postgres harness and migration round-trip test
 status: open
 priority: P0
 created: "2026-09-16T20:26:56.983296956Z"
-updated: "2026-09-16T20:26:56.983296956Z"
+updated: "2026-09-16T20:51:51.525116377Z"
 tags:
   - orchestrator
   - core
   - tests
+depends_on:
+  - sywed
 parent: p5tsd
 ---
 

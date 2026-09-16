@@ -4,10 +4,12 @@ title: Add shared-directory name and container-path validation and SharedDirRepo
 status: open
 priority: P2
 created: "2026-09-16T20:29:32.014791104Z"
-updated: "2026-09-16T20:29:32.014791104Z"
+updated: "2026-09-16T20:51:51.896745441Z"
 tags:
   - orchestrator
   - projects
+depends_on:
+  - z4u4e
 parent: pkaee
 ---
 

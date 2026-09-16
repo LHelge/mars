@@ -4,11 +4,14 @@ title: "Add EventFanout: Notice type, LISTEN payload parsing and per-session/per
 status: open
 priority: P0
 created: "2026-09-16T20:44:03.854778874Z"
-updated: "2026-09-16T20:44:03.854778874Z"
+updated: "2026-09-16T20:51:52.081740217Z"
 tags:
   - orchestrator
   - realtime
   - core
+depends_on:
+  - s52qg
+  - "5h3y4"
 parent: h8kw9
 ---
 

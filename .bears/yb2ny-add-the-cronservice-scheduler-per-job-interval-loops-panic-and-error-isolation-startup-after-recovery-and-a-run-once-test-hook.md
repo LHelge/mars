@@ -4,11 +4,13 @@ title: "Add the CronService scheduler: per-job interval loops, panic and error i
 status: open
 priority: P0
 created: "2026-09-16T20:42:23.411464510Z"
-updated: "2026-09-16T20:42:23.411464510Z"
+updated: "2026-09-16T20:51:52.224352131Z"
 tags:
   - orchestrator
   - cron
   - core
+depends_on:
+  - xjaah
 parent: cxmar
 ---
 

@@ -4,10 +4,12 @@ title: Add the git command wrapper, GitError and its HTTP error mapping
 status: open
 priority: P0
 created: "2026-09-16T20:27:09.950042128Z"
-updated: "2026-09-16T20:27:09.950042128Z"
+updated: "2026-09-16T20:51:51.818386654Z"
 tags:
   - orchestrator
   - git
+depends_on:
+  - t36d2
 parent: z4u4e
 ---
 

@@ -4,11 +4,15 @@ title: "Add Session model: state machine, kind rules, title defaulting and Sessi
 status: open
 priority: P0
 created: "2026-09-16T20:28:22.693124755Z"
-updated: "2026-09-16T20:28:22.693124755Z"
+updated: "2026-09-16T20:51:51.994353910Z"
 tags:
   - orchestrator
   - sessions
   - core
+depends_on:
+  - naqhy
+  - pkaee
+  - "8vnwy"
 parent: s52qg
 ---
 

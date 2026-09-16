@@ -4,11 +4,14 @@ title: Define AgentEvent and SessionInput types with the storage and API seriali
 status: open
 priority: P0
 created: "2026-09-16T20:26:41.546633971Z"
-updated: "2026-09-16T20:26:41.546633971Z"
+updated: "2026-09-16T20:51:51.937571055Z"
 tags:
   - orchestrator
   - agent
   - core
+depends_on:
+  - deex5
+  - p5tsd
 parent: "8vnwy"
 ---
 

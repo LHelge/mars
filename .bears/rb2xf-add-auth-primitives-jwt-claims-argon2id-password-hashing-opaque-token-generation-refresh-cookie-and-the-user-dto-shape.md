@@ -4,10 +4,12 @@ title: "Add auth primitives: JWT Claims, Argon2id password hashing, opaque token
 status: open
 priority: P0
 created: "2026-09-16T20:27:16.329398231Z"
-updated: "2026-09-16T20:27:16.329398231Z"
+updated: "2026-09-16T20:51:51.630071023Z"
 tags:
   - orchestrator
   - auth
+depends_on:
+  - p5tsd
 parent: qacxf
 ---
 

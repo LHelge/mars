@@ -4,11 +4,13 @@ title: "Add the tracker models: task states, tasks, dependencies, comments, hand
 status: open
 priority: P1
 created: "2026-09-16T20:27:24.947302370Z"
-updated: "2026-09-16T20:27:24.947302370Z"
+updated: "2026-09-16T20:51:51.545088753Z"
 tags:
   - orchestrator
   - core
   - tracker
+depends_on:
+  - sywed
 parent: p5tsd
 ---
 

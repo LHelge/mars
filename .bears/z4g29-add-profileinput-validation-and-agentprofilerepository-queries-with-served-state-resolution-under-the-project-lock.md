@@ -4,11 +4,13 @@ title: Add ProfileInput validation and AgentProfileRepository queries with serve
 status: open
 priority: P1
 created: "2026-09-16T20:29:07.295569536Z"
-updated: "2026-09-16T20:29:07.295569536Z"
+updated: "2026-09-16T20:51:51.854554904Z"
 tags:
   - orchestrator
   - projects
   - tracker
+depends_on:
+  - z4u4e
 parent: pkaee
 ---
 

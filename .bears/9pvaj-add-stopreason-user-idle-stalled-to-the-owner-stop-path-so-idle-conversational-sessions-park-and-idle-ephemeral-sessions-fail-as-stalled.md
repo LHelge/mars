@@ -4,10 +4,12 @@ title: Add StopReason (user, idle, stalled) to the owner stop path so idle conve
 status: open
 priority: P1
 created: "2026-09-16T20:42:55.195112567Z"
-updated: "2026-09-16T20:42:55.195112567Z"
+updated: "2026-09-16T20:51:52.250363933Z"
 tags:
   - orchestrator
   - sessions
+depends_on:
+  - xjaah
 parent: cxmar
 ---
 

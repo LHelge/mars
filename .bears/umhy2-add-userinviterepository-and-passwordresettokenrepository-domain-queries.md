@@ -4,10 +4,12 @@ title: Add UserInviteRepository and PasswordResetTokenRepository domain queries
 status: open
 priority: P1
 created: "2026-09-16T20:28:08.083469761Z"
-updated: "2026-09-16T20:28:08.083469761Z"
+updated: "2026-09-16T20:51:51.591017585Z"
 tags:
   - orchestrator
   - auth
+depends_on:
+  - p5tsd
 parent: qacxf
 ---
 

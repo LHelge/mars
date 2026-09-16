@@ -4,7 +4,7 @@ title: Define mock engine, email, git-credential and keyring stubs behind the in
 status: open
 priority: P1
 created: "2026-09-16T20:27:50.753387584Z"
-updated: "2026-09-16T20:27:50.753387584Z"
+updated: "2026-09-16T20:51:51.569356534Z"
 tags:
   - orchestrator
   - core
@@ -12,6 +12,8 @@ tags:
   - engine
   - secrets
   - git
+depends_on:
+  - sywed
 parent: p5tsd
 ---
 

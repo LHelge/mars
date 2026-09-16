@@ -4,9 +4,11 @@ title: Write the shared mars-entrypoint script for session images
 status: open
 priority: P0
 created: "2026-09-16T20:26:57.940000686Z"
-updated: "2026-09-16T20:26:57.940000686Z"
+updated: "2026-09-16T20:51:51.736512363Z"
 tags:
   - images
+depends_on:
+  - sywed
 parent: deex5
 ---
 

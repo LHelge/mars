@@ -4,10 +4,13 @@ title: Add the Handoff API DTO, embed the current hand-off in Task and the order
 status: open
 priority: P2
 created: "2026-09-16T20:40:29.082079219Z"
-updated: "2026-09-16T20:40:29.082079219Z"
+updated: "2026-09-16T20:51:52.147023349Z"
 tags:
   - orchestrator
   - tracker
+depends_on:
+  - "5h3y4"
+  - s52qg
 parent: xjaah
 ---
 

@@ -14,9 +14,11 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0006](0006-envelope-encryption-in-orchestrator.md) | Envelope encryption in the orchestrator | accepted |
 | [0007](0007-orchestrator-side-git.md) | Remote git operations only in the orchestrator, via MCP | accepted |
 | [0008](0008-normalised-event-schema.md) | Normalised `AgentEvent` schema | accepted |
-| [0009](0009-single-writer-task-leases.md) | Single-writer task claiming with leases | accepted |
+| [0009](0009-single-writer-task-leases.md) | Single-writer task claiming with leases | superseded by 0016 |
 | [0010](0010-transcript-file-as-recovery-source.md) | Transcript file, not the attach stream, is the recovery source | accepted |
 | [0011](0011-shell-out-to-git.md) | Shell out to the `git` binary | accepted |
 | [0012](0012-container-is-the-permission-boundary.md) | The container is the permission boundary | accepted |
 | [0013](0013-invite-only-users.md) | Invite-only users with a seeded administrator | accepted |
 | [0014](0014-email-via-resend.md) | Email through Resend behind an `EmailClient` trait | accepted |
+| [0015](0015-project-shared-directories.md) | Project-scoped shared directories and a per-project CLI state directory | accepted |
+| [0016](0016-task-state-as-queue.md) | Task state is a project-defined queue; leases follow session liveness | accepted |

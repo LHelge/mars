@@ -22,10 +22,16 @@ erDiagram
     users ||--o{ projects : created
     users ||--o{ sessions : launched
     projects ||--o{ agent_profiles : has
+    projects ||--o{ project_shared_dirs : mounts
     projects ||--o{ sessions : has
+    projects ||--o{ task_states : defines
     projects ||--o{ tasks : has
     projects ||--o{ task_events : has
+    task_states ||--o{ tasks : "is in"
+    agent_profiles }o--o{ task_states : serves
     agent_profiles ||--o{ sessions : configures
+    tasks ||--o{ sessions : "launched for"
+    tasks ||--o{ tasks : "parent of"
     sessions ||--o{ events : produces
     sessions ||--o{ secret_uses : audited
     secrets ||--o{ secret_uses : audited
@@ -43,7 +49,8 @@ erDiagram
 | `profile_kind` | `conversational`, `ephemeral` | v1 launches only `conversational`; `ephemeral` exists so future roles are rows, not migrations. |
 | `agent_backend` | `claude` | Which CLI adapter drives sessions of this profile. A second backend is added as a new value by migration. |
 | `session_state` | `creating`, `running`, `parked`, `done`, `failed` | State machine in `ARCHITECTURE.md`, "Session lifecycle". Only conversational sessions use `parked`; an ephemeral session goes to `done` when its result arrives. |
-| `task_state` | `blocked`, `ready`, `in_progress`, `needs_human`, `done` | `blocked` is stored, not derived; see `tasks`. |
+| `task_state_kind` | `queue`, `human`, `terminal` | What a project-defined task state means to the orchestrator; see `task_states`. The states themselves are rows, not enum values. |
+| `task_dependency_kind` | `blocks`, `discovered_from`, `related` | Only `blocks` affects whether a task is claimable; see `task_dependencies`. |
 | `secret_scope` | `global`, `user`, `project` | Resolution order at session start is global, then project, then launching user. |
 
 Event kinds (`events.kind`, `task_events.kind`) are deliberately `TEXT`, not enums: the set of kinds is owned by the Rust types in `orchestrator/src/events/` and adding a kind must not require a migration.
@@ -129,10 +136,27 @@ A project is one git repository, mirrored under `/data/projects/<id>/repo.git`.
 | `status_message` | `TEXT` | NULL | Human-readable reason when `status = 'error'`. |
 | `created_by` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |
 | `last_fetched_at` | `TIMESTAMPTZ` | NULL | Updated by the periodic mirror fetch. |
+| `max_attempts` | `SMALLINT` | NOT NULL DEFAULT 3, CHECK 1–20 | How many claims a task may go through in one state before a release sends it to the project's human state instead. See `tasks`. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
 The remote credential is not a column. It is a project-scoped, orchestrator-only secret named `GIT_CREDENTIAL` (see `secrets`). The git credential provider looks it up by that fixed name.
+
+### `project_shared_dirs`
+
+Directories under `/data/projects/<project_id>/shared/<name>` that every session container of the project mounts read-write at `container_path` (`ARCHITECTURE.md`, "Storage"; ADR 0015). The rows are configuration; the directories themselves are created lazily at launch and removed with the row or the project.
+
+| Column | Type | Constraints | Notes |
+| --- | --- | --- | --- |
+| `project_id` | `UUID` | NOT NULL, FK `projects(id)` ON DELETE CASCADE | |
+| `name` | `TEXT` | NOT NULL | 1–64 chars, `[a-z0-9][a-z0-9_-]*`. Directory name on disk. |
+| `container_path` | `TEXT` | NOT NULL | Absolute, normalised. Validated by the model against the reserved paths listed in `SPEC.md`, "Shared directories". |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
+
+Constraints and indexes:
+
+- `PRIMARY KEY (project_id, name)`.
+- `UNIQUE (project_id, container_path)`.
 
 ### `agent_profiles`
 
@@ -142,7 +166,7 @@ Per-project configuration of one kind of agent. Every project gets one default c
 | --- | --- | --- | --- |
 | `id` | `UUID` | PK | |
 | `project_id` | `UUID` | NOT NULL, FK `projects(id)` ON DELETE CASCADE | |
-| `name` | `TEXT` | NOT NULL | Unique per project. Also used as the task `role` filter. |
+| `name` | `TEXT` | NOT NULL | Unique per project. |
 | `kind` | `profile_kind` | NOT NULL DEFAULT `'conversational'` | |
 | `backend` | `agent_backend` | NOT NULL DEFAULT `'claude'` | |
 | `model` | `TEXT` | NULL | Passed to the CLI as `--model` when set; CLI default otherwise. |
@@ -153,7 +177,7 @@ Per-project configuration of one kind of agent. Every project gets one default c
 | `mcp_tools` | `TEXT[]` | NOT NULL DEFAULT `'{}'` | Names of MCP tools this profile may call. Empty means the task-tracker set only; see `SPEC.md`, "MCP tool contracts". |
 | `secrets` | `TEXT[]` | NOT NULL DEFAULT `'{}'` | Secret names to inject. Orchestrator-only secrets are never injected even if listed. |
 | `partial_messages` | `BOOLEAN` | NOT NULL | Whether to request partial (streaming) messages from the CLI. No column default: the model sets `true` for `conversational` and `false` for `ephemeral` when the caller does not specify it. |
-| `idle_timeout_secs` | `INTEGER` | NOT NULL DEFAULT 1800 | Idle time after which a running session is parked. |
+| `idle_timeout_secs` | `INTEGER` | NOT NULL DEFAULT 1800 | Time without any event after which a running conversational session is parked, or a running ephemeral session is treated as stalled and failed (`ARCHITECTURE.md`, "Task tracker"). |
 | `is_default` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Exactly one per project. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
@@ -164,7 +188,7 @@ Constraints and indexes:
 - Partial unique index `agent_profiles_one_default_idx ON agent_profiles (project_id) WHERE is_default`.
 - Deleting a profile that has sessions is refused (`sessions.profile_id` is `ON DELETE RESTRICT`).
 
-Triggers and policies ("spawn an implementer when a task becomes ready") are a future concern and will live in their own table; they are not columns here.
+Which task states a profile serves is the `profile_states` link table under "Tasks". Automatic launching (a dispatcher that starts an ephemeral session when a served state has claimable work, or a schedule that runs a profile periodically) is not in v1; when it comes it is columns on this table and one background job, and no change to the task tables (`ARCHITECTURE.md`, "Task tracker").
 
 ## Sessions and events
 
@@ -179,6 +203,7 @@ One agent instance. The row outlives the container: a session may be relaunched 
 | `profile_id` | `UUID` | NOT NULL, FK `agent_profiles(id)` ON DELETE RESTRICT | |
 | `created_by` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | The launching user; determines the `user` secret scope. |
 | `title` | `TEXT` | NULL | Optional user-given label. |
+| `task_id` | `UUID` | NULL, FK `tasks(id)` ON DELETE SET NULL | The task the session was launched for, if any; the launch claims it in the same transaction. Added by the `tasks` migration because `tasks` references `sessions`. |
 | `state` | `session_state` | NOT NULL DEFAULT `'creating'` | |
 | `base_ref` | `TEXT` | NOT NULL | Branch, tag or commit the session clone started from. |
 | `branch` | `TEXT` | NOT NULL | Always `session/<id>`; stored so it is queryable. |
@@ -192,7 +217,7 @@ One agent instance. The row outlives the container: a session may be relaunched 
 | `parked_at` | `TIMESTAMPTZ` | NULL | Set on each transition to `parked`. |
 | `ended_at` | `TIMESTAMPTZ` | NULL | Set on transition to `done` or `failed`. |
 
-Indexes: `sessions_project_created_idx (project_id, created_at DESC)`, `sessions_state_idx (state)`, `sessions_container_id_idx (container_id)`.
+Indexes: `sessions_project_created_idx (project_id, created_at DESC)`, `sessions_state_idx (state)`, `sessions_container_id_idx (container_id)`, `sessions_task_idx (task_id) WHERE task_id IS NOT NULL`.
 
 The MCP bearer token is generated at creation, written into the session's `mcp.json` on the session volume, and only its hash is stored. Rotating it means rewriting the file and relaunching.
 
@@ -222,69 +247,120 @@ Row size: tool results are stored in full up to 256 KiB per event; larger result
 
 ## Tasks
 
-### `tasks`
+The shared tracker, project-scoped. Agents reach it through MCP, users through the REST API, both write the same rows. The design is in `ARCHITECTURE.md`, "Task tracker" and ADR 0016: a task's state is the queue it waits in, the set of states is defined per project, and the lease says which session is working on it right now.
 
-The shared tracker, project-scoped. Agents reach it through MCP, users through the REST API, both write the same rows.
+### `task_states`
+
+The states a project's tasks can be in, in board order. Every project is created with the default set below; users add, rename, reorder and remove states from the project page.
 
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
 | `id` | `UUID` | PK | |
 | `project_id` | `UUID` | NOT NULL, FK `projects(id)` ON DELETE CASCADE | |
-| `number` | `INTEGER` | NOT NULL | Per-project human-readable number, assigned as `MAX(number)+1` inside the insert transaction. |
+| `name` | `TEXT` | NOT NULL | 1–32 chars matching `[a-z0-9][a-z0-9_-]*`. The API and agents use the name; the id is internal. |
+| `kind` | `task_state_kind` | NOT NULL | `queue`: agents claim from it. `human`: agents never claim from it; escalations land here. `terminal`: closes the task and satisfies dependencies. Immutable after creation. |
+| `position` | `INTEGER` | NOT NULL | Board column order, ascending. |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
+
+Constraints and indexes:
+
+- `UNIQUE (project_id, name)`.
+- Partial unique index `task_states_one_human_idx ON task_states (project_id) WHERE kind = 'human'`: at most one human state per project.
+- The repository refuses to delete the human state, the last terminal state, or any state a task is in (`tasks.state_id` is `ON DELETE RESTRICT`).
+- The default state for a new task is the `queue` state with the lowest position.
+
+Default set, created with the project:
+
+| `name` | `kind` | `position` | Meant for |
+| --- | --- | --- | --- |
+| `backlog` | `queue` | 0 | Requests and ideas that need planning before work can start. |
+| `ready` | `queue` | 1 | Planned work an implementer can pick up. |
+| `review` | `queue` | 2 | Implemented; waiting for review. |
+| `merge` | `queue` | 3 | Approved; waiting to be merged. |
+| `needs_human` | `human` | 4 | An agent asked for a decision, or the task ran out of attempts. |
+| `done` | `terminal` | 5 | Finished. |
+| `cancelled` | `terminal` | 6 | Will not be done. Satisfies dependencies like `done`. |
+
+### `profile_states`
+
+Which states an agent profile serves. The MCP `ready` tool lists, and `claim` claims, only tasks in the calling profile's served states. This is the whole role mechanism: a profile's served states say which queue it works, its system prompt says what to do there.
+
+| Column | Type | Constraints |
+| --- | --- | --- |
+| `profile_id` | `UUID` | NOT NULL, FK `agent_profiles(id)` ON DELETE CASCADE |
+| `state_id` | `UUID` | NOT NULL, FK `task_states(id)` ON DELETE CASCADE |
+
+Constraint: `PRIMARY KEY (profile_id, state_id)`. Both rows must belong to the same project (repository check). Only `queue` states may be served (repository check). The default profile of a new project serves `ready`.
+
+### `tasks`
+
+| Column | Type | Constraints | Notes |
+| --- | --- | --- | --- |
+| `id` | `UUID` | PK | |
+| `project_id` | `UUID` | NOT NULL, FK `projects(id)` ON DELETE CASCADE | |
+| `number` | `INTEGER` | NOT NULL | Per-project human-readable number, assigned as `MAX(number)+1` inside the insert transaction. Agents and the API accept it wherever a task id is accepted. |
 | `title` | `TEXT` | NOT NULL | 1–200 chars. |
 | `description` | `TEXT` | NOT NULL DEFAULT `''` | Markdown. |
-| `state` | `task_state` | NOT NULL DEFAULT `'ready'` | Set to `blocked` automatically when an incomplete dependency is added. |
-| `priority` | `SMALLINT` | NOT NULL DEFAULT 2, CHECK 0–3 | `0` critical, `1` high, `2` medium, `3` low. `ready` orders by priority, then number. |
-| `role` | `TEXT` | NULL | Which profile name should pick this up. NULL means any. The MCP `ready` tool filters on it. |
-| `assignee_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | Human assignee, mostly for `needs_human`. |
-| `assignee_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | Session that owns the task; set on claim, kept after the lease ends. |
-| `lease_holder_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | Session currently holding the lease. |
-| `lease_expires_at` | `TIMESTAMPTZ` | NULL | Lease expiry; NULL iff `lease_holder_session_id` is NULL. |
-| `needs_human_reason` | `TEXT` | NULL | Set by the `needs_human` MCP tool. |
+| `state_id` | `UUID` | NOT NULL, FK `task_states(id)` ON DELETE RESTRICT | The queue the task is in. Set by the repository to the project's default state when the caller gives none. |
+| `priority` | `SMALLINT` | NOT NULL DEFAULT 2, CHECK 0–3 | `0` critical, `1` high, `2` medium, `3` low. Claimable tasks are ordered by priority, then number. |
+| `blocked` | `BOOLEAN` | NOT NULL DEFAULT FALSE | True while any `blocks` dependency is in a non-terminal state. Stored, not derived; recomputed by the orchestrator (see below). A blocked task is not claimable in any state. |
+| `labels` | `TEXT[]` | NOT NULL DEFAULT `'{}'` | Free-form tags, each 1–32 chars matching the state-name pattern. Filterable; carry no behaviour in v1. |
+| `parent_id` | `UUID` | NULL, FK `tasks(id)` ON DELETE SET NULL | The epic this task belongs to. One level: a task with children cannot itself get a parent. |
+| `assignee_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | The person who should look at it, mostly for the human state. |
+| `lease_holder_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | Session currently working on the task. NULL means nobody. |
+| `lease_since` | `TIMESTAMPTZ` | NULL | When the current holder claimed it; NULL iff `lease_holder_session_id` is NULL. |
+| `attempts` | `SMALLINT` | NOT NULL DEFAULT 0 | Claims since the task last changed state. Incremented on claim, reset to 0 on every state change. |
+| `needs_human_reason` | `TEXT` | NULL | Why the task was last escalated; set by the `needs_human` tool and by the reaper. |
 | `created_by_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |
 | `created_by_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
-| `closed_at` | `TIMESTAMPTZ` | NULL | Set on `done`. |
+| `closed_at` | `TIMESTAMPTZ` | NULL | Set on entering a terminal state, cleared on leaving one. |
 
 Constraints and indexes:
 
 - `UNIQUE (project_id, number)`.
-- `CHECK ((lease_holder_session_id IS NULL) = (lease_expires_at IS NULL))`.
+- `CHECK ((lease_holder_session_id IS NULL) = (lease_since IS NULL))`.
 - `CHECK (priority BETWEEN 0 AND 3)`.
-- `tasks_project_state_idx (project_id, state, priority, number)`.
-- `tasks_lease_expires_idx (lease_expires_at) WHERE lease_expires_at IS NOT NULL` for the lease reaper.
+- `CHECK (parent_id <> id)`; the parent must belong to the same project (repository check).
+- `tasks_project_state_idx (project_id, state_id, priority, number)` for the board.
+- `tasks_claimable_idx (project_id, state_id, priority, number) WHERE NOT blocked AND lease_holder_session_id IS NULL` for the `ready` tool.
+- `tasks_lease_holder_idx (lease_holder_session_id) WHERE lease_holder_session_id IS NOT NULL` for the stuck-task reaper.
+- `tasks_parent_idx (parent_id)`.
 
-Claiming is a single atomic statement (see ADR 0009):
+Claiming is a single atomic statement (ADR 0016):
 
 ```sql
 UPDATE tasks
-SET state = 'in_progress',
-    lease_holder_session_id = $2,
-    lease_expires_at = NOW() + $3,
-    assignee_session_id = $2,
+SET lease_holder_session_id = $2,
+    lease_since = NOW(),
+    attempts = attempts + 1,
     updated_at = NOW()
 WHERE id = $1
-  AND project_id = $4
-  AND state = 'ready'
+  AND project_id = $3
+  AND state_id = ANY($4)          -- the claiming profile's served states; every queue state for a launch from the UI
+  AND NOT blocked
   AND lease_holder_session_id IS NULL
 RETURNING *;
 ```
 
 Zero rows returned means the claim lost; the caller gets a conflict, never a partial state.
 
-The `blocked` state is stored, not derived, so that `ready` is a plain indexed query and so that the transition to `ready` can emit a `TaskEvent`. The orchestrator recomputes `blocked`/`ready` for every dependant inside the same transaction that changes a dependency or marks a task `done`.
+A **hand-off** is a state change. In one transaction the orchestrator sets `state_id`, clears the lease, resets `attempts`, sets or clears `closed_at` according to the new state's kind, recomputes `blocked` on every dependant when a terminal state is entered or left, and writes the `task_events` row.
 
-The assignment columns (`role`, `assignee_user_id`, `assignee_session_id`) are provisional: how assignment should be modelled is deferred to a dedicated task-structure planning session (`docs/open-questions.md`). Nothing outside the task tables depends on their exact shape.
+A **release** clears the lease and keeps the state. When the release comes from an agent (`release` tool) or from the reaper and `attempts` has reached `projects.max_attempts`, the same transaction moves the task to the project's human state instead, sets `needs_human_reason`, and writes a system comment. A release by a user never escalates.
+
+The `blocked` flag is stored so that the claimable query is a plain indexed read and so that the transition to unblocked can emit a `TaskEvent`. The orchestrator recomputes it for every dependant inside the same transaction that adds or removes a `blocks` dependency, or moves a task into or out of a terminal state.
 
 ### `task_dependencies`
 
-| Column | Type | Constraints |
-| --- | --- | --- |
-| `task_id` | `UUID` | NOT NULL, FK `tasks(id)` ON DELETE CASCADE |
-| `depends_on_task_id` | `UUID` | NOT NULL, FK `tasks(id)` ON DELETE CASCADE |
+| Column | Type | Constraints | Notes |
+| --- | --- | --- | --- |
+| `task_id` | `UUID` | NOT NULL, FK `tasks(id)` ON DELETE CASCADE | |
+| `depends_on_task_id` | `UUID` | NOT NULL, FK `tasks(id)` ON DELETE CASCADE | |
+| `kind` | `task_dependency_kind` | NOT NULL DEFAULT `'blocks'` | `blocks`: `task_id` is not claimable until `depends_on_task_id` is terminal. `discovered_from`: `task_id` was created while working on `depends_on_task_id`; provenance only. `related`: informational. |
 
-Constraints: `PRIMARY KEY (task_id, depends_on_task_id)`, `CHECK (task_id <> depends_on_task_id)`. Both tasks must belong to the same project (enforced in the repository, since a cross-table check needs a trigger). Cycles are rejected in the repository with a recursive CTE before insert.
+Constraints: `PRIMARY KEY (task_id, depends_on_task_id)`, `CHECK (task_id <> depends_on_task_id)`. Both tasks must belong to the same project (enforced in the repository, since a cross-table check needs a trigger). Cycles among `blocks` edges are rejected in the repository with a recursive CTE before insert; the other kinds are not checked for cycles and never affect `blocked`.
 
 Index: `task_dependencies_depends_on_idx (depends_on_task_id)` for "who is waiting on me".
 
@@ -292,20 +368,21 @@ Index: `task_dependencies_depends_on_idx (depends_on_task_id)` for "who is waiti
 
 The agent-to-agent (and human-to-agent) communication channel.
 
-| Column | Type | Constraints |
-| --- | --- | --- |
-| `id` | `UUID` | PK |
-| `task_id` | `UUID` | NOT NULL, FK `tasks(id)` ON DELETE CASCADE |
-| `author_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL |
-| `author_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL |
-| `body` | `TEXT` | NOT NULL |
-| `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() |
+| Column | Type | Constraints | Notes |
+| --- | --- | --- | --- |
+| `id` | `UUID` | PK | |
+| `task_id` | `UUID` | NOT NULL, FK `tasks(id)` ON DELETE CASCADE | |
+| `author_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |
+| `author_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | |
+| `system` | `BOOLEAN` | NOT NULL DEFAULT FALSE | True for comments the orchestrator writes (reaper releases, escalations). Both author columns are NULL. |
+| `body` | `TEXT` | NOT NULL | |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
-Constraint: `CHECK (num_nonnulls(author_user_id, author_session_id) = 1)` at insert time; either may later become NULL through `ON DELETE SET NULL`, so the check is enforced in the repository rather than as a table constraint. Index: `task_comments_task_idx (task_id, created_at)`.
+Constraint: exactly one author column is set when `system` is false, none when it is true; enforced at insert time in the repository, since either author may later become NULL through `ON DELETE SET NULL`. Index: `task_comments_task_idx (task_id, created_at)`.
 
 ### `task_sessions`
 
-Which sessions touched which tasks. A row is upserted whenever a session claims, updates, comments on or completes a task.
+Which sessions touched which tasks. A row is upserted whenever a session claims, updates, comments on, releases or hands off a task, and when a session is launched for a task.
 
 | Column | Type | Constraints |
 | --- | --- | --- |
@@ -318,7 +395,7 @@ Constraint: `PRIMARY KEY (task_id, session_id)`. Index: `task_sessions_session_i
 
 ### `task_events`
 
-The project-scoped `TaskEvent` stream, delivered over SSE. Same append-only, derived-`seq` discipline as `events`, keyed by project.
+The project-scoped `TaskEvent` stream, delivered over SSE. Same append-only, derived-`seq` discipline as `events`, keyed by project. Changes to `task_states` are also written here (kind `states_changed`, `task_id` NULL) so a connected board learns about new columns.
 
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
@@ -392,9 +469,9 @@ Migrations are created with `sqlx migrate add -r <name>` and applied automatical
 
 1. `enums` — all enum types above.
 2. `users` — `users` (including the seeded admin row), `refresh_tokens`, `user_invites`, `password_reset_tokens`.
-3. `projects` — `projects`, `agent_profiles`.
+3. `projects` — `projects`, `agent_profiles`, `project_shared_dirs`.
 4. `sessions` — `sessions`, `events`.
-5. `tasks` — `tasks`, `task_dependencies`, `task_comments`, `task_sessions`, `task_events`.
+5. `tasks` — `task_states`, `profile_states`, `tasks`, `task_dependencies`, `task_comments`, `task_sessions`, `task_events`, and `ALTER TABLE sessions ADD COLUMN task_id`.
 6. `secrets` — `secrets`, `secret_uses`.
 
 Each `.down.sql` drops exactly what its `.up.sql` created, in reverse order.

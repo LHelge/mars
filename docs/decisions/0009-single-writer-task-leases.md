@@ -1,6 +1,6 @@
 # 0009. Single-writer task claiming with leases
 
-Status: accepted
+Status: superseded by 0016. The atomic claim statement is retained there; the time-based lease TTL and the fixed state enum are not.
 
 ## Context
 

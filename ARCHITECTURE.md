@@ -1,6 +1,6 @@
 # Architecture
 
-Mars runs coding-agent sessions in isolated containers and exposes them to a browser. This document describes the components, the trust boundaries between them, and the designs that hold the system together: session lifecycle, durability and recovery, the git model, secrets, and the MCP surface. The functional contract (endpoints, schemas, tool signatures) is in `SPEC.md`; the database schema is in `docs/data-model.md`; the reasoning behind the non-obvious choices is in `docs/decisions/`.
+Mars runs coding-agent sessions in isolated containers and exposes them to a browser. This document describes the components, the trust boundaries between them, and the designs that hold the system together: session lifecycle, durability and recovery, the git model, secrets, the MCP surface, and the task tracker. The functional contract (endpoints, schemas, tool signatures) is in `SPEC.md`; the database schema is in `docs/data-model.md`; the reasoning behind the non-obvious choices is in `docs/decisions/`.
 
 ## Components
 
@@ -80,7 +80,7 @@ Three boundaries matter:
 
 1. **User to orchestrator.** Users exist only through invites from an admin (ADR 0013); they authenticate with username and password and receive a short-lived JWT access token plus an HTTP-only refresh cookie (see `SPEC.md`, "Authentication"). Every user is trusted with every project; the `admin` flag exists for inviting and managing users only. Authorisation questions of the form "may this user see this project" do not exist in v1.
 2. **Agent to orchestrator.** A session container talks to the orchestrator only through MCP, authenticated by a per-session bearer token generated at session creation. The token identifies the session; from it the orchestrator derives the project, the profile and therefore which tools the agent may call. Agents never self-identify.
-3. **Agent to everything else.** The container is the permission boundary (ADR 0012). Inside it the agent runs with the CLI's bypass-permissions mode. It can read and write its session volume, read the project mirror, reach the internet, and call MCP. It cannot reach the engine, Postgres, other sessions or nginx, and it holds no git credentials.
+3. **Agent to everything else.** The container is the permission boundary (ADR 0012). Inside it the agent runs with the CLI's bypass-permissions mode. It can read and write its session volume, read the project mirror, reach the internet, and call MCP. It cannot reach the engine, Postgres, nginx or sessions of other projects, and it holds no git credentials. Sessions of the same project share the CLI state directory and the project's declared shared directories (ADR 0015) and nothing else.
 
 The orchestrator container is the high-value target. It runs as an unprivileged user, its root filesystem is read-only where the engine allows, it contains `git` and nothing else beyond the binary, and the engine socket is the only privileged thing it holds. Under rootless Podman that socket is itself unprivileged on the host.
 
@@ -91,11 +91,15 @@ Postgres holds every fact the UI displays. The `/data` volume holds working stat
 ```
 /data
 ├── projects/<project_id>/
-│   └── repo.git/                 bare mirror of the remote, gc disabled
+│   ├── repo.git/                 bare mirror of the remote, gc disabled; mounted RO at the same path
+│   ├── claude/                   CLI state dir (CLAUDE_CONFIG_DIR), shared by the project's sessions; mounted RW at the same path
+│   │   └── projects/-session-work/
+│   │       ├── <cli_session_id>.jsonl   one transcript per session
+│   │       └── memory/                  the CLI's auto memory, shared by the project's sessions
+│   └── shared/<name>/            project shared directories, mounted RW at their container path
 └── sessions/<session_id>/
     ├── work/                     git clone, mounted RW at /session/work
     ├── home/                     the agent's HOME, mounted RW at /session/home
-    │   └── .claude/              CLI config dir, transcripts (CLAUDE_CONFIG_DIR)
     ├── log/
     │   └── stream.jsonl          native CLI output, tee'd by the entrypoint
     └── mcp.json                  CLI MCP config with the session's bearer token
@@ -103,7 +107,11 @@ Postgres holds every fact the UI displays. The `/data` volume holds working stat
 
 `/data` is mounted at `/data` in the orchestrator container and, for the parts a session needs, at the same absolute path in session containers. The orchestrator additionally needs to know the host path of the volume (`DATA_DIR_HOST`) because bind-mount sources given to the engine are host paths. `git clone --reference` records the mirror's absolute path in the session clone's alternates file, which is why the mirror must be mounted at the same path in the session container as the orchestrator sees it (ADR 0001).
 
-Deleting a session removes its directory; deleting a project removes the mirror after all of its sessions are gone.
+**Per-project CLI state.** The CLI's state directory is per project, not per session (ADR 0015). Every session runs with `cwd = /session/work`, so the CLI files transcripts, memory and project settings under the same encoded-path subdirectory; sharing the directory per project turns that into project memory, while sharing it more widely would merge the memory of unrelated projects. Transcripts are named by CLI session id, so co-locating them is harmless, and several CLI processes on one state directory is the ordinary single-machine situation. Everything else under `HOME` (shell history, tool caches) stays per session.
+
+**Shared directories.** A project declares zero or more shared directories, each a name and an absolute container path (`SPEC.md`, "Shared directories"; `docs/data-model.md`, `project_shared_dirs`). At launch the orchestrator creates `/data/projects/<id>/shared/<name>` if missing (owned by uid 1000, like the session directories) and adds a read-write bind mount to the container path. The expected first use is `target` mounted at `/session/work/target`, so that Cargo's build output is shared by every session of a Rust project. A container path inside the work tree is a nested bind mount over the clone; the engine mounts parents before children, and the engine tests verify this on both engines. Rules the launcher enforces come from the model: the path is absolute and normalised, is not `/data` or below it, and is neither equal to nor an ancestor of `/session/work`, `/session/home`, `/session/log` or `/session/mcp.json`. Changes to the list take effect at the next launch of each session; a running container keeps the mounts it started with. Emptying a shared directory (the `clear` action) and deleting one are refused while any session of the project is `running` or `creating`, because a build in progress may hold files open.
+
+Deleting a session removes its directory and, if it has a `cli_session_id`, that session's transcript file and any directory of the same name under the project's CLI state directory. Deleting a project removes the mirror, the CLI state directory and all shared directories after all of its sessions are gone.
 
 ## Orchestrator internals
 
@@ -124,12 +132,12 @@ orchestrator/
 │   ├── mcp/                   rmcp server, tool handlers, bearer auth
 │   ├── engine/                ContainerEngine trait + bollard implementation + mock
 │   ├── agent/                 AgentBackend trait, claude/ adapter, event translation
-│   ├── session/               SessionOwner task, launcher, idle reaper, recovery
+│   ├── session/               SessionOwner task, launcher (incl. launch-for-task), idle reaper, recovery
 │   ├── git/                   git binary wrapper, mirror + session clone ops, GitCredentialProvider
 │   ├── secrets/               envelope crypto, resolution, injection
 │   ├── events/                AgentEvent / TaskEvent types, notify fan-out
 │   ├── email/                 EmailClient trait, Resend implementation, log fallback, mock
-│   └── cron/                  periodic jobs: mirror fetch, lease reaper, token cleanup
+│   └── cron/                  periodic jobs: mirror fetch, idle reaper, stuck-task reaper, token cleanup
 └── tests/                     integration tests (TestApp with testcontainers Postgres)
 ```
 
@@ -142,7 +150,7 @@ Each session in state `running` is owned by exactly one tokio task, the `Session
 1. Tail `log/stream.jsonl` from the recorded offset; for every complete line, translate it through the backend adapter into zero or more `AgentEvent`s, append each to `events` with the next `seq` and the line's end offset, then `NOTIFY session_events`.
 2. Receive input messages from the `SessionRegistry` channel (user messages, answers, stop requests), serialise them and write them to the container's attached stdin. Inputs are recorded as `user_message` events before being written, so history shows them even if the write fails.
 3. Watch the container: on exit, emit a `state_change` event and transition the session to `parked` (clean exit or SIGINT-stopped) or `failed` (non-zero exit outside a stop request; see "Session lifecycle" for the exact rule).
-4. Track `last_activity_at`; the idle reaper (a cron job, not the owner) parks sessions idle longer than the profile's `idle_timeout_secs`.
+4. Track `last_activity_at`; the idle reaper (a cron job, not the owner) parks conversational sessions idle longer than the profile's `idle_timeout_secs` and fails ephemeral ones as stalled (see "Task tracker").
 
 The owner never holds an in-memory event counter. `seq` is derived in the insert statement; a duplicate-key error means another writer exists, which is a bug that the owner surfaces by failing the session rather than by retrying silently.
 
@@ -154,7 +162,7 @@ stateDiagram-v2
     creating --> running: container started, init event seen
     creating --> failed: clone or container error
     running --> parked: conversational: idle reaper / stop / CLI exit 0 / container gone
-    running --> failed: unrecoverable CLI or container error
+    running --> failed: unrecoverable CLI or container error; ephemeral: stalled
     running --> done: user ends session, or ephemeral result
     parked --> running: user message or explicit resume
     parked --> done: user ends session
@@ -166,10 +174,10 @@ stateDiagram-v2
 | State | Meaning | Container | Accepts input |
 | --- | --- | --- | --- |
 | `creating` | Session row exists; clone and container creation in progress. | being created | queued |
-| `running` | CLI process alive; `SessionOwner` attached. | running | yes |
-| `parked` | No process. Resumable with `--resume` at any time. Default rest state of a conversational session. | removed | yes, triggers relaunch |
-| `done` | Ended by a user or policy, or an ephemeral session whose `result` arrived. Not resumable through the UI; branch remains in the mirror. | removed | no |
-| `failed` | Last launch or run failed; `sessions.error` says why. A retry moves it to `parked` then relaunches. | removed | retry only |
+| `running` | CLI process alive; `SessionOwner` attached. Any task it holds stays held. | running | yes |
+| `parked` | No process. Resumable with `--resume` at any time. Default rest state of a conversational session. Held tasks stay held. | removed | yes, triggers relaunch |
+| `done` | Ended by a user or policy, or an ephemeral session whose `result` arrived. Not resumable through the UI; branch remains in the mirror. Held tasks are released. | removed | no |
+| `failed` | Last launch or run failed; `sessions.error` says why (`stalled` for an ephemeral session the idle reaper gave up on). A retry moves it to `parked` then relaunches. Held tasks are released. | removed | retry only |
 
 Inputs arriving while `creating` or `parked` are queued in the registry and delivered once the CLI has emitted its init event, so from the frontend's point of view a session always accepts messages.
 
@@ -187,20 +195,20 @@ sequenceDiagram
     participant E as engine
     participant C as session container
 
-    U->>API: POST /projects/{id}/sessions {profile_id, base_ref, message?}
-    API->>API: insert session (creating), generate MCP token, write mcp.json
+    U->>API: POST /projects/{id}/sessions {profile_id, base_ref, message?, task_id?}
+    API->>API: insert session (creating) and claim task_id in one transaction, generate MCP token, write mcp.json
     API-->>U: 201 {session}
     API->>SO: spawn owner
     SO->>G: clone --reference mirror --branch base_ref work; checkout -b session/<id>  (fresh only)
     SO->>SEC: resolve profile.secrets for (global, project, user)
     SEC-->>SO: env map (orchestrator-only excluded); secret_uses rows written
-    SO->>E: create container (image, mounts, env, labels, network, runtime)
+    SO->>E: create container (image, mounts incl. CLI state dir and shared dirs, env, labels, network, runtime)
     SO->>E: start; attach stdin
     E->>C: entrypoint runs CLI | tee log/stream.jsonl
     SO->>SO: tail stream.jsonl from offset 0 (fresh) or last offset (resume)
     C-->>SO: system/init {session_id}
     SO->>API: state running, cli_session_id stored
-    SO->>C: flush queued inputs on stdin
+    SO->>C: flush queued inputs on stdin (the generated task message first, if launched for a task)
 ```
 
 The profile's system prompt is passed on every launch with `--append-system-prompt`; the CLI does not persist it across resumes. The MCP config is passed explicitly with `--mcp-config /session/mcp.json` on every launch.
@@ -246,7 +254,7 @@ Ephemeral sessions run `claude -p "<prompt>"` with the same output, permission, 
 
 `--bare` is not used in v1. Verified against the CLI documentation: bare mode never reads OAuth credentials, so `CLAUDE_CODE_OAUTH_TOKEN` does not work with it, and it also skips the repository's `CLAUDE.md`, `.mcp.json`, hooks, skills and plugins. Non-bare mode gives the desired split of responsibilities: the repository owns "how we work here" through its `CLAUDE.md` and `.mcp.json`, the profile owns "what this agent's job is" through its system prompt. The cost is that a non-bare `-p` session connects every server in the repository's `.mcp.json` without a trust prompt, which is acceptable because the container is the boundary. A per-profile `--bare` option for API-key-backed sessions was considered and left out of v1; it is one column if a need appears. Whether the pinned CLI version supports `--strict-mcp-config` (load only `--mcp-config` servers) is checked during the adapter task and adopted if present.
 
-The CLI's state directory is relocated onto the session volume with `CLAUDE_CONFIG_DIR=/session/home/.claude` so that transcripts survive container replacement and `--resume <cli_session_id>` finds them. `cli_session_id` is taken from the `session_id` field of the `system`/`init` event. Should the id ever fail to resume, the transcript file path (`/session/home/.claude/projects/<encoded cwd>/<id>.jsonl`) can be passed to `--resume` instead; the owner tries the id first.
+The CLI's state directory is relocated onto the project's data directory with `CLAUDE_CONFIG_DIR=/data/projects/<project_id>/claude` so that transcripts survive container replacement, `--resume <cli_session_id>` finds them, and the CLI's auto memory is shared by every session of the project (see "Storage", ADR 0015). `cli_session_id` is taken from the `session_id` field of the `system`/`init` event. Should the id ever fail to resume, the transcript file path (`/data/projects/<project_id>/claude/projects/-session-work/<id>.jsonl`; the CLI encodes the working directory `/session/work` as `-session-work`) can be passed to `--resume` instead; the owner tries the id first.
 
 Credentials: `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is injected like any other secret the profile declares. The launcher refuses to start a session whose resolved environment contains both, because the CLI's precedence rules would silently pick the API key. Token lifetime is not managed: when the CLI fails to authenticate, the translator emits an `error` event with `fatal: true` that names the secret that was injected (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`) and its scope, the session is parked, and the user replaces the secret and sends the next message.
 
@@ -288,7 +296,7 @@ On start the orchestrator:
 1. Runs migrations.
 2. Lists containers with the label `mars.session_id` through the engine. For each one whose session row is `running`, it re-creates a `SessionOwner`, reattaches stdin, and resumes tailing from `MAX(_offset)` of that session's events. If the container is gone, the session is marked `parked` with a `state_change` event saying so.
 3. Marks every session in `creating` as `failed` with reason `orchestrator restarted during creation`; the user can retry.
-4. Starts the cron jobs (mirror fetch, lease reaper, token cleanup, idle reaper).
+4. Starts the cron jobs (mirror fetch, idle reaper, stuck-task reaper, token cleanup).
 
 Because parked sessions need nothing running, a restart with a hundred parked sessions and two running ones costs two reattaches.
 
@@ -401,6 +409,29 @@ The orchestrator serves MCP with `rmcp` over Streamable HTTP on its own listener
 
 The server is named `mars-orchestrator` rather than `mars` to reduce the chance of a repository's own `.mcp.json` shadowing it; the launcher emits a `launch_warning` if the `init` event does not list it as connected. The hostname `orchestrator` resolves on the sessions network. The file is regenerated on every launch from the stored hash only if the token is rotated; otherwise it is left as written at creation.
 
+## Task tracker
+
+The tracker is how agents hand work to each other and to people. It is modelled on Beads: a dependency-aware issue list that agents query for work they can start, with comments as the channel for context. Beads syncs a per-checkout store through git because every agent has its own copy; here every agent talks to one orchestrator and Postgres is the single store, so the atomic update in `docs/data-model.md` does the job that a merge would (ADR 0016). Four ideas carry the design.
+
+**State is a queue, defined per project.** A task's state names the queue it is waiting in. Each agent profile declares which states it serves, and the MCP `ready` tool returns claimable tasks in those states only. That is the whole role mechanism: a planner is a conversational profile that serves `backlog` and hands tasks to `ready`; an implementer serves `ready` and hands to `review`; a reviewer serves `review` and hands to `merge`, or back to `ready` with a comment saying why; a merger serves `merge` and closes. None of those names are hard-coded. A project's states are rows (`task_states`) with a `kind` that tells the orchestrator what it needs to know: `queue` states are where agents pick work up, the one `human` state is where escalations land, `terminal` states close a task and satisfy dependencies. Every project starts with `backlog`, `ready`, `review`, `merge`, `needs_human`, `done`, `cancelled` and can change the list from the project page.
+
+**The lease is the worker.** There is no in-progress state. A task in `ready` with a lease holder is being implemented; the same task in `review` with a holder is being reviewed. Claiming is one atomic statement that succeeds for exactly one session (ADR 0009's mechanism, kept). A hand-off is a state change by the holder, which clears the lease in the same transaction, so a task is never both held and waiting in a new queue. A holder that cannot finish gives the task back with `release`, which keeps the state. Users are bound by none of this in the UI: they can move, release and edit anything, and a move by a user hands off just like one by an agent.
+
+**Liveness comes from the session, not from tool calls.** A lease has no TTL. It is valid while its holder is alive, where alive means the session is `creating`, `running`, or `parked`. `parked` counts because a parked conversational session is waiting for a person, and a planner that talks with a user for two hours without touching the tracker must not lose its task. Dead means `done` or `failed`. Two jobs enforce this. The idle reaper already parks a conversational session that has produced no event for the profile's `idle_timeout_secs`; for an ephemeral session the same silence means stalled, and the reaper stops the container and marks the session `failed` with error `stalled`. The stuck-task reaper then releases every lease whose holder is `done` or `failed`, with reason `session_ended` or `stalled`, and writes a system comment on the task. Ending a session from the UI releases its leases immediately; the reaper is the backstop.
+
+**Attempts and escalation.** `attempts` counts claims since the task last changed state; a claim increments it, a hand-off resets it. When a release (by the agent or by the reaper) finds `attempts` at the project's `max_attempts` (default 3), the task goes to the project's `human` state instead of back into its queue, with the reason recorded and an `escalated` event. Three implementers failing on one task therefore produces one item in `needs_human` with three comments explaining what went wrong, not a fourth attempt. A review loop (reviewer rejects, implementer retries) is not capped by this counter because each rejection is a state change; the reviewer's prompt and the comment history are what stop it.
+
+**Launching a session for a task.** `POST /projects/{pid}/sessions` takes an optional `task_id`. The launch inserts the session and claims the task in one transaction, records the task on the session, and delivers a generated first message naming the task before any user-supplied message. A launch by a user ignores the profile's served states, since the user chose the pairing; the task must merely be unheld, unblocked and non-terminal. A launch that fails in `creating` releases the task when the session becomes `failed`. This is the v1 way of putting an agent on a specific task: open a backlog item with a planner, open a review item with a reviewer, both from the task's detail view.
+
+**Blocked is stored.** A `blocks` dependency on a non-terminal task marks the dependant `blocked`, which excludes it from `ready` in every state. The flag is recomputed for all dependants in the same transaction that adds or removes a `blocks` edge or moves a task into or out of a terminal state, and each flip emits a `blocked` or `unblocked` event. The other dependency kinds, `discovered_from` (written automatically when a holder creates a task) and `related`, are provenance for agents reading a task and never affect readiness.
+
+### After v1: dispatcher and scheduled agents
+
+Nothing in v1 launches a session by itself. Two additions are planned and the model above is shaped so that they touch profiles and jobs only, never the task tables:
+
+- **Dispatcher.** A profile gains `auto_launch` and `max_concurrent`. A job, woken by `task_events` and run on a timer as a fallback, finds profiles with `auto_launch` whose served states contain a claimable task and fewer than `max_concurrent` live sessions, and launches an ephemeral session for the highest-priority such task through the same path as a user launch. Ephemeral sessions become launchable at that point; the MCP surface, the reaper and the attempt limit already cover an unattended agent that fails.
+- **Scheduled agents.** A profile gains a cron expression. A job launches an ephemeral session of that profile, without a task, at each tick. The tech-debt scanner that files `ready` tasks once a day and the agent that turns new GitHub issues into `backlog` tasks are instances; both need only `create_task`, and the latter needs GitHub access, which is on the roadmap in `README.md`.
+
 ## Engine adapter
 
 `ContainerEngine` is a trait with one production implementation on `bollard` and one mock. The production implementation is engine-agnostic by construction: it uses only endpoints and `HostConfig` fields that both Docker and Podman's compatible API implement (ADR 0004).
@@ -412,6 +443,7 @@ The server is named `mars-orchestrator` rather than `mars` to reduce the chance 
 | exec + resize (TTY on) | yes | yes | Used by the optional terminal view. |
 | list with label filter | yes | yes | Recovery lists `mars.session_id`. |
 | bind mounts (`Binds`) | yes | yes | Sources are host paths (`DATA_DIR_HOST`). |
+| nested bind mounts | yes | yes | A shared directory mounted inside `/session/work`; parents are mounted before children. Exercised by the engine tests. |
 | `NetworkMode` = named network | yes | yes | |
 | `Runtime` (`runsc`, `kata`) | yes | yes if configured in `containers.conf` | |
 | `UsernsMode: keep-id` | ignored | required | Set when `/version` reports Podman. Verified at startup (see below); the orchestrator refuses to run on a Podman that does not honour it. |
@@ -444,8 +476,8 @@ One cron service with independent intervals, mirroring the reference layout of a
 | Job | Interval | Work |
 | --- | --- | --- |
 | mirror fetch | 10 min | `git fetch --prune` on every `ready` mirror. |
-| lease reaper | 1 min | Release expired task leases; emit `TaskEvent`. |
-| idle reaper | 1 min | Park `running` sessions idle beyond their profile's timeout. |
+| idle reaper | 1 min | Park `running` conversational sessions idle beyond their profile's timeout; stop and fail `running` ephemeral sessions idle beyond it (`stalled`). |
+| stuck-task reaper | 1 min | Release tasks held by `done` or `failed` sessions, escalating those at the attempt limit; write the system comment and emit `TaskEvent`s. |
 | token cleanup | 1 h | Delete expired refresh tokens, reset tokens and unaccepted invites. |
 | secret rotation | 1 h | Re-wrap rows whose `key_version` is behind the newest key, if any. |
 | orphan cleanup | 1 h | Remove containers labelled `mars.session_id` whose session is `done`/`failed`/missing; delete `/data/tmp` leftovers. |

@@ -23,6 +23,7 @@ The design rests on a few commitments:
 - **Every effect outside the container is audited.** Pushes, merges and task changes go through the orchestrator, attributed to a session or a user.
 - **Nothing is lost when nobody is watching.** The agent's output is written to disk in the container and folded into an append-only event log in Postgres; the UI is a subscriber, never the owner of state.
 - **One event schema.** The frontend never sees a CLI's native output; each backend is translated into the same `AgentEvent` stream.
+- **Task state routes work.** The tracker is modelled on Beads, backed by Postgres instead of a synced store. A task's state is the queue it waits in, each agent profile says which states it serves, and agents hand work to each other by moving tasks between states. A planner turns `backlog` into `ready`, an implementer turns `ready` into `review`, a reviewer sends it on to `merge` or back. States are configured per project; the roles are profiles and prompts, not code.
 
 ## Deployment shape
 
@@ -114,12 +115,26 @@ The orchestrator applies database migrations on startup; the first migration see
 
 Open `PUBLIC_URL`, log in as `admin`, and you are required to set a new password before anything else works. Then invite your team from the admin page (each invite is a 7-day link sent by email), create a project from a remote URL, and launch a session from its default profile. There is no self-registration.
 
+Work flows through the project's task board. Create a task (it lands in `backlog`), open it in a planning session to break it down, and the resulting `ready` tasks are what an implementer session picks up with its `ready` and `claim` tools. In v1 every session is started by a person, optionally for one task; a task that agents keep failing on ends up in `needs_human` after `max_attempts` (project setting, default 3) with the agents' comments explaining why.
+
 ### Operating notes
 
 - Session working copies, project mirrors and transcripts live under `DATA_DIR_HOST`. Back it up with the database.
 - Rotating the secrets master key: add a new `<version>=<key>` entry with a higher version, restart, and let the rotation job re-wrap existing rows; remove the old entry once `GET /api/secrets` shows no row on the old version.
 - Restarting the orchestrator does not stop sessions: running containers are re-adopted and their transcripts resumed from the last committed offset.
-- Removing a project removes its mirror and every session directory under it.
+- Removing a project removes its mirror, its CLI state directory, its shared directories and every session directory under it.
+- Sessions of one project share the agent CLI's state directory (transcripts, auto memory, installed skills and plugins), so what one session learns is available to the next. Nothing is shared between projects.
+- Shared directories (project page, "Shared directories") mount one directory read-write into every session of a project, so build output is kept once instead of once per session. Which directories are safe to share is per ecosystem: a content-addressed download cache almost always is, build output inside the checkout usually is not. Cargo is the exception because it locks its build directory, so concurrent builds from several sessions queue instead of corrupting each other; the same working-directory path in every session means artifacts are reused across sessions. Starting points:
+
+  | Ecosystem | Share (name → container path) | Keep per session |
+  | --- | --- | --- |
+  | Rust | `target` → `/session/work/target`; `cargo-registry` → `/session/home/.cargo/registry` | |
+  | Node | `npm-cache` → `/session/home/.npm`, or the pnpm store | `node_modules` (rewritten in place; branches disagree on lockfiles) |
+  | Go | `go-mod` → `/session/home/go/pkg/mod`; `go-build` → `/session/home/.cache/go-build` | |
+  | Python | `uv-cache` → `/session/home/.cache/uv` (or the pip cache) | virtualenvs |
+  | JVM | `m2` → `/session/home/.m2`; `gradle` → `/session/home/.gradle` | `build/` |
+
+  A shared directory grows across branches; empty it from the project page when disk gets tight. Both emptying and removing are refused while a session of the project is running.
 
 ## Development
 
@@ -140,7 +155,7 @@ Local development runs Postgres in a container, the orchestrator with `cargo run
 
 ## Roadmap after v1
 
-Multiple role profiles per project (implementer, reviewer, QA, merge); ephemeral agents spawned by policy when tasks become ready; GitHub App credentials and webhooks; egress restriction for session containers; sandboxed runtimes (gVisor, Kata) per profile; per-project toolchain setup scripts for session images; a second agent backend (GitHub Copilot CLI is the candidate, pending a spike to learn its structured output, stdin protocol and container authentication).
+A dispatcher that launches ephemeral sessions when a served task state has claimable work, bounded per profile; scheduled agents (a profile run on a cron expression, such as a daily tech-debt scan that files tasks, or an agent that turns GitHub issues into backlog tasks); GitHub App credentials and webhooks; egress restriction for session containers; sandboxed runtimes (gVisor, Kata) per profile; per-project toolchain setup scripts for session images; a second agent backend (GitHub Copilot CLI is the candidate, pending a spike to learn its structured output, stdin protocol and container authentication).
 
 ## License
 

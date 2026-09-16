@@ -5,10 +5,9 @@ Working conventions for any agent or human changing this repository. The product
 ## Mandatory rules
 
 1. **Documentation is part of the change.** Any change to behaviour, an endpoint, a schema, a config variable, a container contract or a tool description updates the document that describes it in the same commit: `SPEC.md` for endpoints, streams, event schemas and MCP tools; `docs/data-model.md` for tables; `ARCHITECTURE.md` for lifecycle, recovery, git, secrets and engine behaviour; `README.md` for configuration and operation; a new ADR in `docs/decisions/` when a real alternative was rejected. A change that resolves an entry in `docs/open-questions.md` deletes that entry.
-2. **Issue tracking**: use `bea` (Bears) for all issue tracking. `bea ready --json` to find work, `bea start <id> --json` to claim, `bea done <id> --json` to complete. No markdown TODO lists.
-3. **Planning**: break significant changes into Bears sub-tasks (`bea create "Step title" --priority P1 --json`) and link dependencies with `bea dep add <task-id> <depends-on-id> --json`. Tasks cite the section of the document they implement.
-4. **File modifications**: never use `sed`/`awk` to modify files. Use the editor tools only, in small reviewable commits.
-5. **Secrets never appear in code, tests, fixtures, logs, events or documentation.** Test fixtures use obviously fake values.
+2. **Issue tracking**: use Bears for all issue tracking, through the `bears` MCP server (`list_ready` to find work, `start_task` to claim, `complete_task` to complete). The `bea` CLI is the fallback when the MCP server is not available. No markdown TODO lists.
+3. **Planning**: break significant changes into an epic with sub-tasks (`create_task` with `type: epic`, then `create_task` with `parent`) and link dependencies with `add_dependency`. Tasks cite the section of the document they implement.
+4. **Secrets never appear in code, tests, fixtures, logs, events or documentation.** Test fixtures use obviously fake values.
 
 ## Project overview
 
@@ -154,6 +153,19 @@ cd frontend && npm run lint && npx tsc -b && npm run build && npm run test:e2e
 
 ## Issue tracking (Bears)
 
+Prefer the `bears` MCP server (registered in `.mcp.json`, backed by `bea mcp`). Tools by task:
+
+| Need | MCP tool |
+| --- | --- |
+| Find unblocked work | `list_ready` |
+| View a task | `get_task`, `search_tasks`, `get_graph`, `plan_epic` (an epic's children in execution order) |
+| Create work | `create_task` (with `type: epic` for an epic, `parent` for a sub-task) |
+| Claim / complete | `start_task`, `complete_task` |
+| Dependencies | `add_dependency`, `remove_dependency` |
+| Housekeeping | `update_task`, `cancel_task`, `archive_task` |
+
+The `bea` CLI is the fallback when the MCP server is unavailable (for example in a plain shell or CI):
+
 ```bash
 bea init                # Initialise .bears/ in the repo
 bea ready --json        # Find unblocked work
@@ -161,9 +173,10 @@ bea show <id> --json    # View task details
 bea create "Title" --priority P2 --json
 bea start <id> --json   # Claim
 bea done <id> --json    # Complete
+bea dep add <task-id> <depends-on-id> --json
 ```
 
-Types: `bug`, `feature`, `task`, `epic`, `chore`. Priorities: `P0` critical, `P1` high, `P2` medium, `P3` low. Link blockers with `bea dep add <task-id> <depends-on-id> --json`. Newly discovered work becomes a new task linked to the current one. Commit messages include the task id.
+Types: `bug`, `feature`, `task`, `epic`, `chore`. Priorities: `P0` critical, `P1` high, `P2` medium, `P3` low. Newly discovered work becomes a new task linked to the current one. Commit messages include the task id.
 
 ## Git workflow
 

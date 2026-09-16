@@ -166,7 +166,60 @@ mars/
 └── .env.example
 ```
 
-Local development runs Postgres in a container, the orchestrator with `cargo run` against the host's Podman socket, and the frontend with `npm run dev` proxying `/api` and `/ws` to the orchestrator. Session containers reach the host-run orchestrator's MCP listener through `MCP_URL=http://host.containers.internal:7001/mcp`. See `CLAUDE.md` for the exact commands, toolchain and test expectations.
+Working conventions, code-quality commands and test expectations are in `CLAUDE.md`.
+
+### Running locally
+
+These commands apply once the implementation, images and `.env.example` exist. The socket commands assume Linux.
+
+**Postgres**:
+
+```bash
+podman run -d --name mars-pg -e POSTGRES_USER=mars -e POSTGRES_PASSWORD=mars -e POSTGRES_DB=mars -p 5432:5432 postgres:18
+export DATABASE_URL=postgres://mars:mars@localhost:5432/mars
+```
+
+**Podman socket** (rootless):
+
+```bash
+systemctl --user enable --now podman.socket
+export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock
+```
+
+With Docker instead: `export DOCKER_HOST=unix:///var/run/docker.sock`. The supported Docker uid contract also requires running the orchestrator as uid 1000 with a data directory owned by that uid; see `ARCHITECTURE.md`, "Uid contract".
+
+**Orchestrator**:
+
+```bash
+cd orchestrator
+cp ../.env.example ../.env   # then edit
+cargo run                    # runs migrations, listens on API_PORT and MCP_PORT
+```
+
+`DATA_DIR_HOST` must point at a directory the current user owns; when running the orchestrator directly on the host it is the same path as `DATA_DIR` (default `./data`, made absolute at startup). Set `MCP_URL=http://host.containers.internal:7001/mcp` (Docker: `host.docker.internal`, plus `SESSION_EXTRA_HOSTS=host.docker.internal:host-gateway`) so session containers can reach the MCP listener on the host. On macOS the data directory must lie under a path the Podman machine shares with its VM (the home directory by default).
+
+**Session image**:
+
+```bash
+podman build -t mars-session-claude:dev images/claude
+```
+
+**Frontend**:
+
+```bash
+cd frontend
+npm install
+npm run dev                  # proxies /api and /ws to the orchestrator
+```
+
+### CI
+
+| Workflow | Triggers on | Checks |
+| --- | --- | --- |
+| Orchestrator CI | `orchestrator/**` | fmt, clippy, tests with `SQLX_OFFLINE=true` |
+| Frontend CI | `frontend/**` | lint, typecheck, build |
+| E2E | `orchestrator/**` or `frontend/**` | Playwright against a real orchestrator, Postgres and the stub session image |
+| Images | `images/**` | Build session images; smoke-run the entrypoint |
 
 ## Roadmap after v1
 

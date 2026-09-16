@@ -155,6 +155,29 @@ orchestrator/
 
 `AppState` is cloned into every handler and holds: `Arc<Config>`, the `PgPool`, `Arc<dyn ContainerEngine>`, `Arc<dyn EmailClient>`, `Arc<dyn GitCredentialProvider>`, the `SecretsKeyring`, the `SessionRegistry` (handles to running session owner tasks), and the broadcast senders for event fan-out. Every `Arc<dyn Trait>` has a mock behind the `integration-tests` feature so the whole API can be tested without an engine, a mail provider or GitHub.
 
+**Crates**, one per concern, added with `cargo add` and never by editing versions by hand. Git is not a crate (ADR 0011).
+
+| Concern | Crate |
+| --- | --- |
+| HTTP, WebSocket, SSE | `axum` (features `ws`), `axum-extra` (`cookie`, `typed-header`), `tower-http` (`trace`, `cors`) |
+| Database | `sqlx` (`postgres`, `runtime-tokio`, `uuid`, `chrono`, `json`) |
+| Container engine | `bollard` |
+| MCP server | `rmcp` (server, Streamable HTTP transport) |
+| Async runtime | `tokio` (`full`), `tokio-stream`, `futures-util` |
+| Auth | `jsonwebtoken`, `argon2`, `sha2` |
+| Secrets | `aes-gcm`, `rand`, `zeroize`, `base64` |
+| Serialisation | `serde`, `serde_json` |
+| Errors | `thiserror` |
+| Logging | `tracing`, `tracing-subscriber` (`env-filter`) |
+| Email | `reqwest` against the Resend HTTP API (no SDK crate) |
+| Ids, time | `uuid` (`v4`, `serde`), `chrono` (`serde`) |
+| Config | `dotenvy` |
+| Tests | `axum-test`, `testcontainers-modules` (`postgres`), `tempfile` |
+
+**Errors.** One `Error` enum in `src/prelude/error.rs` with `#[from]` variants for `sqlx::Error`, `ClaimsError`, each model error (`UserError`, `TaskError`, ...), `EngineError`, `GitError`, `SecretsError` and `EmailError`, plus `NotFound`, `Forbidden`, `Conflict(String)`, `BadRequest(String)` and `Internal(String)`. `impl IntoResponse for Error` maps to `{ "status": <u16>, "error": "<message>" }`; internal errors are logged with `tracing::error!` and answered with a generic message. `Result<T>` is `std::result::Result<T, Error>`. MCP tool handlers map `Error` to MCP error codes in `src/mcp/error.rs`.
+
+**Cron jobs** are each a method on `CronService`; see "Background jobs".
+
 ### Session owner task
 
 Each session in state `running` is owned by exactly one tokio task, the `SessionOwner`. It is the only writer to the CLI's stdin and the only reader of the transcript file. It is not the only writer of the session's `events` rows: git operations, recovery, the launcher and the reaper insert `git`, `state_change` and `launch_warning` events through the same repository call, whether or not an owner exists. Its loop:

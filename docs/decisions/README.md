@@ -1,6 +1,6 @@
 # Architecture decision records
 
-One file per decision where a real alternative was considered and rejected. Each record is short: context, decision, consequences. Records are never edited after acceptance except to add a "Superseded by" line; a changed decision is a new record.
+One file per decision where a real alternative was considered and rejected. Each record is short: context with the options considered, decision, consequences, under 300 words. A record is the why; the rule it establishes always lives in the main document (`SPEC.md`, `ARCHITECTURE.md`, `docs/data-model.md`, `README.md`), so nobody has to read a record to know what to build. Records are never edited after acceptance except to add a "Superseded by" line or to condense wording without changing the decision; a changed decision is a new record. A record over the cap is condensed, never truncated: the rejected alternatives and the consequences stay.
 
 Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 

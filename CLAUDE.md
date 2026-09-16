@@ -1,71 +1,27 @@
 # Claude Instructions — Mars
 
-Working conventions for any agent or human changing this repository. The product itself is described in `README.md`, `ARCHITECTURE.md`, `SPEC.md` and `docs/`; this file is about how to work here.
+Working conventions for any agent or human changing this repository. The product is described in `README.md`, `ARCHITECTURE.md`, `SPEC.md` and `docs/`; this file is about how to work here.
 
 ## Mandatory rules
 
-1. **Documentation is part of the change.** Any change to behaviour, an endpoint, a schema, a config variable, a container contract or a tool description updates the document that describes it in the same commit: `SPEC.md` for endpoints, streams, event schemas and MCP tools; `docs/data-model.md` for tables; `ARCHITECTURE.md` for lifecycle, recovery, git, secrets and engine behaviour; `README.md` for configuration and operation; a new ADR in `docs/decisions/` when a real alternative was rejected. A change that resolves an entry in `docs/open-questions.md` deletes that entry.
-2. **Issue tracking**: use Bears for all issue tracking, through the `bears` MCP server (`list_ready` to find work, `start_task` to claim, `complete_task` to complete). The `bea` CLI is the fallback when the MCP server is not available. No markdown TODO lists.
-3. **Planning**: break significant changes into an epic with sub-tasks (`create_task` with `type: epic`, then `create_task` with `parent`) and link dependencies with `add_dependency`. Tasks cite the section of the document they implement.
-4. **Do not put real credentials in code, tests, fixtures or documentation, or copy them from credential handling into operational logs or orchestrator-generated events, except for the intentional email fallback below.** Test fixtures use obviously fake values. Agent/tool output and user-provided transcript content may contain secrets; v1 stores and displays that content without automatic secret redaction (ADR 0027). This does not permit the orchestrator to include credential values in its own diagnostics. When `RESEND_API_KEY` is unset, `LogEmailClient` must log complete invitation and password-reset links, including their tokens, at `info` so local development works without email configuration (ADR 0026). This exception does not permit logging other credentials or logging these links through the configured email provider.
+1. **Documentation is part of the change.** Any change to behaviour, an endpoint, a schema, a config variable, a container contract or a tool description updates the document that describes it in the same commit: `SPEC.md` for endpoints, streams, event schemas and MCP tools; `docs/data-model.md` for tables; `ARCHITECTURE.md` for lifecycle, recovery, git, secrets and engine behaviour; `README.md` for configuration and operation; a new ADR in `docs/decisions/` when a real alternative was rejected. The rule always lives in the main document; read an ADR only when changing or questioning the decision it records. A change that resolves an entry in `docs/open-questions.md` deletes that entry.
+2. **Issue tracking is Bears**, through the `bears` MCP server: `list_ready` to find work, `start_task` to claim, `complete_task` to finish; `create_task` with `type: epic` and then `parent` to break work down, `add_dependency` to order it. Priorities run `P0` critical to `P3` low. Tasks cite the document section they implement, newly discovered work becomes a new task linked to the current one, and commit messages include the task id. In a plain shell or CI the `bea` CLI is the fallback (`bea ready --json`, `bea show <id> --json`, `bea start <id> --json`, `bea done <id> --json`). No markdown TODO lists.
+3. **No real credentials** in code, tests, fixtures or documentation; fixtures use obviously fake values. The orchestrator never puts secret values or tokens into its own logs, diagnostics or generated events. Two documented exceptions: agent output and user messages are stored and displayed unredacted (ADR 0027), and when `RESEND_API_KEY` is unset `LogEmailClient` logs complete invitation and password-reset links at `info` so local development works without email (ADR 0026). `ResendClient` and ordinary request logs never log those links.
 
 ## Project overview
 
-Mars runs coding-agent sessions (Claude Code in v1, behind a pluggable `AgentBackend` trait) in one container per session and exposes them in a browser, with a task tracker shared between agents (over MCP) and users (in the UI).
-
-| Directory | Stack | Status |
-| --- | --- | --- |
-| `orchestrator/` | Rust 2024, Axum, SQLx, Postgres, bollard, rmcp | Not started |
-| `frontend/` | Vite, React 19, TypeScript, Tailwind 4, TanStack Query, Zustand | Not started |
-| `images/` | Session container images (Dockerfiles + entrypoint) | Not started |
-| `nginx/` | Frontend image and reverse proxy config | Not started |
+Mars runs coding-agent sessions (Claude Code in v1, behind a pluggable `AgentBackend` trait) in one container per session and exposes them in a browser, with a task tracker shared between agents (over MCP) and users (in the UI). `orchestrator/` is Rust (Axum, SQLx, Postgres, bollard, rmcp), `frontend/` is Vite, React and TypeScript, `images/` holds the session container images and `nginx/` the frontend image and reverse proxy.
 
 ## Backend conventions
 
-**Toolchain**: Rust stable, edition 2024, pinned by `rust-toolchain.toml`. `cargo fmt` and `cargo clippy -- -D warnings` clean at all times.
-
-**Crates** (add with `cargo add`, never by editing versions by hand):
-
-| Concern | Crate |
-| --- | --- |
-| HTTP, WebSocket, SSE | `axum` (features `ws`), `axum-extra` (`cookie`, `typed-header`), `tower-http` (`trace`, `cors`) |
-| Database | `sqlx` (`postgres`, `runtime-tokio`, `uuid`, `chrono`, `json`) |
-| Container engine | `bollard` |
-| MCP server | `rmcp` (server, Streamable HTTP transport) |
-| Async runtime | `tokio` (`full`), `tokio-stream`, `futures-util` |
-| Auth | `jsonwebtoken`, `argon2`, `sha2` |
-| Secrets | `aes-gcm`, `rand`, `zeroize`, `base64` |
-| Serialisation | `serde`, `serde_json` |
-| Errors | `thiserror` |
-| Logging | `tracing`, `tracing-subscriber` (`env-filter`) |
-| Email | `reqwest` against the Resend HTTP API (no SDK crate) |
-| Ids, time | `uuid` (`v4`, `serde`), `chrono` (`serde`) |
-| Config | `dotenvy` |
-| Tests | `axum-test`, `testcontainers-modules` (`postgres`), `tempfile` |
-
-Git is never a crate: all git operations shell out to the `git` binary through `orchestrator/src/git/` (ADR 0011).
-
-**Layout**: see `ARCHITECTURE.md`, "Orchestrator internals". In short:
-
-- `src/prelude/`: `AppState`, `Config`, `Claims`, `Error`, `Result`. Every module does `use crate::prelude::*`.
-- `src/models/`: domain types with their validation and a per-model error enum (`UserError`, `TaskError`, ...). No SQL.
-- `src/repositories/`: all SQL, one `XRepository<'a>` struct per aggregate borrowing `&PgPool`. Use `sqlx::query!`/`query_as!` (compile-time checked). Scoped mutations put the scope in the `WHERE` clause (`... WHERE id = $1 AND project_id = $2`), never mutate by id and check afterwards.
-- Tracker writes share one transaction per operation and lock the project row before authoritative reads/checks, mutations and event allocation. Repository helpers accept that transaction rather than committing independently. Session event batches lock their session row; combined writes take the project lock first. Acquire any git lock before database project locks, never the reverse (ADR 0021).
-- `src/routes/`: one module per resource exporting `routes() -> Router<AppState>`, nested under `/api`. Request and response DTOs are private to the route module; response DTOs exist when the shape differs from the model.
-- `src/engine/`, `src/agent/`, `src/git/`, `src/secrets/`, `src/email/`: each exposes a trait, a production implementation and a mock. `AppState` holds them as `Arc<dyn Trait>`. Mocks are compiled behind the `integration-tests` cargo feature and expose `as_any()` for downcasting in tests.
-- `src/session/`: `SessionOwner` tasks, launcher, recovery, registry.
-- `src/events/`: `AgentEvent`, `TaskEvent`, translation helpers, notify fan-out. Issue `pg_notify` inside the same transaction as the corresponding event/state writes; PostgreSQL delivers it after commit. The shared listener then broadcasts the wake signal. Do not issue a separate post-commit notification write (ADR 0028).
-- `src/cron/`: periodic jobs, each a method on `CronService`, each failure logged and retried next interval.
-
-**Error handling**: one `Error` enum in `src/prelude/error.rs` with `#[from]` variants for `sqlx::Error`, `ClaimsError`, each model error, `EngineError`, `GitError`, `SecretsError`, `EmailError`, plus `NotFound`, `Forbidden`, `Conflict(String)`, `BadRequest(String)`, `Internal(String)`. `impl IntoResponse for Error` maps to `{ "status": <u16>, "error": "<message>" }`; internal errors log with `tracing::error!` and return a generic message. `Result<T>` is `std::result::Result<T, Error>`. Functions return `Result`; `unwrap`/`expect` only in tests and at startup. MCP tool handlers map `Error` to MCP error codes in `src/mcp/error.rs`.
-
-**Logging**: `tracing` with structured fields (`session_id = %id`), never string-formatted ids. Never log secret values or tokens except invitation/password-reset links emitted by `LogEmailClient` when email is unconfigured (mandatory rule 4; ADR 0026). Never log event payloads at `info` or above. Session transcript files and persisted agent output follow the separate no-redaction contract in ADR 0027; they are not operational tracing logs. Keep the fallback links usable, not redacted; ordinary request/error logs and `ResendClient` must not log them.
-
-**Migrations**: `sqlx migrate add -r <name>` creates a paired `.up.sql`/`.down.sql` in `orchestrator/migrations/`. Migrations run automatically at startup. Every `.down.sql` fully reverses its `.up.sql`. `docs/data-model.md` is updated in the same commit. Enum values are only added, never removed or renamed.
-
-**SQLx offline mode**: after changing any query, run `cargo sqlx prepare` in `orchestrator/` and commit `.sqlx/`. CI and the Docker build run with `SQLX_OFFLINE=true`. A build that fails with "no cached data for this query" means `.sqlx/` is stale.
-
-**Environment**: `README.md`, "Configuration", is the current variable contract; the implementation must provide `.env.example` with the same variables. `Config::from_env()` fails fast with the name of any missing required variable and applies documented defaults and optional behavior for the rest.
+- Rust stable, edition 2024, pinned by `rust-toolchain.toml`. `cargo fmt` and `cargo clippy -- -D warnings` clean at all times. Crates are added with `cargo add`; the crate chosen for each concern is listed in `ARCHITECTURE.md`, "Orchestrator internals". Git is never a crate: everything shells out to the `git` binary through `src/git/` (ADR 0011).
+- Module layout and the `Error` enum contract are in `ARCHITECTURE.md`, "Orchestrator internals". Every module does `use crate::prelude::*`. Models hold validation and a per-model error enum, never SQL. Repositories hold all SQL through `sqlx::query!`/`query_as!`, one `XRepository<'a>` per aggregate borrowing `&PgPool`, and put the scope in the `WHERE` clause (`... WHERE id = $1 AND project_id = $2`) instead of checking after mutating. Routes are one module per resource exporting `routes() -> Router<AppState>`, DTOs private to the module. Engine, agent, git, secrets and email each expose a trait, a production implementation and a mock behind the `integration-tests` feature with `as_any()` for downcasting.
+- Locking and notification discipline is specified in `ARCHITECTURE.md`, "Task tracker" and "Event delivery": one project row lock per tracker mutation, one session row lock per event batch, any git lock before any database lock, `pg_notify` inside the writing transaction and never as a separate post-commit write (ADR 0021, 0028). Repository helpers accept the caller's transaction.
+- Functions return `Result`; `unwrap`/`expect` only in tests and at startup. Internal errors log with `tracing::error!` and return a generic message.
+- Logging is `tracing` with structured fields (`session_id = %id`), never string-formatted ids. Never log event payloads at `info` or above. Secrets: rule 3.
+- Migrations: `sqlx migrate add -r <name>`; every `.down.sql` fully reverses its `.up.sql`; enum values are only added, never removed or renamed; `docs/data-model.md` changes in the same commit.
+- After changing any query, run `cargo sqlx prepare` in `orchestrator/` and commit `.sqlx/`. CI builds with `SQLX_OFFLINE=true`; "no cached data for this query" means `.sqlx/` is stale.
+- `README.md`, "Configuration", is the variable contract and `.env.example` carries the same variables. `Config::from_env()` fails fast naming any missing required variable.
 
 ## Frontend conventions
 
@@ -88,47 +44,7 @@ Git is never a crate: all git operations shell out to the `git` binary through `
 
 ## Running locally
 
-These commands apply once the implementation, images and `.env.example` exist; the repository currently contains only the design documents. The socket commands below assume Linux.
-
-**Postgres**:
-
-```bash
-podman run -d --name mars-pg -e POSTGRES_USER=mars -e POSTGRES_PASSWORD=mars -e POSTGRES_DB=mars -p 5432:5432 postgres:18
-export DATABASE_URL=postgres://mars:mars@localhost:5432/mars
-```
-
-**Podman socket** (rootless):
-
-```bash
-systemctl --user enable --now podman.socket
-export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock
-```
-
-With Docker instead: `export DOCKER_HOST=unix:///var/run/docker.sock`. The supported Docker uid contract also requires running the orchestrator as uid 1000 with a data directory owned by that uid; see `ARCHITECTURE.md`, "Uid contract".
-
-**Orchestrator**:
-
-```bash
-cd orchestrator
-cp ../.env.example ../.env   # then edit
-cargo run                    # runs migrations, listens on API_PORT and MCP_PORT
-```
-
-`DATA_DIR_HOST` must point at a directory the current user owns; when running the orchestrator directly on the host it is the same path as `DATA_DIR` (default `./data`, made absolute at startup). Set `MCP_URL=http://host.containers.internal:7001/mcp` (Docker: `host.docker.internal`, plus `SESSION_EXTRA_HOSTS=host.docker.internal:host-gateway`) so session containers can reach the MCP listener on the host. On macOS the data directory must lie under a path the Podman machine shares with its VM (the home directory by default).
-
-**Session image**:
-
-```bash
-podman build -t mars-session-claude:dev images/claude
-```
-
-**Frontend**:
-
-```bash
-cd frontend
-npm install
-npm run dev                  # proxies /api and /ws to the orchestrator
-```
+The commands are in `README.md`, "Development": Postgres in a container, `DOCKER_HOST` pointed at the Podman or Docker socket, `cargo run` in `orchestrator/`, `npm run dev` in `frontend/`. The CI workflows are described there too.
 
 ## Code quality
 
@@ -146,52 +62,16 @@ cd frontend && npm run lint && npx tsc -b && npm run build && npm run test:e2e
 
 ## Testing expectations
 
-- **Backend integration tests** use `TestApp::spawn()` from `tests/common/mod.rs`: a `testcontainers` Postgres, migrations applied, the seeded admin removed, `AppState` built with the mock engine, mock email, mock git credential provider and a fixed test master key. `TestApp` creates users directly in the database and logs them in; invite flows are tested through the mock email client's captured messages. One `#[tokio::test]` per scenario. Every new endpoint gets tests for the happy path and each error path (unauthenticated, forbidden, validation, conflict). Assertions through `response.assert_status()` and `response.json::<T>()`.
-- **Engine tests** (`tests/engine.rs`) run only when `DOCKER_HOST` is set and exercise create, attach, exec, kill and label listing on whatever engine is configured; CI runs them on both Podman and Docker.
-- **Git tests** create real bare repositories in temporary directories with `tempfile`; no mocking of git.
-- **Event translation tests** are fixture-based: recorded native output per pinned CLI version in `tests/fixtures/claude/<version>/`, expected `AgentEvent` sequences beside them. A CLI version bump adds fixtures, never edits old ones.
+- **Backend integration tests** use `TestApp::spawn()` from `tests/common/mod.rs` (testcontainers Postgres, migrations applied, seeded admin removed, mock engine, email and git credentials, fixed test master key). One `#[tokio::test]` per scenario. Every new endpoint gets tests for the happy path and each error path (unauthenticated, forbidden, validation, conflict). Assert with `response.assert_status()` and `response.json::<T>()`. Invite flows are asserted through the mock email client's captured messages.
+- **Engine tests** (`tests/engine.rs`) run only when `DOCKER_HOST` is set; CI runs them on both Podman and Docker.
+- **Git tests** use real bare repositories in `tempfile` directories; git is never mocked.
+- **Event translation tests** are fixture-based: recorded native output per pinned CLI version in `tests/fixtures/claude/<version>/` with the expected `AgentEvent` sequences beside them. A CLI version bump adds fixtures, never edits old ones.
 - **MCP tests** drive the tool handlers through the `rmcp` server in-process with a session bearer token from `TestApp`.
-- **Session owner tests** feed a transcript file line by line, kill and restart the owner mid-file, and assert that `events` has no gaps and no duplicates.
-- **Frontend end-to-end tests** (Playwright, `workers: 1`) run against a real orchestrator started with `--features integration-tests`, create fresh users per test through the test-only `/api/test/users` endpoint (there is no self-registration), and use helpers from `tests/utils/test-helpers.ts`. Sessions in E2E use a stub session image that replays a fixture transcript so tests need no model credentials.
-
-## Issue tracking (Bears)
-
-Prefer the `bears` MCP server (registered in `.mcp.json`, backed by `bea mcp`). Tools by task:
-
-| Need | MCP tool |
-| --- | --- |
-| Find unblocked work | `list_ready` |
-| View a task | `get_task`, `search_tasks`, `get_graph`, `plan_epic` (an epic's children in execution order) |
-| Create work | `create_task` (with `type: epic` for an epic, `parent` for a sub-task) |
-| Claim / complete | `start_task`, `complete_task` |
-| Dependencies | `add_dependency`, `remove_dependency` |
-| Housekeeping | `update_task`, `cancel_task`, `archive_task` |
-
-The `bea` CLI is the fallback when the MCP server is unavailable (for example in a plain shell or CI):
-
-```bash
-bea init                # Initialise .bears/ in the repo
-bea ready --json        # Find unblocked work
-bea show <id> --json    # View task details
-bea create "Title" --priority P2 --json
-bea start <id> --json   # Claim
-bea done <id> --json    # Complete
-bea dep add <task-id> <depends-on-id> --json
-```
-
-Types: `bug`, `feature`, `task`, `epic`, `chore`. Priorities: `P0` critical, `P1` high, `P2` medium, `P3` low. Newly discovered work becomes a new task linked to the current one. Commit messages include the task id.
+- **Session owner tests** feed a transcript file line by line, kill and restart the owner mid-file, and assert `events` has no gaps and no duplicates.
+- **Frontend E2E** (Playwright, `workers: 1`) runs against a real orchestrator started with `--features integration-tests`, creates fresh users per test through the test-only `/api/test/users` endpoint, uses helpers from `tests/utils/test-helpers.ts`, and runs sessions on a stub image that replays a fixture transcript.
 
 ## Git workflow
 
 - Feature branches from `main`; rebase before merging, no merge commits; `gh pr create`.
 - Conventional Commits: `<type>(<scope>): <description>` with types `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `style`, `perf`, `ci`, `build` and scopes `orchestrator`, `frontend`, `images`, `infra`, `docs`.
 - A PR that changes behaviour without touching the corresponding document is not mergeable (rule 1).
-
-## CI
-
-| Workflow | Triggers on | Checks |
-| --- | --- | --- |
-| Orchestrator CI | `orchestrator/**` | fmt, clippy, tests with `SQLX_OFFLINE=true` |
-| Frontend CI | `frontend/**` | lint, typecheck, build |
-| E2E | `orchestrator/**` or `frontend/**` | Playwright against a real orchestrator, Postgres and the stub session image |
-| Images | `images/**` | Build session images; smoke-run the entrypoint |

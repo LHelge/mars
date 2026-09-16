@@ -4,26 +4,23 @@ Status: accepted.
 
 ## Context
 
-JWT claims previously carried administrator status and the password-change flag without specifying how existing logins respond to account changes. Password changes, resets, deletion and demotion need predictable effects, including for refresh tokens and already-open browser connections.
+JWT claims carried administrator status and the password-change flag without specifying how existing logins respond to account changes. Password changes, resets, deletion and demotion need predictable effects on refresh tokens and open browser connections.
 
 Options considered:
 
-1. Trust token snapshots until expiry. Rejected: old administrator privileges would remain usable after demotion, and password changes would not invalidate existing logins.
-2. Maintain a blacklist of individual access tokens and broadcast revocation to every connection. Rejected for v1: unnecessary token storage and connection coordination.
-3. Check the current user and a per-user login version in Postgres. Chosen: one version field and the existing user/token transactions provide the required behavior.
+1. Trust token snapshots until expiry. Rejected: demoted administrators keep privileges and password changes do not invalidate logins.
+2. A blacklist of access tokens with revocation broadcast to every connection. Rejected for v1: needless token storage and connection coordination.
+3. Check the current user and a per-user login version in Postgres. Chosen: one version field plus existing transactions give the required behavior.
 
 ## Decision
 
-- Add `users.auth_version`, initially zero, to access-token claims. Authenticated HTTP requests validate the token and require a current user with the same version. Missing users and version mismatches return 401. Authorization uses the current database role and password-change flag; stale token claims grant no administrator privileges.
-- Every successful password change or reset increments the version, updates the password, clears the password-change flag, revokes existing refresh tokens and invalidates outstanding password-reset links in one transaction.
-- A self-service password change requires the current password and issues a replacement pair for the current browser. An administrator changing another user's password and a reset-link operation do not log that target user in. Role changes preserve ordinary logins while changing permissions on subsequent requests.
-- Credential issuance and password/reset-token mutations lock the user row before token rows and revalidate credentials after locking. Concurrent login/refresh cannot preserve access through credentials invalidated by a password change. Return new credentials only after commit.
-- Open streams continue across ordinary token expiry. Recheck current user state and login version at existing heartbeat ticks, and before incoming WebSocket application messages, including terminal input. Invalid authorization closes the connection and its terminal attachment. The underlying agent session continues.
-- Reconnection refreshes credentials. A refresh 401 clears browser authentication and returns to login; transient errors use normal retry. A successful self-service password change installs its replacement credentials and reconnects streams.
+- `users.auth_version` is carried in access-token claims. Authenticated requests require a current user with the same version; authorization uses the database's current role and flags, never stale claims.
+- Every password change or reset increments the version, revokes refresh tokens and invalidates reset links in one transaction. Self-service change issues a replacement pair for the current browser; administrator changes and reset links do not log the target user in.
+- Credential issuance locks the user row and revalidates after locking, so a concurrent login or refresh cannot outlive a password change.
+- Open streams recheck user state and version at heartbeat ticks and before incoming WebSocket messages. Invalid authorization closes the connection; the agent session continues.
 
 ## Consequences
 
-- Authentication performs a database lookup per request and per stream authorization check. No token blacklist, additional service or revocation broadcast is required.
-- Passive streams may remain open until the next heartbeat: 30 seconds for WebSocket, 15 seconds for SSE. Commands are rechecked before acceptance. Work already authorized before revocation may finish; this is not cancellation of running operations.
-- User login revocation does not revoke the separate session MCP credentials or stop running agents.
-- Acceptance covers old access/refresh tokens after all three password-change paths, preservation of the self-service browser login, deleted users, stale administrator claims, concurrent refresh/login versus password changes, reset-link reuse, and revocation of idle streams and terminal input.
+- One database lookup per request and per stream check; no blacklist, extra service or broadcast.
+- Passive streams may stay open until the next heartbeat. Already authorized work may finish; this is not cancellation.
+- Login revocation does not revoke session MCP credentials or stop agents.

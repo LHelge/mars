@@ -23,6 +23,10 @@ use crate::prelude::debug;
 /// What secret-valued `Debug` fields print instead of their value (rule 3).
 const REDACTED: &str = "<redacted>";
 
+/// The default value of `SESSION_IMAGE_DEFAULT`: the `latest` alias of the
+/// image built from `images/claude/` (`README.md`, "Session image").
+const SESSION_IMAGE_DEFAULT: &str = "mars-session-claude:latest";
+
 /// Where the secrets master keyring is read from.
 ///
 /// Exactly one of `SECRETS_MASTER_KEYS` and `SECRETS_MASTER_KEY_FILE` is set.
@@ -115,7 +119,8 @@ pub struct Config {
     pub stop_grace_secs: u64,
     /// How often project mirrors are fetched.
     pub mirror_fetch_interval_secs: u64,
-    /// Image used by the default profile of new projects.
+    /// Image used by the default profile of new projects and by the startup
+    /// probe; defaults to [`SESSION_IMAGE_DEFAULT`].
     pub session_image_default: String,
     /// Resend API key; `None` selects the logging email fallback (ADR 0026).
     pub resend_api_key: Option<String>,
@@ -206,7 +211,6 @@ impl Config {
 
         let git_bot_name = required(&vars, "GIT_BOT_NAME", &mut missing);
         let git_bot_email = required(&vars, "GIT_BOT_EMAIL", &mut missing);
-        let session_image_default = required(&vars, "SESSION_IMAGE_DEFAULT", &mut missing);
 
         // `MAIL_FROM` is only required when mail actually goes out; without a
         // key the log fallback is used instead (ADR 0026).
@@ -233,7 +237,6 @@ impl Config {
         let secrets_master_keys = secrets_master_keys.expect("a master key source present");
         let git_bot_name = git_bot_name.expect("GIT_BOT_NAME present");
         let git_bot_email = git_bot_email.expect("GIT_BOT_EMAIL present");
-        let session_image_default = session_image_default.expect("SESSION_IMAGE_DEFAULT present");
 
         let public_url = normalise_public_url(&public_url)?;
 
@@ -271,6 +274,13 @@ impl Config {
         let stop_grace_secs: u64 = optional_parsed(&vars, "STOP_GRACE_SECS", 20)?;
         let mirror_fetch_interval_secs: u64 =
             optional_parsed(&vars, "MIRROR_FETCH_INTERVAL_SECS", 600)?;
+
+        // Optional so a default installation needs no image name: the value
+        // below is the tag the documented build command produces, and both the
+        // default profile of a new project and the startup probe pull it
+        // (`README.md`, "Configuration"; `ARCHITECTURE.md`, "Session image").
+        let session_image_default = value(&vars, "SESSION_IMAGE_DEFAULT")
+            .unwrap_or_else(|| SESSION_IMAGE_DEFAULT.to_string());
 
         let rust_log = value(&vars, "RUST_LOG").unwrap_or_else(|| "info".to_string());
 
@@ -497,7 +507,6 @@ mod tests {
             ("SECRETS_MASTER_KEYS", "1=not-a-real-key"),
             ("GIT_BOT_NAME", "Mars Bot"),
             ("GIT_BOT_EMAIL", "mars-bot@example.invalid"),
-            ("SESSION_IMAGE_DEFAULT", "mars-session-claude:dev"),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -530,7 +539,6 @@ mod tests {
         );
         assert_eq!(config.git_bot_name, "Mars Bot");
         assert_eq!(config.git_bot_email, "mars-bot@example.invalid");
-        assert_eq!(config.session_image_default, "mars-session-claude:dev");
 
         assert_eq!(config.data_dir, PathBuf::from("/srv/mars/data"));
         assert_eq!(config.mcp_url, "http://orchestrator:7001/mcp");
@@ -541,6 +549,7 @@ mod tests {
         assert_eq!(config.mcp_port, 7001);
         assert_eq!(config.stop_grace_secs, 20);
         assert_eq!(config.mirror_fetch_interval_secs, 600);
+        assert_eq!(config.session_image_default, "mars-session-claude:latest");
         assert_eq!(config.resend_api_key, None);
         assert_eq!(config.mail_from, None);
         assert_eq!(config.rust_log, "info");
@@ -572,6 +581,23 @@ mod tests {
         vars.insert("DATA_DIR_HOST".to_string(), "/mnt/mars/data".to_string());
         let config = load(&vars).expect("loads");
         assert_eq!(config.data_dir_host, PathBuf::from("/mnt/mars/data"));
+    }
+
+    /// The variable is optional: an installation that built the image under
+    /// the documented tag needs no value, and a value still wins
+    /// (`README.md`, "Configuration").
+    #[test]
+    fn session_image_default_is_optional_and_overridable() {
+        let config = load(&required_only()).expect("no image name is fine");
+        assert_eq!(config.session_image_default, "mars-session-claude:latest");
+
+        let mut vars = required_only();
+        vars.insert(
+            "SESSION_IMAGE_DEFAULT".to_string(),
+            "mars-session-stub:latest".to_string(),
+        );
+        let config = load(&vars).expect("loads");
+        assert_eq!(config.session_image_default, "mars-session-stub:latest");
     }
 
     #[test]
@@ -827,5 +853,8 @@ mod tests {
         assert_eq!(config.api_port, 7000);
         assert_eq!(config.mcp_port, 7001);
         assert_eq!(config.resend_api_key, None);
+        // `.env.example` spells out the same image name the code falls back to,
+        // so the README table, the file and this module cannot drift apart.
+        assert_eq!(config.session_image_default, SESSION_IMAGE_DEFAULT);
     }
 }

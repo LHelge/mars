@@ -99,7 +99,7 @@ Copy `.env.example` to `.env` and set:
 | `MCP_PORT` | Port of the MCP listener on the sessions network (default 7001). |
 | `STOP_GRACE_SECS` | Seconds between SIGINT and SIGTERM when stopping a session (default 20). |
 | `MIRROR_FETCH_INTERVAL_SECS` | How often project mirrors are fetched (default 600). |
-| `SESSION_IMAGE_DEFAULT` | Image used by the default profile of new projects. |
+| `SESSION_IMAGE_DEFAULT` | Image used by the default profile of new projects and by the startup probe (default `mars-session-claude:latest`). Both pull it, so it has to exist on the engine before the first start; build it as described under "Session image". |
 | `RESEND_API_KEY`, `MAIL_FROM` | Email delivery through Resend, used for invites, password resets and task escalations. `MAIL_FROM` is required once `RESEND_API_KEY` is set. Without an API key, full usable links including their tokens are intentionally written to the orchestrator log at `info` instead of sent. This supports local development without email configuration; no extra flag is required (ADR 0026). |
 | `RUST_LOG` | Log filter, `info` by default and whenever the given filter is unusable, such as the bare non-level word `verbose`. |
 
@@ -162,7 +162,7 @@ mars/
 ├── docs/               data model, decisions, open questions
 ├── .github/workflows/  CI: orchestrator, frontend, e2e, images
 ├── .env.example
-├── images/             (planned) session container images (claude/)
+├── images/             session container images (claude/, stub/)
 ├── nginx/              (planned) nginx.conf and Dockerfile for the frontend image
 └── compose.yml         (planned)
 ```
@@ -171,7 +171,7 @@ Working conventions, code-quality commands and test expectations are in `CLAUDE.
 
 ### Running locally
 
-The orchestrator, the frontend and `.env.example` are in the repository; the session images and `compose.yml` are not, so the steps that build or run an image are marked as planned. The socket commands assume Linux.
+The orchestrator, the frontend, the session images and `.env.example` are in the repository; `compose.yml` and the nginx image are not, so the steps that need them are marked as planned. The socket commands assume Linux.
 
 **Postgres**:
 
@@ -205,11 +205,14 @@ cargo run                    # runs migrations, listens on API_PORT and MCP_PORT
 
 `DATA_DIR_HOST` must point at a directory the current user owns; when running the orchestrator directly on the host it is the same path as `DATA_DIR` (default `./data`, made absolute at startup). Set `MCP_URL=http://host.containers.internal:7001/mcp` (Docker: `host.docker.internal`, plus `SESSION_EXTRA_HOSTS=host.docker.internal:host-gateway`) so session containers can reach the MCP listener on the host. On macOS the data directory must lie under a path the Podman machine shares with its VM (the home directory by default).
 
-**Session image** (planned; `images/` is not in the repository yet):
+**Session image**, built from the repository root:
 
 ```bash
-podman build -t mars-session-claude:dev images/claude
+podman build -t mars-session-claude:$(sed -n 's/^ARG CLAUDE_CODE_VERSION=//p' images/claude/Dockerfile) -t mars-session-claude:latest images/claude
+podman build -t mars-session-stub:latest images/stub
 ```
+
+The claude image's version tag is the CLI version pinned in `images/claude/Dockerfile` and `mars-session-claude:latest` is an alias for that same build, which is what `SESSION_IMAGE_DEFAULT` points at; the stub image replays a recorded transcript instead of calling a model, so tests run on it without credentials. `ENGINE=podman images/smoke-test.sh` checks both. With Docker, run the same two commands with `docker build`.
 
 **Frontend**:
 
@@ -238,7 +241,7 @@ npm run test:e2e             # starts the dev server itself, or reuses a running
 | Engine | `orchestrator/**` | `tests/engine.rs` against the runner's Docker daemon and against rootless Podman via its compatible socket |
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright; the real orchestrator, Postgres and stub session image are added by their own epics |
-| Images | `images/**` | Build session images once `images/` exists; smoke-run the entrypoint |
+| Images | `images/**` | Lint the entrypoint, Dockerfiles and stub; build both session images on Docker and Podman; run `images/smoke-test.sh` |
 
 ## Roadmap after v1
 

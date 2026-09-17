@@ -15,21 +15,23 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use serde::Serialize;
 
+use crate::engine::ContainerEngine;
 use crate::prelude::*;
 
-/// How long the database probe may take before it counts as a failure. Short,
+/// How long either probe may take before it counts as a failure. Short,
 /// because a health check that blocks is itself a fault: an exhausted pool or
-/// a hung server must answer 503 quickly rather than hold the checker open.
-const DATABASE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// a hung engine socket must answer 503 quickly rather than hold the checker
+/// open.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The documented body (`SPEC.md`, "Health").
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     /// Always true: this process answered.
     orchestrator: bool,
-    /// Whether a trivial query completed within [`DATABASE_PROBE_TIMEOUT`].
+    /// Whether a trivial query completed within [`PROBE_TIMEOUT`].
     database: bool,
-    /// Whether the container engine is reachable.
+    /// Whether the container engine answered a ping within [`PROBE_TIMEOUT`].
     engine: bool,
 }
 
@@ -41,7 +43,7 @@ pub fn routes() -> Router<AppState> {
 /// shape either way.
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
     let database = database_ready(&state.pool).await;
-    let engine = state.engine_ready().await;
+    let engine = engine_ready(state.engine.as_ref()).await;
 
     let status = if database && engine {
         StatusCode::OK
@@ -62,12 +64,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
 /// Acquire a connection and run the cheapest possible query, under a timeout
 /// so an exhausted pool reports `database: false` instead of hanging.
 async fn database_ready(pool: &PgPool) -> bool {
-    match tokio::time::timeout(
-        DATABASE_PROBE_TIMEOUT,
-        sqlx::query("SELECT 1").execute(pool),
-    )
-    .await
-    {
+    match tokio::time::timeout(PROBE_TIMEOUT, sqlx::query("SELECT 1").execute(pool)).await {
         Ok(Ok(_)) => true,
         Ok(Err(err)) => {
             warn!(error = %err, "health probe: database query failed");
@@ -75,8 +72,28 @@ async fn database_ready(pool: &PgPool) -> bool {
         }
         Err(_) => {
             warn!(
-                timeout_secs = DATABASE_PROBE_TIMEOUT.as_secs(),
+                timeout_secs = PROBE_TIMEOUT.as_secs(),
                 "health probe: database query timed out"
+            );
+            false
+        }
+    }
+}
+
+/// Ping the container engine under the same timeout, so an engine socket that
+/// accepts and then hangs reports `engine: false` instead of stalling the
+/// checker.
+async fn engine_ready(engine: &dyn ContainerEngine) -> bool {
+    match tokio::time::timeout(PROBE_TIMEOUT, engine.ping()).await {
+        Ok(Ok(())) => true,
+        Ok(Err(err)) => {
+            warn!(error = %err, "health probe: container engine ping failed");
+            false
+        }
+        Err(_) => {
+            warn!(
+                timeout_secs = PROBE_TIMEOUT.as_secs(),
+                "health probe: container engine ping timed out"
             );
             false
         }
@@ -87,11 +104,16 @@ async fn database_ready(pool: &PgPool) -> bool {
 mod tests {
     use std::collections::HashMap;
 
+    use async_trait::async_trait;
     use axum_test::TestServer;
     use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
+    use crate::email::PlaceholderEmailClient;
+    use crate::engine::{EngineError, PlaceholderEngine};
+    use crate::git::{CommitIdentity, PlaceholderCredentialProvider};
+    use crate::secrets::{MASTER_KEY_LEN, SecretsKeyring};
 
     /// Obviously fake values; nothing here is a real credential (rule 3).
     fn test_config() -> Config {
@@ -117,26 +139,64 @@ mod tests {
             .expect("a complete required set loads")
     }
 
+    /// An engine that refuses every ping, so the `engine: false` branch can be
+    /// exercised without the `integration-tests` feature.
+    struct UnreachableEngine;
+
+    #[async_trait]
+    impl ContainerEngine for UnreachableEngine {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        async fn ping(&self) -> Result<()> {
+            Err(EngineError::Unavailable("nothing is listening".to_string()).into())
+        }
+    }
+
     /// The router with a pool that can never connect: no Postgres needed.
-    fn server() -> TestServer {
+    fn server(engine: Arc<dyn ContainerEngine>) -> TestServer {
         let config = test_config();
         let pool = PgPoolOptions::new()
             .connect_lazy(&config.database_url)
             .expect("a lazy pool never connects");
-        let state = AppState::new(Arc::new(config), pool);
+        let state = AppState::new(
+            Arc::new(config),
+            pool,
+            engine,
+            Arc::new(PlaceholderEmailClient),
+            Arc::new(PlaceholderCredentialProvider::new(CommitIdentity {
+                name: "Mars Bot".to_string(),
+                email: "mars-bot@example.invalid".to_string(),
+            })),
+            SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
+                .expect("one entry is a valid keyring"),
+        );
 
         TestServer::new(crate::build_api_router(state))
     }
 
     #[tokio::test]
     async fn an_unreachable_database_answers_503_with_the_documented_body() {
-        let response = server().get("/api/health").await;
+        let response = server(Arc::new(PlaceholderEngine)).get("/api/health").await;
 
         response.assert_status(StatusCode::SERVICE_UNAVAILABLE);
         response.assert_json(&json!({
             "orchestrator": true,
             "database": false,
             "engine": true,
+        }));
+    }
+
+    #[tokio::test]
+    async fn an_engine_that_refuses_the_ping_reports_engine_false() {
+        let response = server(Arc::new(UnreachableEngine)).get("/api/health").await;
+
+        response.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+        response.assert_json(&json!({
+            "orchestrator": true,
+            "database": false,
+            "engine": false,
         }));
     }
 }

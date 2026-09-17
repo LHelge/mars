@@ -12,8 +12,12 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+use crate::email::EmailError;
+use crate::engine::EngineError;
+use crate::git::GitError;
 use crate::models::TaskError;
 use crate::prelude::*;
+use crate::secrets::SecretsError;
 
 /// The message every 5xx response carries; internal detail never leaves the log.
 const INTERNAL_MESSAGE: &str = "internal error";
@@ -72,6 +76,20 @@ pub enum Error {
         message: String,
         conflicts: Vec<String>,
     },
+    /// A container engine failure; [`EngineError::status`] decides the code.
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+    /// An outgoing mail failure; [`EmailError::status`] decides the code.
+    #[error(transparent)]
+    Email(#[from] EmailError),
+    /// A git failure that is not a merge conflict; [`GitError::status`]
+    /// decides the code. Conflicts are [`Error::GitConflict`], which carries
+    /// the conflicting paths.
+    #[error(transparent)]
+    Git(#[from] GitError),
+    /// A secrets failure; [`SecretsError::status`] decides the code.
+    #[error(transparent)]
+    Secrets(#[from] SecretsError),
     /// Any database failure. 500, except `RowNotFound`, which is 404 so
     /// repositories can use `fetch_one` and let this conversion do the work.
     #[error(transparent)]
@@ -96,6 +114,10 @@ impl Error {
             Error::GitConflict { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Error::Throttled => StatusCode::TOO_MANY_REQUESTS,
             Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::Engine(err) => err.status(),
+            Error::Email(err) => err.status(),
+            Error::Git(err) => err.status(),
+            Error::Secrets(err) => err.status(),
             Error::Database(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             Error::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Task(err) => err.status(),
@@ -120,6 +142,10 @@ impl IntoResponse for Error {
             Error::Database(sqlx::Error::RowNotFound) => {}
             Error::Database(err) => error!(error = ?err, "internal error"),
             Error::Internal(detail) => error!(error = %detail, "internal error"),
+            // Every other 5xx — an engine, mail, git or secrets failure, and
+            // whatever later epics add — is logged once here with its detail,
+            // because the response body only ever says "internal error".
+            other if status.is_server_error() => error!(error = %other, "internal error"),
             other => debug!(status = status.as_u16(), error = %other, "request failed"),
         }
 
@@ -326,6 +352,35 @@ mod tests {
             json!({ "status": 500, "error": "internal error" }),
         );
         assert!(!body.contains("unexpected packet"), "leaked body: {body}");
+    }
+
+    #[tokio::test]
+    async fn collaborator_errors_are_500_without_detail() {
+        let error = Error::from(EngineError::Unavailable(
+            "connect /run/podman.sock: refused".into(),
+        ));
+        assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let (status, body) = response_of(error).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({ "status": 500, "error": "internal error" }),
+        );
+        assert!(!body.contains("podman.sock"), "leaked body: {body}");
+
+        for error in [
+            Error::from(EmailError::NotConfigured),
+            Error::from(GitError::Command("fatal: not a repository".into())),
+            Error::from(SecretsError::InvalidMasterKey("version 1".into())),
+        ] {
+            assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let (_, body) = response_of(error).await;
+            assert_eq!(
+                serde_json::from_str::<Value>(&body).unwrap(),
+                json!({ "status": 500, "error": "internal error" }),
+            );
+        }
     }
 
     #[tokio::test]

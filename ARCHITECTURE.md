@@ -170,6 +170,7 @@ orchestrator/
 | Secrets | `aes-gcm`, `rand`, `zeroize`, `base64` |
 | Serialisation | `serde`, `serde_json` |
 | Errors | `thiserror` |
+| Trait objects | `async-trait`, so the `ContainerEngine`, `EmailClient` and `GitCredentialProvider` traits keep `async fn` methods while staying dyn compatible |
 | Logging | `tracing`, `tracing-subscriber` (`env-filter`) |
 | Email | `reqwest` (default features off, `json`, `rustls`) against the Resend HTTP API (no SDK crate) |
 | Ids, time | `uuid` (`v4`, `serde`), `chrono` (`serde`) |

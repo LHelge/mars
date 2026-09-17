@@ -7,7 +7,11 @@
 
 use axum::extract::FromRef;
 
+use crate::email::EmailClient;
+use crate::engine::ContainerEngine;
+use crate::git::GitCredentialProvider;
 use crate::prelude::*;
+use crate::secrets::SecretsKeyring;
 
 /// The state cloned into every handler.
 ///
@@ -18,15 +22,13 @@ use crate::prelude::*;
 /// owner tasks), and the broadcast senders for event fan-out. Every `Arc<dyn
 /// Trait>` has a mock behind the `integration-tests` feature."
 ///
-/// Only the two fields this epic can populate exist yet. The remaining fields
-/// are added in place, each by the epic that owns the trait it names:
+/// The three collaborator traits are here as trait objects so the whole API
+/// can be tested without an engine, a mail provider or GitHub; each has a mock
+/// behind the `integration-tests` feature. The fields still missing are added
+/// in place by the epic that owns them:
 ///
 /// | Field | Owning epic |
 /// | --- | --- |
-/// | `engine: Arc<dyn ContainerEngine>` | Container engine |
-/// | `email: Arc<dyn EmailClient>` | Authentication |
-/// | `git_credentials: Arc<dyn GitCredentialProvider>` | Git operations |
-/// | `keyring: SecretsKeyring` | Secrets manager |
 /// | `registry: SessionRegistry` | Session lifecycle |
 /// | the broadcast senders for event fan-out | Real-time delivery |
 ///
@@ -38,20 +40,36 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// The Postgres pool; repositories borrow it.
     pub pool: PgPool,
+    /// The container engine; `GET /api/health` pings it and the session
+    /// lifecycle drives containers through it.
+    pub engine: Arc<dyn ContainerEngine>,
+    /// Outgoing mail: invitations and password resets.
+    pub email: Arc<dyn EmailClient>,
+    /// Credentials and the bot identity for upstream git operations.
+    pub git_credentials: Arc<dyn GitCredentialProvider>,
+    /// The master keys envelope encryption wraps data keys under. Cloning it
+    /// shares the keys rather than copying them.
+    pub keyring: SecretsKeyring,
 }
 
 impl AppState {
     /// Build the state from the pieces the startup task owns.
-    pub fn new(config: Arc<Config>, pool: PgPool) -> Self {
-        Self { config, pool }
-    }
-
-    /// Whether the container engine is reachable; the health endpoint reports
-    /// it.
-    ///
-    /// Container engine epic: replace with `self.engine.ping().await.is_ok()`.
-    pub async fn engine_ready(&self) -> bool {
-        true
+    pub fn new(
+        config: Arc<Config>,
+        pool: PgPool,
+        engine: Arc<dyn ContainerEngine>,
+        email: Arc<dyn EmailClient>,
+        git_credentials: Arc<dyn GitCredentialProvider>,
+        keyring: SecretsKeyring,
+    ) -> Self {
+        Self {
+            config,
+            pool,
+            engine,
+            email,
+            git_credentials,
+            keyring,
+        }
     }
 }
 
@@ -74,6 +92,10 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
+    use crate::email::PlaceholderEmailClient;
+    use crate::engine::PlaceholderEngine;
+    use crate::git::{CommitIdentity, PlaceholderCredentialProvider};
+    use crate::secrets::MASTER_KEY_LEN;
 
     /// Obviously fake values; nothing here is a real credential (rule 3).
     fn test_config() -> Config {
@@ -102,7 +124,22 @@ mod tests {
         let pool = PgPoolOptions::new()
             .connect_lazy(&config.database_url)
             .expect("a lazy pool never connects");
-        AppState::new(Arc::new(config), pool)
+        let identity = CommitIdentity {
+            name: config.git_bot_name.clone(),
+            email: config.git_bot_email.clone(),
+        };
+
+        // The startup placeholders, not the mocks: these unit tests also
+        // compile without the `integration-tests` feature.
+        AppState::new(
+            Arc::new(config),
+            pool,
+            Arc::new(PlaceholderEngine),
+            Arc::new(PlaceholderEmailClient),
+            Arc::new(PlaceholderCredentialProvider::new(identity)),
+            SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
+                .expect("one entry is a valid keyring"),
+        )
     }
 
     fn assert_send_sync<T: Send + Sync + 'static>() {}
@@ -132,7 +169,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_ready_is_true_until_the_container_engine_epic_lands() {
-        assert!(test_state().engine_ready().await);
+    async fn the_collaborators_are_shared_by_a_clone_not_rebuilt() {
+        let state = test_state();
+        let clone = state.clone();
+
+        assert!(Arc::ptr_eq(&state.engine, &clone.engine));
+        assert!(Arc::ptr_eq(&state.email, &clone.email));
+        assert!(Arc::ptr_eq(&state.git_credentials, &clone.git_credentials));
+        assert_eq!(clone.keyring.current_version(), 1);
     }
 }

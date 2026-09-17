@@ -1,10 +1,16 @@
 //! The wrapper around the `git` binary, mirror and session clone operations
 //! and the `GitCredentialProvider`. Git is never a crate (ADR 0011).
 //!
-//! Only the shape the test harness depends on exists yet: the credential
-//! trait, its two value types, a [`GitError`] and a startup placeholder. The
-//! git operations epic adds the command wrapper, and the secrets epic the
-//! provider that reads the project-scoped `GIT_CREDENTIAL` secret (ADR 0002).
+//! [`GitCommand`] is the single invocation point: every operation in this
+//! module and every one later epics add builds one rather than spawning a
+//! process of its own, so the argv, the working directory, the environment and
+//! the failure mapping have exactly one definition. [`GitError`] is what they
+//! all fail with.
+//!
+//! The credential side is still the shape the test harness depends on: the
+//! trait, its two value types and a startup placeholder. The secrets epic adds
+//! the provider that reads the project-scoped `GIT_CREDENTIAL` secret
+//! (ADR 0002).
 //!
 //! **Async style.** `#[async_trait::async_trait]`, for the reason given in
 //! [`crate::engine`]: the trait is held as `Arc<dyn GitCredentialProvider>`
@@ -14,13 +20,17 @@ use std::any::Any;
 use std::fmt;
 
 use async_trait::async_trait;
-use axum::http::StatusCode;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
 use crate::prelude::*;
 
+pub mod command;
+pub mod error;
 pub mod lock;
+
+pub use command::{GitCommand, GitOutput};
+pub use error::GitError;
 pub use lock::{ProjectGitGuard, ProjectGitLocks};
 
 #[cfg(feature = "integration-tests")]
@@ -74,34 +84,6 @@ pub struct CommitIdentity {
     pub name: String,
     /// The committer email.
     pub email: String,
-}
-
-/// Anything a git operation or a credential lookup fails with, apart from a
-/// merge conflict, which is [`Error::GitConflict`] because it carries the
-/// conflicting paths and answers 422.
-#[derive(Debug, thiserror::Error)]
-pub enum GitError {
-    /// The `git` binary exited non-zero, or could not be run. The string is
-    /// git's own report; credentials never appear in it, because they live in
-    /// a config file rather than in argv.
-    #[error("the git command failed: {0}")]
-    Command(String),
-    /// No usable credential for the project.
-    #[error("no git credential is available: {0}")]
-    CredentialUnavailable(String),
-}
-
-impl GitError {
-    /// The HTTP status this failure maps to. Both variants are internal
-    /// faults; the git operations epic refines the mapping if it finds a case
-    /// the caller can act on.
-    pub fn status(&self) -> StatusCode {
-        match self {
-            GitError::Command(_) | GitError::CredentialUnavailable(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        }
-    }
 }
 
 /// Where every upstream git command gets its credential and its committer

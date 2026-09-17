@@ -40,8 +40,9 @@ const INTERNAL_MESSAGE: &str = "internal error";
 /// - `UserError`, `ProjectError`, `SessionError`, `TaskError`, `SecretError`,
 ///   ... → 400 or 409 per the model's own `status()`
 /// - `EngineError` → 500, or 409 for state conflicts
-/// - `GitError` → 500, or 422 when it carries conflicting paths
-///   ([`Error::GitConflict`])
+/// - `GitError` → 500, 400 for a ref the caller named wrong, 409 for a
+///   non-fast-forward push, a dirty work tree or a missing credential, and 422
+///   when it carries conflicting paths ([`Error::GitConflict`])
 /// - `SecretsError` → 500
 /// - `EmailError` → 500
 ///
@@ -96,9 +97,11 @@ pub enum Error {
     Email(#[from] EmailError),
     /// A git failure that is not a merge conflict; [`GitError::status`]
     /// decides the code. Conflicts are [`Error::GitConflict`], which carries
-    /// the conflicting paths.
+    /// the conflicting paths: the hand-written `From<GitError>` below is what
+    /// routes them there, so a `?` on any git call produces the documented
+    /// 422 body without the call site having to know.
     #[error(transparent)]
-    Git(#[from] GitError),
+    Git(GitError),
     /// A secrets failure; [`SecretsError::status`] decides the code.
     #[error(transparent)]
     Secrets(#[from] SecretsError),
@@ -166,6 +169,26 @@ impl Error {
     }
 }
 
+/// Not `#[from]`, because one git failure does not belong in
+/// [`Error::Git`]: a merge or rebase that stopped on conflicting paths is the
+/// documented 422, and the paths have to reach the response body
+/// (`SPEC.md`, "REST API"). Routing it here rather than at each call site is
+/// what makes `?` on a git operation correct everywhere.
+impl From<GitError> for Error {
+    fn from(err: GitError) -> Self {
+        match err {
+            GitError::Conflict { paths } => Error::GitConflict {
+                message: GIT_CONFLICT_MESSAGE.to_string(),
+                conflicts: paths,
+            },
+            other => Error::Git(other),
+        }
+    }
+}
+
+/// The message a 422 carries; the conflicting paths are the detail.
+const GIT_CONFLICT_MESSAGE: &str = "merge conflict";
+
 /// The only JSON shape an error ever produces (`SPEC.md`, "REST API").
 #[derive(Debug, Serialize)]
 struct ErrorBody {
@@ -192,6 +215,12 @@ impl IntoResponse for Error {
 
         let (message, conflicts) = match &self {
             Error::GitConflict { message, conflicts } => (message.clone(), Some(conflicts.clone())),
+            // `From<GitError>` routes conflicts to `GitConflict`, so this only
+            // catches one constructed by hand. It is here so a 422 can never
+            // go out without the `conflicts` the contract promises.
+            Error::Git(GitError::Conflict { paths }) => {
+                (GIT_CONFLICT_MESSAGE.to_string(), Some(paths.clone()))
+            }
             Error::Database(sqlx::Error::RowNotFound) => (Error::NotFound.to_string(), None),
             _ if status.is_server_error() => (INTERNAL_MESSAGE.to_string(), None),
             other => (other.to_string(), None),
@@ -430,7 +459,11 @@ mod tests {
             Error::from(EmailError::Transport(
                 "connect api.resend.com: refused".into(),
             )),
-            Error::from(GitError::Command("fatal: not a repository".into())),
+            Error::from(GitError::Command {
+                args: vec!["rev-parse".into(), "--git-dir".into()],
+                code: Some(128),
+                stderr: "fatal: not a git repository".into(),
+            }),
             Error::from(SecretsError::InvalidMasterKey("version 1".into())),
         ] {
             assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -458,6 +491,107 @@ mod tests {
             }),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn a_git_conflict_becomes_the_422_that_carries_its_paths() {
+        // The whole point of the hand-written `From<GitError>`: a `?` on a
+        // merge produces the documented body, not a bare 422.
+        assert_maps_to(
+            Error::from(GitError::Conflict {
+                paths: vec!["src/main.rs".into(), "README.md".into()],
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "status": 422,
+                "error": "merge conflict",
+                "conflicts": ["src/main.rs", "README.md"],
+            }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_conflict_left_inside_error_git_still_answers_with_its_paths() {
+        assert_maps_to(
+            Error::Git(GitError::Conflict {
+                paths: vec!["src/lib.rs".into()],
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "status": 422,
+                "error": "merge conflict",
+                "conflicts": ["src/lib.rs"],
+            }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_non_fast_forward_push_is_409_and_names_the_branch() {
+        assert_maps_to(
+            Error::from(GitError::NonFastForward {
+                remote_branch: "main".into(),
+            }),
+            StatusCode::CONFLICT,
+            json!({
+                "status": 409,
+                "error": "the upstream branch main has moved on; push rejected as non-fast-forward",
+            }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_missing_credential_and_a_dirty_work_tree_are_409() {
+        for error in [GitError::CredentialUnavailable, GitError::DirtyWorkTree] {
+            let expected = error.to_string();
+            assert_maps_to(
+                Error::from(error),
+                StatusCode::CONFLICT,
+                json!({ "status": 409, "error": expected }),
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_ref_the_caller_named_wrong_is_400_with_the_name_in_the_message() {
+        for (error, name) in [
+            (GitError::InvalidRef("origin/main".into()), "origin/main"),
+            (
+                GitError::UnknownRef("refs/heads/gone".into()),
+                "refs/heads/gone",
+            ),
+            (
+                GitError::NotACommit("v1.0.0^{tree}".into()),
+                "v1.0.0^{tree}",
+            ),
+        ] {
+            let error = Error::from(error);
+            assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+
+            let (status, body) = response_of(error).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(body.contains(name), "the name is missing from {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_git_command_is_500_and_never_leaks_its_argv_or_stderr() {
+        let (status, body) = response_of(Error::from(GitError::Command {
+            args: vec!["push".into(), "origin".into()],
+            code: Some(128),
+            stderr: "fatal: could not read Username for 'https://example.invalid'".into(),
+        }))
+        .await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({ "status": 500, "error": "internal error" }),
+        );
+        assert!(!body.contains("example.invalid"), "leaked body: {body}");
     }
 
     #[tokio::test]

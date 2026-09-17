@@ -27,7 +27,7 @@ use futures_util::FutureExt;
 use mars_orchestrator::email::{EmailClient, LogEmailClient, ResendClient};
 use mars_orchestrator::engine::{EngineError, bootstrap_engine};
 use mars_orchestrator::git::{
-    CommitIdentity, GitCredentialProvider, PlaceholderCredentialProvider,
+    CommitIdentity, GitCommand, GitCredentialProvider, PlaceholderCredentialProvider,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::secrets;
@@ -85,7 +85,8 @@ async fn main() {
     }
 }
 
-/// Configuration, tracing, keyring, pool, migrations, keyring verification.
+/// Configuration, tracing, the `git` probe, keyring, pool, migrations, keyring
+/// verification.
 ///
 /// The shared prefix of both paths, in the documented order. The keyring is
 /// built before the pool because a master key that cannot be parsed is a
@@ -108,6 +109,17 @@ async fn bootstrap() -> Bootstrap {
     if let Err(err) = init_tracing(&config.rust_log) {
         eprintln!("error: {err}");
         std::process::exit(EXIT_FAILURE);
+    }
+
+    // Every git operation shells out to the binary (ADR 0011), so a missing or
+    // unusable `git` is a broken installation, not something to discover at the
+    // first clone. The version is pinned in the orchestrator image.
+    match GitCommand::new().arg("--version").run_ok().await {
+        Ok(output) => info!(git_version = %output.stdout.trim(), "git binary found"),
+        Err(err) => {
+            error!(error = %err, "`git` could not be run; install git and put it on PATH");
+            std::process::exit(EXIT_FAILURE);
+        }
     }
 
     // Before the pool, because a master key that cannot be parsed is a

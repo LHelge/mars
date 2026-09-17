@@ -180,6 +180,8 @@ podman run -d --name mars-pg -e POSTGRES_USER=mars -e POSTGRES_PASSWORD=mars -e 
 export DATABASE_URL=postgres://mars:mars@localhost:5432/mars
 ```
 
+That database is also what backs the offline query cache: after changing any `sqlx::query!`/`query_as!` call, run `cargo sqlx prepare -- --all-targets --features integration-tests` in `orchestrator/` and commit `.sqlx/` (`CLAUDE.md`, "Backend conventions"). Orchestrator CI runs the same command with `--check` against its own Postgres service, so a stale `.sqlx/` fails the build.
+
 **Podman socket** (rootless):
 
 ```bash
@@ -230,7 +232,7 @@ npm run test:e2e             # starts the dev server itself, or reuses a running
 
 | Workflow | Triggers on | Checks |
 | --- | --- | --- |
-| Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests with `SQLX_OFFLINE=true` |
+| Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests with `SQLX_OFFLINE=true`; a second job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright; the real orchestrator, Postgres and stub session image are added by their own epics |
 | Images | `images/**` | Build session images once `images/` exists; smoke-run the entrypoint |

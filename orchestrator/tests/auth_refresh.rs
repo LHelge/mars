@@ -22,7 +22,7 @@ use axum::http::StatusCode;
 use axum::http::header::SET_COOKIE;
 use chrono::{TimeDelta, Utc};
 use common::TestApp;
-use mars_orchestrator::models::{OpaqueToken, UserUpdate};
+use mars_orchestrator::models::{OpaqueToken, User, UserUpdate};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;
 use serde_json::{Value, json};
@@ -35,6 +35,14 @@ const PASSWORD: &str = "correct-horse-battery-staple";
 /// The documented 401 body (`SPEC.md`, "Authentication").
 fn unauthorized() -> Value {
     json!({ "status": 401, "error": "authentication required" })
+}
+
+/// A route behind `CurrentUser`, which is what an access token is checked
+/// against here: `GET /users/{id}`, pointed at `user`'s own id so a 200 means
+/// the extractor let the request through rather than that the lookup found
+/// something (`SPEC.md`, "Users").
+fn gated(user: &User) -> String {
+    format!("/api/users/{}", user.id)
 }
 
 /// The `Set-Cookie` that tells a browser to drop the refresh cookie: the same
@@ -95,12 +103,12 @@ async fn a_refresh_returns_a_new_pair_and_a_new_cookie() {
     // And the new access token works, while the first one is untouched: an
     // access token is not revoked by rotation, it simply expires.
     app.server
-        .get("/api/test/whoami")
+        .get(&gated(&user))
         .authorization_bearer(access_token)
         .await
         .assert_status(StatusCode::OK);
     app.server
-        .get("/api/test/whoami")
+        .get(&gated(&user))
         .authorization_bearer(&first.access_token)
         .await
         .assert_status(StatusCode::OK);
@@ -214,7 +222,7 @@ async fn a_refresh_after_a_password_change_is_401() {
 
     // The access token minted with it is dead too, through `auth_version`.
     app.server
-        .get("/api/test/whoami")
+        .get(&gated(&user))
         .authorization_bearer(&pair.access_token)
         .await
         .assert_status(StatusCode::UNAUTHORIZED);

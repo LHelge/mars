@@ -424,7 +424,16 @@ async fn attach_stdin_delivers_bytes() {
         let dir = writable_tempdir();
         let mut spec = test_spec(
             &unique_name("attach"),
-            &["sh", "-c", "cat > /mnt/out/echo.txt"],
+            &[
+                "sh",
+                "-c",
+                // A sentinel ends the loop instead of EOF: with `StdinOnce: false`
+                // Docker keeps the container's stdin open when the attach client
+                // disconnects, so a `cat` would never exit there, while Podman
+                // propagates the close as EOF (`ARCHITECTURE.md`, "Engine
+                // adapter", attach).
+                r#"while read line; do [ "$line" = END ] && exit 0; echo "$line" >> /mnt/out/echo.txt; done"#,
+            ],
         );
         spec.open_stdin = true;
         spec.binds = vec![rw_bind(&absolute(dir.path()), "/mnt/out")];
@@ -442,8 +451,8 @@ async fn attach_stdin_delivers_bytes() {
         tokio::time::sleep(Duration::from_secs(2)).await;
         stdin.write_all(b"world\n").await.expect("the second write");
         stdin.flush().await.expect("the second flush");
-        // EOF, which is what makes `cat` exit.
-        stdin.shutdown().await.expect("the writer shuts down");
+        stdin.write_all(b"END\n").await.expect("the sentinel write");
+        stdin.flush().await.expect("the sentinel flush");
 
         assert_eq!(wait_within(engine, &id, WAIT_TIMEOUT).await.code, 0);
 

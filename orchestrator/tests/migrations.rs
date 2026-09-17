@@ -428,6 +428,195 @@ async fn tasks_schema_holds_the_documented_guarantees() {
     );
 }
 
+/// The load-bearing details of the `secrets` migration
+/// (`docs/data-model.md`, "Secrets").
+///
+/// Two of them cannot be seen by reading the table definition back as a list
+/// of columns, and both would fail silently rather than loudly. The unique key
+/// is `NULLS NOT DISTINCT`, without which the NULL `scope_id` of every global
+/// secret would make duplicates of the same global name legal; and `scope_id`
+/// has no foreign key, because the scope decides which table it points at. The
+/// `CHECK` tying `scope` to `scope_id` is asserted by inserting the rows it
+/// exists to refuse.
+#[tokio::test]
+async fn secrets_schema_holds_the_documented_guarantees() {
+    let (_postgres, pool) = common::db::test_pool().await;
+
+    // The name matters as much as the constraint: the repository matches
+    // Postgres's default name to turn a duplicate into a `Conflict`.
+    let (nulls_not_distinct, definition): (bool, String) = sqlx::query_as(
+        "SELECT i.indnullsnotdistinct, pg_get_constraintdef(c.oid) \
+         FROM pg_index i \
+         JOIN pg_class ic ON ic.oid = i.indexrelid \
+         JOIN pg_namespace n ON n.oid = ic.relnamespace \
+         JOIN pg_constraint c ON c.conindid = i.indexrelid \
+         WHERE n.nspname = 'public' AND ic.relname = 'secrets_scope_scope_id_name_key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the unique key carries Postgres's default name for (scope, scope_id, name)");
+    assert!(
+        nulls_not_distinct,
+        "secrets_scope_scope_id_name_key must be declared NULLS NOT DISTINCT, or \
+         global secrets could be duplicated: {definition}"
+    );
+
+    // No foreign key at all on `secrets`, other than `created_by`: `scope_id`
+    // points at `users` or `projects` depending on `scope`, so the repository
+    // validates it and a reaper deletes orphans.
+    let foreign_keys: Vec<String> = sqlx::query_scalar(
+        "SELECT constraint_name::text \
+         FROM information_schema.table_constraints \
+         WHERE constraint_schema = 'public' AND table_name = 'secrets' \
+           AND constraint_type = 'FOREIGN KEY' \
+         ORDER BY constraint_name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the constraint catalog is readable");
+    assert_eq!(
+        foreign_keys,
+        vec!["secrets_created_by_fkey".to_string()],
+        "secrets.scope_id must have no foreign key; only created_by has one"
+    );
+
+    // Rotation sweeps select by key version, so the index is what keeps them
+    // from scanning the table.
+    let (key_version_unique, key_version_predicate): (bool, Option<String>) =
+        partial_index(&pool, "secrets_key_version_idx").await;
+    assert!(
+        !key_version_unique,
+        "secrets_key_version_idx is a lookup index, not a uniqueness constraint"
+    );
+    assert_eq!(
+        key_version_predicate, None,
+        "secrets_key_version_idx covers every row, so rotation finds them all"
+    );
+
+    // The audit index is read newest-first for a secret, and the session index
+    // skips the rows that record no session at all.
+    let secret_uses_index: String = index_definition(&pool, "secret_uses_secret_idx").await;
+    assert!(
+        secret_uses_index.contains("at DESC"),
+        "secret_uses_secret_idx must order `at` descending, not {secret_uses_index:?}"
+    );
+    let (_, session_predicate): (bool, Option<String>) =
+        partial_index(&pool, "secret_uses_session_idx").await;
+    let session_predicate =
+        session_predicate.expect("secret_uses_session_idx must be a partial index");
+    assert!(
+        session_predicate.contains("session_id IS NOT NULL"),
+        "secret_uses_session_idx must be predicated on session_id IS NOT NULL, not \
+         {session_predicate:?}"
+    );
+
+    // `purpose` is `launch` or `git`, validated by the model: the document
+    // lists no constraint, and adding one here would make a new purpose a
+    // migration.
+    let secret_use_checks: Vec<String> = sqlx::query_scalar(
+        "SELECT pg_get_constraintdef(c.oid) \
+         FROM pg_constraint c \
+         JOIN pg_class t ON t.oid = c.conrelid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
+         WHERE n.nspname = 'public' AND t.relname = 'secret_uses' AND c.contype = 'c'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the constraint catalog is readable");
+    assert!(
+        !secret_use_checks.iter().any(|def| def.contains("purpose")),
+        "secret_uses.purpose must not be constrained by a CHECK: {secret_use_checks:?}"
+    );
+
+    // The scope/scope_id CHECK, from both sides. A global secret names no
+    // target and a project secret always names one; the database is what makes
+    // that true, so it is asserted by trying to break it.
+    let global_with_target = insert_secret(&pool, "global", Some(FAKE_SCOPE_ID), "GLOBAL_WITH_ID")
+        .await
+        .expect_err("a global secret with a scope_id is refused");
+    assert_check_violation(&global_with_target, "secrets");
+
+    let project_without_target = insert_secret(&pool, "project", None, "PROJECT_WITHOUT_ID")
+        .await
+        .expect_err("a project secret without a scope_id is refused");
+    assert_check_violation(&project_without_target, "secrets");
+
+    // And the unique key, behaviourally: two global rows of the same name
+    // differ only in a NULL `scope_id`, so this insert is what proves NULLS
+    // NOT DISTINCT is in force rather than merely declared.
+    insert_secret(&pool, "global", None, "ANTHROPIC_TOKEN")
+        .await
+        .expect("the first global secret of a name is accepted");
+    let duplicate = insert_secret(&pool, "global", None, "ANTHROPIC_TOKEN")
+        .await
+        .expect_err("a second global secret of the same name is refused");
+    assert_eq!(
+        duplicate
+            .as_database_error()
+            .and_then(|error| error.constraint()),
+        Some("secrets_scope_scope_id_name_key"),
+        "the duplicate must be refused by the named unique key: {duplicate}"
+    );
+}
+
+/// A syntactically valid UUID that belongs to no row; `scope_id` has no
+/// foreign key, so nothing looks it up.
+const FAKE_SCOPE_ID: &str = "00000000-0000-0000-0000-0000000000ff";
+
+/// Insert a secret with obviously fake encrypted material (`CLAUDE.md`, rule
+/// 3), returning whatever the database made of it.
+async fn insert_secret(
+    pool: &PgPool,
+    scope: &str,
+    scope_id: Option<&str>,
+    name: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO secrets \
+             (id, scope, scope_id, name, ciphertext, nonce, \
+              data_key_wrapped, data_key_nonce, key_version) \
+         VALUES (gen_random_uuid(), $1::secret_scope, $2::uuid, $3, $4, $5, $6, $7, 1)",
+    )
+    .bind(scope)
+    .bind(scope_id)
+    .bind(name)
+    .bind(b"fake-ciphertext".as_slice())
+    .bind(b"fake-nonce--".as_slice())
+    .bind(b"fake-wrapped-data-key".as_slice())
+    .bind(b"fake-wrap-no".as_slice())
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+/// Assert that an insert was refused by a `CHECK` on the given table. The
+/// constraint is unnamed in the migration, so its name is read back from the
+/// catalog rather than spelled out here.
+fn assert_check_violation(error: &sqlx::Error, table: &str) {
+    let database_error = error
+        .as_database_error()
+        .unwrap_or_else(|| panic!("the insert failed in the database, not in sqlx: {error}"));
+    let constraint = database_error
+        .constraint()
+        .unwrap_or_else(|| panic!("the failure names the constraint that refused it: {error}"));
+    assert!(
+        constraint.starts_with(table) && constraint.ends_with("_check"),
+        "the insert must be refused by a CHECK on {table}, not by {constraint}"
+    );
+}
+
+/// The `CREATE INDEX` statement Postgres reconstructs for an index.
+async fn index_definition(pool: &PgPool, name: &str) -> String {
+    sqlx::query_scalar(
+        "SELECT indexdef::text FROM pg_indexes \
+         WHERE schemaname = 'public' AND indexname = $1",
+    )
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .unwrap_or_else(|_| panic!("{name} exists"))
+}
+
 /// Whether an index is unique, and its partial predicate if it has one.
 async fn partial_index(pool: &PgPool, name: &str) -> (bool, Option<String>) {
     sqlx::query_as(

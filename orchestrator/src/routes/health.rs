@@ -103,6 +103,9 @@ async fn engine_ready(engine: &dyn ContainerEngine) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    // Shadows the prelude's one-parameter `Result<T>` alias, so the engine
+    // impl below can spell the `Result<T, EngineError>` the trait returns.
+    use std::result::Result;
 
     use async_trait::async_trait;
     use axum_test::TestServer;
@@ -111,7 +114,10 @@ mod tests {
 
     use super::*;
     use crate::email::LogEmailClient;
-    use crate::engine::{EngineError, PlaceholderEngine};
+    use crate::engine::{
+        ContainerId, ContainerInfo, ContainerSpec, ContainerSummary, EngineError, EngineKind,
+        ExecSession, ExitStatus, PlaceholderEngine, Signal, StdinWriter,
+    };
     use crate::git::{CommitIdentity, PlaceholderCredentialProvider};
     use crate::secrets::{MASTER_KEY_LEN, SecretsKeyring};
 
@@ -141,16 +147,103 @@ mod tests {
 
     /// An engine that refuses every ping, so the `engine: false` branch can be
     /// exercised without the `integration-tests` feature.
+    ///
+    /// Only `ping` is interesting; the handler calls nothing else, and every
+    /// other operation refuses so that a future handler that did call one
+    /// would fail rather than read a made-up answer.
     struct UnreachableEngine;
+
+    impl UnreachableEngine {
+        fn unreachable<T>() -> Result<T, EngineError> {
+            Err(EngineError::Connection("nothing is listening".to_string()))
+        }
+    }
 
     #[async_trait]
     impl ContainerEngine for UnreachableEngine {
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
+        fn kind(&self) -> EngineKind {
+            EngineKind::Podman
         }
 
-        async fn ping(&self) -> Result<()> {
-            Err(EngineError::Unavailable("nothing is listening".to_string()).into())
+        async fn ping(&self) -> Result<(), EngineError> {
+            Self::unreachable()
+        }
+
+        async fn ensure_network(&self, _name: &str, _internal: bool) -> Result<(), EngineError> {
+            Self::unreachable()
+        }
+
+        async fn image_exists(&self, _image: &str) -> Result<bool, EngineError> {
+            Self::unreachable()
+        }
+
+        async fn pull_image(&self, _image: &str) -> Result<(), EngineError> {
+            Self::unreachable()
+        }
+
+        async fn create(&self, _spec: &ContainerSpec) -> Result<ContainerId, EngineError> {
+            Self::unreachable()
+        }
+
+        async fn connect_network(
+            &self,
+            _id: &ContainerId,
+            _network: &str,
+        ) -> Result<(), EngineError> {
+            Self::unreachable()
+        }
+
+        async fn start(&self, _id: &ContainerId) -> Result<(), EngineError> {
+            Self::unreachable()
+        }
+
+        async fn stop(&self, _id: &ContainerId, _grace_secs: u32) -> Result<(), EngineError> {
+            Self::unreachable()
+        }
+
+        async fn kill(&self, _id: &ContainerId, _signal: Signal) -> Result<(), EngineError> {
+            Self::unreachable()
+        }
+
+        async fn remove(&self, _id: &ContainerId, _force: bool) -> Result<(), EngineError> {
+            Self::unreachable()
+        }
+
+        async fn inspect(&self, _id: &ContainerId) -> Result<ContainerInfo, EngineError> {
+            Self::unreachable()
+        }
+
+        async fn wait(&self, _id: &ContainerId) -> Result<ExitStatus, EngineError> {
+            Self::unreachable()
+        }
+
+        async fn list_by_label(
+            &self,
+            _label_key: &str,
+        ) -> Result<Vec<ContainerSummary>, EngineError> {
+            Self::unreachable()
+        }
+
+        async fn attach_stdin(
+            &self,
+            _id: &ContainerId,
+        ) -> Result<Box<dyn StdinWriter>, EngineError> {
+            Self::unreachable()
+        }
+
+        async fn exec_pty(
+            &self,
+            _id: &ContainerId,
+            _cmd: &[String],
+            _user: &str,
+            _cols: u16,
+            _rows: u16,
+        ) -> Result<Box<dyn ExecSession>, EngineError> {
+            Self::unreachable()
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
     }
 

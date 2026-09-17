@@ -7,3 +7,16 @@
 #![allow(dead_code)]
 
 pub mod db;
+
+/// `TestApp` needs the mocks, which exist only behind the `integration-tests`
+/// feature, so the module is gated rather than the items inside it: the test
+/// binaries that only use `common::db` still compile without the feature.
+#[cfg(feature = "integration-tests")]
+pub mod app;
+
+/// `use common::TestApp;` for the binaries that want it; the ones that only
+/// use `common::db` leave the re-export unused, which is the same situation
+/// `#![allow(dead_code)]` above covers for items.
+#[cfg(feature = "integration-tests")]
+#[allow(unused_imports)]
+pub use app::TestApp;

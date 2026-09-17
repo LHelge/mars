@@ -58,6 +58,45 @@ pub enum SecretError {
     /// The stored `purpose` was not one of the documented values.
     #[error("secret use purpose must be launch or git")]
     InvalidPurpose,
+    /// The value was empty or longer than [`MAX_SECRET_VALUE_BYTES`].
+    ///
+    /// The message names the limit and never the value — there is nothing in
+    /// the value that belongs in a response or a log line (`CLAUDE.md`, rule
+    /// 3).
+    #[error("secret value must be between 1 and {MAX_SECRET_VALUE_BYTES} bytes")]
+    InvalidValue,
+}
+
+/// The largest value the API accepts, in bytes of UTF-8.
+///
+/// A secret becomes an environment variable in the container, and 64 KiB is
+/// generously above the largest credential anybody stores in one — a PEM
+/// private key is a few kilobytes — while keeping a request body that has to
+/// be sealed in memory bounded. The limit is on bytes rather than characters
+/// because that is what is encrypted and what an environment holds.
+pub const MAX_SECRET_VALUE_BYTES: usize = 65_536;
+
+/// Accept a secret value of at least one byte and at most
+/// [`MAX_SECRET_VALUE_BYTES`].
+///
+/// Deliberately not a newtype the way [`SecretName`] is: a value is never
+/// stored, compared or rendered in the clear, so it exists only as the
+/// `Zeroizing<String>` the service seals and drops, and a wrapper around it
+/// would be one more place holding a plaintext credential for no gain
+/// (`ARCHITECTURE.md`, "Secrets", Credential handling). Nothing is trimmed:
+/// leading or trailing whitespace can be significant in a credential, so a
+/// value is stored exactly as it arrived.
+///
+/// An empty value is rejected here rather than in the cipher, which round
+/// trips it happily: an empty environment variable is almost always a client
+/// that failed to read its own configuration, and storing it would inject an
+/// empty credential into every session that resolves the name.
+pub fn validate_secret_value(value: &str) -> SecretResult<()> {
+    if value.is_empty() || value.len() > MAX_SECRET_VALUE_BYTES {
+        return Err(SecretError::InvalidValue);
+    }
+
+    Ok(())
 }
 
 impl SecretError {
@@ -488,6 +527,7 @@ mod tests {
             SecretError::InvalidName,
             SecretError::InvalidScope,
             SecretError::InvalidPurpose,
+            SecretError::InvalidValue,
         ] {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
             assert!(!error.to_string().is_empty(), "{error:?} has no message");
@@ -560,6 +600,40 @@ mod tests {
         assert_eq!(SecretName::parse("TOKEN").unwrap().to_string(), "TOKEN");
         assert_eq!(String::from(SecretName::parse("TOKEN").unwrap()), "TOKEN");
         assert!(SecretName::parse(" TOKEN ").is_err());
+    }
+
+    #[test]
+    fn a_value_is_accepted_between_one_byte_and_the_limit() {
+        assert_eq!(validate_secret_value("x"), Ok(()));
+        assert_eq!(validate_secret_value(" leading space"), Ok(()));
+        assert_eq!(
+            validate_secret_value(&"x".repeat(MAX_SECRET_VALUE_BYTES)),
+            Ok(())
+        );
+
+        assert_eq!(validate_secret_value(""), Err(SecretError::InvalidValue));
+        assert_eq!(
+            validate_secret_value(&"x".repeat(MAX_SECRET_VALUE_BYTES + 1)),
+            Err(SecretError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn a_value_is_measured_in_bytes_not_characters() {
+        // Two bytes each, so half as many characters reach the limit.
+        let at_the_limit = "ö".repeat(MAX_SECRET_VALUE_BYTES / 2);
+        assert_eq!(at_the_limit.len(), MAX_SECRET_VALUE_BYTES);
+        assert_eq!(validate_secret_value(&at_the_limit), Ok(()));
+
+        let over = format!("{at_the_limit}ö");
+        assert_eq!(over.chars().count(), MAX_SECRET_VALUE_BYTES / 2 + 1);
+        assert_eq!(validate_secret_value(&over), Err(SecretError::InvalidValue));
+    }
+
+    #[test]
+    fn the_value_rejection_names_the_limit_and_nothing_else() {
+        let message = SecretError::InvalidValue.to_string();
+        assert!(message.contains("65536"), "{message}");
     }
 
     #[test]

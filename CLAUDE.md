@@ -25,7 +25,7 @@ Mars runs coding-agent sessions (Claude Code in v1, behind a pluggable `AgentBac
 
 ## Frontend conventions
 
-**Stack**: Vite, React 19, TypeScript (strict), Tailwind CSS 4, React Router 7, TanStack Query, Zustand, `@tanstack/react-virtual`, `react-markdown`, `xterm.js`, Heroicons (`@heroicons/react/24/outline`), ESLint, Playwright.
+**Stack**: Vite, React 19, TypeScript (strict), Tailwind CSS 4, React Router 7, TanStack Query, Zustand, `@tanstack/react-virtual`, `react-markdown`, `xterm.js`, Heroicons (`@heroicons/react/24/outline`), ESLint, Vitest, Playwright.
 
 - Functional components with hooks only; named exports.
 - All API calls go through `src/services/`; components never call `fetch`. Use `apiGet`/`apiPost`/`apiPut`/`apiPatch`/`apiDelete` from `services/apiClient.ts`, which attaches the access token and refreshes once on 401.
@@ -57,7 +57,7 @@ cd orchestrator && cargo fmt && cargo clippy -- -D warnings && cargo test --feat
 After every frontend change:
 
 ```bash
-cd frontend && npm run lint && npx tsc -b && npm run build && npm run test:e2e
+cd frontend && npm run lint && npx tsc -b && npm run build && npm run test:unit && npm run test:e2e
 ```
 
 ## Testing expectations
@@ -68,6 +68,7 @@ cd frontend && npm run lint && npx tsc -b && npm run build && npm run test:e2e
 - **Event translation tests** are fixture-based: recorded native output per pinned CLI version in `tests/fixtures/claude/<version>/` with the expected `AgentEvent` sequences beside them. A CLI version bump adds fixtures, never edits old ones.
 - **MCP tests** drive the tool handlers through the `rmcp` server in-process with a session bearer token from `TestApp`.
 - **Session owner tests** feed a transcript file line by line, kill and restart the owner mid-file, and assert `events` has no gaps and no duplicates.
+- **Frontend unit tests** use Vitest; test files sit beside the module as `*.test.ts`.
 - **Frontend E2E** (Playwright, `workers: 1`) runs against a real orchestrator started with `--features integration-tests`, creates fresh users per test through the test-only `/api/test/users` endpoint, uses helpers from `tests/utils/test-helpers.ts`, and runs sessions on a stub image that replays a fixture transcript.
 
 ## Git workflow

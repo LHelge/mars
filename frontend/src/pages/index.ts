@@ -1,0 +1,1 @@
+export { HealthPlaceholderPage } from "./HealthPlaceholderPage";

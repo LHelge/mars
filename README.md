@@ -212,12 +212,14 @@ npm install
 npm run dev                  # proxies /api and /ws to the orchestrator
 ```
 
+The proxy targets `http://localhost:7000` (the `API_PORT` default); set `VITE_API_TARGET` to point the dev server at a different orchestrator.
+
 ### CI
 
 | Workflow | Triggers on | Checks |
 | --- | --- | --- |
 | Orchestrator CI | `orchestrator/**` | fmt, clippy, tests with `SQLX_OFFLINE=true` |
-| Frontend CI | `frontend/**` | lint, typecheck, build |
+| Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
 | E2E | `orchestrator/**` or `frontend/**` | Playwright against a real orchestrator, Postgres and the stub session image |
 | Images | `images/**` | Build session images; smoke-run the entrypoint |
 

@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/* Operator-console base tokens. Later UI work extends these rather than
+   replacing them; see CLAUDE.md, "Frontend conventions". */
+@theme {
+  --font-mono:
+    ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --color-console-bg: oklch(0.18 0.01 260);
+  --color-console-surface: oklch(0.23 0.012 260);
+  --color-console-border: oklch(0.32 0.014 260);
+  --color-console-text: oklch(0.92 0.005 260);
+  --color-console-muted: oklch(0.68 0.012 260);
+
+  /* Quiet colour, reserved for state. */
+  --color-state-running: oklch(0.74 0.14 150);
+  --color-state-parked: oklch(0.78 0.13 85);
+  --color-state-failed: oklch(0.68 0.19 25);
+  --color-state-human: oklch(0.72 0.13 265);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-console-bg);
+  color: var(--color-console-text);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}

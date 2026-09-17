@@ -73,6 +73,10 @@ echo "== merged: $(git log --oneline "$BASE..HEAD" | wc -l) commit(s), main at $
 # Worktree and branch cleanup.
 WT="$(git worktree list --porcelain | awk -v b="refs/heads/$BRANCH" '$1=="worktree"{wt=$2} $1=="branch" && $2==b {print wt}')"
 if [ -n "$WT" ]; then
+  # The harness locks the worktree of an agent it spawned and may keep the lock
+  # after the agent has reported; `remove` refuses a locked tree even with
+  # --force, so unlock first.
+  git worktree unlock "$WT" 2>/dev/null || true
   git worktree remove --force "$WT" || true
 fi
 git worktree prune

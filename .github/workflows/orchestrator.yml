@@ -1,0 +1,61 @@
+name: Orchestrator CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["orchestrator/**", ".github/workflows/orchestrator.yml"]
+  pull_request:
+    paths: ["orchestrator/**", ".github/workflows/orchestrator.yml"]
+
+concurrency:
+  group: orchestrator-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SQLX_OFFLINE: "true"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  check:
+    name: Format, clippy, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # rustup reads orchestrator/rust-toolchain.toml here and installs the
+      # pinned channel with its rustfmt and clippy components.
+      - name: Install the pinned toolchain
+        run: |
+          rustup show
+          rustc --version
+          cargo fmt --version
+          cargo clippy --version
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: orchestrator
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (integration-tests)
+        run: cargo clippy --all-targets --features integration-tests -- -D warnings
+
+      # Integration tests bring up Postgres through testcontainers on the
+      # Docker daemon that ubuntu-latest provides. DOCKER_HOST is deliberately
+      # unset, so the engine tests stay skipped in this workflow.
+      - name: Tests
+        run: cargo test --features integration-tests

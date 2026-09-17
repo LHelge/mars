@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE sessions\n            SET cost_usd = cost_usd + $2,\n                input_tokens = input_tokens + $3,\n                output_tokens = output_tokens + $4\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Float8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f9bc94b5c344649c8ed257b0b4ffc82e4f069ccbf30e16ea33aaf113b05ce65e"
+}

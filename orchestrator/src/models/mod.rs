@@ -1,7 +1,9 @@
 //! Domain types and their validation (`User`, `Project`, `Session`, `Task`,
 //! `Secret`, ...). Models never contain SQL; each carries its own error enum.
 
+pub mod event;
 pub mod secret;
+pub mod session;
 pub mod task;
 pub mod task_comment;
 pub mod task_dependency;
@@ -11,9 +13,14 @@ pub mod task_session;
 pub mod task_state;
 pub mod user;
 
+pub use event::{EventRow, INTERNAL_FIELD_PREFIX, NewEvent, OFFSET_FIELD};
 pub use secret::{
     EncryptedValue, MAX_SECRET_NAME_CHARS, NewSecret, ScopeRef, Secret, SecretError, SecretMeta,
     SecretName, SecretResult, SecretScope, SecretUse, SecretUsePurpose,
+};
+pub use session::{
+    NewSession, ProfileKind, Session, SessionError, SessionResult, SessionState, SessionTitle,
+    StateChange, session_branch, state_change_payload,
 };
 pub use task::{Label, MAX_TITLE_CHARS, NewTask, Priority, Task, TaskError, TaskResult, TaskTitle};
 pub use task_comment::{NewTaskComment, TaskComment};

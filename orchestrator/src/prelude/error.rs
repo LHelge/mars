@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::email::EmailError;
 use crate::engine::EngineError;
 use crate::git::GitError;
-use crate::models::{SecretError, TaskError, UserError};
+use crate::models::{SecretError, SessionError, TaskError, UserError};
 use crate::prelude::*;
 use crate::secrets::SecretsError;
 
@@ -98,6 +98,10 @@ pub enum Error {
     /// is the caller's mistake; [`Error::Secrets`] is the keyring's.
     #[error(transparent)]
     Secret(#[from] SecretError),
+    /// A session model rejected its input. The model decides the status: an
+    /// illegal lifecycle transition is 409, everything else 400.
+    #[error(transparent)]
+    Session(#[from] SessionError),
     /// A tracker model rejected its input. The model decides the status.
     #[error(transparent)]
     Task(#[from] TaskError),
@@ -128,6 +132,7 @@ impl Error {
             Error::Database(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             Error::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Secret(err) => err.status(),
+            Error::Session(err) => err.status(),
             Error::Task(err) => err.status(),
             Error::User(err) => err.status(),
         }

@@ -1,0 +1,185 @@
+# The live engine suite (`orchestrator/tests/engine.rs`) against both supported
+# engines. ADR 0004 makes rootless Podman the target engine and Docker the one
+# that must keep working, with `DOCKER_HOST` as the only deployment difference,
+# so the suite runs twice with nothing but that variable changed.
+#
+# The suite needs no Postgres — nothing in it touches the database — so, unlike
+# Orchestrator CI, this workflow starts no service container.
+name: Engine
+
+on:
+  push:
+    branches: [main]
+    paths: ["orchestrator/**", ".github/workflows/engine.yml"]
+  pull_request:
+    paths: ["orchestrator/**", ".github/workflows/engine.yml"]
+
+concurrency:
+  group: engine-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SQLX_OFFLINE: "true"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  # The crate's tracing target, so the engine detection and startup probe lines
+  # are in the log when a scenario fails.
+  RUST_LOG: mars_orchestrator=debug
+
+jobs:
+  # Deliberately unnamed: the GitHub UI then shows `engine (docker)` and
+  # `engine (podman)`, which is what the log of a failure is cited by.
+  engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # Each engine is its own evidence; a Docker failure must not hide the
+      # Podman result or the other way round.
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+        include:
+          - engine: docker
+            docker_host: unix:///var/run/docker.sock
+          - engine: podman
+            docker_host: unix:///tmp/podman.sock
+    defaults:
+      run:
+        working-directory: orchestrator
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # rustup reads orchestrator/rust-toolchain.toml here and installs the
+      # pinned channel.
+      - name: Install the pinned toolchain
+        run: |
+          rustup show
+          rustc --version
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: orchestrator
+          # One cache entry per engine, so the two matrix jobs do not evict
+          # each other's.
+          key: engine-${{ matrix.engine }}
+
+      # The uid decides which branch of the startup probe the suite asserts:
+      # `tests/engine.rs` expects the contract to hold under rootless Podman
+      # (keep-id maps the runner to uid 1000) and to fail on a Docker runner
+      # that is not itself uid 1000 — a GitHub-hosted runner is uid 1001, so
+      # the Docker job's log shows the probe's failure branch and the job is
+      # still green, because that is the branch the test asserts.
+      - name: Report the runner uid
+        run: |
+          echo "uid: $(id -u)"
+          echo "user: $(id -un)"
+          id
+
+      - name: Report the Docker version
+        if: matrix.engine == 'docker'
+        run: docker version
+
+      # Ubuntu 24.04's own package is Podman 4.9.x, which has both
+      # `host-gateway` in ExtraHosts and `keep-id:uid=,gid=`; the OpenSUSE
+      # kubic repository is therefore not needed. uidmap supplies newuidmap and
+      # newgidmap, slirp4netns the rootless network and fuse-overlayfs the
+      # rootless storage driver.
+      - name: Install Podman
+        if: matrix.engine == 'podman'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          podman version
+
+      # Rootless Podman needs a sub-uid and sub-gid range for the runner user.
+      # GitHub's image normally has one; create it when it does not.
+      - name: Ensure sub-uid and sub-gid ranges
+        if: matrix.engine == 'podman'
+        run: |
+          if ! grep -q "^$(id -un):" /etc/subuid || ! grep -q "^$(id -un):" /etc/subgid; then
+            sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+            podman system migrate
+          fi
+          grep "^$(id -un):" /etc/subuid /etc/subgid
+
+      # ADR 0004 targets rootless Podman, so a rootful daemon here would be
+      # evidence for the wrong thing: fail loudly instead. The last resort if
+      # this ever stops working on a hosted runner is `sudo podman system
+      # service` with DOCKER_HOST at the root socket and the matrix entry
+      # renamed to `podman (rootful fallback)`, so that the log says plainly
+      # which contract was exercised.
+      - name: Check that Podman is rootless
+        if: matrix.engine == 'podman'
+        run: |
+          rootless="$(podman info --format '{{.Host.Security.Rootless}}')"
+          echo "rootless: ${rootless}"
+          if [ "${rootless}" != "true" ]; then
+            echo "::error::podman is not rootless; ADR 0004 targets the rootless engine"
+            podman info
+            exit 1
+          fi
+
+      - name: Start the Podman compatibility socket
+        if: matrix.engine == 'podman'
+        run: |
+          nohup podman system service --time=0 unix:///tmp/podman.sock \
+            > /tmp/podman-service.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if [ -S /tmp/podman.sock ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ ! -S /tmp/podman.sock ]; then
+            echo "::error::the Podman compatibility socket never appeared"
+            cat /tmp/podman-service.log
+            exit 1
+          fi
+
+      # bollard speaks the Docker-compatible API; this asserts that the socket
+      # answering it really is Podman's and not a stray Docker daemon.
+      - name: Check the compatibility socket answers as Podman
+        if: matrix.engine == 'podman'
+        run: |
+          version=""
+          for _ in $(seq 1 30); do
+            if version="$(curl -sf --unix-socket /tmp/podman.sock http://d/v1.41/version)"; then
+              break
+            fi
+            sleep 1
+          done
+          echo "${version}"
+          case "${version}" in
+            *Podman*) ;;
+            *)
+              echo "::error::the socket at /tmp/podman.sock does not report Podman"
+              cat /tmp/podman-service.log
+              exit 1
+              ;;
+          esac
+
+      # `DOCKER_HOST` is the whole difference between the two jobs (ADR 0004):
+      # the suite skips itself when it is unset, so an empty value here would
+      # be a silently passing run.
+      - name: Engine tests
+        run: cargo test --features integration-tests --test engine -- --nocapture
+        env:
+          DOCKER_HOST: ${{ matrix.docker_host }}
+
+      # Diagnostics only: the suite cleans up after itself, so anything left
+      # labelled `mars.test` is a scenario that died mid-flight.
+      - name: Leftover test containers
+        if: always() && matrix.engine == 'docker'
+        run: docker ps -a --filter label=mars.test
+
+      - name: Leftover test containers and the service log
+        if: always() && matrix.engine == 'podman'
+        run: |
+          podman ps -a --filter label=mars.test
+          podman network ls
+          cat /tmp/podman-service.log

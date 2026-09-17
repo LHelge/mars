@@ -233,6 +233,7 @@ npm run test:e2e             # starts the dev server itself, or reuses a running
 | Workflow | Triggers on | Checks |
 | --- | --- | --- |
 | Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests with `SQLX_OFFLINE=true`; a second job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
+| Engine | `orchestrator/**` | `tests/engine.rs` against the runner's Docker daemon and against rootless Podman via its compatible socket |
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright; the real orchestrator, Postgres and stub session image are added by their own epics |
 | Images | `images/**` | Build session images once `images/` exists; smoke-run the entrypoint |

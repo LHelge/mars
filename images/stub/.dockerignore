@@ -1,0 +1,6 @@
+# Keep the build context to what the image ships: the entrypoint, the stub CLI
+# and fixtures/*.jsonl. Both markdown patterns are needed because a bare *.md
+# only matches the context root, while fixtures/README.md sits one level down.
+tests/
+*.md
+**/*.md

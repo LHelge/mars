@@ -116,7 +116,7 @@ Indexes: UNIQUE `user_invites_open_email_idx ON user_invites (email) WHERE accep
 
 ### `password_reset_tokens`
 
-Single-use tokens sent by email. Successful password changes and resets invalidate every outstanding reset token for that user by setting `used_at`; consuming a reset link, changing the password and revoking logins commit together. A token must be unexpired and have null `used_at` when revalidated under the user lock.
+Single-use tokens sent by email, valid for 1 hour from issuance. Successful password changes and resets invalidate every outstanding reset token for that user by setting `used_at`; consuming a reset link, changing the password and revoking logins commit together. A token must be unexpired and have null `used_at` when revalidated under the user lock.
 
 | Column | Type | Constraints |
 | --- | --- | --- |

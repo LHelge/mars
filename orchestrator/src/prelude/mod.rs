@@ -53,6 +53,16 @@ pub const REFRESH_TOKEN_TTL: TimeDelta = TimeDelta::days(30);
 /// `user_invites`). Resending an invite starts a new one.
 pub const INVITE_TTL: TimeDelta = TimeDelta::days(7);
 
+/// How long a password-reset link is valid (`SPEC.md`, "User-facing
+/// features"; `docs/data-model.md`, `password_reset_tokens`).
+///
+/// An hour rather than the invitation's seven days: a reset link is asked for
+/// by somebody who is at the keyboard now, and it is the one credential a
+/// stranger can cause to be mailed to an address they do not control. Asking
+/// again costs one request, and `routes::throttle::RESET_WINDOW` — the hour
+/// three of them are allowed in — is deliberately the same length.
+pub const PASSWORD_RESET_TTL: TimeDelta = TimeDelta::hours(1);
+
 /// The name of the refresh-token cookie (`SPEC.md`, "Authentication").
 ///
 /// A browser matches a cookie by name, domain and path, so this spelling is

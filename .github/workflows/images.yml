@@ -112,16 +112,18 @@ jobs:
       fail-fast: false
       matrix:
         engine: [docker, podman]
-    env:
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
       # The smoke script creates its temp tree here and keeps it, so the logs
       # of a failed run can be uploaded. RUNNER_TEMP is under the runner's home
       # directory, which is what rootless Podman needs for the bind sources;
       # it is also an absolute path the upload action can glob, which `~` is
-      # not.
-      SMOKE_KEEP_DIR: ${{ runner.temp }}/smoke-${{ matrix.engine }}
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@v7
+      # not. Set from a step because the `runner` context is not available in
+      # a job-level `env`.
+      - name: Choose the smoke test keep directory
+        run: echo "SMOKE_KEEP_DIR=${RUNNER_TEMP}/smoke-${{ matrix.engine }}" >> "$GITHUB_ENV"
 
       - name: Report the Docker version
         if: matrix.engine == 'docker'

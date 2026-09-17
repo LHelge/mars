@@ -3,11 +3,15 @@
 //! The master keyring ([`keyring`]) holds the versioned keys, wraps and
 //! unwraps per-row data keys and verifies at startup that every `key_version`
 //! present in the table can still be unwrapped (`ARCHITECTURE.md`, "Secrets").
-//! The value-level encryption, the resolution order and the injection into a
-//! session are the rest of the secrets epic.
+//! [`crypto`] is the layer above it: sealing a value under a fresh data key
+//! bound to its row, opening it again, re-sealing it when the row is renamed
+//! and re-wrapping its data key when the master key rotates. The resolution
+//! order and the injection into a session are the rest of the secrets epic.
 
+pub mod crypto;
 pub mod keyring;
 
+pub use crypto::{VALUE_NONCE_LEN, aad, aad_for, open, reseal, rewrap, seal};
 pub use keyring::{
     DATA_KEY_LEN, MASTER_KEY_LEN, SecretsError, SecretsKeyring, WRAP_NONCE_LEN, WrappedKey,
 };

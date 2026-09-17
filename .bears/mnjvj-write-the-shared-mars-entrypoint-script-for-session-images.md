@@ -1,15 +1,17 @@
 ---
 id: mnjvj
 title: Write the shared mars-entrypoint script for session images
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:26:57.940000686Z"
-updated: "2026-09-16T20:51:51.736512363Z"
+updated: "2026-09-17T22:09:34.018157253Z"
 tags:
   - images
 depends_on:
   - sywed
 parent: deex5
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

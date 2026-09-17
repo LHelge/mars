@@ -154,6 +154,21 @@ impl TestApp {
     pub fn mock_git(&self) -> &MockGitCredentialProvider {
         &self.git
     }
+
+    /// Forget every failed login and password-reset request counted so far.
+    ///
+    /// A fresh `TestApp` already starts with both limiters empty, so this is
+    /// only for a test that drives several scenarios through one app: one that
+    /// deliberately blocks a key and then wants to log in again.
+    ///
+    /// The limiters key on the client address as well as on the username, and
+    /// `axum-test`'s mock transport has no peer, so every request here comes
+    /// from the loopback fallback (`routes::throttle::client_addr`). A test
+    /// that needs two distinct clients sets `X-Forwarded-For` itself.
+    pub fn reset_limiters(&self) {
+        self.state.login_throttle.reset();
+        self.state.reset_rate_limit.reset();
+    }
 }
 
 /// The configuration `spawn` builds, from values in code rather than from the

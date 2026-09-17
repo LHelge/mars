@@ -11,6 +11,7 @@ use crate::email::EmailClient;
 use crate::engine::ContainerEngine;
 use crate::git::GitCredentialProvider;
 use crate::prelude::*;
+use crate::routes::throttle::{LoginThrottle, ResetRateLimit};
 use crate::secrets::SecretsKeyring;
 
 /// The state cloned into every handler.
@@ -18,9 +19,10 @@ use crate::secrets::SecretsKeyring;
 /// `ARCHITECTURE.md`, "Orchestrator internals": "`AppState` is cloned into
 /// every handler and holds: `Arc<Config>`, the `PgPool`, `Arc<dyn
 /// ContainerEngine>`, `Arc<dyn EmailClient>`, `Arc<dyn GitCredentialProvider>`,
-/// the `SecretsKeyring`, the `SessionRegistry` (handles to running session
-/// owner tasks), and the broadcast senders for event fan-out. Every `Arc<dyn
-/// Trait>` has a mock behind the `integration-tests` feature."
+/// the `SecretsKeyring`, the in-memory login throttle and password-reset rate
+/// limiter, the `SessionRegistry` (handles to running session owner tasks), and
+/// the broadcast senders for event fan-out. Every `Arc<dyn Trait>` has a mock
+/// behind the `integration-tests` feature."
 ///
 /// The three collaborator traits are here as trait objects so the whole API
 /// can be tested without an engine, a mail provider or GitHub; each has a mock
@@ -50,10 +52,22 @@ pub struct AppState {
     /// The master keys envelope encryption wraps data keys under. Cloning it
     /// shares the keys rather than copying them.
     pub keyring: SecretsKeyring,
+    /// Failed-login counters and blocks, in process memory: v1 runs a single
+    /// orchestrator instance (`SPEC.md`, "Non-goals for v1").
+    pub login_throttle: Arc<LoginThrottle>,
+    /// Password-reset request counters, in process memory for the same reason.
+    pub reset_rate_limit: Arc<ResetRateLimit>,
 }
 
 impl AppState {
     /// Build the state from the pieces the startup task owns.
+    ///
+    /// The two limiters are not parameters: they hold no configuration, have
+    /// no collaborator to mock and start empty, so every caller — `main`, the
+    /// unit tests below and `TestApp` — wants exactly the same pair on the
+    /// system clock. A test that has to forget what they counted calls
+    /// `reset()` on the field; a unit test of the limiters themselves builds
+    /// its own with an injected clock.
     pub fn new(
         config: Arc<Config>,
         pool: PgPool,
@@ -69,6 +83,8 @@ impl AppState {
             email,
             git_credentials,
             keyring,
+            login_throttle: Arc::new(LoginThrottle::new()),
+            reset_rate_limit: Arc::new(ResetRateLimit::new()),
         }
     }
 }
@@ -88,6 +104,7 @@ impl FromRef<AppState> for PgPool {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr};
 
     use sqlx::postgres::PgPoolOptions;
 
@@ -177,5 +194,35 @@ mod tests {
         assert!(Arc::ptr_eq(&state.email, &clone.email));
         assert!(Arc::ptr_eq(&state.git_credentials, &clone.git_credentials));
         assert_eq!(clone.keyring.current_version(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_limiters_are_shared_by_a_clone_and_start_empty() {
+        let state = test_state();
+        let clone = state.clone();
+
+        assert!(Arc::ptr_eq(&state.login_throttle, &clone.login_throttle));
+        assert!(Arc::ptr_eq(
+            &state.reset_rate_limit,
+            &clone.reset_rate_limit
+        ));
+
+        assert_eq!(state.login_throttle.tracked_keys(), 0);
+        assert_eq!(state.reset_rate_limit.tracked_keys(), 0);
+
+        // A handler holding the clone counts against the same maps the rest of
+        // the process reads.
+        clone
+            .login_throttle
+            .record_failure("bob", IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert!(clone.reset_rate_limit.allow("bob@example.invalid"));
+
+        assert_eq!(state.login_throttle.tracked_keys(), 2);
+        assert_eq!(state.reset_rate_limit.tracked_keys(), 1);
+
+        state.login_throttle.reset();
+        state.reset_rate_limit.reset();
+        assert_eq!(clone.login_throttle.tracked_keys(), 0);
+        assert_eq!(clone.reset_rate_limit.tracked_keys(), 0);
     }
 }

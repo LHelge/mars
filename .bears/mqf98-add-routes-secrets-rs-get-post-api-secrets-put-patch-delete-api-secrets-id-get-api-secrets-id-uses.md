@@ -1,10 +1,10 @@
 ---
 id: mqf98
 title: "Add routes/secrets.rs: GET/POST /api/secrets, PUT/PATCH/DELETE /api/secrets/{id}, GET /api/secrets/{id}/uses"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:32:09.483672603Z"
-updated: "2026-09-17T13:57:05.720951748Z"
+updated: "2026-09-17T14:39:19.972138698Z"
 tags:
   - orchestrator
   - secrets

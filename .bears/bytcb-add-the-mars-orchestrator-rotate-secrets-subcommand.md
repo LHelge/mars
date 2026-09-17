@@ -1,10 +1,10 @@
 ---
 id: bytcb
 title: Add the mars-orchestrator rotate-secrets subcommand
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:32:24.245693491Z"
-updated: "2026-09-17T13:57:07.006194103Z"
+updated: "2026-09-17T15:02:17.419450236Z"
 tags:
   - orchestrator
   - secrets

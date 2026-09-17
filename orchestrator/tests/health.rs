@@ -86,15 +86,16 @@ async fn the_state_holds_the_same_mocks_as_the_test_app() {
     assert!(app.mock_git().requested().is_empty());
 }
 
-/// Two apps in one binary get two independent containers, which is what lets
-/// `#[tokio::test]`s in a binary run in parallel without isolating anything.
+/// Two apps in one binary get two independent databases on the process's one
+/// Postgres, which is what lets `#[tokio::test]`s in a binary run in parallel
+/// without isolating anything.
 #[tokio::test]
-async fn two_apps_run_side_by_side_on_independent_containers() {
+async fn two_apps_run_side_by_side_on_independent_databases() {
     let (first, second) = tokio::join!(TestApp::spawn(), TestApp::spawn());
 
     assert_ne!(
         first.state.config.database_url, second.state.config.database_url,
-        "each app must get its own container"
+        "each app must get its own database"
     );
     assert_ne!(
         first.data_dir.path(),

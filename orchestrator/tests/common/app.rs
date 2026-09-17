@@ -1,8 +1,10 @@
 //! `TestApp`: the integration-test entry point every backend epic uses
 //! (`CLAUDE.md`, "Testing expectations").
 //!
-//! [`TestApp::spawn`] starts a throw-away Postgres, applies the migrations,
-//! removes the seeded administrator, builds an [`AppState`] out of the mock
+//! [`TestApp::spawn`] takes a throw-away database on the process's shared
+//! Postgres, already migrated because it is a clone of the migrated template
+//! (`tests/common/db.rs`), removes the seeded administrator, builds an
+//! [`AppState`] out of the mock
 //! engine, the mock email client, the mock git credential provider and the
 //! fixed test master key, and serves the library's router through
 //! `axum-test`. Tests then drive the real middleware stack in-process: no
@@ -11,7 +13,7 @@
 //!
 //! Every configuration value is obviously fake (rule 3). The only one that
 //! points at anything real is `DATABASE_URL`, and what it points at is the
-//! container this `TestApp` started and stops again when it drops.
+//! database this `TestApp` created and drops again when it drops.
 //!
 //! Needs a container engine (`DOCKER_HOST`); see `tests/common/db.rs`.
 
@@ -39,8 +41,6 @@ use mars_orchestrator::secrets::SecretsKeyring;
 use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::ContainerAsync;
 use uuid::Uuid;
 
 use super::db;
@@ -67,8 +67,8 @@ const DELETE_SEEDED_ADMIN: &str =
 /// A running orchestrator with every collaborator mocked.
 ///
 /// Field order is drop order: the server, the pool and the mocks go first and
-/// the container guard `_db` last, so Postgres is still up while anything that
-/// might still talk to it is torn down.
+/// the database guard `_db` last, so the database is still there while
+/// anything that might still talk to it is torn down.
 pub struct TestApp {
     /// The router under test, driven in-process by `axum-test`.
     pub server: TestServer,
@@ -87,18 +87,21 @@ pub struct TestApp {
     /// `DATA_DIR` and `DATA_DIR_HOST`. Held here because it has to outlive the
     /// app: dropping it removes the directory.
     pub data_dir: TempDir,
-    /// The Postgres container. Never read; it stops the container on drop.
-    _db: ContainerAsync<Postgres>,
+    /// This app's database on the shared Postgres. Never read; it drops the
+    /// database on drop.
+    _db: db::TestDatabase,
 }
 
 impl TestApp {
-    /// Start a fresh app: one container, one migrated database, one router.
+    /// Start a fresh app: one migrated database, one router.
     ///
-    /// One container per test is the expected cost; nothing is shared between
-    /// tests, so there is nothing to isolate and nothing to clean up.
+    /// The database is this app's alone — cloned from the process's migrated
+    /// template — so nothing is shared between tests and there is nothing to
+    /// isolate or clean up. Only the first `spawn` in a binary pays a
+    /// container start (`tests/common/db.rs`).
     pub async fn spawn() -> TestApp {
-        let (postgres, pool) = db::test_pool().await;
-        let database_url = db::connection_string(&postgres).await;
+        let (database, pool) = db::test_pool().await;
+        let database_url = database.url().to_string();
 
         // After the migrations and before the router: the first request must
         // never see the seeded administrator.
@@ -147,7 +150,7 @@ impl TestApp {
             email,
             git,
             data_dir,
-            _db: postgres,
+            _db: database,
         }
     }
 

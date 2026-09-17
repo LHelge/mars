@@ -60,11 +60,11 @@ After every frontend change:
 cd frontend && npm run lint && npx tsc -b && npm run build && npm run test:unit && npm run test:e2e
 ```
 
-The two clippy invocations are what the Orchestrator CI workflow runs, so a lint in a test file or behind the `integration-tests` feature is caught locally. `tests/health.rs` needs a container engine for its testcontainers Postgres, as CI has.
+The two clippy invocations are what the Orchestrator CI workflow runs, so a lint in a test file or behind the `integration-tests` feature is caught locally. `tests/health.rs` still needs a container engine, as CI has: every test binary that touches the database starts one testcontainers Postgres of its own and removes it again when the process exits.
 
 ## Testing expectations
 
-- **Backend integration tests** use `TestApp::spawn()` from `tests/common/mod.rs` (testcontainers Postgres, migrations applied, seeded admin removed, mock engine, email and git credentials, fixed test master key). One `#[tokio::test]` per scenario. Every new endpoint gets tests for the happy path and each error path (unauthenticated, forbidden, validation, conflict). Assert with `response.assert_status()` and `response.json::<T>()`. Invite flows are asserted through the mock email client's captured messages.
+- **Backend integration tests** use `TestApp::spawn()` from `tests/common/mod.rs` (one testcontainers Postgres per test process, one database per test cloned from a template the migrations were applied to once, seeded admin removed, mock engine, email and git credentials, fixed test master key). One `#[tokio::test]` per scenario. Every new endpoint gets tests for the happy path and each error path (unauthenticated, forbidden, validation, conflict). Assert with `response.assert_status()` and `response.json::<T>()`. Invite flows are asserted through the mock email client's captured messages.
 - **Engine tests** (`tests/engine.rs`) run only when `DOCKER_HOST` is set; CI runs them on both Podman and Docker.
 - **Git tests** use real bare repositories in `tempfile` directories; git is never mocked.
 - **Event translation tests** are fixture-based: recorded native output per pinned CLI version in `tests/fixtures/claude/<version>/` with the expected `AgentEvent` sequences beside them. A CLI version bump adds fixtures, never edits old ones.

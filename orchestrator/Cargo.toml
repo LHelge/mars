@@ -45,6 +45,10 @@ zeroize = "1.9.0"
 
 [dev-dependencies]
 axum-test = "21.1.0"
+# Only for `atexit`, which is how `tests/common/db.rs` removes the test
+# Postgres container: the test harness exits with `std::process::exit`, so no
+# destructor runs.
+libc = "0.2.189"
 tempfile = "3.27.0"
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
 tokio = { version = "1.53.1", features = ["test-util"] }

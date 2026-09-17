@@ -1,10 +1,10 @@
 ---
 id: a2cku
 title: "Implement SecretsService: create, replace, rename re-encryption, delete, list and uses with ownership rules"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:30:47.404552253Z"
-updated: "2026-09-17T13:07:28.946438926Z"
+updated: "2026-09-17T13:56:51.201663791Z"
 tags:
   - orchestrator
   - secrets

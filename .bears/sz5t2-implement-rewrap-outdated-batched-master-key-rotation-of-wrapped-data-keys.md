@@ -1,10 +1,10 @@
 ---
 id: sz5t2
 title: "Implement rewrap_outdated: batched master-key rotation of wrapped data keys"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:31:43.123490352Z"
-updated: "2026-09-17T13:07:32.000766595Z"
+updated: "2026-09-17T13:51:07.424192581Z"
 tags:
   - orchestrator
   - secrets

@@ -12,6 +12,7 @@ pub mod auth;
 pub mod cookies;
 pub mod extractors;
 pub mod health;
+pub mod secrets;
 pub mod throttle;
 pub mod users;
 
@@ -28,6 +29,7 @@ pub fn routes() -> Router<AppState> {
     let router = Router::new()
         .merge(health::routes())
         .nest("/auth", auth::routes())
+        .nest("/secrets", secrets::routes())
         .nest("/users", users::routes());
 
     // The only routes with a prefix of their own, because `SPEC.md`,

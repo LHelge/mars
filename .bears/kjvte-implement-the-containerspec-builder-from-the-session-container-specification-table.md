@@ -1,16 +1,18 @@
 ---
 id: kjvte
 title: Implement the ContainerSpec builder from the session container specification table
-status: open
+status: in_progress
 priority: P0
 created: "2026-09-16T20:27:13.946656503Z"
-updated: "2026-09-16T20:27:13.946656503Z"
+updated: "2026-09-17T15:47:47.887645140Z"
 tags:
   - orchestrator
   - engine
 depends_on:
   - "84dxt"
 parent: naqhy
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

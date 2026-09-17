@@ -1,10 +1,10 @@
 ---
 id: "84dxt"
 title: Define the ContainerEngine trait, EngineError and engine domain types
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:26:29.486214325Z"
-updated: "2026-09-16T20:51:51.714769744Z"
+updated: "2026-09-17T15:46:58.452054171Z"
 tags:
   - orchestrator
   - engine
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - sywed
 parent: naqhy
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: nfz7m
 title: Build images/stub/Dockerfile honouring the session image contract without model credentials
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:29:06.261713901Z"
-updated: "2026-09-16T20:29:06.261713901Z"
+updated: "2026-09-17T22:25:57.393478513Z"
 tags:
   - images
   - tests
@@ -13,6 +13,8 @@ depends_on:
   - ajyxd
   - t2ecg
 parent: deex5
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

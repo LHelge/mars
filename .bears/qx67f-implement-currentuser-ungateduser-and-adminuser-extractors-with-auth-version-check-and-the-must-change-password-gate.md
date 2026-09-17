@@ -1,16 +1,18 @@
 ---
 id: qx67f
 title: Implement CurrentUser, UngatedUser and AdminUser extractors with auth_version check and the must-change-password gate
-status: open
+status: in_progress
 priority: P0
 created: "2026-09-16T20:29:01.213257292Z"
-updated: "2026-09-16T20:29:01.213257292Z"
+updated: "2026-09-17T09:08:36.486605835Z"
 tags:
   - orchestrator
   - auth
 depends_on:
   - rb2xf
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

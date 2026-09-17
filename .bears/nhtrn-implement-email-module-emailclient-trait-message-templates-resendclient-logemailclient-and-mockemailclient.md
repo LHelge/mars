@@ -1,16 +1,18 @@
 ---
 id: nhtrn
 title: "Implement email module: EmailClient trait, message templates, ResendClient, LogEmailClient and MockEmailClient"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:26:45.506118046Z"
-updated: "2026-09-16T20:51:51.610732009Z"
+updated: "2026-09-17T08:59:31.581017670Z"
 tags:
   - orchestrator
   - auth
 depends_on:
   - p5tsd
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

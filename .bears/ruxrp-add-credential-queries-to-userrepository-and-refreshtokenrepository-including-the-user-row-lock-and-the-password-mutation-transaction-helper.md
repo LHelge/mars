@@ -1,16 +1,18 @@
 ---
 id: ruxrp
 title: Add credential queries to UserRepository and RefreshTokenRepository, including the user-row lock and the password-mutation transaction helper
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:27:42.652342083Z"
-updated: "2026-09-16T20:51:51.650535941Z"
+updated: "2026-09-17T09:10:20.436397094Z"
 tags:
   - orchestrator
   - auth
 depends_on:
   - p5tsd
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

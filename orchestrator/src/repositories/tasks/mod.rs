@@ -1,0 +1,110 @@
+//! All SQL against the tracker tables, and the transaction primitive every
+//! tracker mutation is built on.
+//!
+//! `docs/data-model.md`, "Tracker mutation transactions" and `ARCHITECTURE.md`,
+//! "Task tracker" put one rule above everything else in this module: **one
+//! mutation at a time per project**. Every writer begins a `READ COMMITTED`
+//! transaction, locks the project row, and only then reads authoritative state
+//! and validates. [`TaskRepository::begin_mutation`] is that opening move, and
+//! every other helper here documents that it must run inside such a
+//! transaction; a helper called outside one reads state nobody is holding
+//! still, and the answer may already be stale when it returns (ADR 0021).
+//!
+//! **Lock order.** Any git lock is acquired before any database lock, then the
+//! project row ([`TaskRepository::begin_mutation`]), then session rows, then
+//! task rows; never the other way round.
+//!
+//! The isolation level is left at the Postgres default, `READ COMMITTED`: the
+//! project row lock, not a stricter snapshot, is what serialises the tracker,
+//! and raising the level would only add serialisation failures for callers to
+//! retry.
+//!
+//! **Events are the caller's to compose.** None of these helpers appends the
+//! `states_changed` event a state change owes the board, or the `updated`
+//! events a task change owes it. A helper changes rows; the caller assembles
+//! the [`NewTaskEvent`](crate::models::NewTaskEvent) batch that describes the
+//! change and passes it to [`TaskRepository::append_task_events`] **in the same
+//! transaction**, so the rows, their events and the `pg_notify` that announces
+//! them commit or roll back together (ADR 0028; `SPEC.md`, "TaskEvent"). The
+//! payload assembly itself — actor, `task`, `from`/`to`, `states` — belongs to
+//! `events/` and the tracker epic, not here.
+//!
+//! The module is split by table: `states` holds `task_states` and
+//! `profile_states`, `events` holds `task_events`. Task rows, dependencies,
+//! comments, hand-offs and session links join them as they are written.
+
+mod events;
+mod states;
+
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
+use uuid::Uuid;
+
+pub use events::MAX_TASK_EVENT_PAGE;
+
+use crate::prelude::*;
+use crate::repositories::ProjectRepository;
+
+/// All SQL against the tracker tables (`ARCHITECTURE.md`, "Orchestrator
+/// internals").
+///
+/// Reads that need no transaction go straight to the pool; everything that
+/// mutates, and everything that has to be read under the project lock to be
+/// authoritative, takes the caller's `&mut PgConnection`, so one transaction
+/// can hold a whole tracker mutation — the lock, the change, its dependency
+/// effects and its events — together.
+pub struct TaskRepository<'a> {
+    pool: &'a PgPool,
+}
+
+impl<'a> TaskRepository<'a> {
+    /// Borrow `pool` for the lifetime of this repository.
+    pub fn new(pool: &'a PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Open a tracker mutation: one transaction with the project row locked.
+    ///
+    /// This is the first statement of every tracker write — task, state,
+    /// dependency, comment, claim, release, hand-off, profile served states,
+    /// background job and deletion alike (`docs/data-model.md`, "Tracker
+    /// mutation transactions"). The lock is held until the returned
+    /// transaction commits or rolls back, so everything read through it
+    /// afterwards is authoritative for this project, and nothing read *before*
+    /// it is.
+    ///
+    /// An unknown project is [`Error::NotFound`], raised by
+    /// [`ProjectRepository::lock_project`] before the caller can write
+    /// anything: a mutation must not proceed unserialised against a project
+    /// that is not there. The transaction is dropped — and therefore rolled
+    /// back — on that path.
+    ///
+    /// Concurrent calls for the same project queue at the lock; calls for
+    /// different projects are independent. An operation spanning several
+    /// projects opens them in UUID order.
+    pub async fn begin_mutation(&self, project_id: Uuid) -> Result<Transaction<'a, Postgres>> {
+        let mut tx = self.pool.begin().await?;
+        ProjectRepository::new(self.pool)
+            .lock_project(&mut tx, project_id)
+            .await?;
+
+        Ok(tx)
+    }
+}
+
+/// Is there a task with this id in this project?
+///
+/// The scope check shared by the helpers that accept a task id alongside the
+/// project they are mutating. **Call only inside a
+/// [`TaskRepository::begin_mutation`] transaction**: without the project lock
+/// the answer can change before the caller acts on it.
+async fn task_in_project(tx: &mut PgConnection, project_id: Uuid, task_id: Uuid) -> Result<bool> {
+    let exists = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND project_id = $2) AS "exists!""#,
+        task_id,
+        project_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    Ok(exists)
+}

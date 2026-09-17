@@ -2,10 +2,10 @@
 id: naqhy
 title: Container engine adapter
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:12:18.569396170Z"
-updated: "2026-09-16T20:15:14.072931569Z"
+updated: "2026-09-17T20:37:00.094476184Z"
 tags:
   - orchestrator
   - engine

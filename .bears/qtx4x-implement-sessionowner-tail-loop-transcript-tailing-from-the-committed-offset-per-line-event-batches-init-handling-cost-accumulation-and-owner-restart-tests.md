@@ -4,7 +4,7 @@ title: "Implement SessionOwner tail loop: transcript tailing from the committed 
 status: open
 priority: P1
 created: "2026-09-16T20:30:45.126836266Z"
-updated: "2026-09-16T20:30:45.126836266Z"
+updated: "2026-09-17T04:57:28.979550059Z"
 tags:
   - orchestrator
   - sessions
@@ -32,13 +32,14 @@ Implement the read side of `SessionOwner` in `orchestrator/src/session/owner.rs`
 - [ ] `init` event in the batch: before committing the batch, in the same transaction, `set_cli_session_id` and `transition(creating|parked → running, reason = "init received")`; the batch commit therefore carries the `init` event, the `state_change` and the `session_state` notify together. If `init.mcp_servers` has no entry `{name: "mars-orchestrator", status: "connected"}` (compare the status string case-insensitively), append `launch_warning { message: "MCP server mars-orchestrator is not connected (status: <status or 'missing'>)" }` in the same batch. After commit: `registry.mark_running(sid)` and hand each drained `QueuedInput` to the input hook (`self.deliver_input`, implemented by the next task; here it is a method that records the `user_message` and writes stdin if a writer exists).
 - [ ] `result` event: compute `CostDelta` from `cost_usd` and `usage.input_tokens`/`usage.output_tokens` (missing → 0) using the accumulation rule constant `COST_ACCOUNTING: CostAccounting::{PerTurn, Cumulative}` (default `PerTurn`; the agent epic flips it if the live probe shows cumulative reporting, in which case the delta is the increase over the previous `result` of this run); pass it to `append_native_line`; `registry.clear_prompt(sid)`; call the `on_result` hook (ephemeral end-of-run, next task).
 - [ ] `prompt` event committed at `seq` → `registry.set_prompt(sid, seq, prompt_id)`.
+- [ ] Adoption restores translation state before live tailing: restart after a committed subagent call and before its result still emits exactly one matching `subagent_end`; a delayed echo of a recorded input remains suppressed. Replaying committed history writes no events or counters. Test cumulative accounting across adoption when that mode is selected, with the previous result's baseline restored.
 - [ ] `OwnerCommand::Shutdown` exits the loop cleanly after finishing the line in progress.
 - [ ] The owner never logs event payloads at `info` or above and never holds the registry mutex across an `.await`.
 
 ## Implementation notes
 - Files: `orchestrator/src/session/owner.rs`, `orchestrator/src/session/mod.rs`.
 - Loop shape: `tokio::select!` over the tail interval, `commands.recv()`, and (next task) the container wait future; keep the tail step as `async fn read_available_lines(&mut self) -> Result<Vec<(String, u64)>>` so tests can drive it directly.
-- Translate state (`TranslateState`) is owned by the owner and reset on each spawn; after a restart the adapter's echo-suppression hashes are empty, which is acceptable (the CLI echo, if any, becomes a `raw`/`tool_result` event rather than a duplicate `user_message`).
+- Translation state belongs to the CLI process, not the owner task. Before adoption or owner restart tails beyond the committed offset, reconstruct the active process's open subagent calls, denied-tool bookkeeping and input-echo hashes from retained transcript/history. Restore the last accounted cumulative result when the probe selects cumulative cost accounting. Reconstruction must respect process-launch boundaries, discard replayed output, and neither append events nor add costs nor resend inputs. Fresh process launches, including resume/retry, start fresh translation state. See `ARCHITECTURE.md`, "Durability and recovery"; this does not add durable input delivery (ADR 0020).
 - Byte offsets are `u64` from the file, stored in `_offset` as a JSON number; `MAX((payload->>'_offset')::bigint)` is the repository's read.
 
 ## Edge cases

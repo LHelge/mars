@@ -4,7 +4,7 @@ title: "Add launch-for-task: claim in the session insert transaction, hand-off b
 status: open
 priority: P1
 created: "2026-09-16T20:35:04.556129627Z"
-updated: "2026-09-16T20:35:04.556129627Z"
+updated: "2026-09-17T04:59:04.594272135Z"
 tags:
   - orchestrator
   - sessions
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - tjccc
   - "9wxhs"
+  - cws3a
+  - htyzj
 parent: s52qg
 ---
 
@@ -31,7 +33,7 @@ Extend `POST /projects/{pid}/sessions` and the launcher with the optional `task_
 - [ ] Ephemeral: `LaunchContext.prompt` = generated message + `"\n\n"` + `message` (or the generated message alone); nothing is queued.
 - [ ] `MARS_TASK_ID=<task uuid>` is in the container env exactly when `session.task_id` is set, after `MARS_PROJECT_ID` and before the secrets.
 - [ ] The `on_session_ended` / `on_session_failed` hooks call the tracker's `release_leases_for_session(session_id, reason = "session_ended")`, so a launch failing in `creating`, an `end`, an ephemeral `done`, and recovery's `creating → failed` all release the claim with a `released` event and a system comment as the tracker epic specifies.
-- [ ] `GET /api/sessions/{id}/tasks` → 200 `Task[]` from `task_sessions` ordered by `last_touched_at DESC`; 404 unknown session. If the tracker epic already mounted this route, keep exactly one implementation.
+- [ ] `GET /api/sessions/{id}/tasks` → 200 `Task[]` from `task_sessions` ordered by `last_touched_at DESC`; 404 unknown session. Reuse the route delivered by prerequisite `htyzj`; do not mount a second implementation.
 - [ ] Ephemeral profile with `task_id` and no `message` is valid (400 only when both are missing).
 
 ## Implementation notes

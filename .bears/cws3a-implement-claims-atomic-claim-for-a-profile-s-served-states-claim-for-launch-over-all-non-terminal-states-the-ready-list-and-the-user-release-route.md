@@ -4,7 +4,7 @@ title: "Implement claims: atomic claim for a profile's served states, claim-for-
 status: open
 priority: P1
 created: "2026-09-16T20:44:45.993609259Z"
-updated: "2026-09-16T20:44:45.993609259Z"
+updated: "2026-09-17T04:57:52.802984543Z"
 tags:
   - orchestrator
   - tracker
@@ -24,10 +24,10 @@ Implement the lease acquisition side of the tracker: the atomic claim statement 
 - ADRs 0009 (mechanism), 0016, 0021, 0030.
 
 ## Acceptance criteria
-- [ ] `TaskRepository::claim(conn, project_id, task_id, session_id, state_ids: &[Uuid]) -> Result<Option<Task>>` executes the statement above verbatim (`Option::None` for zero rows), plus `list_claimable(project_id, state_ids, limit) -> Vec<Task>` using the claimable index (`NOT blocked AND lease_holder_session_id IS NULL AND state_id = ANY($2)` ordered by `priority, number`) and `depends_on_counts(task_ids) -> HashMap<Uuid, i64>`.
+- [ ] `TaskRepository::claim(conn, project_id, task_id, session_id, state_ids: &[Uuid]) -> Result<Option<Task>>` executes the statement above verbatim (`Option::None` for zero rows), plus `list_claimable(project_id, state_ids, limit) -> Result<Vec<TaskSummaryRow>>`: one scoped `query_as!` using the claimable index, joining `task_states` for the state name and counting outgoing `task_dependencies` of every kind with a lateral aggregate, ordered by `priority, number` and limited by `$3`. This task owns the repository query; `y2nd8` reuses it through `ready_summaries`.
 - [ ] `tracker::leases::claim_for_profile(m, task: &Task, session_id, served_state_ids: &[Uuid]) -> Result<TaskDto>`: if `task.state_id` is not in `served_state_ids` → `Error::Conflict("task is not in a state this profile serves")`; else run `claim`; `None` → `Error::Conflict("task is not claimable")`; on success emit `claimed` (actor `session`) with the task after the claim and `touch(task.id, session_id)`.
 - [ ] `tracker::leases::claim_for_launch(m, task: &Task, session_id) -> Result<TaskDto>`: `state_ids` = every state of the project whose kind is not `terminal` (queue and human); `None` → `Error::Conflict("task is not claimable")`; emits `claimed` with the mutation's actor (the launching user) and `touch(task.id, session_id)`. The sessions epic calls this inside its session-insert transaction, which must be a `TrackerMutation` (project row locked before the session row is inserted).
-- [ ] `tracker::leases::ready_summaries(pool, project_id, served_state_ids, limit) -> Result<Vec<TaskSummary>>` is a lock-free read returning `TaskSummary` DTOs with `description_excerpt` = first 200 characters of the description (at a char boundary, no trailing partial word requirement) and `depends_on_count` = number of outgoing edges of any kind; no events, no touches (ADR 0030).
+- [ ] `tracker::leases::ready_summaries(pool, project_id, served_state_ids, limit) -> Result<Vec<TaskSummary>>` is a lock-free read returning `TaskSummary` DTOs with `description_excerpt` = trim the description, replace each newline sequence (CRLF, LF or CR) with one space, then take the first 200 Unicode scalar values and trim trailing whitespace, without an ellipsis and `depends_on_count` = number of outgoing edges of any kind; no events, no touches (ADR 0030).
 - [ ] `tracker::leases::release_by_user(m, task: &Task) -> Result<TaskDto>`: no holder → `Error::Conflict("task is not held")`; else clear `lease_holder_session_id`/`lease_since` (keep `attempts`, state, `closed_at`), emit `released` with `reason: "user"` and the task; no comment, no escalation, never moves the task.
 - [ ] `POST /projects/{pid}/tasks/{id}/release` → 200 `Task`, 409 `task is not held`, 404 unknown task.
 - [ ] `cargo sqlx prepare` run and `.sqlx/` committed.
@@ -42,7 +42,7 @@ Implement the lease acquisition side of the tracker: the atomic claim statement 
 - Claim of a task in the human state by a profile: never served (only queue states can be served), so it is `task is not in a state this profile serves`; by launch: allowed.
 - Claim of a blocked task: zero rows → `task is not claimable` even when the state matches.
 - Claim of a terminal task by launch: zero rows → 409.
-- `ready` with `limit` 0 or > 200: clamp to 1..=200 (document); default 20.
+- `ready` defaults to 20; an explicit limit must be an integer from 1 through 100 inclusive. Reject out-of-range or non-integer values with `invalid_argument` at the MCP boundary; never clamp. `ready_summaries` validates the same range and returns a validation error for invalid internal callers. Test default, 1, 100, 0, 101 and fractional input (fractional input at the MCP boundary).
 - `release_by_user` on a task held by a session that is already `done` (reaper not yet run): allowed; the reaper later finds nothing to release.
 - A session claiming a task it already holds: zero rows (holder not null) → `task is not claimable`; the MCP epic may special-case this message if desired, but the tracker returns the conflict.
 

@@ -4,7 +4,7 @@ title: Define the AgentBackend trait, LaunchContext, TranslateState and backend 
 status: open
 priority: P0
 created: "2026-09-16T20:27:16.163281732Z"
-updated: "2026-09-16T20:27:16.163281732Z"
+updated: "2026-09-17T04:57:36.177787413Z"
 tags:
   - orchestrator
   - agent
@@ -42,7 +42,7 @@ Deliver `orchestrator/src/agent/` as the seam between the session owner and any 
 - Do not put per-line parsing helpers here; the Claude translator owns the native shapes.
 
 ## Edge cases
-- `TranslateState` is per process launch: the owner creates a fresh one on every launch, resume, retry and adoption; `resumed` is true on `--resume` launches and on adoption of a process that was launched with `--resume`.
+- `TranslateState` is per process launch: the owner creates a fresh one on every actual launch, resume and retry; adoption of an existing process reconstructs its state before live tailing as specified by `qtx4x` and `ARCHITECTURE.md` "Durability and recovery"; `resumed` is true on `--resume` launches and on adoption of a process that was launched with `--resume`.
 - `sent_input_hashes` is a set, not a counter: two identical user messages are both recorded once each in `user_message` events by the owner but only one hash is stored; document this as accepted (the second echo becomes `raw`).
 - The mock must not depend on the Claude module; feature-gated code compiles without warnings under both feature settings.
 

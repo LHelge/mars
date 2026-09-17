@@ -382,6 +382,8 @@ Description: "List tasks you could start now, in the states your profile serves.
 
 Input `{ limit?: number = 20 }`. Output `{ tasks: TaskSummary[] }` where `TaskSummary = { id, number, title, state, priority, labels, description_excerpt, attempts, depends_on_count }`. Returns tasks in the calling profile's served states that are not blocked and have no lease holder, ordered by `priority` then `number`. A profile that serves no states gets an empty list.
 
+An explicit `limit` must be an integer from 1 through 100 inclusive; other values return `invalid_argument` and are never clamped. To produce `description_excerpt`, trim the description, replace each newline sequence (CRLF, LF or CR) with one space, then take the first 200 Unicode scalar values and trim trailing whitespace, without adding an ellipsis. `depends_on_count` counts outgoing dependencies of every kind.
+
 ### `claim`
 
 Description: "Claim a task before you start it. You hold it until you hand it off with `update`, give it back with `release`, or your session ends. If the claim fails someone else has it: pick another."

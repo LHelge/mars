@@ -4,7 +4,7 @@ title: "Implement restart recovery: adopt labelled containers with the token unc
 status: open
 priority: P1
 created: "2026-09-16T20:33:19.244397462Z"
-updated: "2026-09-16T20:33:19.244397462Z"
+updated: "2026-09-17T04:57:45.226464470Z"
 tags:
   - orchestrator
   - sessions
@@ -33,7 +33,7 @@ Implement `orchestrator/src/session/recovery.rs` and wire it into `main.rs` betw
 
 ## Implementation notes
 - Files: `orchestrator/src/session/recovery.rs`, `orchestrator/src/session/mod.rs`, `orchestrator/src/main.rs`.
-- Reuse the owner-spawn helper from the launcher (`spawn_owner(state, session, dirs, stdin, start_offset)`) so adoption and launch construct the owner identically.
+- Reuse the owner-spawn helper from the launcher, with an explicit adoption mode: restore the existing process's translation state through `qtx4x` before tailing beyond `start_offset`. Fresh launches reset state; adoption restores open subagents, denied-tool bookkeeping, input-echo hashes and any cumulative-cost baseline. Restoration publishes no events, increments no counters and resends no input.
 - The `mcp_token_hash` must be read before and after adoption in tests to prove it is unchanged; the code simply never writes it.
 - Also expose `recover` on `TestApp` (`app.recover().await`) so tests can simulate a restart against the same database and data directory after clearing the registry.
 
@@ -41,6 +41,7 @@ Implement `orchestrator/src/session/recovery.rs` and wire it into `main.rs` betw
 - Two containers with the same session label (crash between create and remove on a resume): adopt the running one, remove the others.
 - A session `running` in the database but the engine reports the container as `created`/not started: treat as gone (park and remove the container).
 - `MAX(_offset)` beyond the current file size (file replaced): the owner's tail handles it (seek to EOF with a warning).
+- Adoption tests also restart between a subagent call and its result and before a delayed input echo; assert a matching `subagent_end`, suppressed echo, unchanged committed history and no double-counted costs.
 - Recovery must not wait for `init`; the registry phase is `Running` immediately and queued inputs from before the restart are gone (ADR 0020).
 
 ## Testing

@@ -4,7 +4,7 @@ title: "Link tasks and sessions: GET /sessions/{id}/tasks and installing release
 status: open
 priority: P1
 created: "2026-09-16T20:46:59.309167546Z"
-updated: "2026-09-16T20:47:34.178360966Z"
+updated: "2026-09-17T04:58:18.266318490Z"
 tags:
   - orchestrator
   - tracker
@@ -25,7 +25,7 @@ Close the loop between sessions and the tracker: expose the tasks a session touc
 - ADRs 0016, 0021.
 
 ## Acceptance criteria
-- [ ] `GET /api/sessions/{id}/tasks` → 200 `Task[]` (full `Task` DTOs) for every `task_sessions` row of the session ordered by `last_touched_at DESC`, loaded through `load_task_dtos` with the session's project; 404 for an unknown session; 401 unauthenticated. Lives in `orchestrator/src/routes/sessions.rs` if that module exists, otherwise in `routes/tasks.rs` with a comment; exactly one implementation across epics (see the sessions epic's `md2zq`, which lists the same route: whichever lands second reuses the first).
+- [ ] `GET /api/sessions/{id}/tasks` → 200 `Task[]` (full `Task` DTOs) for every `task_sessions` row of the session ordered by `last_touched_at DESC`, loaded through `load_task_dtos` with the session's project; 404 for an unknown session; 401 unauthenticated. Lives in `orchestrator/src/routes/sessions.rs` if that module exists, otherwise in `routes/tasks.rs` with a comment; exactly one implementation across epics (see the sessions epic's `md2zq`, which lists the same route: `htyzj` owns the route and `md2zq` depends on and reuses it).
 - [ ] `tracker::hooks::on_session_dead(state: &AppState, session_id, reason: ReleaseReason)` calls `release_leases_for_session(pool, session_id, reason)` and then `escalation::notify(state, escalations)`; errors are logged with `session_id = %id` and swallowed (a session transition must not fail because the tracker did).
 - [ ] At startup (`main.rs` / `AppState` construction) the sessions epic's `on_session_ended` and `on_session_failed` hooks are set to call `on_session_dead` with `SessionEnded`; the `failed` hook passes `Stalled` when `sessions.error == "stalled"`, `SessionEnded` otherwise.
 - [ ] The hook runs after the session-state transaction has committed (never inside it: the project lock must precede session locks, so the tracker mutation is a separate, later transaction).

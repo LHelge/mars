@@ -78,3 +78,4 @@ The two clippy invocations are what the Orchestrator CI workflow runs, so a lint
 - Feature branches from `main`; rebase before merging, no merge commits; `gh pr create`.
 - Conventional Commits: `<type>(<scope>): <description>` with types `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `style`, `perf`, `ci`, `build` and scopes `orchestrator`, `frontend`, `images`, `infra`, `docs`.
 - A PR that changes behaviour without touching the corresponding document is not mergeable (rule 1).
+- Epics are implemented with the `implement-epic` skill (`.claude/skills/implement-epic/`): one Opus subagent per task in its own worktree, the coordinating session reviews, merges, verifies and pushes each task.

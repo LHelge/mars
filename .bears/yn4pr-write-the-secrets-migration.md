@@ -1,10 +1,10 @@
 ---
 id: yn4pr
 title: Write the secrets migration
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:31:32.329287655Z"
-updated: "2026-09-16T20:31:32.329287655Z"
+updated: "2026-09-17T07:19:58.827132458Z"
 tags:
   - orchestrator
   - core
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - vnwqh
 parent: p5tsd
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: dm7hz
 title: Add the secret models and SecretRepository with scoped CRUD and usage audit rows
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:33:06.510749584Z"
-updated: "2026-09-16T20:33:06.510749584Z"
+updated: "2026-09-17T07:20:03.197280752Z"
 tags:
   - orchestrator
   - core
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - yn4pr
 parent: p5tsd
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

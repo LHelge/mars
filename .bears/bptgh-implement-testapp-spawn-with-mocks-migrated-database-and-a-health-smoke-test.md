@@ -1,10 +1,10 @@
 ---
 id: bptgh
 title: "Implement TestApp::spawn() with mocks, migrated database and a health smoke test"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:29:38.437708995Z"
-updated: "2026-09-16T20:29:38.437708995Z"
+updated: "2026-09-17T07:08:11.301056154Z"
 tags:
   - orchestrator
   - core
@@ -14,6 +14,8 @@ depends_on:
   - suzac
   - xbjn4
 parent: p5tsd
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

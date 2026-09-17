@@ -18,7 +18,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use axum_test::TestServer;
+use axum_extra::extract::cookie::Cookie;
+use axum_test::{TestResponse, TestServer};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{TimeDelta, Utc};
@@ -29,10 +30,13 @@ use mars_orchestrator::engine::ContainerEngine;
 use mars_orchestrator::engine::mock::MockContainerEngine;
 use mars_orchestrator::git::GitCredentialProvider;
 use mars_orchestrator::git::mock::MockGitCredentialProvider;
+use mars_orchestrator::models::user::hash_password;
 use mars_orchestrator::models::{Email, NewUser, User, Username};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;
 use mars_orchestrator::secrets::SecretsKeyring;
+use serde::Deserialize;
+use serde_json::Value;
 use tempfile::TempDir;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
@@ -238,6 +242,90 @@ impl TestApp {
             .encode(&self.state.config)
             .expect("the test claims sign")
     }
+
+    /// Insert a user whose password actually verifies.
+    ///
+    /// [`TestApp::insert_user`] stores [`FAKE_PASSWORD_HASH`], which nothing
+    /// can authenticate against; a test that drives `POST /api/auth/login`
+    /// needs a real Argon2id hash of a known password, and hashing one costs
+    /// tens of milliseconds, so it is a separate call rather than a cost every
+    /// arrangement pays.
+    ///
+    /// `password` is an obviously fake test password like every other value
+    /// here (rule 3).
+    pub async fn insert_user_with_password(
+        &self,
+        username: &str,
+        email: &str,
+        password: &str,
+        admin: bool,
+        must_change_password: bool,
+    ) -> User {
+        let user = NewUser {
+            id: Uuid::new_v4(),
+            username: Username::parse(username).expect("the test username is valid"),
+            email: Email::parse(email).expect("the test email is valid"),
+            password_hash: hash_password(password).expect("the test password hashes"),
+            admin,
+            must_change_password,
+        };
+
+        let mut tx = self.pool.begin().await.expect("a transaction begins");
+        let inserted = UserRepository::new(&self.pool)
+            .insert(&mut tx, &user)
+            .await
+            .expect("the test user inserts");
+        tx.commit().await.expect("the transaction commits");
+
+        inserted
+    }
+
+    /// Log in through the real route and return the body and the raw refresh
+    /// cookie value.
+    ///
+    /// Asserts 200, so it is the arrangement step for tests that are about
+    /// what happens *after* a login; a test asserting on a failed login posts
+    /// to `/api/auth/login` itself.
+    ///
+    /// The cookie is returned rather than stored because `axum-test` does not
+    /// keep cookies between requests unless asked to, and the refresh tests
+    /// need to present an old value deliberately.
+    pub async fn login(&self, username: &str, password: &str) -> (TokenPair, String) {
+        let response = self
+            .server
+            .post("/api/auth/login")
+            .json(&serde_json::json!({ "username": username, "password": password }))
+            .await;
+
+        response.assert_status_ok();
+        let cookie = response.cookie(REFRESH_COOKIE).value().to_string();
+
+        (response.json::<TokenPair>(), cookie)
+    }
+
+    /// Present `cookie` at `POST /api/auth/refresh`.
+    ///
+    /// The whole response, not a parsed body: half of what the refresh tests
+    /// assert is the status and the `Set-Cookie` of a *rejection*.
+    pub async fn refresh(&self, cookie: &str) -> TestResponse {
+        self.server
+            .post("/api/auth/refresh")
+            .add_cookie(Cookie::new(REFRESH_COOKIE, cookie.to_string()))
+            .await
+    }
+}
+
+/// The `{ user, access_token }` body the credential-issuing routes answer with
+/// (`SPEC.md`, "Authentication").
+///
+/// `user` stays a `Value` on purpose: the route's own response type is
+/// `pub(crate)` and `User` has no `Deserialize` (deriving one would make an
+/// empty `password_hash` constructible from JSON), and what the tests assert
+/// about it is partly which keys are *absent*.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TokenPair {
+    pub user: Value,
+    pub access_token: String,
 }
 
 /// The configuration `spawn` builds, from values in code rather than from the

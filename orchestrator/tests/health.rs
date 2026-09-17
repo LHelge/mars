@@ -12,7 +12,11 @@ use std::collections::HashMap;
 use axum::http::StatusCode;
 use axum_test::TestServer;
 use mars_orchestrator::build_api_router;
+use mars_orchestrator::email::PlaceholderEmailClient;
+use mars_orchestrator::engine::PlaceholderEngine;
+use mars_orchestrator::git::{CommitIdentity, PlaceholderCredentialProvider};
 use mars_orchestrator::prelude::*;
+use mars_orchestrator::secrets::{MASTER_KEY_LEN, SecretsKeyring};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use testcontainers_modules::postgres::Postgres;
@@ -69,7 +73,21 @@ async fn health_endpoint_reports_ready_with_real_postgres() {
         .await
         .expect("the pool connects");
 
-    let state = AppState::new(Arc::new(config), pool);
+    // The startup placeholders, which is what `main` wires today; `ping`
+    // succeeds, so this asserts the database half against a real Postgres.
+    let identity = CommitIdentity {
+        name: config.git_bot_name.clone(),
+        email: config.git_bot_email.clone(),
+    };
+    let state = AppState::new(
+        Arc::new(config),
+        pool,
+        Arc::new(PlaceholderEngine),
+        Arc::new(PlaceholderEmailClient),
+        Arc::new(PlaceholderCredentialProvider::new(identity)),
+        SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
+            .expect("one entry is a valid keyring"),
+    );
     let server = TestServer::new(build_api_router(state));
 
     let response = server.get("/api/health").await;

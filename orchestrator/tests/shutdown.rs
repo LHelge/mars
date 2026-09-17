@@ -5,8 +5,12 @@
 
 use std::time::Duration;
 
+use mars_orchestrator::email::PlaceholderEmailClient;
+use mars_orchestrator::engine::PlaceholderEngine;
+use mars_orchestrator::git::{CommitIdentity, PlaceholderCredentialProvider};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::run;
+use mars_orchestrator::secrets::{MASTER_KEY_LEN, SecretsKeyring};
 use sqlx::postgres::PgPoolOptions;
 use std::collections::HashMap;
 use tokio::net::TcpListener;
@@ -35,7 +39,20 @@ fn test_state() -> AppState {
         .connect_lazy(&config.database_url)
         .expect("a lazy pool never connects");
 
-    AppState::new(Arc::new(config), pool)
+    let identity = CommitIdentity {
+        name: config.git_bot_name.clone(),
+        email: config.git_bot_email.clone(),
+    };
+
+    AppState::new(
+        Arc::new(config),
+        pool,
+        Arc::new(PlaceholderEngine),
+        Arc::new(PlaceholderEmailClient),
+        Arc::new(PlaceholderCredentialProvider::new(identity)),
+        SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
+            .expect("one entry is a valid keyring"),
+    )
 }
 
 #[tokio::test]

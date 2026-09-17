@@ -12,7 +12,13 @@
 use std::time::Duration;
 
 use futures_util::FutureExt;
+use mars_orchestrator::email::{EmailClient, PlaceholderEmailClient};
+use mars_orchestrator::engine::{ContainerEngine, PlaceholderEngine};
+use mars_orchestrator::git::{
+    CommitIdentity, GitCredentialProvider, PlaceholderCredentialProvider,
+};
 use mars_orchestrator::prelude::*;
+use mars_orchestrator::secrets;
 use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -44,6 +50,22 @@ async fn main() {
         eprintln!("error: {err}");
         std::process::exit(1);
     }
+
+    // Before the pool, because a master key that cannot be parsed is a
+    // configuration fault and nothing in the process can recover from it. The
+    // error names the offending version, never the value (rule 3).
+    let keyring = match secrets::load_keyring(&config) {
+        Ok(keyring) => keyring,
+        Err(err) => {
+            error!(error = %err, "the secrets master keys could not be loaded");
+            std::process::exit(1);
+        }
+    };
+    info!(
+        key_versions = ?keyring.versions(),
+        current_key_version = keyring.current_version(),
+        "master keyring loaded"
+    );
 
     // The URL is a credential; the database is identified by nothing at all
     // here, and by its host only once sqlx reports a failure (rule 3).
@@ -87,7 +109,25 @@ async fn main() {
     let mcp = bind(mcp_port).await;
     info!(api_port, mcp_port, "listening");
 
-    let state = AppState::new(Arc::new(config), pool);
+    // The three collaborators have no production implementation yet: the
+    // container engine, authentication and git operations epics each replace
+    // their placeholder with the real thing behind the same trait.
+    let engine: Arc<dyn ContainerEngine> = Arc::new(PlaceholderEngine);
+    let email: Arc<dyn EmailClient> = Arc::new(PlaceholderEmailClient);
+    let git_credentials: Arc<dyn GitCredentialProvider> =
+        Arc::new(PlaceholderCredentialProvider::new(CommitIdentity {
+            name: config.git_bot_name.clone(),
+            email: config.git_bot_email.clone(),
+        }));
+
+    let state = AppState::new(
+        Arc::new(config),
+        pool,
+        engine,
+        email,
+        git_credentials,
+        keyring,
+    );
 
     // One signal future, watched twice: once by the listeners, which start
     // draining, and once by the deadline, which gives up on a request that

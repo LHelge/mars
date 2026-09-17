@@ -1,16 +1,18 @@
 ---
 id: a2cku
 title: "Implement SecretsService: create, replace, rename re-encryption, delete, list and uses with ownership rules"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:30:47.404552253Z"
-updated: "2026-09-16T20:30:47.404552253Z"
+updated: "2026-09-17T13:07:28.946438926Z"
 tags:
   - orchestrator
   - secrets
 depends_on:
   - qafug
 parent: t36d2
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

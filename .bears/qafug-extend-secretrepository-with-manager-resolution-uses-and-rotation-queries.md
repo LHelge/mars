@@ -1,10 +1,10 @@
 ---
 id: qafug
 title: Extend SecretRepository with manager, resolution, uses and rotation queries
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:30:14.314571587Z"
-updated: "2026-09-17T12:37:43.039719027Z"
+updated: "2026-09-17T13:06:59.610082672Z"
 tags:
   - orchestrator
   - secrets

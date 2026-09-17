@@ -1,10 +1,10 @@
 ---
 id: sz5t2
 title: "Implement rewrap_outdated: batched master-key rotation of wrapped data keys"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:31:43.123490352Z"
-updated: "2026-09-16T20:31:43.123490352Z"
+updated: "2026-09-17T13:07:32.000766595Z"
 tags:
   - orchestrator
   - secrets
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - qafug
 parent: t36d2
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

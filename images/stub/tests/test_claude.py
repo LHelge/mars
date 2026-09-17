@@ -21,6 +21,7 @@ import unittest
 from pathlib import Path
 
 STUB = Path(__file__).resolve().parents[1] / "claude"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 TIMEOUT = 10
 
 
@@ -420,6 +421,61 @@ class TranscriptTests(StubTestCase):
             completed.stdout.splitlines(),
         )
         self.assertIn("no transcript to resume", completed.stderr)
+
+
+class ShippedFixtureTests(StubTestCase):
+    """The fixtures the image ships under /opt/mars-stub/fixtures/.
+
+    They are loaded through MARS_STUB_FIXTURE exactly as the container does, so
+    a change to either file that the stub cannot replay fails here rather than
+    in an end-to-end run (`images/stub/fixtures/README.md`).
+    """
+
+    def test_default_fixture_replays_three_turns_with_partial_messages(self):
+        completed = self.run_stub(
+            ["-p", "hello", "--include-partial-messages"],
+            fixture=FIXTURES / "default.jsonl",
+        )
+        self.assertEqual(completed.returncode, 0)
+        lines = self.lines(completed)
+        self.assertEqual(len(lines), 26)
+        self.assertEqual(lines[0]["type"], "system")
+        self.assertEqual(lines[0]["subtype"], "init")
+        results = [line for line in lines if line["type"] == "result"]
+        self.assertEqual(len(results), 3)
+        self.assertEqual(
+            [line["total_cost_usd"] for line in results], [0.0123, 0.0456, 0.0089]
+        )
+        self.assertEqual(lines[-1]["type"], "result")
+        self.assertEqual(
+            len([line for line in lines if line["type"] == "stream_event"]), 2
+        )
+
+    def test_default_fixture_drops_stream_events_without_the_flag(self):
+        completed = self.run_stub(["-p", "hello"], fixture=FIXTURES / "default.jsonl")
+        self.assertEqual(completed.returncode, 0)
+        lines = self.lines(completed)
+        self.assertEqual([line["type"] for line in lines if line["type"] == "stream_event"], [])
+        self.assertEqual(len(lines), 24)
+        self.assertEqual(len([line for line in lines if line["type"] == "result"]), 3)
+
+    def test_agent_tool_fixture_replays_one_turn(self):
+        completed = self.run_stub(
+            ["-p", "hello"], fixture=FIXTURES / "agent-tool.jsonl"
+        )
+        self.assertEqual(completed.returncode, 0)
+        lines = self.lines(completed)
+        self.assertEqual(lines[0]["subtype"], "init")
+        self.assertEqual(len([line for line in lines if line["type"] == "result"]), 1)
+        self.assertEqual(lines[-1]["type"], "result")
+        tool_names = [
+            block.get("name")
+            for line in lines
+            if line["type"] == "assistant"
+            for block in line["message"]["content"]
+            if block.get("type") == "tool_use"
+        ]
+        self.assertIn("Agent", tool_names)
 
 
 class SignalTests(StubTestCase):

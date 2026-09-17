@@ -153,6 +153,20 @@ if [ "$VERIFY" -eq 1 ]; then
     for f in $(echo "$CHANGED" | grep '^\.github/workflows/'); do
       [ -f "$f" ] && npx -y @action-validator/cli@latest "$f"
     done
+    # action-validator checks the schema only; it accepted a job-level `env`
+    # that used the `runner` context, which GitHub then refused to parse, so
+    # the Images run failed before any job started. actionlint knows which
+    # contexts each key may use. It needs the repository root as its working
+    # directory and a container engine to run from.
+    ENGINE_CLI=""
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then ENGINE_CLI=docker
+    elif command -v podman >/dev/null 2>&1; then ENGINE_CLI=podman
+    fi
+    if [ -n "$ENGINE_CLI" ]; then
+      "$ENGINE_CLI" run --rm -v "$REPO:/repo:ro" -w /repo docker.io/rhysd/actionlint:latest -no-color
+    else
+      echo "!! no container engine for actionlint; expression-context errors are only caught by GitHub"
+    fi
   fi
 fi
 

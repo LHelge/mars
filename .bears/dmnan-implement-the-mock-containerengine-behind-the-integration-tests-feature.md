@@ -1,10 +1,10 @@
 ---
 id: dmnan
 title: Implement the mock ContainerEngine behind the integration-tests feature
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:28:45.110649935Z"
-updated: "2026-09-16T20:28:45.110649935Z"
+updated: "2026-09-17T17:14:47.363719572Z"
 tags:
   - orchestrator
   - engine
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - kjvte
 parent: naqhy
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: m8qqn
 title: Implement BollardEngine attach-stdin (TTY off) and exec PTY with resize
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:29:18.916075238Z"
-updated: "2026-09-16T20:29:18.916075238Z"
+updated: "2026-09-17T17:20:42.713573720Z"
 tags:
   - orchestrator
   - engine
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - d9h6f
 parent: naqhy
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

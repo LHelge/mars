@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT p.profile_id, p.state_id\n            FROM profile_states AS p\n            JOIN task_states AS s ON s.id = p.state_id\n            WHERE s.project_id = $1\n            ORDER BY p.profile_id, s.position, s.name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "profile_states",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "state_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "profile_states",
+            "name": "state_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c1d6281f9994486b625f7dc8ecd3fabc4c53be7b74a1b9688b7f2fd42abc6632"
+}

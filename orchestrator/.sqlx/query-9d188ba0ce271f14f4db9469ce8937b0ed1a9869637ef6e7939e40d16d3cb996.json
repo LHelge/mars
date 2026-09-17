@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO profile_states (profile_id, state_id) SELECT $1, * FROM UNNEST($2::uuid[])",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9d188ba0ce271f14f4db9469ce8937b0ed1a9869637ef6e7939e40d16d3cb996"
+}

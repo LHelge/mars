@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE task_states SET position = position + 1 WHERE project_id = $1 AND position >= $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f61c052763e31d9b56cf3ecd282bf684a679df090d25def7902d0bd46daa9d21"
+}

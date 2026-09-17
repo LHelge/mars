@@ -20,6 +20,9 @@ use zeroize::Zeroize;
 
 use crate::prelude::*;
 
+pub mod lock;
+pub use lock::{ProjectGitGuard, ProjectGitLocks};
+
 #[cfg(feature = "integration-tests")]
 pub mod mock;
 

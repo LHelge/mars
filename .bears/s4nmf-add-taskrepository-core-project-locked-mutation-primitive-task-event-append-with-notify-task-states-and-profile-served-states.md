@@ -1,10 +1,10 @@
 ---
 id: s4nmf
 title: "Add TaskRepository core: project-locked mutation primitive, task-event append with notify, task states and profile served states"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:32:02.151930431Z"
-updated: "2026-09-16T20:32:02.151930431Z"
+updated: "2026-09-17T07:59:27.381629277Z"
 tags:
   - orchestrator
   - core
@@ -15,6 +15,8 @@ depends_on:
   - "2xrbu"
   - tu78t
 parent: p5tsd
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

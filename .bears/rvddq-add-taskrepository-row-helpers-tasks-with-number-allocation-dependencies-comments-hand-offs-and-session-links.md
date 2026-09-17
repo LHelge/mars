@@ -1,10 +1,10 @@
 ---
 id: rvddq
 title: "Add TaskRepository row helpers: tasks with number allocation, dependencies, comments, hand-offs and session links"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:32:42.530907366Z"
-updated: "2026-09-16T20:32:42.530907366Z"
+updated: "2026-09-17T08:20:50.195457059Z"
 tags:
   - orchestrator
   - core
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - s4nmf
 parent: p5tsd
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

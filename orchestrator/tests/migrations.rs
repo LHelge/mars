@@ -260,19 +260,48 @@ async fn projects_and_sessions_schema_holds_the_documented_guarantees() {
     );
 
     // `task_id` and `handoff_id` belong to the `tasks` migration, which owns
-    // the tables they reference.
-    let session_columns: Vec<String> = sqlx::query_scalar(
-        "SELECT column_name::text FROM information_schema.columns \
+    // the tables they reference, but they are columns of `sessions` and both
+    // are optional: a session may be launched without a task at all.
+    let session_columns: Vec<(String, String)> = sqlx::query_as(
+        "SELECT column_name::text, is_nullable::text FROM information_schema.columns \
          WHERE table_schema = 'public' AND table_name = 'sessions' \
-           AND column_name IN ('task_id', 'handoff_id')",
+           AND column_name IN ('task_id', 'handoff_id') \
+         ORDER BY column_name",
     )
     .fetch_all(&pool)
     .await
     .expect("the column catalog is readable");
-    assert!(
-        session_columns.is_empty(),
-        "sessions.task_id and sessions.handoff_id are added by the tasks migration, \
-         but this schema already has {session_columns:?}"
+    assert_eq!(
+        session_columns,
+        vec![
+            ("handoff_id".to_string(), "YES".to_string()),
+            ("task_id".to_string(), "YES".to_string()),
+        ],
+        "sessions must carry the nullable task_id and handoff_id the tasks migration adds"
+    );
+
+    // Deleting a task or a hand-off leaves its sessions in place; they are the
+    // record of work that actually ran.
+    let session_delete_rules: Vec<(String, String)> = sqlx::query_as(
+        "SELECT constraint_name::text, delete_rule::text \
+         FROM information_schema.referential_constraints \
+         WHERE constraint_schema = 'public' \
+           AND constraint_name IN ('sessions_task_id_fkey', 'sessions_handoff_id_fkey') \
+         ORDER BY constraint_name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the referential constraint catalog is readable");
+    assert_eq!(
+        session_delete_rules,
+        vec![
+            (
+                "sessions_handoff_id_fkey".to_string(),
+                "SET NULL".to_string()
+            ),
+            ("sessions_task_id_fkey".to_string(), "SET NULL".to_string()),
+        ],
+        "sessions.task_id and sessions.handoff_id must be ON DELETE SET NULL"
     );
 
     let session_indexes: Vec<String> = sqlx::query_scalar(
@@ -291,10 +320,127 @@ async fn projects_and_sessions_schema_holds_the_documented_guarantees() {
             "sessions_pkey".to_string(),
             "sessions_project_created_idx".to_string(),
             "sessions_state_idx".to_string(),
+            "sessions_task_idx".to_string(),
         ],
-        "the sessions indexes do not match the document (sessions_task_idx comes with the \
-         tasks migration)"
+        "the sessions indexes do not match the document"
     );
+}
+
+/// The load-bearing details of the `tasks` migration (`docs/data-model.md`,
+/// "Tasks").
+///
+/// As above, the point is the handful of guarantees only the database can
+/// make: the deliberate *absence* of a foreign key on `task_events.task_id`,
+/// the `RESTRICT` that keeps a state with tasks in it from being deleted, and
+/// the two partial indexes whose predicates are what make the claimable query
+/// and "at most one human state" work at all. Everything else is exercised by
+/// the repositories that query it.
+#[tokio::test]
+async fn tasks_schema_holds_the_documented_guarantees() {
+    let (_postgres, pool) = common::db::test_pool().await;
+
+    // Event history keeps the task's original UUID after the task is deleted,
+    // so a foreign key here would either erase history or block deletion. The
+    // primary key must be the only constraint of its kind on the table.
+    let task_event_constraints: Vec<(String, String)> = sqlx::query_as(
+        "SELECT constraint_name::text, constraint_type::text \
+         FROM information_schema.table_constraints \
+         WHERE constraint_schema = 'public' AND table_name = 'task_events' \
+           AND constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY') \
+         ORDER BY constraint_name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the constraint catalog is readable");
+    assert_eq!(
+        task_event_constraints,
+        vec![
+            ("task_events_pkey".to_string(), "PRIMARY KEY".to_string()),
+            (
+                "task_events_project_id_fkey".to_string(),
+                "FOREIGN KEY".to_string()
+            ),
+        ],
+        "task_events must have only the (project_id, seq) primary key and the project \
+         foreign key; task_id deliberately has none"
+    );
+
+    let task_id_keys: Vec<String> = sqlx::query_scalar(
+        "SELECT k.constraint_name::text \
+         FROM information_schema.key_column_usage k \
+         JOIN information_schema.table_constraints c \
+           ON c.constraint_schema = k.constraint_schema \
+          AND c.constraint_name = k.constraint_name \
+         WHERE k.table_schema = 'public' AND k.table_name = 'task_events' \
+           AND k.column_name = 'task_id' AND c.constraint_type = 'FOREIGN KEY'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the key column catalog is readable");
+    assert!(
+        task_id_keys.is_empty(),
+        "task_events.task_id must have no foreign key, but has {task_id_keys:?}"
+    );
+
+    // A state that still holds tasks cannot be deleted; the repository refuses
+    // first, but this is what makes the refusal true.
+    let state_delete_rule: String = sqlx::query_scalar(
+        "SELECT delete_rule::text \
+         FROM information_schema.referential_constraints \
+         WHERE constraint_schema = 'public' AND constraint_name = 'tasks_state_id_fkey'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("tasks.state_id has a foreign key under Postgres's default name");
+    assert_eq!(
+        state_delete_rule, "RESTRICT",
+        "tasks.state_id must be ON DELETE RESTRICT"
+    );
+
+    // The `ready` tool reads only claimable tasks, so the index must exclude
+    // the blocked and the already-held ones rather than merely order them.
+    let (claimable_unique, claimable_predicate): (bool, Option<String>) =
+        partial_index(&pool, "tasks_claimable_idx").await;
+    assert!(
+        !claimable_unique,
+        "tasks_claimable_idx is an ordering index, not a uniqueness constraint"
+    );
+    let claimable_predicate =
+        claimable_predicate.expect("tasks_claimable_idx must be a partial index");
+    assert!(
+        claimable_predicate.contains("NOT blocked")
+            && claimable_predicate.contains("lease_holder_session_id IS NULL"),
+        "tasks_claimable_idx must be predicated on NOT blocked AND \
+         lease_holder_session_id IS NULL, not {claimable_predicate:?}"
+    );
+
+    // At most one human state per project, enforced by a partial unique index
+    // rather than by the repository reading before it writes.
+    let (human_unique, human_predicate): (bool, Option<String>) =
+        partial_index(&pool, "task_states_one_human_idx").await;
+    assert!(human_unique, "task_states_one_human_idx must be UNIQUE");
+    let human_predicate =
+        human_predicate.expect("task_states_one_human_idx must be a partial index");
+    assert!(
+        human_predicate.contains("human"),
+        "task_states_one_human_idx must be predicated on kind = 'human', not \
+         {human_predicate:?}"
+    );
+}
+
+/// Whether an index is unique, and its partial predicate if it has one.
+async fn partial_index(pool: &PgPool, name: &str) -> (bool, Option<String>) {
+    sqlx::query_as(
+        "SELECT i.indisunique, pg_get_expr(i.indpred, i.indrelid) \
+         FROM pg_index i \
+         JOIN pg_class c ON c.oid = i.indexrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = 'public' AND c.relname = $1",
+    )
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .unwrap_or_else(|_| panic!("{name} exists"))
 }
 
 /// How many migrations sqlx has recorded as applied.

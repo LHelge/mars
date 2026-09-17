@@ -2013,6 +2013,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "jsonwebtoken",
+ "libc",
  "rand 0.10.2",
  "reqwest",
  "rmcp",

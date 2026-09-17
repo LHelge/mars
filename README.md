@@ -191,6 +191,8 @@ export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock
 
 With Docker instead: `export DOCKER_HOST=unix:///var/run/docker.sock`. The supported Docker uid contract also requires running the orchestrator as uid 1000 with a data directory owned by that uid; see `ARCHITECTURE.md`, "Uid contract".
 
+The backend tests reach this socket too: each test binary starts one `postgres:18` container of its own and gives every test a database on it (`CLAUDE.md`, "Testing expectations"), and removes the container when the process exits.
+
 **Orchestrator**:
 
 ```bash

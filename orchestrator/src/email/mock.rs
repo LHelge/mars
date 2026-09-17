@@ -4,17 +4,22 @@
 //! captured (`CLAUDE.md`, "Testing expectations").
 
 use std::any::Any;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use async_trait::async_trait;
 
-use super::{EmailClient, EmailMessage};
+use super::{EmailClient, EmailError, EmailMessage};
 use crate::prelude::*;
+
+/// The status the simulated provider failure reports.
+const SIMULATED_PROVIDER_STATUS: u16 = 500;
 
 /// A client that delivers nowhere and keeps every message in order.
 #[derive(Debug, Default)]
 pub struct MockEmailClient {
     sent: Mutex<Vec<EmailMessage>>,
+    fail_next: AtomicBool,
 }
 
 impl MockEmailClient {
@@ -34,6 +39,14 @@ impl MockEmailClient {
         self.lock().clear();
     }
 
+    /// Make exactly the next send fail, as a provider refusal would.
+    ///
+    /// The failed message is not captured, so `sent()` still reflects what a
+    /// caller actually got delivered.
+    pub fn fail_next(&self) {
+        self.fail_next.store(true, Ordering::SeqCst);
+    }
+
     fn lock(&self) -> MutexGuard<'_, Vec<EmailMessage>> {
         // Test-only code: a poisoned lock means another test thread already
         // panicked, which is a failure in its own right.
@@ -48,6 +61,13 @@ impl EmailClient for MockEmailClient {
     }
 
     async fn send(&self, message: EmailMessage) -> Result<()> {
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            return Err(EmailError::Provider {
+                status: SIMULATED_PROVIDER_STATUS,
+            }
+            .into());
+        }
+
         self.lock().push(message);
         Ok(())
     }
@@ -84,6 +104,28 @@ mod tests {
 
         client.clear();
         assert!(client.sent().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fail_next_fails_exactly_one_send() {
+        let client = MockEmailClient::new();
+        client.fail_next();
+
+        let error = client
+            .send(message("refused"))
+            .await
+            .expect_err("the armed send fails");
+        assert!(matches!(
+            error,
+            Error::Email(EmailError::Provider { status: 500 })
+        ));
+        assert!(client.sent().is_empty(), "a failed send is not captured");
+
+        client
+            .send(message("delivered"))
+            .await
+            .expect("only one send was armed to fail");
+        assert_eq!(client.sent().len(), 1);
     }
 
     #[tokio::test]

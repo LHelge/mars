@@ -400,7 +400,9 @@ mod tests {
         assert!(!body.contains("podman.sock"), "leaked body: {body}");
 
         for error in [
-            Error::from(EmailError::NotConfigured),
+            Error::from(EmailError::Transport(
+                "connect api.resend.com: refused".into(),
+            )),
             Error::from(GitError::Command("fatal: not a repository".into())),
             Error::from(SecretsError::InvalidMasterKey("version 1".into())),
         ] {

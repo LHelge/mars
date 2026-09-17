@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use mars_orchestrator::email::PlaceholderEmailClient;
+use mars_orchestrator::email::LogEmailClient;
 use mars_orchestrator::engine::PlaceholderEngine;
 use mars_orchestrator::git::{CommitIdentity, PlaceholderCredentialProvider};
 use mars_orchestrator::prelude::*;
@@ -48,7 +48,7 @@ fn test_state() -> AppState {
         Arc::new(config),
         pool,
         Arc::new(PlaceholderEngine),
-        Arc::new(PlaceholderEmailClient),
+        Arc::new(LogEmailClient),
         Arc::new(PlaceholderCredentialProvider::new(identity)),
         SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
             .expect("one entry is a valid keyring"),

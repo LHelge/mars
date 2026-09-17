@@ -92,7 +92,7 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
-    use crate::email::PlaceholderEmailClient;
+    use crate::email::LogEmailClient;
     use crate::engine::PlaceholderEngine;
     use crate::git::{CommitIdentity, PlaceholderCredentialProvider};
     use crate::secrets::MASTER_KEY_LEN;
@@ -129,13 +129,13 @@ mod tests {
             email: config.git_bot_email.clone(),
         };
 
-        // The startup placeholders, not the mocks: these unit tests also
+        // The startup clients, not the mocks: these unit tests also
         // compile without the `integration-tests` feature.
         AppState::new(
             Arc::new(config),
             pool,
             Arc::new(PlaceholderEngine),
-            Arc::new(PlaceholderEmailClient),
+            Arc::new(LogEmailClient),
             Arc::new(PlaceholderCredentialProvider::new(identity)),
             SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
                 .expect("one entry is a valid keyring"),

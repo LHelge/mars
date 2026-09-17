@@ -1,10 +1,10 @@
 ---
 id: "5efvd"
 title: "Implement SecretsKeyring: master-key parsing, data-key wrap/unwrap and startup key_version verification"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:29:20.648385693Z"
-updated: "2026-09-16T20:51:51.694847232Z"
+updated: "2026-09-17T12:18:05.456103524Z"
 tags:
   - orchestrator
   - secrets
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - qacxf
 parent: t36d2
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: bytcb
 title: Add the mars-orchestrator rotate-secrets subcommand
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-16T20:32:24.245693491Z"
-updated: "2026-09-16T20:32:24.245693491Z"
+updated: "2026-09-17T13:57:07.006194103Z"
 tags:
   - orchestrator
   - secrets
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - sz5t2
 parent: t36d2
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

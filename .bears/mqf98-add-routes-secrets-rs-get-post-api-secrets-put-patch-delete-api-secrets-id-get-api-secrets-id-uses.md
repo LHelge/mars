@@ -1,10 +1,10 @@
 ---
 id: mqf98
 title: "Add routes/secrets.rs: GET/POST /api/secrets, PUT/PATCH/DELETE /api/secrets/{id}, GET /api/secrets/{id}/uses"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:32:09.483672603Z"
-updated: "2026-09-16T20:32:09.483672603Z"
+updated: "2026-09-17T13:57:05.720951748Z"
 tags:
   - orchestrator
   - secrets
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - a2cku
 parent: t36d2
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

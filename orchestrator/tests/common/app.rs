@@ -28,7 +28,7 @@ use mars_orchestrator::build_api_router;
 use mars_orchestrator::email::EmailClient;
 use mars_orchestrator::email::mock::MockEmailClient;
 use mars_orchestrator::engine::ContainerEngine;
-use mars_orchestrator::engine::mock::MockContainerEngine;
+use mars_orchestrator::engine::mock::MockEngine;
 use mars_orchestrator::git::GitCredentialProvider;
 use mars_orchestrator::git::mock::MockGitCredentialProvider;
 use mars_orchestrator::models::user::hash_password;
@@ -78,7 +78,7 @@ pub struct TestApp {
     /// The state the router was built with, cloned into every handler.
     pub state: AppState,
     /// The same allocation as `state.engine`.
-    pub engine: Arc<MockContainerEngine>,
+    pub engine: Arc<MockEngine>,
     /// The same allocation as `state.email`; invite and password-reset flows
     /// are asserted through the messages it captured.
     pub email: Arc<MockEmailClient>,
@@ -114,7 +114,7 @@ impl TestApp {
         // Built as concrete mocks first and coerced afterwards, so the
         // `Arc<dyn Trait>` in the state and the `Arc<Mock…>` on `TestApp` are
         // the same allocation: what a handler sends, `app.email.sent()` sees.
-        let engine = Arc::new(MockContainerEngine::new());
+        let engine = Arc::new(MockEngine::default());
         let email = Arc::new(MockEmailClient::new());
         let git = Arc::new(MockGitCredentialProvider::new());
 
@@ -153,7 +153,7 @@ impl TestApp {
 
     /// The engine the router calls. Also reachable from an
     /// `Arc<dyn ContainerEngine>` through `ContainerEngine::as_any`.
-    pub fn mock_engine(&self) -> &MockContainerEngine {
+    pub fn engine(&self) -> &MockEngine {
         &self.engine
     }
 

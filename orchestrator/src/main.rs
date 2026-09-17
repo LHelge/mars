@@ -27,7 +27,7 @@ use futures_util::FutureExt;
 use mars_orchestrator::email::{EmailClient, LogEmailClient, ResendClient};
 use mars_orchestrator::engine::{EngineError, bootstrap_engine};
 use mars_orchestrator::git::{
-    CommitIdentity, GitCommand, GitCredentialProvider, PlaceholderCredentialProvider,
+    CommitIdentity, GitCommand, GitCredentialProvider, PatCredentialProvider,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::secrets;
@@ -235,15 +235,19 @@ async fn serve(bootstrap: Bootstrap) {
     let mcp = bind(mcp_port).await;
     info!(api_port, mcp_port, "listening");
 
-    // The git credential provider has no production implementation yet: the
-    // git operations epic replaces its placeholder with the real thing behind
-    // the same trait.
+    // The v1 provider (ADR 0002): the project's `GIT_CREDENTIAL` secret,
+    // decrypted and audited on every read, as an `Authorization: Basic`
+    // header. It shares the pool and the keyring with the rest of the process;
+    // cloning the keyring shares its keys rather than copying them.
     let email: Arc<dyn EmailClient> = select_email_client(&config);
-    let git_credentials: Arc<dyn GitCredentialProvider> =
-        Arc::new(PlaceholderCredentialProvider::new(CommitIdentity {
+    let git_credentials: Arc<dyn GitCredentialProvider> = Arc::new(PatCredentialProvider::new(
+        pool.clone(),
+        keyring.clone(),
+        CommitIdentity {
             name: config.git_bot_name.clone(),
             email: config.git_bot_email.clone(),
-        }));
+        },
+    ));
 
     let state = AppState::new(
         Arc::new(config),

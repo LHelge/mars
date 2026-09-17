@@ -118,7 +118,7 @@ mod tests {
         ContainerId, ContainerInfo, ContainerSpec, ContainerSummary, EngineError, EngineKind,
         ExecSession, ExitStatus, PlaceholderEngine, Signal, StdinWriter,
     };
-    use crate::git::{CommitIdentity, PlaceholderCredentialProvider};
+    use crate::git::{CommitIdentity, PatCredentialProvider};
     use crate::secrets::{MASTER_KEY_LEN, SecretsKeyring};
 
     /// Obviously fake values; nothing here is a real credential (rule 3).
@@ -253,17 +253,23 @@ mod tests {
         let pool = PgPoolOptions::new()
             .connect_lazy(&config.database_url)
             .expect("a lazy pool never connects");
+        let keyring = SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
+            .expect("one entry is a valid keyring");
+
         let state = AppState::new(
             Arc::new(config),
-            pool,
+            pool.clone(),
             engine,
             Arc::new(LogEmailClient),
-            Arc::new(PlaceholderCredentialProvider::new(CommitIdentity {
-                name: "Mars Bot".to_string(),
-                email: "mars-bot@example.invalid".to_string(),
-            })),
-            SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
-                .expect("one entry is a valid keyring"),
+            Arc::new(PatCredentialProvider::new(
+                pool,
+                keyring.clone(),
+                CommitIdentity {
+                    name: "Mars Bot".to_string(),
+                    email: "mars-bot@example.invalid".to_string(),
+                },
+            )),
+            keyring,
         );
 
         TestServer::new(crate::build_api_router(state))

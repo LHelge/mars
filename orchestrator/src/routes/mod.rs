@@ -53,7 +53,7 @@ mod tests {
     use crate::build_api_router;
     use crate::email::LogEmailClient;
     use crate::engine::PlaceholderEngine;
-    use crate::git::{CommitIdentity, PlaceholderCredentialProvider};
+    use crate::git::{CommitIdentity, PatCredentialProvider};
     use crate::secrets::{MASTER_KEY_LEN, SecretsKeyring};
 
     /// A router over a state nothing in this test ever reaches: the assertion
@@ -88,14 +88,16 @@ mod tests {
             email: config.git_bot_email.clone(),
         };
 
+        let keyring = SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
+            .expect("one entry is a valid keyring");
+
         let state = AppState::new(
             Arc::new(config),
-            pool,
+            pool.clone(),
             Arc::new(PlaceholderEngine),
             Arc::new(LogEmailClient),
-            Arc::new(PlaceholderCredentialProvider::new(identity)),
-            SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
-                .expect("one entry is a valid keyring"),
+            Arc::new(PatCredentialProvider::new(pool, keyring.clone(), identity)),
+            keyring,
         );
 
         TestServer::new(build_api_router(state))

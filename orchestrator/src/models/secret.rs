@@ -357,6 +357,30 @@ impl Secret {
         ScopeRef::new(self.scope, self.scope_id)
             .expect("a stored row satisfies the scope/scope_id check")
     }
+
+    /// The five encrypted columns of this row, as the crypto layer takes them.
+    ///
+    /// A [`Secret`] is the whole row and the cipher wants only the envelope,
+    /// so the columns are gathered here rather than in each of the resolver,
+    /// the git credential helpers and the secrets service, which each had
+    /// their own private copy of exactly this function. The clone is of
+    /// ciphertext and wrapping, never of a plaintext — this module still
+    /// decrypts nothing.
+    ///
+    /// An inherent method rather than `impl From<&Secret> for EncryptedValue`:
+    /// every call site already holds a `&Secret` and reads better as
+    /// `row.encrypted_value()` than as `EncryptedValue::from(row)`, and a
+    /// `From` would also make the conversion available by inference in places
+    /// that did not ask for it, which is not something a ciphertext should get.
+    pub fn encrypted_value(&self) -> EncryptedValue {
+        EncryptedValue {
+            ciphertext: self.ciphertext.clone(),
+            nonce: self.nonce.clone(),
+            data_key_wrapped: self.data_key_wrapped.clone(),
+            data_key_nonce: self.data_key_nonce.clone(),
+            key_version: self.key_version,
+        }
+    }
 }
 
 /// The caller-supplied half of a new secret.
@@ -820,5 +844,23 @@ mod tests {
     fn a_row_reports_its_scope_pair() {
         let row = fake_row();
         assert_eq!(row.scope_ref(), ScopeRef::user(Uuid::nil()));
+    }
+
+    #[test]
+    fn a_row_hands_over_exactly_its_five_encrypted_columns() {
+        let row = fake_row();
+        let value = row.encrypted_value();
+
+        assert_eq!(value.ciphertext, row.ciphertext);
+        assert_eq!(value.nonce, row.nonce);
+        assert_eq!(value.data_key_wrapped, row.data_key_wrapped);
+        assert_eq!(value.data_key_nonce, row.data_key_nonce);
+        assert_eq!(value.key_version, row.key_version);
+
+        // A copy, not a borrow: the row is untouched and mutating the envelope
+        // cannot reach back into it.
+        let mut value = value;
+        value.ciphertext.clear();
+        assert_eq!(row.ciphertext, b"fake-ciphertext".to_vec());
     }
 }

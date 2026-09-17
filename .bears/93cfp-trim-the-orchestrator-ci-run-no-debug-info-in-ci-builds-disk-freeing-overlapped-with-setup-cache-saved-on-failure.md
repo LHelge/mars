@@ -1,15 +1,17 @@
 ---
 id: "93cfp"
 title: "Trim the Orchestrator CI run: no debug info in CI builds, disk freeing overlapped with setup, cache saved on failure"
-status: open
+status: done
 priority: P2
 created: "2026-09-17T20:48:37.604840879Z"
-updated: "2026-09-17T20:48:37.604840879Z"
+updated: "2026-09-17T21:02:57.606820087Z"
 tags:
   - infra
   - ci
   - docs
 parent: yq6c3
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -1,15 +1,17 @@
 ---
 id: "7fsrg"
 title: Start one Postgres per test process and give every test its own database from a migrated template
-status: open
+status: done
 priority: P1
 created: "2026-09-17T20:27:12.643071038Z"
-updated: "2026-09-17T20:27:12.643071038Z"
+updated: "2026-09-17T21:42:36.522691642Z"
 tags:
   - orchestrator
   - tests
   - docs
 parent: yq6c3
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

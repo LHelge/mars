@@ -4,13 +4,14 @@ title: Implement GitCredentialProvider with the PAT provider, temp-config transp
 status: open
 priority: P0
 created: "2026-09-16T20:28:43.060799825Z"
-updated: "2026-09-16T20:28:43.060799825Z"
+updated: "2026-09-17T20:05:02.991010559Z"
 tags:
   - orchestrator
   - git
   - secrets
 depends_on:
   - bv7a5
+  - escp8
 parent: z4u4e
 ---
 

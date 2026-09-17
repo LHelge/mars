@@ -4,12 +4,13 @@ title: "Add the task-states route module: list, create, rename and reorder, dele
 status: open
 priority: P1
 created: "2026-09-16T20:41:39.156347309Z"
-updated: "2026-09-16T20:41:39.156347309Z"
+updated: "2026-09-17T20:04:48.111768247Z"
 tags:
   - orchestrator
   - tracker
 depends_on:
   - thes7
+  - tepsh
 parent: "5h3y4"
 ---
 

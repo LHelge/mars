@@ -4,7 +4,7 @@ title: "Implement the session launcher: mirror fetch, base-ref clone, secrets re
 status: open
 priority: P1
 created: "2026-09-16T20:31:36.800460115Z"
-updated: "2026-09-16T20:31:36.800460115Z"
+updated: "2026-09-17T20:04:54.318127824Z"
 tags:
   - orchestrator
   - sessions
@@ -14,6 +14,8 @@ tags:
 depends_on:
   - mvrfc
   - qtx4x
+  - n7tzv
+  - escp8
 parent: s52qg
 ---
 

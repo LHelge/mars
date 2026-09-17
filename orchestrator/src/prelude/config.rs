@@ -10,8 +10,9 @@
 //! The parsing itself lives in [`Config::from_vars`], which takes a lookup
 //! closure instead of touching the environment, so unit tests never mutate
 //! process-global state. `from_vars` reads one piece of ambient state,
-//! `std::env::current_dir()`, to make `DATA_DIR` absolute; the pure function
-//! behind it, `from_vars_in`, takes that directory as a parameter.
+//! `std::env::current_dir()`, to make `DATA_DIR` and `DATA_DIR_HOST`
+//! absolute; the pure function behind it, `from_vars_in`, takes that
+//! directory as a parameter.
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -83,8 +84,10 @@ pub struct Config {
     pub database_url: String,
     /// Engine socket, for example `unix:///run/user/1000/podman/podman.sock`.
     pub docker_host: String,
-    /// Host path of the data directory, used as bind-mount source; stored as
-    /// given because the engine, not this process, interprets it.
+    /// Host path of the data directory, used as the source of every session
+    /// bind mount and therefore resolved to an absolute path at startup: a
+    /// relative source is not a path to either engine, and Docker would read
+    /// it as a named volume. The directory need not exist.
     pub data_dir_host: PathBuf,
     /// The path at which the orchestrator itself sees the data directory,
     /// resolved to an absolute path at startup. The directory need not exist.
@@ -155,7 +158,8 @@ impl Config {
     /// Build the configuration from a lookup closure.
     ///
     /// Pure except for `std::env::current_dir()`, which is needed to make
-    /// `DATA_DIR` absolute; `from_vars_in` takes that directory as a parameter.
+    /// `DATA_DIR` and `DATA_DIR_HOST` absolute; `from_vars_in` takes that
+    /// directory as a parameter.
     pub fn from_vars<F>(vars: F) -> std::result::Result<Self, ConfigError>
     where
         F: Fn(&str) -> Option<String>,
@@ -233,11 +237,18 @@ impl Config {
 
         let public_url = normalise_public_url(&public_url)?;
 
-        // `DATA_DIR` is this process's own view of the volume, so it is
-        // resolved here; `DATA_DIR_HOST` is a host path the engine interprets
-        // and is stored exactly as given (`ARCHITECTURE.md`, "Storage").
+        // Both views of the volume are made absolute here. `DATA_DIR` is this
+        // process's own view. `DATA_DIR_HOST` is a host path the engine
+        // interprets, and a relative one is not a path to it at all — Docker
+        // reads it as a named volume — so it is resolved against this
+        // process's working directory too: a relative value only makes sense
+        // when the orchestrator runs on the host, where its working directory
+        // *is* the host's, and in compose the value is absolute already and
+        // the join is a no-op (`ARCHITECTURE.md`, "Storage"; `README.md`,
+        // "Configuration").
         let data_dir = value(&vars, "DATA_DIR").unwrap_or_else(|| "./data".to_string());
         let data_dir = lexically_normalise(&current_dir.join(data_dir));
+        let data_dir_host = lexically_normalise(&current_dir.join(data_dir_host));
 
         let api_port: u16 = optional_parsed(&vars, "API_PORT", 7000)?;
         let mcp_port: u16 = optional_parsed(&vars, "MCP_PORT", 7001)?;
@@ -268,7 +279,7 @@ impl Config {
             jwt_secret,
             database_url,
             docker_host,
-            data_dir_host: PathBuf::from(data_dir_host),
+            data_dir_host,
             data_dir,
             mcp_url,
             session_network_internal,
@@ -547,6 +558,22 @@ mod tests {
         assert_eq!(config.data_dir, PathBuf::from("/mnt/mars/data"));
     }
 
+    /// A bind-mount source has to be an absolute path, so a relative
+    /// `DATA_DIR_HOST` — which only makes sense when the orchestrator runs on
+    /// the host — is resolved against the working directory, and an absolute
+    /// one is left alone (`README.md`, "Configuration").
+    #[test]
+    fn data_dir_host_is_made_absolute_and_normalised() {
+        let mut vars = required_only();
+        vars.insert("DATA_DIR_HOST".to_string(), "./var/../data".to_string());
+        let config = load(&vars).expect("loads");
+        assert_eq!(config.data_dir_host, PathBuf::from("/srv/mars/data"));
+
+        vars.insert("DATA_DIR_HOST".to_string(), "/mnt/mars/data".to_string());
+        let config = load(&vars).expect("loads");
+        assert_eq!(config.data_dir_host, PathBuf::from("/mnt/mars/data"));
+    }
+
     #[test]
     fn missing_variables_are_reported_together_in_table_order() {
         let mut vars = required_only();
@@ -793,7 +820,9 @@ mod tests {
 
         let config = Config::from_vars_in(|name| entries.get(name).cloned(), Path::new(BASE))
             .expect("`.env.example` is a usable configuration");
-        assert_eq!(config.data_dir_host, PathBuf::from("./data"));
+        // `.env.example` ships the development default `./data` for both, and
+        // both are resolved against the working directory at startup.
+        assert_eq!(config.data_dir_host, PathBuf::from("/srv/mars/data"));
         assert_eq!(config.data_dir, PathBuf::from("/srv/mars/data"));
         assert_eq!(config.api_port, 7000);
         assert_eq!(config.mcp_port, 7001);

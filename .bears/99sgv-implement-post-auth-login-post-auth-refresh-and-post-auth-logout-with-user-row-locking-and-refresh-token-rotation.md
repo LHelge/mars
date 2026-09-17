@@ -1,10 +1,10 @@
 ---
 id: "99sgv"
 title: Implement POST /auth/login, POST /auth/refresh and POST /auth/logout with user-row locking and refresh-token rotation
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:29:38.038521864Z"
-updated: "2026-09-16T20:29:38.038521864Z"
+updated: "2026-09-17T09:51:39.944014667Z"
 tags:
   - orchestrator
   - auth
@@ -14,6 +14,8 @@ depends_on:
   - ruxrp
   - "78zk5"
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: "8pnnv"
 title: "Implement users routes: GET/PATCH /users/me, GET /users, GET/PUT/DELETE /users/{id} with last-administrator advisory lock"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:30:07.800849511Z"
-updated: "2026-09-16T20:30:07.800849511Z"
+updated: "2026-09-17T09:44:26.417882700Z"
 tags:
   - orchestrator
   - auth
@@ -12,6 +12,8 @@ depends_on:
   - qx67f
   - ruxrp
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

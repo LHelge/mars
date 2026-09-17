@@ -1,10 +1,10 @@
 ---
 id: "2f25v"
 title: Implement the startup probe container and uid-ownership check
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:29:53.809182220Z"
-updated: "2026-09-17T17:20:41.258864983Z"
+updated: "2026-09-17T18:11:02.058841921Z"
 tags:
   - orchestrator
   - engine

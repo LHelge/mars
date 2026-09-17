@@ -566,8 +566,8 @@ Nothing in v1 launches a session by itself. Two additions are planned and the mo
 | Operation | Docker | Podman compat API | Notes |
 | --- | --- | --- | --- |
 | create / start / stop / kill / remove | yes | yes | `kill` with a named signal is used for SIGINT/SIGTERM. |
-| attach (stdin, TTY off) | yes | yes | Used for stdin only. |
-| exec + resize (TTY on) | yes | yes | Used by the optional terminal view. |
+| attach (stdin, TTY off) | yes | yes | Used for stdin only. The adapter drains the unused output half and treats its end as the attachment closing, because a rootless Podman accepts and discards writes to a container that has already exited; a write after that fails rather than being silently lost. |
+| exec + resize (TTY on) | yes | yes | Used by the optional terminal view. An exec on a container that is not running is refused with 409 by Docker and with 500 by Podman; the adapter reports both as a conflict, so the terminal answers the same on either engine. |
 | list with label filter | yes | yes | Recovery lists `mars.session_id`. |
 | bind mounts (`Binds`) | yes | yes | Sources are host paths (`DATA_DIR_HOST`). |
 | nested bind mounts | yes | yes | A shared directory mounted inside `/session/work`; parents are mounted before children. Exercised by the engine tests. |

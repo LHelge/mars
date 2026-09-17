@@ -1,10 +1,10 @@
 ---
 id: "3zfgh"
 title: "Wire the engine into startup: connect, ensure networks, run the probe, expose the health flag"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:30:21.205403371Z"
-updated: "2026-09-16T20:30:21.205403371Z"
+updated: "2026-09-17T18:38:27.121935500Z"
 tags:
   - orchestrator
   - engine
@@ -13,6 +13,8 @@ depends_on:
   - "2f25v"
   - dmnan
 parent: naqhy
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

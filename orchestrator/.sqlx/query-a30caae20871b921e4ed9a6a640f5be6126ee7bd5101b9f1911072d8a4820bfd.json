@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)\n                VALUES ($1, $2, $3, NOW() + INTERVAL '30 days')\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a30caae20871b921e4ed9a6a640f5be6126ee7bd5101b9f1911072d8a4820bfd"
+}

@@ -3,6 +3,7 @@
 
 pub mod password_reset_tokens;
 pub mod projects;
+pub mod refresh_tokens;
 pub mod secrets;
 pub mod sessions;
 pub mod tasks;
@@ -11,6 +12,7 @@ pub mod users;
 
 pub use password_reset_tokens::PasswordResetTokenRepository;
 pub use projects::ProjectRepository;
+pub use refresh_tokens::RefreshTokenRepository;
 pub use secrets::SecretRepository;
 pub use sessions::SessionRepository;
 pub use tasks::{StateFields, TaskFilter, TaskRepository};

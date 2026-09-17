@@ -1,13 +1,23 @@
 //! Mars orchestrator binary.
 //!
 //! The startup order is the one in `ARCHITECTURE.md`, "Orchestrator
-//! internals" and "Restart procedure": configuration, tracing, pool,
-//! migrations, then the recovery and background work each epic adds, then the
-//! two listeners. Nothing here is conditional — a step that fails is fatal and
-//! the process exits rather than serving in a half-built state.
+//! internals" and "Restart procedure": configuration, tracing, keyring, pool,
+//! migrations, keyring verification, then the recovery and background work each
+//! epic adds, then the two listeners. Nothing here is conditional — a step that
+//! fails is fatal and the process exits rather than serving in a half-built
+//! state.
+//!
+//! Everything up to and including the keyring verification is [`bootstrap`],
+//! because the `rotate-secrets` subcommand needs exactly that much and nothing
+//! after it (`ARCHITECTURE.md`, "Secrets", Rotation). Sharing the function is
+//! what keeps the two paths from drifting: a step added to the startup order is
+//! a step the subcommand runs too, or it is below the split and deliberately
+//! server-only.
 //!
 //! The serving itself lives in the library (`mars_orchestrator::run`), so the
 //! integration tests exercise the same router and the same shutdown path.
+
+mod cli;
 
 use std::time::Duration;
 
@@ -35,20 +45,67 @@ const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 /// in-flight requests finish.
 const MIN_DRAIN_GRACE: Duration = Duration::from_secs(1);
 
+/// What every fatal start-up fault exits with, on both paths.
+const EXIT_FAILURE: i32 = 1;
+
+/// `EX_USAGE` from `sysexits.h`: the arguments were wrong, so nothing was
+/// attempted — not even reading the configuration.
+const EXIT_USAGE: i32 = 64;
+
+/// The one line an unrecognised argument gets. No argument parser stands behind
+/// it (`cli`), so this is written out rather than generated.
+const USAGE: &str = "usage: mars-orchestrator [rotate-secrets]";
+
+/// What [`bootstrap`] built: everything both paths need and nothing either one
+/// has to build for itself.
+struct Bootstrap {
+    config: Config,
+    pool: PgPool,
+    keyring: secrets::SecretsKeyring,
+}
+
 #[tokio::main]
 async fn main() {
+    // The dispatch is before the configuration on purpose: a mistyped argument
+    // is answered the same way on a host with no `.env` at all, and an operator
+    // who wanted `rotate-secrets` never starts a server by accident.
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+
+    match arguments.as_slice() {
+        [] => serve(bootstrap().await).await,
+        [subcommand] if subcommand == "rotate-secrets" => {
+            cli::rotate_secrets(bootstrap().await).await
+        }
+        _ => {
+            eprintln!("{USAGE}");
+            std::process::exit(EXIT_USAGE);
+        }
+    }
+}
+
+/// Configuration, tracing, keyring, pool, migrations, keyring verification.
+///
+/// The shared prefix of both paths, in the documented order. The keyring is
+/// built before the pool because a master key that cannot be parsed is a
+/// configuration fault, and verified after the migrations because the table has
+/// to exist first.
+///
+/// Every failure here is fatal and exits [`EXIT_FAILURE`] rather than returning
+/// an error: there is no half-configured state either path could serve or sweep
+/// from, and the caller has nothing to add to the message.
+async fn bootstrap() -> Bootstrap {
     // Before tracing exists, so this one message goes to stderr by hand.
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(err) => {
             eprintln!("error: {err}");
-            std::process::exit(1);
+            std::process::exit(EXIT_FAILURE);
         }
     };
 
     if let Err(err) = init_tracing(&config.rust_log) {
         eprintln!("error: {err}");
-        std::process::exit(1);
+        std::process::exit(EXIT_FAILURE);
     }
 
     // Before the pool, because a master key that cannot be parsed is a
@@ -58,7 +115,7 @@ async fn main() {
         Ok(keyring) => keyring,
         Err(err) => {
             error!(error = %err, "the secrets master keys could not be loaded");
-            std::process::exit(1);
+            std::process::exit(EXIT_FAILURE);
         }
     };
     info!(
@@ -80,7 +137,7 @@ async fn main() {
             // No retry loop: under compose the orchestrator depends on a
             // healthy Postgres, and outside it a restart is the right answer.
             error!(error = %err, "database connection failed");
-            std::process::exit(1);
+            std::process::exit(EXIT_FAILURE);
         }
     };
     info!(max_connections = POOL_MAX_CONNECTIONS, "database connected");
@@ -89,7 +146,7 @@ async fn main() {
     // an interrupted start finishes its migration rather than abandoning it.
     if let Err(err) = sqlx::migrate!("./migrations").run(&pool).await {
         error!(error = %err, "migrations failed");
-        std::process::exit(1);
+        std::process::exit(EXIT_FAILURE);
     }
     info!("migrations applied");
 
@@ -100,9 +157,27 @@ async fn main() {
     // (rule 3).
     if let Err(err) = keyring.verify_against_db(&pool).await {
         error!(error = %err, "the stored secrets cannot be read with the configured master keys");
-        std::process::exit(1);
+        std::process::exit(EXIT_FAILURE);
     }
     info!("stored secrets verified against the master keyring");
+
+    Bootstrap {
+        config,
+        pool,
+        keyring,
+    }
+}
+
+/// Serve the API and MCP until a signal, then drain and exit.
+///
+/// Everything below the bootstrap split: the work and the listeners that only a
+/// running orchestrator has. `rotate-secrets` reaches none of it.
+async fn serve(bootstrap: Bootstrap) {
+    let Bootstrap {
+        config,
+        pool,
+        keyring,
+    } = bootstrap;
 
     // Container engine epic: ensure networks, startup probe
     // Session lifecycle epic: adopt running containers, fail sessions in creating

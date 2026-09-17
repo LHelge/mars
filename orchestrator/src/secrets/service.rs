@@ -40,7 +40,7 @@ use zeroize::Zeroizing;
 use super::crypto;
 use super::keyring::{SecretsError, SecretsKeyring};
 use crate::models::{
-    EncryptedValue, NewSecret, ScopeRef, Secret, SecretMeta, SecretName, SecretScope, SecretUse,
+    NewSecret, ScopeRef, Secret, SecretMeta, SecretName, SecretScope, SecretUse,
     validate_secret_value,
 };
 use crate::prelude::*;
@@ -328,7 +328,7 @@ impl<'a> SecretsService<'a> {
         if let Some(name) = &rename {
             let old_aad = crypto::aad(row.scope, row.scope_id, &row.name);
             let new_aad = crypto::aad(row.scope, row.scope_id, name.as_str());
-            let resealed = crypto::reseal(self.keyring, &old_aad, &new_aad, &encrypted_of(&row))
+            let resealed = crypto::reseal(self.keyring, &old_aad, &new_aad, &row.encrypted_value())
                 .map_err(|err| unreadable(&row, err))?;
 
             repository
@@ -500,17 +500,6 @@ pub fn authorize(actor: &Actor, scope: SecretScope, scope_id: Option<Uuid>) -> R
     }
 
     Ok(())
-}
-
-/// The five encrypted columns of a row, as the crypto layer takes them.
-fn encrypted_of(row: &Secret) -> EncryptedValue {
-    EncryptedValue {
-        ciphertext: row.ciphertext.clone(),
-        nonce: row.nonce.clone(),
-        data_key_wrapped: row.data_key_wrapped.clone(),
-        data_key_nonce: row.data_key_nonce.clone(),
-        key_version: row.key_version,
-    }
 }
 
 /// The API shape of a row, with `last_used_at` supplied by the caller.

@@ -26,8 +26,8 @@ mod common;
 
 use common::TestApp;
 use mars_orchestrator::models::{
-    NewAgentProfile, NewProject, NewSession, ProfileKind, ScopeRef, SecretName, SecretUsePurpose,
-    User,
+    NewAgentProfile, NewProject, NewSession, ProfileKind, ScopeRef, SecretError, SecretName,
+    SecretUsePurpose, User,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{ProjectRepository, SecretRepository, SessionRepository};
@@ -379,7 +379,10 @@ async fn an_empty_or_oversize_credential_is_a_bad_request() {
     )
     .await
     .expect_err("an empty credential is rejected");
-    assert!(matches!(error, Error::BadRequest(_)), "{error:?}");
+    assert!(
+        matches!(error, Error::Secret(SecretError::InvalidValue)),
+        "{error:?}"
+    );
 
     let oversize = "x".repeat(65_536 + 1);
     let error = set_project_git_credential(
@@ -391,7 +394,10 @@ async fn an_empty_or_oversize_credential_is_a_bad_request() {
     )
     .await
     .expect_err("an oversize credential is rejected");
-    assert!(matches!(error, Error::BadRequest(_)), "{error:?}");
+    assert!(
+        matches!(error, Error::Secret(SecretError::InvalidValue)),
+        "{error:?}"
+    );
 
     assert!(
         !has_project_git_credential(&app.pool, project_id)

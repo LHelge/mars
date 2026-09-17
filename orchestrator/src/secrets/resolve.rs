@@ -44,7 +44,7 @@ use zeroize::Zeroizing;
 
 use super::crypto::{aad, open};
 use super::keyring::SecretsKeyring;
-use crate::models::{EncryptedValue, Secret, SecretName, SecretScope, SecretUsePurpose};
+use crate::models::{Secret, SecretName, SecretScope, SecretUsePurpose};
 use crate::prelude::*;
 use crate::repositories::SecretRepository;
 
@@ -111,17 +111,6 @@ fn rank(scope: SecretScope) -> u8 {
         SecretScope::Global => 0,
         SecretScope::Project => 1,
         SecretScope::User => 2,
-    }
-}
-
-/// The five encrypted columns of a row, as [`open`] wants them.
-fn value_of(row: &Secret) -> EncryptedValue {
-    EncryptedValue {
-        ciphertext: row.ciphertext.clone(),
-        nonce: row.nonce.clone(),
-        data_key_wrapped: row.data_key_wrapped.clone(),
-        data_key_nonce: row.data_key_nonce.clone(),
-        key_version: row.key_version,
     }
 }
 
@@ -246,7 +235,7 @@ pub async fn resolve_for_launch(
         let plaintext = open(
             keyring,
             &aad(winner.scope, winner.scope_id, &winner.name),
-            &value_of(winner),
+            &winner.encrypted_value(),
         )
         .map_err(|_| {
             error!(

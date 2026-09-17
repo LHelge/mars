@@ -33,21 +33,15 @@ use zeroize::Zeroizing;
 
 use super::crypto::{aad, aad_for, open, seal};
 use super::keyring::SecretsKeyring;
-use crate::models::{EncryptedValue, NewSecret, ScopeRef, Secret, SecretName, SecretUsePurpose};
+use crate::models::{
+    NewSecret, ScopeRef, Secret, SecretName, SecretUsePurpose, validate_secret_value,
+};
 use crate::prelude::*;
 use crate::repositories::SecretRepository;
 
 /// The name every project's remote credential is stored under
 /// (`docs/data-model.md`, `projects`).
 pub const GIT_CREDENTIAL_NAME: &str = "GIT_CREDENTIAL";
-
-/// The largest credential this module will store, in bytes.
-///
-/// A private constant mirroring the secrets service's own limit: the two are
-/// the same number for the same reason — a value far beyond any token or key
-/// is a mistaken paste, not a credential — and the service's is the one users
-/// meet through `POST /api/secrets`. They are unified once both exist.
-const MAX_VALUE_BYTES: usize = 65_536;
 
 /// Who asked for the credential, as `secret_uses` records it.
 ///
@@ -162,14 +156,10 @@ pub async fn set_project_git_credential(
     value: Zeroizing<String>,
     created_by: Option<Uuid>,
 ) -> Result<()> {
-    if value.is_empty() {
-        return Err(Error::BadRequest("credential must not be empty".into()));
-    }
-    if value.len() > MAX_VALUE_BYTES {
-        return Err(Error::BadRequest(format!(
-            "credential must be at most {MAX_VALUE_BYTES} bytes"
-        )));
-    }
+    // The same check, and so the same 400 text, as a value arriving through
+    // `POST /api/secrets`: a credential is a secret value and there is one
+    // rule for what one may be (`CLAUDE.md`, "Backend conventions").
+    validate_secret_value(&value)?;
 
     let scope = ScopeRef::project(project_id);
     let name = credential_name();
@@ -229,7 +219,7 @@ pub async fn has_project_git_credential(pool: &PgPool, project_id: Uuid) -> Resu
 /// (ADR 0006).
 fn decrypt(keyring: &SecretsKeyring, project_id: Uuid, row: &Secret) -> Result<Zeroizing<String>> {
     let aad = aad(row.scope, row.scope_id, &row.name);
-    let value = encrypted_value_of(row);
+    let value = row.encrypted_value();
 
     let plaintext = open(keyring, &aad, &value).map_err(|_| {
         error!(
@@ -252,21 +242,6 @@ fn decrypt(keyring: &SecretsKeyring, project_id: Uuid, row: &Secret) -> Result<Z
     })?;
 
     Ok(Zeroizing::new(text.to_string()))
-}
-
-/// The four encrypted columns of a row, as the cipher takes them.
-///
-/// A `Secret` is the whole row and [`open`] wants only the envelope, so the
-/// columns are gathered here rather than in every caller. The clone is of
-/// ciphertext and wrapping, never of a plaintext.
-fn encrypted_value_of(row: &Secret) -> EncryptedValue {
-    EncryptedValue {
-        ciphertext: row.ciphertext.clone(),
-        nonce: row.nonce.clone(),
-        data_key_wrapped: row.data_key_wrapped.clone(),
-        data_key_nonce: row.data_key_nonce.clone(),
-        key_version: row.key_version,
-    }
 }
 
 /// Replace the value of an existing `GIT_CREDENTIAL` row, if there is one.

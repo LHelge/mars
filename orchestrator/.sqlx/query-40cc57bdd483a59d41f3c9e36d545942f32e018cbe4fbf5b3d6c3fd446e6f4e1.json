@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM project_shared_dirs WHERE project_id = $1 AND name = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "40cc57bdd483a59d41f3c9e36d545942f32e018cbe4fbf5b3d6c3fd446e6f4e1"
+}

@@ -1,9 +1,12 @@
 //! Domain types and their validation (`User`, `Project`, `Session`, `Task`,
 //! `Secret`, ...). Models never contain SQL; each carries its own error enum.
 
+pub mod agent_profile;
 pub mod event;
+pub mod project;
 pub mod secret;
 pub mod session;
+pub mod shared_dir;
 pub mod task;
 pub mod task_comment;
 pub mod task_dependency;
@@ -13,14 +16,28 @@ pub mod task_session;
 pub mod task_state;
 pub mod user;
 
+pub use agent_profile::{
+    AgentBackend, AgentProfile, DEFAULT_IDLE_TIMEOUT_SECS, MAX_SECRET_NAME_CHARS, NewAgentProfile,
+    PERMISSION_MODE_BYPASS, ProfileError, ProfileKind, ProfileResult, ProfileUpdate,
+    is_secret_name,
+};
 pub use event::{EventRow, INTERNAL_FIELD_PREFIX, NewEvent, OFFSET_FIELD};
+pub use project::{
+    BranchName, DEFAULT_MAX_ATTEMPTS, MAX_MAX_ATTEMPTS, MAX_PROJECT_NAME_CHARS, MIN_MAX_ATTEMPTS,
+    MaxAttempts, NewProject, Project, ProjectError, ProjectName, ProjectResult, ProjectStatus,
+    ProjectUpdate, RemoteUrl, is_branch_name,
+};
 pub use secret::{
-    EncryptedValue, MAX_SECRET_NAME_CHARS, NewSecret, ScopeRef, Secret, SecretError, SecretMeta,
-    SecretName, SecretResult, SecretScope, SecretUse, SecretUsePurpose,
+    EncryptedValue, NewSecret, ScopeRef, Secret, SecretError, SecretMeta, SecretName, SecretResult,
+    SecretScope, SecretUse, SecretUsePurpose,
 };
 pub use session::{
-    NewSession, ProfileKind, Session, SessionError, SessionResult, SessionState, SessionTitle,
-    StateChange, session_branch, state_change_payload,
+    NewSession, Session, SessionError, SessionResult, SessionState, SessionTitle, StateChange,
+    session_branch, state_change_payload,
+};
+pub use shared_dir::{
+    ContainerPath, MAX_SHARED_DIR_NAME_CHARS, NewSharedDir, RESERVED_PATHS, SharedDir,
+    SharedDirError, SharedDirName, SharedDirResult, is_shared_dir_name,
 };
 pub use task::{Label, MAX_TITLE_CHARS, NewTask, Priority, Task, TaskError, TaskResult, TaskTitle};
 pub use task_comment::{NewTaskComment, TaskComment};

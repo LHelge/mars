@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE projects\n            SET next_task_number = next_task_number + 1\n            WHERE id = $1\n            RETURNING next_task_number - 1 AS \"number!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5bf14e17ac27281922afb73b6e197cadea6db9bbd63fed3c8eb8a7fc07d27c4e"
+}

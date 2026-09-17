@@ -1,10 +1,10 @@
 ---
 id: xbjn4
 title: Define mock engine, email, git-credential and keyring stubs behind the integration-tests feature
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:27:50.753387584Z"
-updated: "2026-09-16T20:51:51.569356534Z"
+updated: "2026-09-17T06:58:42.280653524Z"
 tags:
   - orchestrator
   - core
@@ -15,6 +15,8 @@ tags:
 depends_on:
   - sywed
 parent: p5tsd
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

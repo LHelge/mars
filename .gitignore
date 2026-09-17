@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 target/
+target-main/
 node_modules/
 dist/
 data/

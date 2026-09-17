@@ -1,0 +1,9 @@
+# Stub fixtures
+
+`default.jsonl` is the transcript the stub CLI (`images/stub/claude`) replays unless `MARS_STUB_FIXTURE` points at another file. It is hand-authored from the Claude Code CLI reference and the Agent SDK (`anthropic-ai/claude-agent-sdk`) TypeScript message types for the pinned CLI version 2.1.274, not recorded from a live run; every id, path, file name and commit id in it is fictional.
+
+Three turns, each closed by a `result` line with a distinct `total_cost_usd` (0.0123, 0.0456, 0.0089) so accumulation is testable: turn 1 is text plus a `Read` call and its result, turn 2 is thinking, a `Task` subagent (three frames carrying `parent_tool_use_id`, one tool result over 8 KiB), an `Edit` and a `Bash` commit, turn 3 is two `stream_event` text deltas spelling the assistant text that follows them plus a denied `Bash` call. `agent-tool.jsonl` is one turn that calls the subagent tool by its other name, `Agent`, so the translator's constant matching both `Task` and `Agent` can be proven against a container run.
+
+The `system` line with `subtype: "permission_denied"` follows the SDK's `SDKPermissionDeniedMessage` (`tool_name`, `tool_use_id`, `decision_reason_type`, `decision_reason`, `message`); the CLI reference does not document it, so this line is to be confirmed by the live probe of the Claude Code agent backend epic, which is the authority and may adjust it.
+
+To re-record: run the pinned CLI with `--print --output-format stream-json --verbose --include-partial-messages` in a throwaway repository, capture stdout, then replace every id, path, name and credential-shaped value with obviously fake ones (rule 3 of `CLAUDE.md`). Ids here are readable on purpose (`msg_01FIXTURE…`, `toolu_01FIXTURE…`, uuids `00000000-0000-4000-8000-0000000000NN`) so other epics can assert on them by value; the stub rewrites `session_id` at replay time.

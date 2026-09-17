@@ -84,7 +84,11 @@ if [ "$VERIFY" -eq 1 ]; then
     echo "== backend chain (DOCKER_HOST=${DOCKER_HOST:-unset})"
     (
       cd orchestrator
-      cargo clean -p mars-orchestrator --quiet
+      # A shared CARGO_TARGET_DIR lets cargo mistake a sibling worktree's test
+      # binary for a fresh one and skip compiling main's sources entirely
+      # (`cargo clean -p` alone was seen leaving such a binary in place), so
+      # every source file is touched to force a real rebuild of this crate.
+      find src tests migrations -type f -exec touch {} +
       cargo fmt --check
       cargo clippy --all-targets -- -D warnings
       cargo clippy --all-targets --features integration-tests -- -D warnings

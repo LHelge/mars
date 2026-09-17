@@ -54,7 +54,7 @@ These are the intended steps once the implementation exists.
 
 ### Prerequisites
 
-- A Linux host with rootless Podman 5+ (or Docker 24+).
+- A Linux host with rootless Podman 4.9+ (or Docker 24+); the engine tests run on Podman 4.9.3 and 6.1.2 and on Docker 28.0.4.
 - `podman-compose` or `docker compose`.
 - A directory for persistent data, for example `/srv/mars/data`, owned by the service user.
 - For private repositories: a fine-grained GitHub personal access token scoped to the repository.
@@ -73,7 +73,7 @@ systemctl --user enable --now podman.socket
 echo "unix://$XDG_RUNTIME_DIR/podman/podman.sock"
 ```
 
-The compose file runs the orchestrator with `userns_mode: keep-id` and mounts that socket, so the orchestrator's uid inside the container matches the service user on the host. Session containers run with `keep-id:uid=1000,gid=1000`, which maps the service user to the image's `agent` user (uid 1000) whatever the service user's uid is; the orchestrator verifies this at startup with a probe container and refuses to start if Podman does not honour it. If the compatibility API cannot apply `keep-id` to the orchestrator container, it can run as a plain user systemd service. Session containers still require `keep-id:uid=1000,gid=1000` support and must pass the startup probe.
+The compose file runs the orchestrator with `userns_mode: keep-id` and mounts that socket, so the orchestrator's uid inside the container matches the service user on the host. Session containers run with `keep-id:uid=1000,gid=1000`, which maps the service user to the image's `agent` user (uid 1000) whatever the service user's uid is; the orchestrator verifies this at startup with a probe container and refuses to start if Podman does not honour it. That form of `keep-id` needs Podman 4.3 or newer, and the engine tests have verified it through the compatibility API on Podman 4.9.3 and 6.1.2. If the compatibility API cannot apply `keep-id` to the orchestrator container, it can run as a plain user systemd service. Session containers still require `keep-id:uid=1000,gid=1000` support and must pass the startup probe.
 
 For Docker, use the daemon's socket (`unix:///var/run/docker.sock`) and a user in the `docker` group. The supported Docker deployment uses the default uid mapping, so the orchestrator service runs as uid 1000 (`user: "1000:1000"` in the compose file) and the data directory must be owned by uid 1000. The session uid and data-directory ownership requirements still apply.
 

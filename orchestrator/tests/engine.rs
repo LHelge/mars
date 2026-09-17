@@ -9,8 +9,9 @@
 //! One scenario per row of the operation table in `ARCHITECTURE.md`, "Engine
 //! adapter", plus the two behaviours the table records as verified rather than
 //! merely available: `UsernsMode: keep-id:uid=1000,gid=1000` through Podman's
-//! compatibility API (`docs/open-questions.md` item 8) and a `SIGINT` reaching
-//! PID 1 without `Init: true` (item 7). The startup probe and
+//! compatibility API and a `SIGINT` reaching PID 1 without `Init: true`. Both
+//! were open questions; their answers are recorded in `ARCHITECTURE.md`,
+//! "Engine adapter" and "Session image". The startup probe and
 //! [`bootstrap_engine`] run end to end at the bottom, which is the same
 //! sequence the binary runs between its migrations and its listeners.
 //!
@@ -160,8 +161,8 @@ async fn create_start_wait_exit_code() {
     .await;
 }
 
-/// `docs/open-questions.md` item 7: does a `SIGINT` sent with `kill` reach PID
-/// 1 without `Init: true`?
+/// `ARCHITECTURE.md`, "Session image": a `SIGINT` sent with `kill` reaches PID
+/// 1 without `Init: true`, which this scenario is the evidence for.
 ///
 /// The container's command *is* PID 1 — nothing sets `Init`, and the scenario
 /// deliberately does not, because observing the default is the point. The
@@ -787,8 +788,9 @@ async fn ensure_network_is_idempotent() {
     .await;
 }
 
-/// `docs/open-questions.md` item 8: is `UsernsMode: keep-id:uid=1000,gid=1000`
-/// accepted through Podman's compatibility API?
+/// `ARCHITECTURE.md`, "Engine adapter": `UsernsMode: keep-id:uid=1000,gid=1000`
+/// is accepted through Podman's compatibility API, which this scenario is the
+/// evidence for.
 ///
 /// The adapter sets it from the engine kind and nothing else (ADR 0004), so
 /// the scenario asserts both halves: that [`to_bollard`] put the field where

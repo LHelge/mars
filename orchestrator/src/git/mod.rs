@@ -28,10 +28,18 @@ use crate::prelude::*;
 pub mod command;
 pub mod error;
 pub mod lock;
+pub mod refs;
 
 pub use command::{GitCommand, GitOutput};
 pub use error::GitError;
 pub use lock::{ProjectGitGuard, ProjectGitLocks};
+pub use refs::{GitRef, RefEntry, ResolvedRef};
+
+/// Real repositories for tests: `CLAUDE.md`, "Testing expectations" — git is
+/// never mocked, so both the unit tests here and the integration tests under
+/// `tests/` build fixtures with [`testutil`].
+#[cfg(any(test, feature = "integration-tests"))]
+pub mod testutil;
 
 #[cfg(feature = "integration-tests")]
 pub mod mock;

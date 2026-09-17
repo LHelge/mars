@@ -3,6 +3,7 @@
 
 pub mod agent_profile;
 pub mod event;
+pub mod git;
 pub mod project;
 pub mod secret;
 pub mod session;
@@ -23,6 +24,7 @@ pub use agent_profile::{
     is_secret_name,
 };
 pub use event::{EventRow, INTERNAL_FIELD_PREFIX, NewEvent, OFFSET_FIELD};
+pub use git::{Branch, BranchKind};
 pub use project::{
     BranchName, DEFAULT_MAX_ATTEMPTS, MAX_MAX_ATTEMPTS, MAX_PROJECT_NAME_CHARS, MIN_MAX_ATTEMPTS,
     MaxAttempts, NewProject, Project, ProjectError, ProjectName, ProjectResult, ProjectStatus,

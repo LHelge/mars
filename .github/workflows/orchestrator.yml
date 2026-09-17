@@ -27,6 +27,20 @@ jobs:
     defaults:
       run:
         working-directory: orchestrator
+    env:
+      # Nothing in CI opens a debugger or reads a core dump, and debug info is
+      # most of the bulk of a dev-profile build: dropping it shrinks the
+      # workspace build, the link step, the 34 test binaries and the
+      # `rust-cache` entry that carries them all. `0` rather than
+      # `line-tables-only` because failures are diagnosed on a developer
+      # machine, which keeps full debug info, and a panic here still resolves
+      # frames to function names — only the line numbers go. The `test`
+      # profile inherits from `dev` and `cargo clippy` also builds under
+      # `dev`, so this one variable covers fmt, clippy and the tests.
+      # `rust-cache` hashes the `CARGO_*` environment into its key, so this
+      # job's entry can never be restored into a build wanting another debug
+      # level; the first run after this change rebuilds, later ones hit.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
@@ -35,12 +49,27 @@ jobs:
       # testcontainers Postgres image outran the runner disk (pulling
       # postgres:18 failed with "no space left on device"). Preinstalled
       # toolchains this job never uses are removed first.
-      - name: Free runner disk space
+      #
+      # As the job's first foreground step this took 312 s with nothing else
+      # happening. It is detached here and waited on below instead, so it runs
+      # while the toolchain installs, the cache restores and fmt and clippy
+      # run. `nohup` and `disown` are what survive this step's shell exiting;
+      # a plain `... &` would be killed with it.
+      - name: Start freeing runner disk space
         run: |
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/.ghcup
-          sudo docker image prune --all --force > /dev/null
+          cat > "$RUNNER_TEMP/free-disk.sh" <<'SCRIPT'
+          set -x
+          rc=0
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/.ghcup || rc=$?
+          sudo docker image prune --all --force > /dev/null || rc=$?
           df -h /
+          echo "$rc" > "$RUNNER_TEMP/free-disk.status"
+          SCRIPT
+          nohup bash "$RUNNER_TEMP/free-disk.sh" > "$RUNNER_TEMP/free-disk.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/free-disk.pid"
+          disown
+          echo "freeing disk in the background, pid $(cat "$RUNNER_TEMP/free-disk.pid")"
 
       # rustup reads orchestrator/rust-toolchain.toml here and installs the
       # pinned channel with its rustfmt and clippy components.
@@ -55,6 +84,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: orchestrator
+          # Save the entry even when a later step fails, so a `Cargo.lock`
+          # change is not recompiled from scratch by every failing run until
+          # one finally passes.
+          cache-on-failure: true
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -64,6 +97,32 @@ jobs:
 
       - name: Clippy (integration-tests)
         run: cargo clippy --all-targets --features integration-tests -- -D warnings
+
+      # A process started in an earlier step is not a child of this step's
+      # shell, so `wait` cannot see it and the pid is polled instead. This
+      # sits before the build rather than between the build and the run so
+      # that `docker image prune` never competes for disk with the test
+      # binaries being linked, and it still guarantees the prune is finished
+      # before testcontainers pulls postgres:18.
+      - name: Wait for the runner disk to be freed
+        run: |
+          pid="$(cat "$RUNNER_TEMP/free-disk.pid")"
+          while kill -0 "$pid" 2>/dev/null; do
+            sleep 5
+          done
+          cat "$RUNNER_TEMP/free-disk.log"
+          df -h /
+          status="$(cat "$RUNNER_TEMP/free-disk.status" 2>/dev/null || echo missing)"
+          echo "free-disk exit status: ${status}"
+          if [ "${status}" != "0" ]; then
+            echo "::error::freeing runner disk space failed"
+            exit 1
+          fi
+
+      # Split from the run below so the step timings report compiling the
+      # crate and its test binaries separately from executing the tests.
+      - name: Build the test binaries
+        run: cargo test --features integration-tests --no-run
 
       # Integration tests bring up Postgres through testcontainers on the
       # Docker daemon that ubuntu-latest provides. DOCKER_HOST is deliberately
@@ -87,6 +146,12 @@ jobs:
       SQLX_OFFLINE: "false"
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
       SQLX_VERSION: 0.9.0
+      # `cargo sqlx prepare --check` compiles the crate and its test targets
+      # too, so it gains the same way the job above does; see the comment
+      # there for why `0` and not `line-tables-only`. `rust-cache` keys on the
+      # job as well as on this environment, so the two jobs keep separate
+      # entries and neither can restore the other's debug level.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     services:
       postgres:
         image: postgres:18
@@ -114,6 +179,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: orchestrator
+          # As in the job above: a failed check should not throw away the
+          # compile it just paid for.
+          cache-on-failure: true
 
       # The CLI version has to match the `sqlx` crate in orchestrator/Cargo.lock.
       - name: Cache the sqlx CLI

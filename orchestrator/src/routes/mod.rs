@@ -8,6 +8,7 @@ use axum::Router;
 
 use crate::prelude::*;
 
+pub mod auth;
 pub mod cookies;
 pub mod extractors;
 pub mod health;
@@ -25,6 +26,7 @@ pub use extractors::{AdminUser, CurrentUser, UngatedUser, authenticate_access_to
 pub fn routes() -> Router<AppState> {
     let router = Router::new()
         .merge(health::routes())
+        .nest("/auth", auth::routes())
         .nest("/users", users::routes());
 
     // The only routes with a prefix of their own, because `SPEC.md`,

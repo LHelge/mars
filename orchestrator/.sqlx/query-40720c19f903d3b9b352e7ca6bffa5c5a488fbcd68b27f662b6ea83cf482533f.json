@@ -1,0 +1,173 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT h.id, h.task_id, h.source_session_id, h.source_branch, h.commit, h.comment_id,\n                   h.review_status AS \"review_status: ReviewStatus\", h.reviewed_by_user_id,\n                   h.reviewed_by_session_id, h.reviewed_at, h.created_by_user_id,\n                   h.created_by_session_id, h.created_at\n            FROM task_handoffs AS h\n            JOIN tasks AS t ON t.id = h.task_id\n            WHERE h.id = $1 AND t.project_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "task_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "task_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "source_session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "source_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source_branch",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "source_branch"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "commit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "commit"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "comment_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "comment_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "review_status: ReviewStatus",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "review_status"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "reviewed_by_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "reviewed_by_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "reviewed_by_session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "reviewed_by_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "reviewed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "reviewed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "created_by_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "created_by_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "created_by_session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "created_by_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "40720c19f903d3b9b352e7ca6bffa5c5a488fbcd68b27f662b6ea83cf482533f"
+}

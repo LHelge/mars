@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM task_dependencies AS d\n            USING tasks AS t\n            WHERE d.task_id = $1\n              AND d.depends_on_task_id = $2\n              AND d.kind = $3\n              AND t.id = d.task_id\n              AND t.project_id = $4\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "task_dependency_kind",
+            "kind": {
+              "Enum": [
+                "blocks",
+                "discovered_from",
+                "related"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3538d7f42e5be23e196fe144c3b754b0e6d39f115eb2c23337ceba5f434ebc51"
+}

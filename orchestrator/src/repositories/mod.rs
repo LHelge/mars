@@ -10,7 +10,7 @@ pub mod users;
 pub use projects::ProjectRepository;
 pub use secrets::SecretRepository;
 pub use sessions::SessionRepository;
-pub use tasks::TaskRepository;
+pub use tasks::{StateFields, TaskFilter, TaskRepository};
 pub use users::UserRepository;
 
 // The crate convention (`CLAUDE.md`, "Backend conventions"); here it is what

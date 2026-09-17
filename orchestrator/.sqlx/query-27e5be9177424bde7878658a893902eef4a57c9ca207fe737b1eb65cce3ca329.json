@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO task_dependencies (task_id, depends_on_task_id, kind) VALUES ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "task_dependency_kind",
+            "kind": {
+              "Enum": [
+                "blocks",
+                "discovered_from",
+                "related"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "27e5be9177424bde7878658a893902eef4a57c9ca207fe737b1eb65cce3ca329"
+}

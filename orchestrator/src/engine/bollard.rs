@@ -6,11 +6,21 @@
 //! `bollard::errors::Error` becomes an [`EngineError`] through the single
 //! [`From`] implementation below.
 //!
-//! This task builds the adapter's foundations: connecting to the socket named
-//! by `DOCKER_HOST`, deciding once whether the engine is Podman or Docker,
-//! answering the health endpoint's ping, and creating the two session networks
-//! (`ARCHITECTURE.md`, "Networks"). The container operations are stubs that
-//! answer [`EngineError::Unsupported`] until the tasks that write them.
+//! It covers the adapter's foundations — connecting to the socket named by
+//! `DOCKER_HOST`, deciding once whether the engine is Podman or Docker,
+//! answering the health endpoint's ping and creating the two session networks
+//! (`ARCHITECTURE.md`, "Networks") — and the container lifecycle the launcher,
+//! the stop sequence, recovery and orphan cleanup run on: create, connect to
+//! the egress network, start, stop, kill with a named signal, remove, inspect,
+//! wait, list by label and pull an absent image. Those are exactly the rows of
+//! the operation table in `ARCHITECTURE.md`, "Engine adapter", and nothing
+//! outside it is called. The streaming operations — attaching stdin and
+//! running an exec with a PTY — are still stubs that answer
+//! [`EngineError::Unsupported`] until the task that writes them.
+//!
+//! Every method here is one engine call plus a mapping. Retries, the grace
+//! period between `SIGINT` and `SIGTERM` and the decision of what an exit code
+//! means belong to the session owner (`ARCHITECTURE.md`, "Stop semantics").
 //!
 //! Note that this module shadows the `bollard` crate name inside [`super`].
 //! This module and its siblings still reach the crate as `bollard::…`, because
@@ -24,6 +34,7 @@
 //! (CLAUDE.md rule 3).
 
 use std::any::Any;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 // Shadows the prelude's one-parameter `Result<T>` alias, exactly as
 // `engine/mod.rs` does, so the signatures below read as the trait declares
@@ -31,13 +42,27 @@ use std::fmt;
 use std::result::Result;
 
 use async_trait::async_trait;
-use bollard::models::{NetworkCreateRequest, SystemVersion};
-use bollard::query_parameters::InspectNetworkOptions;
+// `bollard` names three types the engine's own vocabulary also names. They are
+// imported under an alias rather than qualified at every use, so a signature
+// below can never be read as the wrong one.
+use bollard::models::{
+    ContainerInspectResponse, ContainerState as BollardContainerState,
+    ContainerSummary as BollardContainerSummary, ContainerSummaryStateEnum, CreateImageInfo,
+    NetworkConnectRequest, NetworkCreateRequest, SystemVersion,
+};
+use bollard::query_parameters::{
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectContainerOptions,
+    InspectNetworkOptions, KillContainerOptionsBuilder, ListContainersOptionsBuilder,
+    RemoveContainerOptionsBuilder, StartContainerOptions, StopContainerOptionsBuilder,
+    WaitContainerOptionsBuilder,
+};
 use bollard::{API_DEFAULT_VERSION, Docker};
+use futures_util::StreamExt;
 
+use super::spec::to_bollard;
 use super::{
-    ContainerEngine, ContainerId, ContainerInfo, ContainerSpec, ContainerSummary, EngineError,
-    EngineKind, ExecSession, ExitStatus, Signal, StdinWriter,
+    ContainerEngine, ContainerId, ContainerInfo, ContainerSpec, ContainerState, ContainerSummary,
+    EngineError, EngineKind, ExecSession, ExitStatus, Signal, StdinWriter,
 };
 use crate::prelude::*;
 
@@ -51,6 +76,16 @@ const REQUEST_TIMEOUT_SECS: u64 = 120;
 /// The driver both session networks are created with (`ARCHITECTURE.md`,
 /// "Networks"). The only driver in the compatible subset of ADR 0004.
 const NETWORK_DRIVER: &str = "bridge";
+
+/// The `wait` condition: the engine answers once the container is no longer
+/// running, which is what the session owner is waiting for. Both Docker and
+/// Podman's compatible API accept it.
+const WAIT_CONDITION: &str = "not-running";
+
+/// The filter key a label list is built on. `label=<key>` matches every
+/// container carrying the key, whatever its value, which is how recovery finds
+/// every session container (`ARCHITECTURE.md`, "Engine adapter").
+const LABEL_FILTER: &str = "label";
 
 /// The `bollard` adapter: one connected client, plus what `/version` said
 /// about the engine behind it when the connection was made.
@@ -115,6 +150,20 @@ impl BollardEngine {
         Err(EngineError::Unsupported(format!(
             "the bollard engine cannot {operation} yet"
         )))
+    }
+
+    /// One inspect, still in `bollard`'s own shape.
+    ///
+    /// [`ContainerEngine::inspect`] maps it to a [`ContainerInfo`], which does
+    /// not carry the OOM flag; [`ContainerEngine::wait`] needs that flag, so
+    /// both go through this rather than one through the other.
+    async fn inspect_raw(&self, id: &ContainerId) -> Result<ContainerInspectResponse, EngineError> {
+        // A 404 becomes `NotFound` through the single conversion, which is
+        // what recovery reads as "the container is gone".
+        Ok(self
+            .docker
+            .inspect_container(&id.0, None::<InspectContainerOptions>)
+            .await?)
     }
 
     /// Create the network, treating a concurrent creation as success.
@@ -269,6 +318,125 @@ fn names_podman(name: &str) -> bool {
     name.to_lowercase().contains("podman")
 }
 
+/// Whether an engine's refusal says the thing already exists.
+///
+/// The one message the adapter reads rather than only reports: connecting a
+/// container to a network it is already on is success, and the status alone
+/// does not say which refusal it was (Docker answers 403, Podman 409, and both
+/// use those statuses for other things too).
+fn says_already(message: &str) -> bool {
+    message.to_lowercase().contains("already")
+}
+
+/// The failure a pull stream reported inside an otherwise successful response,
+/// if it reported one.
+fn pull_error_of(info: &CreateImageInfo) -> Option<String> {
+    let detail = info.error_detail.as_ref()?;
+
+    Some(match (&detail.message, detail.code) {
+        (Some(message), _) => message.clone(),
+        (None, Some(code)) => format!("the registry answered {code}"),
+        (None, None) => "the pull failed without a message".to_string(),
+    })
+}
+
+/// The engine's state string and exit code as a [`ContainerState`].
+///
+/// `restarting`, the engine's empty string and anything a later API version
+/// adds arrive as [`ContainerState::Unknown`] with the string kept verbatim,
+/// so a log line can say what the engine actually reported.
+fn container_state_of(status: &str, exit_code: i64) -> ContainerState {
+    match status {
+        "created" => ContainerState::Created,
+        "running" => ContainerState::Running,
+        "paused" => ContainerState::Paused,
+        "exited" => ContainerState::Exited { code: exit_code },
+        "removing" => ContainerState::Removing,
+        "dead" => ContainerState::Dead,
+        other => ContainerState::Unknown(other.to_string()),
+    }
+}
+
+/// The exit code of a state that is an exit, for the wait that had to ask.
+fn exited_code(state: Option<&BollardContainerState>) -> Option<i64> {
+    let state = state?;
+
+    match container_state_of(&status_string(state), state.exit_code.unwrap_or_default()) {
+        ContainerState::Exited { code } => Some(code),
+        _ => None,
+    }
+}
+
+/// The engine's state string, which the enum's [`Display`](fmt::Display)
+/// yields in the lower case the API sends.
+fn status_string(state: &BollardContainerState) -> String {
+    state
+        .status
+        .map(|status| status.to_string())
+        .unwrap_or_default()
+}
+
+/// The engine's name for a container, without the leading slash it prefixes
+/// for historic reasons.
+fn strip_leading_slash(name: &str) -> &str {
+    name.strip_prefix('/').unwrap_or(name)
+}
+
+/// The engine's labels as the ordered map the plain types use.
+fn labels_of(labels: Option<HashMap<String, String>>) -> BTreeMap<String, String> {
+    labels.unwrap_or_default().into_iter().collect()
+}
+
+/// One inspect response as a [`ContainerInfo`].
+///
+/// The networks come back sorted rather than in the engine's hash order, so
+/// two inspects of the same container compare equal and a log line reads the
+/// same twice.
+fn to_container_info(response: ContainerInspectResponse) -> ContainerInfo {
+    let state = response.state.as_ref();
+    let status = state.map(status_string).unwrap_or_default();
+    let exit_code = state.and_then(|state| state.exit_code).unwrap_or_default();
+
+    let mut networks: Vec<String> = response
+        .network_settings
+        .and_then(|settings| settings.networks)
+        .unwrap_or_default()
+        .into_keys()
+        .collect();
+    networks.sort();
+
+    ContainerInfo {
+        id: ContainerId(response.id.unwrap_or_default()),
+        name: response
+            .name
+            .as_deref()
+            .map(strip_leading_slash)
+            .unwrap_or_default()
+            .to_string(),
+        labels: labels_of(response.config.and_then(|config| config.labels)),
+        state: container_state_of(&status, exit_code),
+        networks,
+        // The engine reports 0 for a container that is not running, which is
+        // not a pid; `None` is what the field means there.
+        pid: state.and_then(|state| state.pid).filter(|pid| *pid > 0),
+    }
+}
+
+/// One list row as a [`ContainerSummary`].
+fn to_container_summary(summary: BollardContainerSummary) -> ContainerSummary {
+    ContainerSummary {
+        id: ContainerId(summary.id.unwrap_or_default()),
+        name: summary
+            .names
+            .as_deref()
+            .and_then(|names| names.first())
+            .map(|name| strip_leading_slash(name).to_string())
+            .unwrap_or_default(),
+        running: summary.state == Some(ContainerSummaryStateEnum::RUNNING),
+        labels: labels_of(summary.labels),
+    }
+}
+
 /// The single translation from a `bollard` failure into an [`EngineError`].
 ///
 /// It lives here because this is the only module that sees a `bollard` type.
@@ -357,48 +525,280 @@ impl ContainerEngine for BollardEngine {
         }
     }
 
-    async fn image_exists(&self, _image: &str) -> Result<bool, EngineError> {
-        Self::not_yet("look up an image")
+    async fn image_exists(&self, image: &str) -> Result<bool, EngineError> {
+        match self.docker.inspect_image(image).await {
+            Ok(_) => Ok(true),
+            Err(error) => match EngineError::from(error) {
+                // The only answer that means "not here". Every other failure
+                // is propagated: an unreachable engine is not an absent image,
+                // and answering `false` would send the launcher into a pull
+                // that cannot work either.
+                EngineError::NotFound(_) => Ok(false),
+                other => Err(other),
+            },
+        }
     }
 
-    async fn pull_image(&self, _image: &str) -> Result<(), EngineError> {
-        Self::not_yet("pull an image")
+    async fn pull_image(&self, image: &str) -> Result<(), EngineError> {
+        // The reference goes to the engine exactly as the profile wrote it. A
+        // tag or a digest is the operator's choice, and defaulting `latest`
+        // here would quietly pull something they did not ask for; the engine
+        // applies its own default when there is no tag.
+        let options = CreateImageOptionsBuilder::new().from_image(image).build();
+        let mut stream = std::pin::pin!(self.docker.create_image(Some(options), None, None));
+
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(info) => {
+                    // A pull that fails part-way still answers 200 and reports
+                    // the failure as an item in the stream, so an error item is
+                    // a failed pull even though the request itself succeeded.
+                    if let Some(message) = pull_error_of(&info) {
+                        return Err(EngineError::ImagePull {
+                            image: image.to_string(),
+                            message,
+                        });
+                    }
+
+                    if let Some(status) = info.status.as_deref() {
+                        // `debug` and no higher: a pull reports a line per
+                        // layer per percent.
+                        debug!(image = %image, status = %status, "image pull progress");
+                    }
+                }
+                Err(error) => {
+                    return Err(EngineError::ImagePull {
+                        image: image.to_string(),
+                        // Verbatim: the launcher stores this in
+                        // `sessions.error`, where a missing tag or an
+                        // unauthenticated registry is the operator's answer.
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }
+
+        info!(image = %image, "pulled the image");
+        Ok(())
     }
 
-    async fn create(&self, _spec: &ContainerSpec) -> Result<ContainerId, EngineError> {
-        Self::not_yet("create a container")
+    async fn create(&self, spec: &ContainerSpec) -> Result<ContainerId, EngineError> {
+        let options = CreateContainerOptionsBuilder::new()
+            .name(&spec.name)
+            .build();
+
+        // Every `HostConfig` field comes from the spec builder and none is
+        // added here, so there is exactly one place where the container's
+        // shape is decided (`ARCHITECTURE.md`, "Session container
+        // specification").
+        let body = to_bollard(spec, self.kind);
+
+        match self.docker.create_container(Some(options), body).await {
+            Ok(response) => {
+                for warning in &response.warnings {
+                    warn!(
+                        name = %spec.name,
+                        warning = %warning,
+                        "the engine warned about the container it created"
+                    );
+                }
+
+                let id = ContainerId(response.id);
+                // The id and the name, never the spec: its `Debug` redacts the
+                // environment values, and this line has no reason to carry
+                // them at all (rule 3).
+                info!(container = %id, name = %spec.name, "created the container");
+                Ok(id)
+            }
+            Err(error) => Err(match EngineError::from(error) {
+                // The image went away between the launcher's `image_exists`
+                // and this create. Naming it turns a bare "no such object"
+                // into the one thing the operator can act on. Nothing pulls
+                // from in here: a pull failure has to reach `sessions.error`
+                // as itself, which is why the launcher pulls first.
+                EngineError::NotFound(message) => {
+                    EngineError::NotFound(format!("image {}: {message}", spec.image))
+                }
+                // A name already in use arrives as `Conflict`, which is how a
+                // second launch of the same session is refused.
+                other => other,
+            }),
+        }
     }
 
-    async fn connect_network(&self, _id: &ContainerId, _network: &str) -> Result<(), EngineError> {
-        Self::not_yet("connect a container to a network")
+    async fn connect_network(&self, id: &ContainerId, network: &str) -> Result<(), EngineError> {
+        let request = NetworkConnectRequest {
+            container: id.0.clone(),
+            // Mars pins no address on either network, so there is no endpoint
+            // configuration to send and the engine's defaults apply.
+            endpoint_config: None,
+        };
+
+        match self.docker.connect_network(network, request).await {
+            Ok(()) => {
+                debug!(container = %id, network = %network, "connected the container to the network");
+                Ok(())
+            }
+            // Already connected is what the caller wanted. Docker says so with
+            // 403 and Podman with 409, and only when the message says
+            // "already": any other refusal at those statuses is a real one.
+            Err(error) => match EngineError::from(error) {
+                EngineError::Conflict(message) if says_already(&message) => {
+                    debug!(container = %id, network = %network, "the container was already on the network");
+                    Ok(())
+                }
+                EngineError::Api {
+                    status: 403,
+                    message,
+                } if says_already(&message) => {
+                    debug!(container = %id, network = %network, "the container was already on the network");
+                    Ok(())
+                }
+                other => Err(other),
+            },
+        }
     }
 
-    async fn start(&self, _id: &ContainerId) -> Result<(), EngineError> {
-        Self::not_yet("start a container")
+    async fn start(&self, id: &ContainerId) -> Result<(), EngineError> {
+        self.docker
+            .start_container(&id.0, None::<StartContainerOptions>)
+            .await?;
+
+        info!(container = %id, "started the container");
+        Ok(())
     }
 
-    async fn stop(&self, _id: &ContainerId, _grace_secs: u32) -> Result<(), EngineError> {
-        Self::not_yet("stop a container")
+    async fn stop(&self, id: &ContainerId, grace_secs: u32) -> Result<(), EngineError> {
+        let options = StopContainerOptionsBuilder::new()
+            // The engine's timeout is signed seconds; a grace period that does
+            // not fit is a misconfiguration, and saturating is friendlier than
+            // wrapping it into a negative timeout, which means "wait forever".
+            .t(i32::try_from(grace_secs).unwrap_or(i32::MAX))
+            .build();
+
+        match self.docker.stop_container(&id.0, Some(options)).await {
+            Ok(()) => {
+                info!(container = %id, grace_secs, "stopped the container");
+                Ok(())
+            }
+            Err(error) => match EngineError::from(error) {
+                // The container had already exited. The engine reports that
+                // with 304, which this version of bollard already reads as
+                // success; the arm stays for the engine or version that
+                // surfaces it, because "it is already stopped" is what the
+                // caller asked for either way.
+                EngineError::Api { status: 304, .. } => {
+                    debug!(container = %id, "the container had already stopped");
+                    Ok(())
+                }
+                other => Err(other),
+            },
+        }
     }
 
-    async fn kill(&self, _id: &ContainerId, _signal: Signal) -> Result<(), EngineError> {
-        Self::not_yet("signal a container")
+    async fn kill(&self, id: &ContainerId, signal: Signal) -> Result<(), EngineError> {
+        // The name, not the number: `ARCHITECTURE.md`, "Stop semantics" sends
+        // SIGINT and then SIGTERM by name, and the same string goes into the
+        // `state_change` event.
+        let options = KillContainerOptionsBuilder::new()
+            .signal(&signal.to_string())
+            .build();
+
+        // A container that has already exited is the engine's 409, which
+        // arrives as `Conflict` and which the session owner reads as "already
+        // gone" rather than as a failure.
+        self.docker.kill_container(&id.0, Some(options)).await?;
+
+        info!(container = %id, signal = %signal, "signalled the container");
+        Ok(())
     }
 
-    async fn remove(&self, _id: &ContainerId, _force: bool) -> Result<(), EngineError> {
-        Self::not_yet("remove a container")
+    async fn remove(&self, id: &ContainerId, force: bool) -> Result<(), EngineError> {
+        // `v` and `link` stay at their defaults, both false: a session's state
+        // lives in bind mounts under `DATA_DIR`, not in anonymous volumes, and
+        // there are no links to remove.
+        let options = RemoveContainerOptionsBuilder::new().force(force).build();
+
+        match self.docker.remove_container(&id.0, Some(options)).await {
+            Ok(()) => {
+                info!(container = %id, force, "removed the container");
+                Ok(())
+            }
+            Err(error) => match EngineError::from(error) {
+                // A container that is not there is already removed, which is
+                // what orphan cleanup and the end of a session both want.
+                EngineError::NotFound(_) => {
+                    debug!(container = %id, "the container was already gone");
+                    Ok(())
+                }
+                other => Err(other),
+            },
+        }
     }
 
-    async fn inspect(&self, _id: &ContainerId) -> Result<ContainerInfo, EngineError> {
-        Self::not_yet("inspect a container")
+    async fn inspect(&self, id: &ContainerId) -> Result<ContainerInfo, EngineError> {
+        Ok(to_container_info(self.inspect_raw(id).await?))
     }
 
-    async fn wait(&self, _id: &ContainerId) -> Result<ExitStatus, EngineError> {
-        Self::not_yet("wait for a container")
+    async fn wait(&self, id: &ContainerId) -> Result<ExitStatus, EngineError> {
+        let options = WaitContainerOptionsBuilder::new()
+            .condition(WAIT_CONDITION)
+            .build();
+
+        // A container that has already exited answers straight away, which is
+        // what makes this safe to call on a container a restart readopted.
+        let mut stream = std::pin::pin!(self.docker.wait_container(&id.0, Some(options)));
+
+        let code = match stream.next().await {
+            Some(Ok(response)) => Some(response.status_code),
+            // bollard turns a non-zero exit into an error of its own. A
+            // non-zero exit is not a failure here: 130 and 143 are exactly
+            // what a stopped session exits with (`ARCHITECTURE.md`, "Stop
+            // semantics").
+            Some(Err(::bollard::errors::Error::DockerContainerWaitError { code, .. })) => {
+                Some(code)
+            }
+            Some(Err(error)) => return Err(error.into()),
+            // The engine ended the stream without answering; the inspect below
+            // has the exit code, if the container did exit.
+            None => None,
+        };
+
+        // One inspect answers the OOM flag, which the wait response does not
+        // carry, and — when the stream said nothing — the exit code itself. A
+        // container removed between the exit and this call still has an exit
+        // code to report, so a failed inspect costs the flag and nothing more.
+        let state = self.inspect_raw(id).await.ok().and_then(|info| info.state);
+        let oom_killed = state
+            .as_ref()
+            .and_then(|state| state.oom_killed)
+            .unwrap_or(false);
+
+        let code = match code {
+            Some(code) => code,
+            None => exited_code(state.as_ref()).ok_or_else(|| {
+                EngineError::Connection(format!(
+                    "the engine ended the wait for container {id} without an exit status"
+                ))
+            })?,
+        };
+
+        debug!(container = %id, exit_code = code, oom_killed, "the container exited");
+        Ok(ExitStatus { code, oom_killed })
     }
 
-    async fn list_by_label(&self, _label_key: &str) -> Result<Vec<ContainerSummary>, EngineError> {
-        Self::not_yet("list containers")
+    async fn list_by_label(&self, label_key: &str) -> Result<Vec<ContainerSummary>, EngineError> {
+        // `all`, because an exited session container is exactly what recovery
+        // and orphan cleanup are looking for.
+        let filters = HashMap::from([(LABEL_FILTER.to_string(), vec![label_key.to_string()])]);
+        let options = ListContainersOptionsBuilder::new()
+            .all(true)
+            .filters(&filters)
+            .build();
+
+        let containers = self.docker.list_containers(Some(options)).await?;
+
+        Ok(containers.into_iter().map(to_container_summary).collect())
     }
 
     async fn attach_stdin(&self, _id: &ContainerId) -> Result<Box<dyn StdinWriter>, EngineError> {
@@ -431,9 +831,13 @@ impl fmt::Display for BollardEngine {
 
 #[cfg(test)]
 mod tests {
-    use bollard::models::{SystemVersionComponents, SystemVersionPlatform};
+    use bollard::models::{
+        ContainerConfig, ContainerStateStatusEnum, EndpointSettings, ErrorDetail, NetworkSettings,
+        SystemVersionComponents, SystemVersionPlatform,
+    };
 
     use super::*;
+    use crate::engine::{LABEL_PROJECT_ID, LABEL_SESSION_ID};
 
     /// A `/version` answer with the given components and platform name.
     fn version_reporting(components: &[&str], platform: Option<&str>) -> SystemVersion {
@@ -454,6 +858,257 @@ mod tests {
             version: Some("0.0.0-fake".to_string()),
             ..Default::default()
         }
+    }
+
+    /// An inspect answer with the state, networks and labels a session
+    /// container carries.
+    fn inspect_response(
+        status: ContainerStateStatusEnum,
+        exit_code: i64,
+        pid: i64,
+    ) -> ContainerInspectResponse {
+        ContainerInspectResponse {
+            id: Some("c0ffee".to_string()),
+            // The engine prefixes the name with a slash.
+            name: Some("/mars-session-00000000-0000-4000-8000-00000000abcd".to_string()),
+            config: Some(ContainerConfig {
+                labels: Some(HashMap::from([
+                    (
+                        LABEL_SESSION_ID.to_string(),
+                        "00000000-0000-4000-8000-00000000abcd".to_string(),
+                    ),
+                    (LABEL_PROJECT_ID.to_string(), "p1".to_string()),
+                ])),
+                ..Default::default()
+            }),
+            state: Some(BollardContainerState {
+                status: Some(status),
+                exit_code: Some(exit_code),
+                pid: Some(pid),
+                oom_killed: Some(false),
+                ..Default::default()
+            }),
+            network_settings: Some(NetworkSettings {
+                networks: Some(HashMap::from([
+                    ("mars-sessions".to_string(), EndpointSettings::default()),
+                    ("mars-egress".to_string(), EndpointSettings::default()),
+                ])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn every_state_string_the_engine_reports_has_a_state() {
+        assert_eq!(container_state_of("created", 0), ContainerState::Created);
+        assert_eq!(container_state_of("running", 0), ContainerState::Running);
+        assert_eq!(container_state_of("paused", 0), ContainerState::Paused);
+        assert_eq!(
+            container_state_of("exited", 143),
+            ContainerState::Exited { code: 143 }
+        );
+        assert_eq!(container_state_of("removing", 0), ContainerState::Removing);
+        assert_eq!(container_state_of("dead", 0), ContainerState::Dead);
+    }
+
+    #[test]
+    fn a_state_string_this_version_does_not_know_is_kept_verbatim() {
+        // `restarting` and the engine's empty string are both states the plain
+        // types do not name; neither is silently turned into something else.
+        assert_eq!(
+            container_state_of("restarting", 0),
+            ContainerState::Unknown("restarting".to_string())
+        );
+        assert_eq!(
+            container_state_of("", 0),
+            ContainerState::Unknown(String::new())
+        );
+        assert_eq!(
+            container_state_of("hibernating", 0),
+            ContainerState::Unknown("hibernating".to_string())
+        );
+    }
+
+    #[test]
+    fn the_enums_string_is_the_one_the_mapping_matches_on() {
+        // The mapping is written against the API's lower-case strings, so the
+        // enum has to yield exactly those.
+        for (status, expected) in [
+            (ContainerStateStatusEnum::CREATED, ContainerState::Created),
+            (ContainerStateStatusEnum::RUNNING, ContainerState::Running),
+            (ContainerStateStatusEnum::PAUSED, ContainerState::Paused),
+            (
+                ContainerStateStatusEnum::EXITED,
+                ContainerState::Exited { code: 0 },
+            ),
+            (ContainerStateStatusEnum::REMOVING, ContainerState::Removing),
+            (ContainerStateStatusEnum::DEAD, ContainerState::Dead),
+        ] {
+            let state = BollardContainerState {
+                status: Some(status),
+                ..Default::default()
+            };
+            assert_eq!(container_state_of(&status_string(&state), 0), expected);
+        }
+    }
+
+    #[test]
+    fn an_inspect_answer_becomes_the_plain_container_info() {
+        let info = to_container_info(inspect_response(ContainerStateStatusEnum::EXITED, 143, 0));
+
+        assert_eq!(info.id, ContainerId("c0ffee".to_string()));
+        // The leading slash is the engine's, not the container's name.
+        assert_eq!(
+            info.name,
+            "mars-session-00000000-0000-4000-8000-00000000abcd"
+        );
+        assert_eq!(info.state, ContainerState::Exited { code: 143 });
+        // Sorted, so the answer does not depend on the engine's hash order.
+        assert_eq!(info.networks, vec!["mars-egress", "mars-sessions"]);
+        assert_eq!(
+            info.labels.get(LABEL_SESSION_ID).map(String::as_str),
+            Some("00000000-0000-4000-8000-00000000abcd")
+        );
+        // Pid 0 is what the engine reports for a container that is not
+        // running, and is not a pid.
+        assert_eq!(info.pid, None);
+    }
+
+    #[test]
+    fn a_running_container_reports_its_pid() {
+        let info = to_container_info(inspect_response(ContainerStateStatusEnum::RUNNING, 0, 4711));
+
+        assert_eq!(info.state, ContainerState::Running);
+        assert!(info.state.is_running());
+        assert_eq!(info.pid, Some(4711));
+    }
+
+    #[test]
+    fn an_inspect_answer_that_says_almost_nothing_still_maps() {
+        let info = to_container_info(ContainerInspectResponse::default());
+
+        assert_eq!(info.id, ContainerId(String::new()));
+        assert_eq!(info.name, "");
+        assert_eq!(info.state, ContainerState::Unknown(String::new()));
+        assert!(info.networks.is_empty());
+        assert!(info.labels.is_empty());
+        assert_eq!(info.pid, None);
+    }
+
+    #[test]
+    fn only_an_exited_state_yields_the_code_a_silent_wait_falls_back_to() {
+        let exited = BollardContainerState {
+            status: Some(ContainerStateStatusEnum::EXITED),
+            exit_code: Some(130),
+            ..Default::default()
+        };
+        assert_eq!(exited_code(Some(&exited)), Some(130));
+
+        let running = BollardContainerState {
+            status: Some(ContainerStateStatusEnum::RUNNING),
+            exit_code: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(exited_code(Some(&running)), None);
+        assert_eq!(exited_code(None), None);
+    }
+
+    #[test]
+    fn a_list_row_is_running_only_when_the_engine_says_running() {
+        let row = |state: Option<ContainerSummaryStateEnum>| BollardContainerSummary {
+            id: Some("c0ffee".to_string()),
+            names: Some(vec!["/mars-session-1".to_string()]),
+            labels: Some(HashMap::from([(
+                LABEL_SESSION_ID.to_string(),
+                "s1".to_string(),
+            )])),
+            state,
+            ..Default::default()
+        };
+
+        let running = to_container_summary(row(Some(ContainerSummaryStateEnum::RUNNING)));
+        assert!(running.running);
+        assert_eq!(running.id, ContainerId("c0ffee".to_string()));
+        assert_eq!(running.name, "mars-session-1");
+        assert_eq!(
+            running.labels.get(LABEL_SESSION_ID).map(String::as_str),
+            Some("s1")
+        );
+
+        for state in [
+            Some(ContainerSummaryStateEnum::CREATED),
+            Some(ContainerSummaryStateEnum::EXITED),
+            Some(ContainerSummaryStateEnum::PAUSED),
+            Some(ContainerSummaryStateEnum::RESTARTING),
+            Some(ContainerSummaryStateEnum::REMOVING),
+            Some(ContainerSummaryStateEnum::DEAD),
+            Some(ContainerSummaryStateEnum::EMPTY),
+            None,
+        ] {
+            assert!(
+                !to_container_summary(row(state)).running,
+                "unexpectedly running: {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_list_row_without_a_name_is_still_a_row() {
+        let summary = to_container_summary(BollardContainerSummary::default());
+
+        assert_eq!(summary.name, "");
+        assert!(summary.labels.is_empty());
+        assert!(!summary.running);
+    }
+
+    #[test]
+    fn only_an_already_exists_refusal_counts_as_already_connected() {
+        assert!(says_already(
+            "endpoint with name mars-session-1 already exists in network mars-egress"
+        ));
+        // Podman's wording, and the upper case an engine might use.
+        assert!(says_already(
+            "container is Already connected to network mars-egress"
+        ));
+
+        assert!(!says_already("network mars-egress not found"));
+        assert!(!says_already("permission denied"));
+    }
+
+    #[test]
+    fn a_pull_stream_error_item_carries_the_registrys_own_message() {
+        let info = CreateImageInfo {
+            error_detail: Some(ErrorDetail {
+                code: Some(1),
+                message: Some("manifest for mars-session-claude:nope not found".to_string()),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            pull_error_of(&info).as_deref(),
+            Some("manifest for mars-session-claude:nope not found")
+        );
+
+        let coded = CreateImageInfo {
+            error_detail: Some(ErrorDetail {
+                code: Some(404),
+                message: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            pull_error_of(&coded).as_deref(),
+            Some("the registry answered 404")
+        );
+
+        // Ordinary progress is not an error.
+        let progress = CreateImageInfo {
+            status: Some("Downloading".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(pull_error_of(&progress), None);
+        assert_eq!(pull_error_of(&CreateImageInfo::default()), None);
     }
 
     #[test]

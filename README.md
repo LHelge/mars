@@ -2,7 +2,7 @@
 
 Mars is a self-hosted web application that runs coding-agent sessions in isolated containers and shows them in a browser. Each session is one agent (Claude Code in v1; the backend is pluggable) working on its own clone of a git repository. Sessions are autonomous: they keep running when nobody is connected, and whoever connects later sees the full history. Agents coordinate through a shared task tracker that the orchestrator exposes to them over MCP, and the same tracker is visible and editable in the web UI.
 
-Nothing in this repository is implemented yet. The documents describe the system to be built:
+The repository holds the skeleton — the orchestrator crate, the frontend application, `.env.example` and the CI workflows — and the documents below describe the system being built on it:
 
 | Document | What it covers |
 | --- | --- |
@@ -153,24 +153,25 @@ Code hand-offs keep the producing session, branch, exact commit and a comment to
 
 ## Development
 
-The intended layout:
+The layout:
 
 ```
 mars/
-├── orchestrator/    Rust crate (axum API, MCP server, session owners)
-├── frontend/        Vite + React + TypeScript
-├── images/          session container images (claude/)
-├── nginx/           nginx.conf and Dockerfile for the frontend image
-├── docs/            data model, decisions, open questions
-├── compose.yml
-└── .env.example
+├── orchestrator/       Rust crate (axum API, MCP server, session owners)
+├── frontend/           Vite + React + TypeScript
+├── docs/               data model, decisions, open questions
+├── .github/workflows/  CI: orchestrator, frontend, e2e, images
+├── .env.example
+├── images/             (planned) session container images (claude/)
+├── nginx/              (planned) nginx.conf and Dockerfile for the frontend image
+└── compose.yml         (planned)
 ```
 
 Working conventions, code-quality commands and test expectations are in `CLAUDE.md`.
 
 ### Running locally
 
-These commands apply once the implementation, images and `.env.example` exist. The socket commands assume Linux.
+The orchestrator, the frontend and `.env.example` are in the repository; the session images and `compose.yml` are not, so the steps that build or run an image are marked as planned. The socket commands assume Linux.
 
 **Postgres**:
 
@@ -196,9 +197,11 @@ cp ../.env.example ../.env   # then edit
 cargo run                    # runs migrations, listens on API_PORT and MCP_PORT
 ```
 
+`Config::from_env` looks for `.env` in the current directory and then in `../.env`, so running from `orchestrator/` picks up the repository-root file. `dotenvy` never overrides a variable that is already set, so the `DATABASE_URL` exported above wins over the compose-oriented `postgres` host in `.env.example`.
+
 `DATA_DIR_HOST` must point at a directory the current user owns; when running the orchestrator directly on the host it is the same path as `DATA_DIR` (default `./data`, made absolute at startup). Set `MCP_URL=http://host.containers.internal:7001/mcp` (Docker: `host.docker.internal`, plus `SESSION_EXTRA_HOSTS=host.docker.internal:host-gateway`) so session containers can reach the MCP listener on the host. On macOS the data directory must lie under a path the Podman machine shares with its VM (the home directory by default).
 
-**Session image**:
+**Session image** (planned; `images/` is not in the repository yet):
 
 ```bash
 podman build -t mars-session-claude:dev images/claude
@@ -227,10 +230,10 @@ npm run test:e2e             # starts the dev server itself, or reuses a running
 
 | Workflow | Triggers on | Checks |
 | --- | --- | --- |
-| Orchestrator CI | `orchestrator/**` | fmt, clippy, tests with `SQLX_OFFLINE=true` |
+| Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests with `SQLX_OFFLINE=true` |
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
-| E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright against a real orchestrator, Postgres and the stub session image |
-| Images | `images/**` | Build session images; smoke-run the entrypoint |
+| E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright; the real orchestrator, Postgres and stub session image are added by their own epics |
+| Images | `images/**` | Build session images once `images/` exists; smoke-run the entrypoint |
 
 ## Roadmap after v1
 

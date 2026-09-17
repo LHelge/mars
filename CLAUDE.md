@@ -14,7 +14,7 @@ Mars runs coding-agent sessions (Claude Code in v1, behind a pluggable `AgentBac
 
 ## Backend conventions
 
-- Rust stable, edition 2024, pinned by `rust-toolchain.toml`. `cargo fmt` and `cargo clippy -- -D warnings` clean at all times. Crates are added with `cargo add`; the crate chosen for each concern is listed in `ARCHITECTURE.md`, "Orchestrator internals". Git is never a crate: everything shells out to the `git` binary through `src/git/` (ADR 0011).
+- Rust stable, edition 2024, pinned by `rust-toolchain.toml`. `cargo fmt` and `cargo clippy --all-targets -- -D warnings` clean at all times. Crates are added with `cargo add`; the crate chosen for each concern is listed in `ARCHITECTURE.md`, "Orchestrator internals". Git is never a crate: everything shells out to the `git` binary through `src/git/` (ADR 0011).
 - Module layout and the `Error` enum contract are in `ARCHITECTURE.md`, "Orchestrator internals". Every module does `use crate::prelude::*`. Models hold validation and a per-model error enum, never SQL. Repositories hold all SQL through `sqlx::query!`/`query_as!`, one `XRepository<'a>` per aggregate borrowing `&PgPool`, and put the scope in the `WHERE` clause (`... WHERE id = $1 AND project_id = $2`) instead of checking after mutating. Routes are one module per resource exporting `routes() -> Router<AppState>`, DTOs private to the module. Engine, agent, git, secrets and email each expose a trait, a production implementation and a mock behind the `integration-tests` feature with `as_any()` for downcasting.
 - Locking and notification discipline is specified in `ARCHITECTURE.md`, "Task tracker" and "Event delivery": one project row lock per tracker mutation, one session row lock per event batch, any git lock before any database lock, `pg_notify` inside the writing transaction and never as a separate post-commit write (ADR 0021, 0028). Repository helpers accept the caller's transaction.
 - Functions return `Result`; `unwrap`/`expect` only in tests and at startup. Internal errors log with `tracing::error!` and return a generic message.
@@ -51,7 +51,7 @@ The commands are in `README.md`, "Development": Postgres in a container, `DOCKER
 After every backend change:
 
 ```bash
-cd orchestrator && cargo fmt && cargo clippy -- -D warnings && cargo test --features integration-tests
+cd orchestrator && cargo fmt && cargo clippy --all-targets -- -D warnings && cargo clippy --all-targets --features integration-tests -- -D warnings && cargo test --features integration-tests
 ```
 
 After every frontend change:
@@ -59,6 +59,8 @@ After every frontend change:
 ```bash
 cd frontend && npm run lint && npx tsc -b && npm run build && npm run test:unit && npm run test:e2e
 ```
+
+The two clippy invocations are what the Orchestrator CI workflow runs, so a lint in a test file or behind the `integration-tests` feature is caught locally. `tests/health.rs` needs a container engine for its testcontainers Postgres, as CI has.
 
 ## Testing expectations
 

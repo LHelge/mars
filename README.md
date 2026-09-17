@@ -88,7 +88,7 @@ Copy `.env.example` to `.env` and set:
 | `DATABASE_URL` | Postgres connection string (compose sets it for the orchestrator). |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Database bootstrap. |
 | `DOCKER_HOST` | Engine socket, `unix:///run/user/1000/podman/podman.sock` for rootless Podman. |
-| `DATA_DIR_HOST` | Host path of the data directory; mounted at `/data` in the orchestrator and used as the source of session bind mounts. |
+| `DATA_DIR_HOST` | Host path of the data directory; mounted at `/data` in the orchestrator and used as the source of session bind mounts. A bind-mount source must be absolute, so a relative path is resolved against the orchestrator's working directory at startup. |
 | `DATA_DIR` | Path at which the orchestrator itself sees the data directory: `/data` in compose, the same as `DATA_DIR_HOST` when running on the host. |
 | `MCP_URL` | URL written into each session's MCP config; default `http://orchestrator:7001/mcp`. On a development host: `http://host.containers.internal:7001/mcp`. |
 | `SESSION_NETWORK_INTERNAL`, `SESSION_NETWORK_EGRESS` | Names of the two session networks (default `mars-sessions`, `mars-egress`); created at startup if missing. |

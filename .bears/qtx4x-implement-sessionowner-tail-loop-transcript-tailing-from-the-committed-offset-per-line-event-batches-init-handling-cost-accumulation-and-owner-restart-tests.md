@@ -4,7 +4,7 @@ title: "Implement SessionOwner tail loop: transcript tailing from the committed 
 status: open
 priority: P1
 created: "2026-09-16T20:30:45.126836266Z"
-updated: "2026-09-17T04:57:28.979550059Z"
+updated: "2026-09-17T20:04:50.000932899Z"
 tags:
   - orchestrator
   - sessions
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - "88tdh"
   - nky3h
+  - n7tzv
 parent: s52qg
 ---
 

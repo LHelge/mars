@@ -2,10 +2,10 @@
 id: yq6c3
 title: "Faster local verification for implement-epic: one Postgres per test process and a private target directory for the coordinator"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-17T20:26:41.921401600Z"
-updated: "2026-09-17T20:26:41.921401600Z"
+updated: "2026-09-17T21:43:27.384458212Z"
 tags:
   - orchestrator
   - infra

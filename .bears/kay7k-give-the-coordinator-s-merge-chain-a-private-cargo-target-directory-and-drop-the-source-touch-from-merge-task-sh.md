@@ -1,14 +1,16 @@
 ---
 id: kay7k
 title: Give the coordinator's merge chain a private cargo target directory and drop the source touch from merge-task.sh
-status: open
+status: done
 priority: P1
 created: "2026-09-17T20:27:30.931725616Z"
-updated: "2026-09-17T20:27:30.931725616Z"
+updated: "2026-09-17T21:19:55.638587961Z"
 tags:
   - infra
   - docs
 parent: yq6c3
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

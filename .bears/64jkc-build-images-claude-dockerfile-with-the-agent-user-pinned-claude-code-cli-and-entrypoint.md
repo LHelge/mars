@@ -1,15 +1,17 @@
 ---
 id: "64jkc"
 title: Build images/claude/Dockerfile with the agent user, pinned Claude Code CLI and entrypoint
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:28:43.345672045Z"
-updated: "2026-09-16T20:28:43.345672045Z"
+updated: "2026-09-17T22:23:14.038987600Z"
 tags:
   - images
 depends_on:
   - mnjvj
 parent: deex5
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -307,18 +307,28 @@ impl RefreshToken {
 /// A `user_invites` row, column for column (`docs/data-model.md`,
 /// `user_invites`).
 ///
-/// The API-facing `Invite` — `{ id, email, admin, invited_by, expires_at,
-/// created_at }` (`SPEC.md`, "Users") — is assembled by the routes from this
-/// row, without `token_hash`.
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+/// This row *is* the API-facing `Invite` — `{ id, email, admin, invited_by,
+/// expires_at, created_at }` (`SPEC.md`, "Users"): the three columns that are
+/// not in that shape are `#[serde(skip)]`, so a row cannot leak a token hash
+/// into a response even when a route serialises it directly. `token_hash` is
+/// the SHA-256 hex of the raw token in the emailed link and the raw token is
+/// never stored (`CLAUDE.md`, rule 3); `accepted_at` and `accepted_user_id`
+/// are internal bookkeeping that only ever describes an invite the API no
+/// longer lists.
+///
+/// There is no `Deserialize`: an invite only ever comes out of the database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct UserInvite {
     pub id: Uuid,
     pub email: String,
+    #[serde(skip)]
     pub token_hash: String,
     pub admin: bool,
     pub invited_by: Option<Uuid>,
     pub expires_at: DateTime<Utc>,
+    #[serde(skip)]
     pub accepted_at: Option<DateTime<Utc>>,
+    #[serde(skip)]
     pub accepted_user_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
@@ -607,6 +617,42 @@ mod tests {
         assert_eq!(json["admin"], true);
         assert_eq!(json["must_change_password"], true);
         assert_eq!(json["notify_email"], false);
+    }
+
+    #[test]
+    fn an_invite_row_serialises_as_the_invite_dto() {
+        let invite = UserInvite {
+            id: Uuid::nil(),
+            email: "ada@example.com".into(),
+            token_hash: "fake-hash".into(),
+            admin: true,
+            invited_by: Some(Uuid::nil()),
+            expires_at: Utc::now(),
+            accepted_at: Some(Utc::now()),
+            accepted_user_id: Some(Uuid::nil()),
+            created_at: Utc::now(),
+        };
+
+        let json = serde_json::to_value(&invite).unwrap();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .expect("an invite serialises as an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        // Exactly `SPEC.md`, "Users": no token hash, no acceptance bookkeeping.
+        assert_eq!(
+            keys,
+            [
+                "admin",
+                "created_at",
+                "email",
+                "expires_at",
+                "id",
+                "invited_by"
+            ]
+        );
     }
 
     #[test]

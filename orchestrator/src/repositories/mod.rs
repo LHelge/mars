@@ -1,16 +1,20 @@
 //! All SQL, through `sqlx::query!` / `query_as!`. One `XRepository<'a>` per
 //! aggregate, borrowing the `PgPool`, with the scope in the `WHERE` clause.
 
+pub mod password_reset_tokens;
 pub mod projects;
 pub mod secrets;
 pub mod sessions;
 pub mod tasks;
+pub mod user_invites;
 pub mod users;
 
+pub use password_reset_tokens::PasswordResetTokenRepository;
 pub use projects::ProjectRepository;
 pub use secrets::SecretRepository;
 pub use sessions::SessionRepository;
 pub use tasks::{StateFields, TaskFilter, TaskRepository};
+pub use user_invites::UserInviteRepository;
 pub use users::UserRepository;
 
 // The crate convention (`CLAUDE.md`, "Backend conventions"); here it is what
@@ -96,5 +100,26 @@ pub(crate) fn foreign_key_violation(err: &sqlx::Error) -> Option<&str> {
             database_error.constraint()
         }
         _ => None,
+    }
+}
+
+/// [`Error::Conflict`] with `message` when `err` is a unique violation of
+/// `constraint`, and the generic mapping otherwise.
+///
+/// The one-constraint shape of the `match` in `users::map_duplicate`, for
+/// the repositories that have exactly one duplicate a caller can provoke:
+///
+/// ```ignore
+/// .map_err(|err| conflict_on(err, "user_invites_open_email_idx", "an open invite already exists for this email"))
+/// ```
+///
+/// It takes `err` by value because the only thing left to do with a mapped
+/// error is return it: a violation of some other constraint widens through
+/// `#[from] sqlx::Error` here, which logs the detail and answers 500 rather
+/// than inventing a message for a constraint this call site did not name.
+pub(crate) fn conflict_on(err: sqlx::Error, constraint: &str, message: &str) -> Error {
+    match unique_violation(&err) {
+        Some(violated) if violated == constraint => Error::Conflict(message.to_string()),
+        _ => Error::from(err),
     }
 }

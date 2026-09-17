@@ -1,10 +1,10 @@
 ---
 id: xgxvf
 title: "Fill in the Images CI workflow: lint, build both images on Docker and Podman, run the smoke test"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:31:13.773117983Z"
-updated: "2026-09-16T20:31:13.773117983Z"
+updated: "2026-09-17T22:45:35.815214621Z"
 tags:
   - images
   - infra
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - yuk96
 parent: deex5
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

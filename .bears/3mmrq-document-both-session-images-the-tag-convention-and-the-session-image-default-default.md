@@ -1,10 +1,10 @@
 ---
 id: "3mmrq"
 title: Document both session images, the tag convention and the SESSION_IMAGE_DEFAULT default
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:30:10.375619282Z"
-updated: "2026-09-16T20:30:10.375619282Z"
+updated: "2026-09-17T22:45:06.969846678Z"
 tags:
   - images
   - docs
@@ -12,6 +12,8 @@ depends_on:
   - "64jkc"
   - nfz7m
 parent: deex5
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

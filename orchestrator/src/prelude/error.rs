@@ -12,6 +12,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+use crate::models::TaskError;
 use crate::prelude::*;
 
 /// The message every 5xx response carries; internal detail never leaves the log.
@@ -75,6 +76,9 @@ pub enum Error {
     /// repositories can use `fetch_one` and let this conversion do the work.
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+    /// A tracker model rejected its input. The model decides the status.
+    #[error(transparent)]
+    Task(#[from] TaskError),
 }
 
 impl Error {
@@ -94,6 +98,7 @@ impl Error {
             Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Database(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             Error::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::Task(err) => err.status(),
         }
     }
 }

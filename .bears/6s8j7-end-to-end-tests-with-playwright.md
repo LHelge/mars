@@ -5,7 +5,7 @@ type: epic
 status: open
 priority: P2
 created: "2026-09-16T20:14:55.298493493Z"
-updated: "2026-09-16T20:16:02.986200849Z"
+updated: "2026-09-17T07:01:44.594456563Z"
 tags:
   - frontend
   - orchestrator
@@ -15,6 +15,7 @@ depends_on:
   - cgdc2
   - gn4y2
   - qgj33
+  - vdscb
 ---
 
 ## Scope

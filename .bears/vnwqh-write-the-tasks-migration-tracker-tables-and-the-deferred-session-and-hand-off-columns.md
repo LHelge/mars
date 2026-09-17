@@ -1,10 +1,10 @@
 ---
 id: vnwqh
 title: "Write the tasks migration: tracker tables and the deferred session and hand-off columns"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:30:09.653306476Z"
-updated: "2026-09-16T20:30:09.653306476Z"
+updated: "2026-09-17T07:11:31.591492714Z"
 tags:
   - orchestrator
   - core
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - k42gy
 parent: p5tsd
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

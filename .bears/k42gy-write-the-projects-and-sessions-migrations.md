@@ -1,10 +1,10 @@
 ---
 id: k42gy
 title: Write the projects and sessions migrations
-status: in_progress
+status: done
 priority: P0
 created: "2026-09-16T20:28:46.663165904Z"
-updated: "2026-09-17T06:57:33.738147138Z"
+updated: "2026-09-17T07:05:35.810442962Z"
 tags:
   - orchestrator
   - core

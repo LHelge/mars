@@ -1,10 +1,10 @@
 ---
 id: fcezm
 title: Add the user, token and invite models and UserRepository with user-row and admin-membership locks
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:29:13.327304385Z"
-updated: "2026-09-17T06:57:35.483449772Z"
+updated: "2026-09-17T07:16:55.704525848Z"
 tags:
   - orchestrator
   - core

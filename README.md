@@ -93,7 +93,7 @@ Copy `.env.example` to `.env` and set:
 | `MCP_URL` | URL written into each session's MCP config; default `http://orchestrator:7001/mcp`. On a development host: `http://host.containers.internal:7001/mcp`. |
 | `SESSION_NETWORK_INTERNAL`, `SESSION_NETWORK_EGRESS` | Names of the two session networks (default `mars-sessions`, `mars-egress`); created at startup if missing. |
 | `SESSION_EXTRA_HOSTS` | Optional comma-separated `host:ip` entries added to session containers, e.g. `host.containers.internal:host-gateway` for development. |
-| `SECRETS_MASTER_KEYS` | One or more `<version>=<base64 32-byte key>` entries, comma separated. Or `SECRETS_MASTER_KEY_FILE`. Back this up separately from the database; without it every stored secret is unrecoverable. |
+| `SECRETS_MASTER_KEYS` | One or more `<version>=<base64 32-byte key>` entries, comma separated. Or `SECRETS_MASTER_KEY_FILE`, a file with the same content, which should be readable only by its owner — a broader mode is accepted with a warning, because a mounted container secret's mode is not always the operator's to set. Back this up separately from the database; without it every stored secret is unrecoverable. The orchestrator refuses to start when a `key_version` present in `secrets` has no configured key or cannot be unwrapped with the one configured for it. |
 | `GIT_BOT_NAME`, `GIT_BOT_EMAIL` | Identity for commits the orchestrator creates (merges). |
 | `API_PORT` | Port of the API listener nginx proxies to (default 7000). |
 | `MCP_PORT` | Port of the MCP listener on the sessions network (default 7001). |

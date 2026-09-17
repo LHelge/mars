@@ -108,11 +108,12 @@ async fn a_user_survives_an_insert_find_list_update_delete_round_trip() {
             .is_none()
     );
 
-    // The seeded admin was created first, so it sorts first.
+    // By username, which is what `GET /users` answers: `ada` before the
+    // seeded `admin`, whatever order the two rows were created in.
     let listed = repository.list().await.unwrap();
     assert_eq!(
         listed.iter().map(|user| user.id).collect::<Vec<_>>(),
-        [SEEDED_ADMIN, new.id]
+        [new.id, SEEDED_ADMIN]
     );
 
     let update = UserUpdate {

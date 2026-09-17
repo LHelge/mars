@@ -12,6 +12,7 @@ pub mod cookies;
 pub mod extractors;
 pub mod health;
 pub mod throttle;
+pub mod users;
 
 /// The probes and fixtures the integration and end-to-end tests drive
 /// (`SPEC.md`, "Test-only routes"). Never compiled into a release build.
@@ -22,7 +23,9 @@ pub use extractors::{AdminUser, CurrentUser, UngatedUser, authenticate_access_to
 
 /// Every resource router, merged into the one router nested under `/api`.
 pub fn routes() -> Router<AppState> {
-    let router = Router::new().merge(health::routes());
+    let router = Router::new()
+        .merge(health::routes())
+        .nest("/users", users::routes());
 
     // The only routes with a prefix of their own, because `SPEC.md`,
     // "Test-only routes" gives them one, and because a single `nest` is what

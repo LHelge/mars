@@ -214,6 +214,15 @@ npm run dev                  # proxies /api and /ws to the orchestrator
 
 The proxy targets `http://localhost:7000` (the `API_PORT` default); set `VITE_API_TARGET` to point the dev server at a different orchestrator.
 
+End-to-end tests need a browser once per machine:
+
+```bash
+npx playwright install --with-deps chromium
+npm run test:e2e             # starts the dev server itself, or reuses a running one
+```
+
+`PLAYWRIGHT_BASE_URL` points Playwright at the frontend under test (default `http://localhost:5173`, the Vite dev server) and `PLAYWRIGHT_API_URL` at the orchestrator its helpers call directly (default `http://localhost:7000`).
+
 ### CI
 
 | Workflow | Triggers on | Checks |

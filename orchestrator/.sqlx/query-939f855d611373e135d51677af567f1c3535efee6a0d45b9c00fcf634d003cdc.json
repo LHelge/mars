@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO events (session_id, seq, ts, kind, payload)\n                SELECT $1, COALESCE(MAX(seq), 0) + 1, $2, $3, $4\n                FROM events\n                WHERE session_id = $1\n                RETURNING seq AS \"seq!\"\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "939f855d611373e135d51677af567f1c3535efee6a0d45b9c00fcf634d003cdc"
+}

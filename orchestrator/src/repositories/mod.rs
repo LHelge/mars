@@ -2,9 +2,11 @@
 //! aggregate, borrowing the `PgPool`, with the scope in the `WHERE` clause.
 
 pub mod secrets;
+pub mod sessions;
 pub mod users;
 
 pub use secrets::SecretRepository;
+pub use sessions::SessionRepository;
 pub use users::UserRepository;
 
 // The crate convention (`CLAUDE.md`, "Backend conventions"); here it is what

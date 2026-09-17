@@ -1,0 +1,315 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, project_id, profile_id, kind AS \"kind: ProfileKind\", created_by,\n                   title, task_id, handoff_id, state AS \"state: SessionState\", base_ref,\n                   branch, container_id, cli_session_id, mcp_token_hash, last_seq,\n                   last_activity_at, cost_usd, input_tokens, output_tokens, error,\n                   created_at, parked_at, ended_at\n            FROM sessions\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "project_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "profile_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "kind: ProfileKind",
+        "type_info": {
+          "Custom": {
+            "name": "profile_kind",
+            "kind": {
+              "Enum": [
+                "conversational",
+                "ephemeral"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "task_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "task_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "handoff_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "handoff_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "state: SessionState",
+        "type_info": {
+          "Custom": {
+            "name": "session_state",
+            "kind": {
+              "Enum": [
+                "creating",
+                "running",
+                "parked",
+                "done",
+                "failed"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "base_ref",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "base_ref"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "branch",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "branch"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "container_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "container_id"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "cli_session_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "cli_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "mcp_token_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "mcp_token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "last_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "last_seq"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "last_activity_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "last_activity_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "cost_usd",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "cost_usd"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "input_tokens",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "input_tokens"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "output_tokens",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "output_tokens"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "error"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "parked_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "parked_at"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
+        "name": "ended_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "ended_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "33f3045dee1350aa434cb3822d0ff6af7477e78a71032afa684a6f8e4d28aa22"
+}

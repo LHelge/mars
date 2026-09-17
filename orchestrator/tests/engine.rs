@@ -865,10 +865,9 @@ async fn userns_keep_id_accepted() {
 ///
 /// On a host whose own uid is not 1000 and which maps no namespace — a
 /// GitHub-hosted Docker runner — the probe is meant to fail, and this asserts
-/// that failure instead. The message is checked loosely there because the
-/// directory the orchestrator created is 0o755 and owned by the runner, so the
-/// container may fail to write the file at all rather than write it as the
-/// wrong uid; either way the verdict is `Probe` and startup stops.
+/// that failure instead. The exact message is asserted there: the probe makes
+/// its session subdirectories world-writable, so the container's write
+/// succeeds and the ownership check is what refuses.
 #[tokio::test]
 async fn startup_probe_end_to_end() {
     let Some(engine) = connect_or_skip().await else {
@@ -1037,7 +1036,12 @@ fn probe_should_pass(kind: EngineKind, own_uid: u32) -> bool {
     kind == EngineKind::Podman || own_uid == SESSION_UID
 }
 
-/// The other branch: the probe refused, with a message naming what it found.
+/// The other branch: the probe refused, naming both uids.
+///
+/// Only that one message is accepted. The probe's session subdirectories are
+/// world-writable, so a container running as uid 1000 writes its file however
+/// the host maps uids, and what is left to fail is the ownership check —
+/// which is the failure an operator can act on.
 fn assert_probe_failure(error: Option<EngineError>, own_uid: u32) {
     let Some(error) = error else {
         panic!("the probe passed although this host does not honour the uid contract");
@@ -1049,9 +1053,7 @@ fn assert_probe_failure(error: Option<EngineError>, own_uid: u32) {
     let expected_owner =
         format!("probe file is owned by uid {SESSION_UID}, orchestrator runs as uid {own_uid}");
     assert!(
-        message.starts_with(&expected_owner)
-            || message.starts_with("probe file was not written")
-            || message.starts_with("probe container exited with code"),
+        message.starts_with(&expected_owner),
         "the probe failed for an unexpected reason: {message}"
     );
 }

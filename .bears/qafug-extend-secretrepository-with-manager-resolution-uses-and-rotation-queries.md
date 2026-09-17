@@ -1,16 +1,18 @@
 ---
 id: qafug
 title: Extend SecretRepository with manager, resolution, uses and rotation queries
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:30:14.314571587Z"
-updated: "2026-09-16T20:30:14.314571587Z"
+updated: "2026-09-17T12:37:43.039719027Z"
 tags:
   - orchestrator
   - secrets
 depends_on:
   - xzahq
 parent: t36d2
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

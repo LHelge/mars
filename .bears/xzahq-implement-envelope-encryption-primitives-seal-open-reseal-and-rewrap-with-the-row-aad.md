@@ -1,10 +1,10 @@
 ---
 id: xzahq
 title: "Implement envelope encryption primitives: seal, open, reseal and rewrap with the row AAD"
-status: in_progress
+status: done
 priority: P0
 created: "2026-09-16T20:29:42.780753979Z"
-updated: "2026-09-17T12:18:12.598120491Z"
+updated: "2026-09-17T12:37:33.951322473Z"
 tags:
   - orchestrator
   - secrets

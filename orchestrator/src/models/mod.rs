@@ -39,7 +39,10 @@ pub use shared_dir::{
     ContainerPath, MAX_SHARED_DIR_NAME_CHARS, NewSharedDir, RESERVED_PATHS, SharedDir,
     SharedDirError, SharedDirName, SharedDirResult, is_shared_dir_name,
 };
-pub use task::{Label, MAX_TITLE_CHARS, NewTask, Priority, Task, TaskError, TaskResult, TaskTitle};
+pub use task::{
+    Label, MAX_TITLE_CHARS, NewTask, Priority, Task, TaskError, TaskRef, TaskResult, TaskTitle,
+    TaskUpdate,
+};
 pub use task_comment::{NewTaskComment, TaskComment};
 pub use task_dependency::{TaskDependency, TaskDependencyKind};
 pub use task_event::{NewTaskEvent, TaskEventRow, kind as task_event_kind};

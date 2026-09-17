@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT d.task_id\n            FROM task_dependencies AS d\n            JOIN tasks AS t ON t.id = d.task_id\n            WHERE d.depends_on_task_id = $1 AND d.kind = $2 AND t.project_id = $3\n            ORDER BY d.task_id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_dependencies",
+            "name": "task_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "task_dependency_kind",
+            "kind": {
+              "Enum": [
+                "blocks",
+                "discovered_from",
+                "related"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2d3460605c04aaea1df7d6dc7cc17874ca94089a4f06ff68accb935009d8afc2"
+}

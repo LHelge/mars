@@ -70,6 +70,9 @@ pub enum TaskError {
     /// A hand-off carried an empty source branch.
     #[error("source branch must not be empty")]
     EmptySourceBranch,
+    /// A task reference was neither a UUID nor a per-project number.
+    #[error("a task is addressed by its UUID or its per-project number")]
+    InvalidTaskRef,
 }
 
 impl TaskError {
@@ -217,6 +220,63 @@ impl std::fmt::Display for Label {
     }
 }
 
+/// How a caller addressed a task: by its UUID or by its per-project number.
+///
+/// `SPEC.md`, "Tasks": "`{id}` and `{dep}` accept a task's UUID or its
+/// per-project number", and the MCP tools accept the same two forms. The
+/// number is only unique within a project, so a [`TaskRef::Number`] is
+/// meaningless without the project it was read in; the repository takes both.
+///
+/// This is a domain identifier, not a row: the translation to a `WHERE` clause
+/// lives in `repositories/tasks/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskRef {
+    /// The task's own UUID.
+    Id(Uuid),
+    /// The task's `number` within the project it belongs to.
+    Number(i32),
+}
+
+impl From<Uuid> for TaskRef {
+    fn from(id: Uuid) -> Self {
+        Self::Id(id)
+    }
+}
+
+impl std::fmt::Display for TaskRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Id(id) => write!(f, "{id}"),
+            Self::Number(number) => write!(f, "{number}"),
+        }
+    }
+}
+
+impl std::str::FromStr for TaskRef {
+    type Err = TaskError;
+
+    /// All digits is a number, anything else has to be a UUID.
+    ///
+    /// The two forms cannot collide: a UUID always carries hyphens or hex
+    /// letters, and a bare run of digits is never 32 hex characters and a
+    /// valid UUID at the same time. A number that does not fit an `INTEGER` —
+    /// and therefore cannot be in the column — is rejected here rather than
+    /// asked about, as is the `#42` the frontend's search box accepts: the
+    /// `#` is display syntax, not part of the reference.
+    fn from_str(raw: &str) -> TaskResult<Self> {
+        if !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit()) {
+            return raw
+                .parse::<i32>()
+                .map(Self::Number)
+                .map_err(|_| TaskError::InvalidTaskRef);
+        }
+
+        Uuid::parse_str(raw)
+            .map(Self::Id)
+            .map_err(|_| TaskError::InvalidTaskRef)
+    }
+}
+
 /// A `tasks` row, column for column (`docs/data-model.md`, `tasks`).
 ///
 /// The API-facing shape — `state` by name, `depends_on`, `blocks`, `handoff` —
@@ -307,8 +367,57 @@ impl NewTask {
     }
 }
 
+/// The fields `PUT /projects/{pid}/tasks/{id}` can change directly
+/// (`SPEC.md`, "Tasks").
+///
+/// `None` means "leave it alone"; the two nested options mean "set it to
+/// NULL". The state, the lease, `attempts`, `closed_at`, `blocked`,
+/// `needs_human_reason` and the current hand-off are deliberately absent: they
+/// are the tracker's to compose out of a state move, a claim, a release or an
+/// escalation, through
+/// [`TaskRepository::set_task_state_fields`](crate::repositories::TaskRepository::set_task_state_fields),
+/// never a field a body sets on its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskUpdate {
+    pub title: Option<TaskTitle>,
+    pub description: Option<String>,
+    pub priority: Option<Priority>,
+    pub labels: Option<Vec<Label>>,
+    pub assignee_user_id: Option<Option<Uuid>>,
+    pub parent_id: Option<Option<Uuid>>,
+}
+
+impl TaskUpdate {
+    /// Whether this update mentions any field at all.
+    ///
+    /// Mentioning a field is not the same as changing it: whether the values
+    /// differ from the stored row is decided by the repository under the
+    /// project lock, because only the row read there is authoritative
+    /// (ADR 0030).
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.description.is_none()
+            && self.priority.is_none()
+            && self.labels.is_none()
+            && self.assignee_user_id.is_none()
+            && self.parent_id.is_none()
+    }
+
+    /// The new labels as the `TEXT[]` binding wants them, if any were given.
+    pub fn label_strings(&self) -> Option<Vec<String>> {
+        self.labels.as_ref().map(|labels| {
+            labels
+                .iter()
+                .map(|label| label.as_str().to_string())
+                .collect()
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
 
     #[test]
@@ -326,6 +435,7 @@ mod tests {
             TaskError::InvalidHandoffActor,
             TaskError::InvalidReview,
             TaskError::EmptySourceBranch,
+            TaskError::InvalidTaskRef,
         ] {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
             assert!(!error.to_string().is_empty(), "{error:?} has no message");
@@ -471,5 +581,75 @@ mod tests {
         let mut task = NewTask::new(Uuid::new_v4(), "labelled").unwrap();
         task.labels = Label::parse_list(&["backend", "backend", "infra"]).unwrap();
         assert_eq!(task.label_strings(), ["backend", "infra"]);
+    }
+
+    #[test]
+    fn a_run_of_digits_is_a_task_number() {
+        assert_eq!(TaskRef::from_str("42").unwrap(), TaskRef::Number(42));
+        assert_eq!(TaskRef::from_str("1").unwrap(), TaskRef::Number(1));
+        assert_eq!(TaskRef::from_str("0").unwrap(), TaskRef::Number(0));
+        assert_eq!(
+            TaskRef::from_str(&i32::MAX.to_string()).unwrap(),
+            TaskRef::Number(i32::MAX)
+        );
+        assert_eq!(TaskRef::Number(42).to_string(), "42");
+    }
+
+    #[test]
+    fn anything_else_has_to_be_a_uuid() {
+        let id = Uuid::new_v4();
+        assert_eq!(TaskRef::from_str(&id.to_string()).unwrap(), TaskRef::Id(id));
+        // The hyphenless form is a UUID too, and is never all digits.
+        assert_eq!(
+            TaskRef::from_str(&id.simple().to_string()).unwrap(),
+            TaskRef::Id(id)
+        );
+        assert_eq!(TaskRef::from(id), TaskRef::Id(id));
+        assert_eq!(TaskRef::Id(id).to_string(), id.to_string());
+    }
+
+    #[test]
+    fn garbage_a_hash_and_an_out_of_range_number_are_rejected() {
+        for raw in [
+            "",
+            " ",
+            "#42",
+            "42 ",
+            "-1",
+            "+1",
+            "4.2",
+            "nonsense",
+            // One past `INTEGER`, so no `tasks.number` can ever hold it.
+            "2147483648",
+            "99999999999999999999",
+            "0123456789abcdef0123456789abcdef0",
+        ] {
+            assert_eq!(
+                TaskRef::from_str(raw),
+                Err(TaskError::InvalidTaskRef),
+                "accepted {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_update_that_mentions_nothing_is_empty() {
+        let mut update = TaskUpdate::default();
+        assert!(update.is_empty());
+        assert!(update.label_strings().is_none());
+
+        update.assignee_user_id = Some(None);
+        assert!(!update.is_empty());
+
+        let mut update = TaskUpdate {
+            labels: Some(Label::parse_list(&["infra", "infra"]).unwrap()),
+            ..TaskUpdate::default()
+        };
+        assert!(!update.is_empty());
+        assert_eq!(update.label_strings().unwrap(), ["infra"]);
+
+        update.labels = Some(Vec::new());
+        assert!(!update.is_empty());
+        assert!(update.label_strings().unwrap().is_empty());
     }
 }

@@ -29,17 +29,26 @@
 //! payload assembly itself — actor, `task`, `from`/`to`, `states` — belongs to
 //! `events/` and the tracker epic, not here.
 //!
-//! The module is split by table: `states` holds `task_states` and
-//! `profile_states`, `events` holds `task_events`. Task rows, dependencies,
-//! comments, hand-offs and session links join them as they are written.
+//! The module is split by table: `rows` holds `tasks`, `dependencies` holds
+//! `task_dependencies`, `comments` holds `task_comments`, `handoffs` holds
+//! `task_handoffs`, `links` holds `task_sessions`, `states` holds
+//! `task_states` and `profile_states`, and `events` holds `task_events`. They
+//! are one `impl TaskRepository` between them, so a caller sees one repository
+//! and the files stay the size of the table they are about.
 
+mod comments;
+mod dependencies;
 mod events;
+mod handoffs;
+mod links;
+mod rows;
 mod states;
 
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 pub use events::MAX_TASK_EVENT_PAGE;
+pub use rows::{StateFields, TaskFilter};
 
 use crate::prelude::*;
 use crate::repositories::ProjectRepository;

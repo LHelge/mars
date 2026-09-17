@@ -1,10 +1,10 @@
 ---
 id: jjzya
 title: Implement BollardEngine connection, Podman/Docker detection, ping and session networks
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:27:43.136998691Z"
-updated: "2026-09-17T15:47:46.551114341Z"
+updated: "2026-09-17T16:42:20.151568564Z"
 tags:
   - orchestrator
   - engine

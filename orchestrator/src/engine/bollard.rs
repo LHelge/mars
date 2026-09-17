@@ -12,11 +12,11 @@
 //! (`ARCHITECTURE.md`, "Networks") — and the container lifecycle the launcher,
 //! the stop sequence, recovery and orphan cleanup run on: create, connect to
 //! the egress network, start, stop, kill with a named signal, remove, inspect,
-//! wait, list by label and pull an absent image. Those are exactly the rows of
-//! the operation table in `ARCHITECTURE.md`, "Engine adapter", and nothing
-//! outside it is called. The streaming operations — attaching stdin and
-//! running an exec with a PTY — are still stubs that answer
-//! [`EngineError::Unsupported`] until the task that writes them.
+//! wait, list by label and pull an absent image. It also covers the two
+//! streaming operations — attaching a container's stdin with the TTY off, and
+//! running an exec with a PTY for the terminal view — whose halves live in
+//! [`super::streams`]. Those are exactly the rows of the operation table in
+//! `ARCHITECTURE.md`, "Engine adapter", and nothing outside it is called.
 //!
 //! Every method here is one engine call plus a mapping. Retries, the grace
 //! period between `SIGINT` and `SIGTERM` and the decision of what an exit code
@@ -45,21 +45,24 @@ use async_trait::async_trait;
 // `bollard` names three types the engine's own vocabulary also names. They are
 // imported under an alias rather than qualified at every use, so a signature
 // below can never be read as the wrong one.
+use bollard::container::AttachContainerResults;
+use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::models::{
     ContainerInspectResponse, ContainerState as BollardContainerState,
     ContainerSummary as BollardContainerSummary, ContainerSummaryStateEnum, CreateImageInfo,
     NetworkConnectRequest, NetworkCreateRequest, SystemVersion,
 };
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectContainerOptions,
-    InspectNetworkOptions, KillContainerOptionsBuilder, ListContainersOptionsBuilder,
-    RemoveContainerOptionsBuilder, StartContainerOptions, StopContainerOptionsBuilder,
-    WaitContainerOptionsBuilder,
+    AttachContainerOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder,
+    InspectContainerOptions, InspectNetworkOptions, KillContainerOptionsBuilder,
+    ListContainersOptionsBuilder, RemoveContainerOptionsBuilder, StartContainerOptions,
+    StopContainerOptionsBuilder, WaitContainerOptionsBuilder,
 };
 use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::StreamExt;
 
 use super::spec::to_bollard;
+use super::streams::{BollardExec, BollardStdin, resize_exec};
 use super::{
     ContainerEngine, ContainerId, ContainerInfo, ContainerSpec, ContainerState, ContainerSummary,
     EngineError, EngineKind, ExecSession, ExitStatus, Signal, StdinWriter,
@@ -139,17 +142,6 @@ impl BollardEngine {
     /// The engine's own version string, as `/version` reported it.
     pub fn version(&self) -> &str {
         &self.version
-    }
-
-    /// The answer every operation this task does not implement yet gives.
-    ///
-    /// [`EngineError::Unsupported`] rather than a panic or a silent success:
-    /// a caller that reaches one of these before its task lands fails loudly
-    /// and says which operation it wanted.
-    fn not_yet<T>(operation: &str) -> Result<T, EngineError> {
-        Err(EngineError::Unsupported(format!(
-            "the bollard engine cannot {operation} yet"
-        )))
     }
 
     /// One inspect, still in `bollard`'s own shape.
@@ -326,6 +318,24 @@ fn names_podman(name: &str) -> bool {
 /// use those statuses for other things too).
 fn says_already(message: &str) -> bool {
     message.to_lowercase().contains("already")
+}
+
+/// Whether an engine's refusal of an exec says the container is not running.
+///
+/// The second message the adapter reads rather than only reports, and for the
+/// same reason as [`says_already`]: the status alone does not say which
+/// refusal it was. Docker answers 409 — already a [`EngineError::Conflict`] —
+/// but a rootless Podman 6 answers 500 with `can only create exec sessions on
+/// running containers: container state improper`, and a 500 would reach the
+/// WebSocket handler as an internal fault rather than as the `error` answer to
+/// a `terminal_open` that is simply too late (`SPEC.md`, "WebSocket: session
+/// stream").
+fn says_not_running(message: &str) -> bool {
+    let message = message.to_lowercase();
+
+    message.contains("not running")
+        || message.contains("state improper")
+        || message.contains("running containers")
 }
 
 /// The failure a pull stream reported inside an otherwise successful response,
@@ -801,19 +811,110 @@ impl ContainerEngine for BollardEngine {
         Ok(containers.into_iter().map(to_container_summary).collect())
     }
 
-    async fn attach_stdin(&self, _id: &ContainerId) -> Result<Box<dyn StdinWriter>, EngineError> {
-        Self::not_yet("attach to a container's stdin")
+    async fn attach_stdin(&self, id: &ContainerId) -> Result<Box<dyn StdinWriter>, EngineError> {
+        // Stdin and nothing else, with `logs` off so the engine replays
+        // nothing: the CLI's output is the transcript file the owner tails,
+        // and this socket is a pipe for input (ADR 0010; `ARCHITECTURE.md`,
+        // "Session container specification", Stdin row). `Tty` is off on the
+        // container itself, which is what keeps the two directions apart.
+        let options = AttachContainerOptionsBuilder::new()
+            .stdin(true)
+            .stdout(false)
+            .stderr(false)
+            .stream(true)
+            .logs(false)
+            .build();
+
+        let AttachContainerResults { output, input } =
+            self.docker.attach_container(&id.0, Some(options)).await?;
+
+        info!(container = %id, "attached to the container's stdin");
+
+        // The output half goes with the writer, drained by a task of its own:
+        // a hijacked connection nobody reads is one the engine may close, and
+        // the session owner never looks at output.
+        Ok(Box::new(BollardStdin::attached(id.clone(), input, output)))
     }
 
     async fn exec_pty(
         &self,
-        _id: &ContainerId,
-        _cmd: &[String],
-        _user: &str,
-        _cols: u16,
-        _rows: u16,
+        id: &ContainerId,
+        cmd: &[String],
+        user: &str,
+        cols: u16,
+        rows: u16,
     ) -> Result<Box<dyn ExecSession>, EngineError> {
-        Self::not_yet("start an exec")
+        // A container that is not running refuses the exec, and the refusal is
+        // a `Conflict` however the engine numbered it (see `says_not_running`).
+        // That is the one the WebSocket handler answers a `terminal_open` with
+        // an `error` message for (`SPEC.md`, "WebSocket: session stream").
+        //
+        // The user is the caller's: `1000:1000` for a session, because the
+        // image's `agent` account is that uid and the engine test image has no
+        // account by that name. `env` and `working_dir` stay unset, because
+        // `/bin/bash -l` is a login shell and the image decides both.
+        let created = self
+            .docker
+            .create_exec(
+                &id.0,
+                CreateExecOptions {
+                    cmd: Some(cmd.to_vec()),
+                    user: Some(user.to_string()),
+                    attach_stdin: Some(true),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    tty: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| match EngineError::from(error) {
+                // Podman says the same thing as Docker with a different status
+                // (see `says_not_running`); both mean the terminal was asked
+                // for after the session's container had gone.
+                EngineError::Api { status, message } if says_not_running(&message) => {
+                    debug!(container = %id, status, "the container is not running");
+                    EngineError::Conflict(message)
+                }
+                other => other,
+            })?;
+
+        let started = self
+            .docker
+            .start_exec(
+                &created.id,
+                Some(StartExecOptions {
+                    detach: false,
+                    tty: true,
+                    output_capacity: None,
+                }),
+            )
+            .await?;
+
+        let (input, output) = match started {
+            StartExecResults::Attached { input, output } => (input, output),
+            // Only ever asked for with `detach: true`. An engine that detaches
+            // anyway has left the terminal nothing to read or write.
+            StartExecResults::Detached => {
+                return Err(EngineError::Unsupported(
+                    "the engine detached the terminal exec instead of attaching it".to_string(),
+                ));
+            }
+        };
+
+        // The size the client opened with, so the shell's first prompt is
+        // already the right width. It has to follow the start: there is no PTY
+        // to resize until the process has one.
+        resize_exec(&self.docker, &created.id, cols, rows).await?;
+
+        info!(container = %id, cols, rows, "started the terminal exec");
+        Ok(Box::new(BollardExec::new(
+            self.docker.clone(),
+            created.id,
+            id.clone(),
+            input,
+            output,
+        )))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1074,6 +1175,22 @@ mod tests {
 
         assert!(!says_already("network mars-egress not found"));
         assert!(!says_already("permission denied"));
+    }
+
+    /// Both engines refuse an exec on a container that has gone, and only one
+    /// of them uses a status that already says so. The wordings are the ones
+    /// they were seen to answer with.
+    #[test]
+    fn both_engines_refusals_of_an_exec_on_a_stopped_container_are_recognised() {
+        assert!(says_not_running(
+            "Container 0123456789ab is not running: exited"
+        ));
+        assert!(says_not_running(
+            "can only create exec sessions on running containers: container state improper"
+        ));
+
+        assert!(!says_not_running("No such container: mars-session-1"));
+        assert!(!says_not_running("permission denied"));
     }
 
     #[test]

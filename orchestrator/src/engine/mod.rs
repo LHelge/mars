@@ -39,6 +39,7 @@ pub mod bollard;
 pub mod error;
 pub mod probe;
 pub mod spec;
+mod streams;
 pub mod types;
 
 #[cfg(feature = "integration-tests")]

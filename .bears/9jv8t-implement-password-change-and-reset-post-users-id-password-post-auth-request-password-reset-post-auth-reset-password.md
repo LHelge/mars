@@ -1,10 +1,10 @@
 ---
 id: "9jv8t"
 title: "Implement password change and reset: POST /users/{id}/password, POST /auth/request-password-reset, POST /auth/reset-password"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:30:48.390164927Z"
-updated: "2026-09-16T20:30:48.390164927Z"
+updated: "2026-09-17T10:20:47.827835436Z"
 tags:
   - orchestrator
   - auth
@@ -15,6 +15,8 @@ depends_on:
   - umhy2
   - "99sgv"
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

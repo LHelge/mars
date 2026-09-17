@@ -1,10 +1,10 @@
 ---
 id: w5re4
 title: Add test-only POST /api/test/users behind the integration-tests feature and TestApp login helpers
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:31:31.374433180Z"
-updated: "2026-09-16T20:31:31.374433180Z"
+updated: "2026-09-17T10:31:06.686771674Z"
 tags:
   - orchestrator
   - auth
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - "99sgv"
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

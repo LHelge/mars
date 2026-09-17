@@ -134,7 +134,7 @@ orchestrator/
 ├── migrations/                sqlx migrations (.up.sql / .down.sql)
 ├── src/
 │   ├── main.rs                config, pool, migrations, listeners, recovery, spawn services
-│   ├── lib.rs
+│   ├── lib.rs                 build_api_router + run (serves the API and MCP listeners)
 │   ├── prelude/               AppState, Config, Claims, Error, Result
 │   ├── models/                domain types + validation (User, Project, Session, Task, Secret, ...)
 │   ├── repositories/          all SQL; one struct per aggregate, borrows the pool
@@ -152,6 +152,8 @@ orchestrator/
 │   └── cron/                  periodic jobs: mirror fetch, idle reaper, stuck-task reaper, token cleanup
 └── tests/                     integration tests (TestApp with testcontainers Postgres)
 ```
+
+`main.rs` owns the startup order — configuration, tracing, pool, migrations, the recovery steps above, then binding the two listeners — and the serving itself is `lib.rs`: `build_api_router(AppState)` and `run(state, api_listener, mcp_listener, shutdown)`, which takes both listeners already bound so that `main` binds the configured ports while tests bind port 0, and drives both graceful shutdowns from one signal.
 
 `AppState` is cloned into every handler and holds: `Arc<Config>`, the `PgPool`, `Arc<dyn ContainerEngine>`, `Arc<dyn EmailClient>`, `Arc<dyn GitCredentialProvider>`, the `SecretsKeyring`, the `SessionRegistry` (handles to running session owner tasks), and the broadcast senders for event fan-out. Every `Arc<dyn Trait>` has a mock behind the `integration-tests` feature so the whole API can be tested without an engine, a mail provider or GitHub.
 

@@ -1,0 +1,89 @@
+//! `run` serves both listeners and stops on one signal.
+//!
+//! Nothing here needs Postgres or a container engine: the pool is lazy, so the
+//! health endpoint answers 503 and the shutdown path is what is under test.
+
+use std::time::Duration;
+
+use mars_orchestrator::prelude::*;
+use mars_orchestrator::run;
+use sqlx::postgres::PgPoolOptions;
+use std::collections::HashMap;
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+
+/// Obviously fake values; nothing listens on port 1, so the health probe
+/// reports `database: false` when its own timeout fires (rule 3).
+fn test_state() -> AppState {
+    let vars: HashMap<&str, &str> = [
+        ("PUBLIC_URL", "https://mars.example.invalid"),
+        ("JWT_SECRET", "not-a-real-signing-secret"),
+        ("DATABASE_URL", "postgres://invalid:invalid@127.0.0.1:1/x"),
+        ("DOCKER_HOST", "unix:///run/user/1000/podman/podman.sock"),
+        ("DATA_DIR_HOST", "/srv/mars/data"),
+        ("SECRETS_MASTER_KEYS", "1=not-a-real-key"),
+        ("GIT_BOT_NAME", "Mars Bot"),
+        ("GIT_BOT_EMAIL", "mars-bot@example.invalid"),
+        ("SESSION_IMAGE_DEFAULT", "mars-session-claude:dev"),
+    ]
+    .into_iter()
+    .collect();
+
+    let config = Config::from_vars(|name| vars.get(name).map(|value| value.to_string()))
+        .expect("a complete required set loads");
+    let pool = PgPoolOptions::new()
+        .connect_lazy(&config.database_url)
+        .expect("a lazy pool never connects");
+
+    AppState::new(Arc::new(config), pool)
+}
+
+#[tokio::test]
+async fn both_listeners_serve_and_stop_on_one_shutdown_signal() {
+    let api = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the api listener binds");
+    let mcp = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the mcp listener binds");
+
+    let api_addr = api.local_addr().expect("the api listener has an address");
+    let mcp_addr = mcp.local_addr().expect("the mcp listener has an address");
+
+    let (tx, rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(run(test_state(), api, mcp, async move {
+        rx.await.ok();
+    }));
+
+    let client = reqwest::Client::new();
+
+    // The API listener serves the router: an unreachable database is 503, not
+    // a connection failure.
+    let health = client
+        .get(format!("http://{api_addr}/api/health"))
+        .send()
+        .await
+        .expect("the api listener answers");
+    assert_eq!(health.status().as_u16(), 503);
+    assert_eq!(
+        health.json::<serde_json::Value>().await.unwrap(),
+        serde_json::json!({ "orchestrator": true, "database": false, "engine": true })
+    );
+
+    // The MCP listener is bound and answers, but has no routes yet.
+    let placeholder = client
+        .get(format!("http://{mcp_addr}/anything"))
+        .send()
+        .await
+        .expect("the mcp listener answers");
+    assert_eq!(placeholder.status().as_u16(), 404);
+
+    tx.send(()).expect("the server is still running");
+
+    let result = tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .expect("both listeners stop within the deadline")
+        .expect("the server task does not panic");
+
+    assert!(result.is_ok(), "run returned an error: {result:?}");
+}

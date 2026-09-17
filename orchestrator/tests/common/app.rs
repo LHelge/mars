@@ -18,8 +18,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use axum::http::StatusCode;
 use axum_extra::extract::cookie::Cookie;
-use axum_test::{TestResponse, TestServer};
+use axum_test::{TestRequest, TestResponse, TestServer};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{TimeDelta, Utc};
@@ -313,6 +314,172 @@ impl TestApp {
             .add_cookie(Cookie::new(REFRESH_COOKIE, cookie.to_string()))
             .await
     }
+
+    /// Create a signed-in ordinary user through `POST /api/test/users`
+    /// (`SPEC.md`, "Test-only routes").
+    ///
+    /// The one-call arrangement every later epic's tests start from: a
+    /// committed `users` row with `must_change_password` false, an access
+    /// token that works on every route and the refresh cookie the route set.
+    /// It goes through the real route rather than the repository, so a test
+    /// that later refreshes or logs out is using credentials the application
+    /// itself issued.
+    ///
+    /// Asserts 201. A test about this route's *failures* posts to
+    /// `/api/test/users` itself.
+    ///
+    /// `password` is an obviously fake test password like every other value
+    /// here (rule 3), and has to be 10–128 characters or the route answers
+    /// 400.
+    pub async fn create_user(
+        &self,
+        username: &str,
+        email: &str,
+        password: &str,
+    ) -> AuthenticatedUser {
+        self.create(username, email, password, false).await
+    }
+
+    /// [`TestApp::create_user`] with `admin: true`.
+    ///
+    /// Creating an administrator here never consults the
+    /// administrator-membership invariant: the route only adds one
+    /// (`SPEC.md`, "Users").
+    pub async fn create_admin(
+        &self,
+        username: &str,
+        email: &str,
+        password: &str,
+    ) -> AuthenticatedUser {
+        self.create(username, email, password, true).await
+    }
+
+    /// A user who has to change their password, with a token that already
+    /// works.
+    ///
+    /// Not [`TestApp::create_user`]: `POST /api/test/users` deliberately has
+    /// no way to raise `must_change_password` — it exists to hand out a user
+    /// who can go straight to the routes under test. So the row goes in
+    /// through the repository and the pair is minted from it, which is enough
+    /// for the gate tests: what they assert is which routes a *gated* token
+    /// reaches, and there is no refresh cookie in that question.
+    ///
+    /// `refresh_cookie` is therefore empty. A gate test that also needs a
+    /// usable cookie logs in with [`TestApp::insert_user_with_password`] and
+    /// [`TestApp::login`], which is the flow a real gated user follows.
+    pub async fn create_gated_user(&self, username: &str, email: &str) -> AuthenticatedUser {
+        let user = self.insert_user(username, email, false, true).await;
+        let access_token = self.token_for(&user);
+
+        AuthenticatedUser {
+            access_token,
+            refresh_cookie: String::new(),
+            user,
+        }
+    }
+
+    /// `GET path` as `user`.
+    ///
+    /// The four verbs below are the request builders every route test uses:
+    /// `axum-test` builds a request per call, so there is no persistent
+    /// authenticated client to hand out — attaching the bearer header is what
+    /// a "client" amounts to here. The returned [`TestRequest`] is still open
+    /// for `.json(..)`, `.add_header(..)` and the rest before it is awaited.
+    pub fn get_as(&self, user: &AuthenticatedUser, path: &str) -> TestRequest {
+        self.server
+            .get(path)
+            .authorization_bearer(&user.access_token)
+    }
+
+    /// `POST path` as `user`.
+    pub fn post_as(&self, user: &AuthenticatedUser, path: &str) -> TestRequest {
+        self.server
+            .post(path)
+            .authorization_bearer(&user.access_token)
+    }
+
+    /// `PUT path` as `user`.
+    pub fn put_as(&self, user: &AuthenticatedUser, path: &str) -> TestRequest {
+        self.server
+            .put(path)
+            .authorization_bearer(&user.access_token)
+    }
+
+    /// `PATCH path` as `user`.
+    pub fn patch_as(&self, user: &AuthenticatedUser, path: &str) -> TestRequest {
+        self.server
+            .patch(path)
+            .authorization_bearer(&user.access_token)
+    }
+
+    /// `DELETE path` as `user`.
+    pub fn delete_as(&self, user: &AuthenticatedUser, path: &str) -> TestRequest {
+        self.server
+            .delete(path)
+            .authorization_bearer(&user.access_token)
+    }
+
+    /// The body of [`TestApp::create_user`] and [`TestApp::create_admin`].
+    async fn create(
+        &self,
+        username: &str,
+        email: &str,
+        password: &str,
+        admin: bool,
+    ) -> AuthenticatedUser {
+        let response = self
+            .server
+            .post("/api/test/users")
+            .json(&serde_json::json!({
+                "username": username,
+                "email": email,
+                "password": password,
+                "admin": admin,
+            }))
+            .await;
+
+        response.assert_status(StatusCode::CREATED);
+        let refresh_cookie = response.cookie(REFRESH_COOKIE).value().to_string();
+        let pair = response.json::<TokenPair>();
+
+        // The route's response body carries the `User` DTO, which has no
+        // `Deserialize`; the row is read back instead, so callers get the same
+        // `User` the other arrangement helpers hand out.
+        let id: Uuid = pair.user["id"]
+            .as_str()
+            .expect("the created user carries an id")
+            .parse()
+            .expect("the id is a uuid");
+        let user = UserRepository::new(&self.pool)
+            .find(id)
+            .await
+            .expect("the lookup runs")
+            .expect("the created user is there");
+
+        AuthenticatedUser {
+            user,
+            access_token: pair.access_token,
+            refresh_cookie,
+        }
+    }
+}
+
+/// A user and the credentials they were signed in with.
+///
+/// What [`TestApp::create_user`] and its siblings return, and what the
+/// `*_as` request builders take: a test that needs to act as somebody holds
+/// one of these rather than a `(User, String)` pair it has to keep together
+/// itself.
+#[derive(Debug, Clone)]
+pub struct AuthenticatedUser {
+    /// The `users` row, read back after the route created it.
+    pub user: User,
+    /// A valid access token for [`AuthenticatedUser::user`].
+    pub access_token: String,
+    /// The raw value of the `refresh_token` cookie the route set, or empty
+    /// when the user was not created through a route that sets one (see
+    /// [`TestApp::create_gated_user`]).
+    pub refresh_cookie: String,
 }
 
 /// The `{ user, access_token }` body the credential-issuing routes answer with

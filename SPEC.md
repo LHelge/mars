@@ -245,13 +245,8 @@ Compiled only with the `integration-tests` cargo feature, never into a release b
 | Method | Path | Auth | Body → Response |
 | --- | --- | --- | --- |
 | POST | `/test/users` | — | `{username, email, password, admin?}` → `{user, access_token}` (201; sets the refresh cookie; `must_change_password` false) |
-| GET | `/test/whoami` | Bearer, gated | → `User` (200) |
-| GET | `/test/whoami-ungated` | Bearer, ungated | → `User` (200) |
-| GET | `/test/whoami-admin` | Bearer, admin | → `User` (200) |
 
 Playwright creates its users through this route; sessions in end-to-end tests use the stub image (`ARCHITECTURE.md`, "Session image").
-
-The three `whoami` probes are one route per authentication extractor, so the rules in "Authentication" are asserted through the real router. They are scaffolding: once `GET /users/me` and the administrator routes exist, those assertions move to them and the probes go.
 
 ## WebSocket: session stream
 

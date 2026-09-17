@@ -24,10 +24,10 @@ use serde_json::{Value, json};
 
 const LOGIN: &str = "/api/auth/login";
 
-/// The probe behind `UngatedUser`: what an access token is checked against
-/// here, because a user with `must_change_password` is refused by the gated
+/// The route behind `UngatedUser`: what an access token is checked against
+/// here, because a user with `must_change_password` is refused by every gated
 /// one (`SPEC.md`, "Authentication").
-const UNGATED: &str = "/api/test/whoami-ungated";
+const UNGATED: &str = "/api/users/me";
 
 /// Obviously fake, and long enough for the documented 10–128 range.
 const PASSWORD: &str = "correct-horse-battery-staple";
@@ -269,7 +269,8 @@ async fn ten_failures_from_one_address_block_a_different_username() {
 #[tokio::test]
 async fn a_user_who_must_change_their_password_can_still_log_in() {
     let app = TestApp::spawn().await;
-    app.insert_user_with_password("ada", "ada@example.test", PASSWORD, false, true)
+    let user = app
+        .insert_user_with_password("ada", "ada@example.test", PASSWORD, false, true)
         .await;
 
     let (pair, cookie) = app.login("ada", PASSWORD).await;
@@ -281,9 +282,10 @@ async fn a_user_who_must_change_their_password_can_still_log_in() {
     assert!(claims.must_change_password);
 
     // The gate itself is unchanged: that token still cannot reach a gated
-    // route (`SPEC.md`, "Authentication").
+    // route (`SPEC.md`, "Authentication"). `GET /users/{id}` is one, pointed
+    // at the caller's own id so the 403 can only be the gate.
     app.server
-        .get("/api/test/whoami")
+        .get(&format!("/api/users/{}", user.id))
         .authorization_bearer(&pair.access_token)
         .await
         .assert_status(StatusCode::FORBIDDEN);

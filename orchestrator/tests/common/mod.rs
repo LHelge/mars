@@ -19,4 +19,4 @@ pub mod app;
 /// `#![allow(dead_code)]` above covers for items.
 #[cfg(feature = "integration-tests")]
 #[allow(unused_imports)]
-pub use app::TestApp;
+pub use app::{AuthenticatedUser, TestApp};

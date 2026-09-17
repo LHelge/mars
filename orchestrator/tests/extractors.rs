@@ -1,10 +1,14 @@
 //! The authentication extractors through the real router (`SPEC.md`,
 //! "Authentication"; ADR 0025).
 //!
-//! Driven through the three test-only probes — `/api/test/whoami`,
-//! `/api/test/whoami-ungated` and `/api/test/whoami-admin` — one per
-//! extractor, so every assertion here goes through `build_api_router`, the
-//! same middleware stack a real route will sit in.
+//! Driven through one real route per extractor — `GET /api/users/{id}` for
+//! [`mars_orchestrator::routes::CurrentUser`], `GET /api/users/me` for
+//! [`mars_orchestrator::routes::UngatedUser`] and `GET /api/users` for
+//! [`mars_orchestrator::routes::AdminUser`] — so every assertion here goes
+//! through `build_api_router`, the same middleware stack every other route
+//! sits in. The routes are picked for their extractor, not for what they
+//! return: the gated one is always pointed at the caller's own id, so a status
+//! is the extractor's answer and never the lookup's.
 //!
 //! What is being asserted is a *contract about the database*, not about the
 //! token: the claims are only a snapshot, so a deleted user, a superseded
@@ -26,14 +30,22 @@ use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;
 use serde_json::{Value, json};
 
-/// The probe behind [`mars_orchestrator::routes::CurrentUser`].
-const GATED: &str = "/api/test/whoami";
+/// The route behind [`mars_orchestrator::routes::CurrentUser`], pointed at
+/// `user`'s own id.
+fn gated(user: &User) -> String {
+    format!("/api/users/{}", user.id)
+}
 
-/// The probe behind [`mars_orchestrator::routes::UngatedUser`].
-const UNGATED: &str = "/api/test/whoami-ungated";
+/// The same route for a request that is never expected to reach the handler,
+/// because there is no user to point it at. The id is a valid UUID and names
+/// nothing.
+const GATED_ANY: &str = "/api/users/00000000-0000-0000-0000-00000000dead";
 
-/// The probe behind [`mars_orchestrator::routes::AdminUser`].
-const ADMIN: &str = "/api/test/whoami-admin";
+/// The route behind [`mars_orchestrator::routes::UngatedUser`].
+const UNGATED: &str = "/api/users/me";
+
+/// The route behind [`mars_orchestrator::routes::AdminUser`].
+const ADMIN: &str = "/api/users";
 
 /// The documented 401 body (`SPEC.md`, "Authentication").
 fn unauthorized() -> Value {
@@ -53,8 +65,8 @@ async fn a_valid_token_reaches_every_extractor_its_row_allows() {
         .await;
     let token = app.token_for(&user);
 
-    for path in [GATED, UNGATED, ADMIN] {
-        let response = app.server.get(path).authorization_bearer(&token).await;
+    for path in [gated(&user), UNGATED.to_string()] {
+        let response = app.server.get(&path).authorization_bearer(&token).await;
 
         response.assert_status(StatusCode::OK);
         let body = response.json::<Value>();
@@ -65,13 +77,24 @@ async fn a_valid_token_reaches_every_extractor_its_row_allows() {
         assert_eq!(body.get("password_hash"), None, "{path}");
         assert_eq!(body.get("auth_version"), None, "{path}");
     }
+
+    // The administrator route answers a list rather than the caller, so it is
+    // asserted on its own; the only interesting part is that the row's `admin`
+    // let the request through.
+    let response = app.server.get(ADMIN).authorization_bearer(&token).await;
+    response.assert_status(StatusCode::OK);
+    let body = response.json::<Vec<Value>>();
+    assert_eq!(body.len(), 1);
+    assert_eq!(body[0]["id"], json!(user.id.to_string()));
+    assert_eq!(body[0].get("password_hash"), None);
+    assert_eq!(body[0].get("auth_version"), None);
 }
 
 #[tokio::test]
 async fn a_request_without_an_authorization_header_is_401() {
     let app = TestApp::spawn().await;
 
-    for path in [GATED, UNGATED, ADMIN] {
+    for path in [GATED_ANY, UNGATED, ADMIN] {
         let response = app.server.get(path).await;
 
         response.assert_status(StatusCode::UNAUTHORIZED);
@@ -96,7 +119,7 @@ async fn a_header_that_is_not_a_bearer_token_is_401() {
     ] {
         let response = app
             .server
-            .get(GATED)
+            .get(&gated(&user))
             .add_header(AUTHORIZATION, header.clone())
             .await;
 
@@ -117,7 +140,7 @@ async fn the_bearer_scheme_is_matched_case_insensitively() {
 
     let response = app
         .server
-        .get(GATED)
+        .get(&gated(&user))
         .add_header(AUTHORIZATION, format!("bEaReR {token}"))
         .await;
 
@@ -129,7 +152,7 @@ async fn a_garbage_token_is_401() {
     let app = TestApp::spawn().await;
 
     for token in ["not-a-token", "a.b.c", "....."] {
-        let response = app.server.get(GATED).authorization_bearer(token).await;
+        let response = app.server.get(GATED_ANY).authorization_bearer(token).await;
 
         response.assert_status(StatusCode::UNAUTHORIZED);
         assert_eq!(response.json::<Value>(), unauthorized(), "{token}");
@@ -144,8 +167,8 @@ async fn an_expired_token_is_401() {
         .await;
     let token = app.expired_token_for(&user);
 
-    for path in [GATED, UNGATED, ADMIN] {
-        let response = app.server.get(path).authorization_bearer(&token).await;
+    for path in [gated(&user), UNGATED.to_string(), ADMIN.to_string()] {
+        let response = app.server.get(&path).authorization_bearer(&token).await;
 
         response.assert_status(StatusCode::UNAUTHORIZED);
         assert_eq!(response.json::<Value>(), unauthorized(), "{path}");
@@ -163,14 +186,18 @@ async fn a_token_for_a_deleted_user_is_401_on_the_next_request() {
     let token = app.token_for(&user);
 
     app.server
-        .get(GATED)
+        .get(&gated(&user))
         .authorization_bearer(&token)
         .await
         .assert_status(StatusCode::OK);
 
     delete_user(&app, &user).await;
 
-    let response = app.server.get(GATED).authorization_bearer(&token).await;
+    let response = app
+        .server
+        .get(&gated(&user))
+        .authorization_bearer(&token)
+        .await;
     response.assert_status(StatusCode::UNAUTHORIZED);
     assert_eq!(response.json::<Value>(), unauthorized());
 }
@@ -188,8 +215,8 @@ async fn a_token_one_auth_version_behind_the_row_is_401() {
     let changed = change_password(&app, &user).await;
     assert_eq!(changed.auth_version, user.auth_version + 1);
 
-    for path in [GATED, UNGATED] {
-        let response = app.server.get(path).authorization_bearer(&token).await;
+    for path in [gated(&user), UNGATED.to_string()] {
+        let response = app.server.get(&path).authorization_bearer(&token).await;
 
         response.assert_status(StatusCode::UNAUTHORIZED);
         assert_eq!(response.json::<Value>(), unauthorized(), "{path}");
@@ -198,7 +225,7 @@ async fn a_token_one_auth_version_behind_the_row_is_401() {
     // The token for the new generation works, so this is the version check
     // and not the user having gone missing.
     app.server
-        .get(GATED)
+        .get(&gated(&changed))
         .authorization_bearer(app.token_for(&changed))
         .await
         .assert_status(StatusCode::OK);
@@ -218,7 +245,7 @@ async fn a_token_ahead_of_the_row_s_auth_version_is_401() {
 
     let response = app
         .server
-        .get(GATED)
+        .get(&gated(&user))
         .authorization_bearer(app.encode(&claims))
         .await;
 
@@ -234,7 +261,11 @@ async fn the_password_change_gate_is_403_everywhere_but_the_ungated_route() {
         .await;
     let token = app.token_for(&user);
 
-    let response = app.server.get(GATED).authorization_bearer(&token).await;
+    let response = app
+        .server
+        .get(&gated(&user))
+        .authorization_bearer(&token)
+        .await;
     response.assert_status(StatusCode::FORBIDDEN);
     assert_eq!(
         response.json::<Value>(),
@@ -263,7 +294,7 @@ async fn the_gate_reads_the_row_rather_than_the_token_s_snapshot() {
 
     let response = app
         .server
-        .get(GATED)
+        .get(&gated(&user))
         .authorization_bearer(app.encode(&claims))
         .await;
 
@@ -336,7 +367,7 @@ async fn a_demotion_closes_the_admin_route_on_the_next_request() {
 
     // Ordinary routes still work: a demotion is not a revocation.
     app.server
-        .get(GATED)
+        .get(&gated(&user))
         .authorization_bearer(&token)
         .await
         .assert_status(StatusCode::OK);

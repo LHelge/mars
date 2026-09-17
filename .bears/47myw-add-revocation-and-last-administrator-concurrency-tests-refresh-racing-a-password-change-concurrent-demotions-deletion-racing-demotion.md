@@ -1,10 +1,10 @@
 ---
 id: "47myw"
 title: "Add revocation and last-administrator concurrency tests: refresh racing a password change, concurrent demotions, deletion racing demotion"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:32:24.126809660Z"
-updated: "2026-09-16T20:32:24.126809660Z"
+updated: "2026-09-17T11:22:08.014974899Z"
 tags:
   - orchestrator
   - auth
@@ -13,6 +13,8 @@ depends_on:
   - "9jv8t"
   - "8pnnv"
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

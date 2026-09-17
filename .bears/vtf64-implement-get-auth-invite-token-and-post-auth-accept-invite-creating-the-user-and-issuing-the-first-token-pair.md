@@ -1,10 +1,10 @@
 ---
 id: vtf64
 title: Implement GET /auth/invite/{token} and POST /auth/accept-invite creating the user and issuing the first token pair
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:31:58.359453069Z"
-updated: "2026-09-16T20:31:58.359453069Z"
+updated: "2026-09-17T10:59:37.471008561Z"
 tags:
   - orchestrator
   - auth
@@ -14,6 +14,8 @@ depends_on:
   - "99sgv"
   - msbxs
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

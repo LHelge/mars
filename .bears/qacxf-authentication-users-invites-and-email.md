@@ -2,10 +2,10 @@
 id: qacxf
 title: Authentication, users, invites and email
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:11:57.012437137Z"
-updated: "2026-09-16T20:15:10.173958641Z"
+updated: "2026-09-17T11:22:24.765567342Z"
 tags:
   - orchestrator
   - auth

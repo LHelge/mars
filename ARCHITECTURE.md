@@ -1,4 +1,4 @@
-# Architecture
+ With `StdinOnce: false`, Docker keeps the container's stdin open when the attach client disconnects, while Podman passes the close on as EOF; nothing in Mars relies on EOF reaching the CLI, and the engine tests end their stdin scenario with a sentinel line for that reason.# Architecture
 
 Mars runs coding-agent sessions in isolated containers and exposes them to a browser. This document describes the components, the trust boundaries between them, and the designs that hold the system together: session lifecycle, durability and recovery, the git model, secrets, the MCP surface, and the task tracker. The functional contract (endpoints, schemas, tool signatures) is in `SPEC.md`; the database schema is in `docs/data-model.md`; the reasoning behind the non-obvious choices is in `docs/decisions/`.
 

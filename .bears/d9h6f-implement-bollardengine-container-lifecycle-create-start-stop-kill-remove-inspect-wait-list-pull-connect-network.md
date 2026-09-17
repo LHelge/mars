@@ -1,10 +1,10 @@
 ---
 id: d9h6f
 title: "Implement BollardEngine container lifecycle: create, start, stop, kill, remove, inspect, wait, list, pull, connect network"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:28:14.680136717Z"
-updated: "2026-09-16T20:28:14.680136717Z"
+updated: "2026-09-17T17:20:37.408345262Z"
 tags:
   - orchestrator
   - engine
@@ -12,6 +12,8 @@ depends_on:
   - kjvte
   - jjzya
 parent: naqhy
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -55,7 +55,7 @@ pub use types::{
 ///
 /// `ARCHITECTURE.md`, "Orchestrator internals": [`AppState`] holds this as
 /// `Arc<dyn ContainerEngine>`, and the `integration-tests` feature supplies
-/// `mock::MockContainerEngine`.
+/// `mock::MockEngine`.
 ///
 /// Every method answers with an [`EngineError`] rather than the crate-wide
 /// [`Error`], because callers branch on the variant — most of all on

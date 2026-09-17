@@ -5,8 +5,9 @@
 //! the ping, and the response comes back through the library's own router and
 //! middleware stack.
 //!
-//! The 503 branches need neither a container nor the harness and are unit
-//! tested beside the handler in `src/routes/health.rs`.
+//! The unhealthy engine is here too, because the mock is what makes it one
+//! line; the database's own 503 branch needs neither a container nor the
+//! harness and is unit tested beside the handler in `src/routes/health.rs`.
 //!
 //! Needs a container engine (`DOCKER_HOST`); see `tests/common/db.rs`.
 
@@ -17,7 +18,7 @@ mod common;
 use axum::http::StatusCode;
 use common::TestApp;
 use mars_orchestrator::engine::ContainerEngine;
-use mars_orchestrator::engine::mock::{EngineCall, MockContainerEngine};
+use mars_orchestrator::engine::mock::MockEngine;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -43,8 +44,24 @@ async fn health_reports_the_orchestrator_the_database_and_the_engine_ready() {
     assert!(health.engine, "the mock engine answers the ping");
 
     // The mock the handler called is the mock `TestApp` holds, which is what
-    // makes every later assertion on `app.mock_*` meaningful.
-    assert_eq!(app.mock_engine().calls(), vec![EngineCall::Ping]);
+    // makes every later assertion on the mocks meaningful.
+    assert_eq!(app.engine().pings(), 1, "the handler pinged exactly once");
+}
+
+/// An engine that does not answer is `engine: false` and 503, with the same
+/// three-field body (`SPEC.md`, "Health").
+#[tokio::test]
+async fn health_reports_503_when_the_engine_does_not_answer() {
+    let app = TestApp::spawn().await;
+    app.engine().set_unhealthy(true);
+
+    let response = app.server.get("/api/health").await;
+
+    response.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+    let health = response.json::<Health>();
+    assert!(health.orchestrator);
+    assert!(health.database);
+    assert!(!health.engine, "the mock engine refused the ping");
 }
 
 /// The mocks in `AppState` are the same allocations as the fields on
@@ -59,9 +76,9 @@ async fn the_state_holds_the_same_mocks_as_the_test_app() {
     let engine: &Arc<dyn ContainerEngine> = &app.state.engine;
     let downcast = engine
         .as_any()
-        .downcast_ref::<MockContainerEngine>()
+        .downcast_ref::<MockEngine>()
         .expect("the state holds the mock engine");
-    assert_eq!(downcast.calls(), app.mock_engine().calls());
+    assert_eq!(downcast.pings(), app.engine().pings());
 
     // Nothing has sent mail or asked for a credential yet; the accessors are
     // here so the epics that do can assert on them.

@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use crate::email::LogEmailClient;
     use crate::engine::PlaceholderEngine;
-    use crate::git::{CommitIdentity, PlaceholderCredentialProvider};
+    use crate::git::{CommitIdentity, PatCredentialProvider};
     use crate::secrets::MASTER_KEY_LEN;
 
     /// Obviously fake values; nothing here is a real credential (rule 3).
@@ -157,16 +157,18 @@ mod tests {
             email: config.git_bot_email.clone(),
         };
 
+        let keyring = SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
+            .expect("one entry is a valid keyring");
+
         // The startup clients, not the mocks: these unit tests also
         // compile without the `integration-tests` feature.
         AppState::new(
             Arc::new(config),
-            pool,
+            pool.clone(),
             Arc::new(PlaceholderEngine),
             Arc::new(LogEmailClient),
-            Arc::new(PlaceholderCredentialProvider::new(identity)),
-            SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
-                .expect("one entry is a valid keyring"),
+            Arc::new(PatCredentialProvider::new(pool, keyring.clone(), identity)),
+            keyring,
         )
     }
 

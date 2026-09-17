@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use mars_orchestrator::email::LogEmailClient;
 use mars_orchestrator::engine::PlaceholderEngine;
-use mars_orchestrator::git::{CommitIdentity, PlaceholderCredentialProvider};
+use mars_orchestrator::git::{CommitIdentity, PatCredentialProvider};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::run;
 use mars_orchestrator::secrets::{MASTER_KEY_LEN, SecretsKeyring};
@@ -44,14 +44,16 @@ fn test_state() -> AppState {
         email: config.git_bot_email.clone(),
     };
 
+    let keyring = SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
+        .expect("one entry is a valid keyring");
+
     AppState::new(
         Arc::new(config),
-        pool,
+        pool.clone(),
         Arc::new(PlaceholderEngine),
         Arc::new(LogEmailClient),
-        Arc::new(PlaceholderCredentialProvider::new(identity)),
-        SecretsKeyring::from_entries(vec![(1, [0u8; MASTER_KEY_LEN])])
-            .expect("one entry is a valid keyring"),
+        Arc::new(PatCredentialProvider::new(pool, keyring.clone(), identity)),
+        keyring,
     )
 }
 

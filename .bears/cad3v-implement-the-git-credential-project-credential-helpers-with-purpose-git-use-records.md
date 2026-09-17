@@ -1,10 +1,10 @@
 ---
 id: cad3v
 title: Implement the GIT_CREDENTIAL project credential helpers with purpose=git use records
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:31:26.655886658Z"
-updated: "2026-09-16T20:31:26.655886658Z"
+updated: "2026-09-17T13:07:30.732744231Z"
 tags:
   - orchestrator
   - secrets
@@ -13,6 +13,8 @@ tags:
 depends_on:
   - qafug
 parent: t36d2
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

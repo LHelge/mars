@@ -1,10 +1,10 @@
 ---
 id: "597h9"
 title: "Implement resolve_for_launch: scope precedence, orchestrator_only suppression, launch warnings and secret_uses rows"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:31:08.252726664Z"
-updated: "2026-09-16T20:31:08.252726664Z"
+updated: "2026-09-17T13:07:27.474377908Z"
 tags:
   - orchestrator
   - secrets
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - qafug
 parent: t36d2
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

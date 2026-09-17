@@ -1,10 +1,10 @@
 ---
 id: suzac
 title: Write the enums and users migrations with the seeded administrator
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:28:18.962593114Z"
-updated: "2026-09-16T20:28:18.962593114Z"
+updated: "2026-09-17T06:56:23.440470629Z"
 tags:
   - orchestrator
   - core
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - yy5rt
 parent: p5tsd
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

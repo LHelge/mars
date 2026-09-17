@@ -1,10 +1,10 @@
 ---
 id: k42gy
 title: Write the projects and sessions migrations
-status: open
+status: in_progress
 priority: P0
 created: "2026-09-16T20:28:46.663165904Z"
-updated: "2026-09-16T20:28:46.663165904Z"
+updated: "2026-09-17T06:57:33.738147138Z"
 tags:
   - orchestrator
   - core
@@ -13,6 +13,8 @@ tags:
 depends_on:
   - suzac
 parent: p5tsd
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

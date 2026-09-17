@@ -1,10 +1,10 @@
 ---
 id: tu78t
 title: "Add the tracker models: task states, tasks, dependencies, comments, hand-offs, session links and task-event rows"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:27:24.947302370Z"
-updated: "2026-09-16T20:51:51.545088753Z"
+updated: "2026-09-17T06:57:29.518929555Z"
 tags:
   - orchestrator
   - core
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - sywed
 parent: p5tsd
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

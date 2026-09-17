@@ -1,8 +1,10 @@
 //! All SQL, through `sqlx::query!` / `query_as!`. One `XRepository<'a>` per
 //! aggregate, borrowing the `PgPool`, with the scope in the `WHERE` clause.
 
+pub mod secrets;
 pub mod users;
 
+pub use secrets::SecretRepository;
 pub use users::UserRepository;
 
 // The crate convention (`CLAUDE.md`, "Backend conventions"); here it is what

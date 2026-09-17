@@ -9,7 +9,7 @@ use axum::extract::FromRef;
 
 use crate::email::EmailClient;
 use crate::engine::ContainerEngine;
-use crate::git::GitCredentialProvider;
+use crate::git::{GitCredentialProvider, ProjectGitLocks};
 use crate::prelude::*;
 use crate::routes::throttle::{LoginThrottle, ResetRateLimit};
 use crate::secrets::SecretsKeyring;
@@ -20,8 +20,9 @@ use crate::secrets::SecretsKeyring;
 /// every handler and holds: `Arc<Config>`, the `PgPool`, `Arc<dyn
 /// ContainerEngine>`, `Arc<dyn EmailClient>`, `Arc<dyn GitCredentialProvider>`,
 /// the `SecretsKeyring`, the in-memory login throttle and password-reset rate
-/// limiter, the `SessionRegistry` (handles to running session owner tasks), and
-/// the broadcast senders for event fan-out. Every `Arc<dyn Trait>` has a mock
+/// limiter, the `ProjectGitLocks` table the per-project git lock is taken from,
+/// the `SessionRegistry` (handles to running session owner tasks), and the
+/// broadcast senders for event fan-out. Every `Arc<dyn Trait>` has a mock
 /// behind the `integration-tests` feature."
 ///
 /// The three collaborator traits are here as trait objects so the whole API
@@ -57,6 +58,12 @@ pub struct AppState {
     pub login_throttle: Arc<LoginThrottle>,
     /// Password-reset request counters, in process memory for the same reason.
     pub reset_rate_limit: Arc<ResetRateLimit>,
+    /// The per-project git locks that serialise every orchestrator mutation of
+    /// a project repository (`ARCHITECTURE.md`, "Git model", Serialization).
+    /// The REST handlers, the MCP tools, the session launcher, the cron jobs
+    /// and the deletion paths share this one table, which is the whole point
+    /// of it living here.
+    pub git_locks: Arc<ProjectGitLocks>,
 }
 
 impl AppState {
@@ -67,7 +74,9 @@ impl AppState {
     /// unit tests below and `TestApp` — wants exactly the same pair on the
     /// system clock. A test that has to forget what they counted calls
     /// `reset()` on the field; a unit test of the limiters themselves builds
-    /// its own with an injected clock.
+    /// its own with an injected clock. The git lock table is built here for
+    /// the same reason, and a test that wants to take a git lock takes it
+    /// through `state.git_locks`, the very table the handlers wait on.
     pub fn new(
         config: Arc<Config>,
         pool: PgPool,
@@ -85,6 +94,7 @@ impl AppState {
             keyring,
             login_throttle: Arc::new(LoginThrottle::new()),
             reset_rate_limit: Arc::new(ResetRateLimit::new()),
+            git_locks: Arc::new(ProjectGitLocks::new()),
         }
     }
 }
@@ -107,6 +117,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use sqlx::postgres::PgPoolOptions;
+    use uuid::Uuid;
 
     use super::*;
     use crate::email::LogEmailClient;
@@ -224,5 +235,26 @@ mod tests {
         state.reset_rate_limit.reset();
         assert_eq!(clone.login_throttle.tracked_keys(), 0);
         assert_eq!(clone.reset_rate_limit.tracked_keys(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_git_locks_are_shared_by_a_clone_and_start_empty() {
+        let state = test_state();
+        let clone = state.clone();
+
+        assert!(Arc::ptr_eq(&state.git_locks, &clone.git_locks));
+        assert_eq!(state.git_locks.tracked_projects(), 0);
+
+        // A handler holding the clone waits on the same table as a cron job
+        // holding the original: that sharing is what serialises them.
+        let project = Uuid::new_v4();
+        let guard = clone.git_locks.lock(project).await;
+
+        assert_eq!(guard.project_id(), project);
+        assert_eq!(state.git_locks.tracked_projects(), 1);
+
+        drop(guard);
+        state.git_locks.forget(project);
+        assert_eq!(clone.git_locks.tracked_projects(), 0);
     }
 }

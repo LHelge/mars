@@ -155,7 +155,7 @@ orchestrator/
 
 `main.rs` owns the startup order — configuration, tracing, pool, migrations, the recovery steps above, then binding the two listeners — and the serving itself is `lib.rs`: `build_api_router(AppState)` and `run(state, api_listener, mcp_listener, shutdown)`, which takes both listeners already bound so that `main` binds the configured ports while tests bind port 0, and drives both graceful shutdowns from one signal.
 
-`AppState` is cloned into every handler and holds: `Arc<Config>`, the `PgPool`, `Arc<dyn ContainerEngine>`, `Arc<dyn EmailClient>`, `Arc<dyn GitCredentialProvider>`, the `SecretsKeyring`, the in-memory `LoginThrottle` and `ResetRateLimit` (`SPEC.md`, "Authentication"), the `SessionRegistry` (handles to running session owner tasks), and the broadcast senders for event fan-out. Every `Arc<dyn Trait>` has a mock behind the `integration-tests` feature so the whole API can be tested without an engine, a mail provider or GitHub.
+`AppState` is cloned into every handler and holds: `Arc<Config>`, the `PgPool`, `Arc<dyn ContainerEngine>`, `Arc<dyn EmailClient>`, `Arc<dyn GitCredentialProvider>`, the `SecretsKeyring`, the in-memory `LoginThrottle` and `ResetRateLimit` (`SPEC.md`, "Authentication"), the `ProjectGitLocks` table the per-project git lock is taken from ("Git model", Serialization), the `SessionRegistry` (handles to running session owner tasks), and the broadcast senders for event fan-out. Every `Arc<dyn Trait>` has a mock behind the `integration-tests` feature so the whole API can be tested without an engine, a mail provider or GitHub.
 
 **Crates**, one per concern, added with `cargo add` and never by editing versions by hand. Git is not a crate (ADR 0011).
 

@@ -28,6 +28,14 @@ env:
   # The crate's tracing target, so the engine detection and startup probe lines
   # are in the log when a scenario fails.
   RUST_LOG: mars_orchestrator=debug
+  # No debugger and no core dumps here either, so debug info only inflates the
+  # build, the link and the cache entry. `0` rather than `line-tables-only`
+  # for the reason given in `orchestrator.yml`: failures are diagnosed on a
+  # developer machine, which keeps full debug info, and `--nocapture` plus
+  # `RUST_LOG` above is what actually names the failing scenario. `rust-cache`
+  # hashes the `CARGO_*` environment into its key, so these entries get their
+  # own and never mix debug levels with another workflow's.
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   # Deliberately unnamed: the GitHub UI then shows `engine (docker)` and
@@ -67,6 +75,9 @@ jobs:
           # One cache entry per engine, so the two matrix jobs do not evict
           # each other's.
           key: engine-${{ matrix.engine }}
+          # An engine failure is the normal outcome of a bad run here; saving
+          # anyway keeps the next attempt from recompiling the crate.
+          cache-on-failure: true
 
       # The uid decides which branch of the startup probe the suite asserts:
       # `tests/engine.rs` expects the contract to hold under rootless Podman

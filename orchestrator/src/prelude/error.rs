@@ -413,7 +413,7 @@ mod tests {
 
     #[tokio::test]
     async fn collaborator_errors_are_500_without_detail() {
-        let error = Error::from(EngineError::Unavailable(
+        let error = Error::from(EngineError::Connection(
             "connect /run/podman.sock: refused".into(),
         ));
         assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -440,6 +440,24 @@ mod tests {
                 json!({ "status": 500, "error": "internal error" }),
             );
         }
+    }
+
+    #[tokio::test]
+    async fn an_engine_state_conflict_is_409_with_the_engine_s_own_message() {
+        // The one engine failure that is not an internal fault: the caller
+        // asked for something the container's state does not allow, so the
+        // message is the answer rather than something to hide.
+        assert_maps_to(
+            Error::from(EngineError::Conflict(
+                "container mars-session-x is already running".into(),
+            )),
+            StatusCode::CONFLICT,
+            json!({
+                "status": 409,
+                "error": "the container engine reports a conflict: container mars-session-x is already running",
+            }),
+        )
+        .await;
     }
 
     #[tokio::test]

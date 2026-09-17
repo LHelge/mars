@@ -1,0 +1,38 @@
+name: Images
+
+on:
+  push:
+    branches: [main]
+    paths: ["images/**", ".github/workflows/images.yml"]
+  pull_request:
+    paths: ["images/**", ".github/workflows/images.yml"]
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [claude, stub]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Build the session image
+        run: |
+          if [ -d "images/${{ matrix.image }}" ]; then
+            docker build -t "mars-session-${{ matrix.image }}:ci" "images/${{ matrix.image }}"
+          else
+            echo "images/${{ matrix.image }} not present yet"
+          fi
+
+      # Session images epic: smoke-run the entrypoint

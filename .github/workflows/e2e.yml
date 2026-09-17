@@ -1,0 +1,56 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+    paths: ["orchestrator/**", "frontend/**", "images/**", ".github/workflows/e2e.yml"]
+  pull_request:
+    paths: ["orchestrator/**", "frontend/**", "images/**", ".github/workflows/e2e.yml"]
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  playwright:
+    name: Playwright
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # Session images epic: build images/stub
+
+      # End-to-end tests epic: start Postgres 18 service, build orchestrator with --features integration-tests, export PLAYWRIGHT_API_URL
+
+      - name: End-to-end tests
+        run: npm run test:e2e
+        env:
+          CI: "true"
+
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report

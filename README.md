@@ -229,7 +229,7 @@ npm run test:e2e             # starts the dev server itself, or reuses a running
 | --- | --- | --- |
 | Orchestrator CI | `orchestrator/**` | fmt, clippy, tests with `SQLX_OFFLINE=true` |
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
-| E2E | `orchestrator/**` or `frontend/**` | Playwright against a real orchestrator, Postgres and the stub session image |
+| E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright against a real orchestrator, Postgres and the stub session image |
 | Images | `images/**` | Build session images; smoke-run the entrypoint |
 
 ## Roadmap after v1

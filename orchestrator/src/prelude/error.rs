@@ -53,9 +53,12 @@ pub enum Error {
     /// The resource does not exist, or is out of the caller's scope. 404.
     #[error("not found")]
     NotFound,
-    /// Authenticated, but not permitted. 403.
-    #[error("forbidden")]
-    Forbidden,
+    /// Authenticated, but not permitted. 403. The string is the client-visible
+    /// message: the password-change gate answers `password change required`
+    /// and an administrator-only route `admin required` (`SPEC.md`,
+    /// "Authentication"), other call sites their own.
+    #[error("{0}")]
+    Forbidden(String),
     /// A state conflict: claim lost, duplicate name, dependency cycle. 409.
     #[error("{0}")]
     Conflict(String),
@@ -139,7 +142,7 @@ impl Error {
         match self {
             Error::BadRequest(_) => StatusCode::BAD_REQUEST,
             Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
-            Error::Forbidden => StatusCode::FORBIDDEN,
+            Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::NotFound => StatusCode::NOT_FOUND,
             Error::Conflict(_) => StatusCode::CONFLICT,
             Error::GitConflict { .. } => StatusCode::UNPROCESSABLE_ENTITY,
@@ -315,13 +318,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forbidden_is_403() {
-        assert_maps_to(
-            Error::Forbidden,
-            StatusCode::FORBIDDEN,
-            json!({ "status": 403, "error": "forbidden" }),
-        )
-        .await;
+    async fn forbidden_is_403_with_the_call_site_s_message() {
+        for message in ["password change required", "admin required"] {
+            assert_maps_to(
+                Error::Forbidden(message.into()),
+                StatusCode::FORBIDDEN,
+                json!({ "status": 403, "error": message }),
+            )
+            .await;
+        }
     }
 
     #[tokio::test]

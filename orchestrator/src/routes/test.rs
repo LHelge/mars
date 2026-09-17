@@ -27,11 +27,10 @@ use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::models::user::hash_password;
 use crate::models::{Email, NewUser, Password, Username};
 use crate::prelude::*;
 use crate::repositories::UserRepository;
-use crate::routes::auth::{TokenPairResponse, issue_pair};
+use crate::routes::auth::{TokenPairResponse, hash_blocking, issue_pair};
 use crate::routes::cookies::refresh_cookie;
 
 pub fn routes() -> Router<AppState> {
@@ -109,20 +108,4 @@ async fn create_user(
         jar.add(refresh_cookie(&state.config, &raw)),
         Json(TokenPairResponse { user, access_token }),
     ))
-}
-
-/// Hash `password` on the blocking pool, as [`crate::routes::auth`] verifies
-/// on it: Argon2id at the OWASP parameters is tens of milliseconds of CPU and
-/// must not run on a runtime worker.
-///
-/// The plaintext is moved into the task and never logged; a panicking task
-/// widens into the crate-wide 500 rather than into a failed hash.
-async fn hash_blocking(password: Password) -> Result<String> {
-    tokio::task::spawn_blocking(move || hash_password(password.expose()))
-        .await
-        .map_err(|err| {
-            error!(error = %err, "the password hashing task did not finish");
-            Error::Internal("hashing the password failed".to_string())
-        })?
-        .map_err(Error::from)
 }

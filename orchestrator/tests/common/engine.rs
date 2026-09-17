@@ -326,12 +326,17 @@ where
     F: FnOnce(Arc<Cleanup>) -> Fut,
     Fut: Future<Output = ()>,
 {
-    // Scenarios run one at a time. Rootless Podman 6.1.2 has been seen
-    // giving a container created with `keep-id` while other containers were
-    // starting a mapping with no sub-uid range, so a `0:0` container fails to
-    // start with "doesn't map UID 0" about one run in three (Bears u6zkz).
-    // The suite verifies the adapter's contract, not the engine's concurrency,
-    // so it stays out of that race until the cause is known.
+    // Scenarios run one at a time, because Podman cannot resolve `keep-id`
+    // for two containers at once: it reads the sub-uid ranges through the
+    // non-thread-safe `libsubid`, so two creates in flight in one API service
+    // corrupt each other's mapping — no sub-uid range at all, or the range
+    // counted twice — and the container then fails at `start` with "doesn't
+    // map UID 0" or "write to `uid_map`: Operation not permitted". It is
+    // Podman's and not the adapter's: twenty concurrent `curl` creates of the
+    // same body reproduce it with no Mars code in the picture (Bears u6zkz;
+    // `ARCHITECTURE.md`, "Engine adapter", the `UsernsMode` row). The suite
+    // verifies the adapter's contract, not Podman's concurrency, so it stays
+    // out of that race.
     static SERIAL: Mutex<()> = Mutex::const_new(());
     let _serial = SERIAL.lock().await;
 

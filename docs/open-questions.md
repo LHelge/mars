@@ -4,7 +4,7 @@ Everything the brief left undecided that has not yet been resolved. Each entry s
 
 The first review pass (2026-09-15) resolved 30 questions; their outcomes are in `SPEC.md`, `ARCHITECTURE.md`, `docs/data-model.md`, `README.md` and ADRs 0013 and 0014. The task-structure planning session (2026-09-16) resolved the last one, how task assignment is modelled, in ADR 0016.
 
-The core v1 decisions are recorded. The items below remain to be verified against the pinned Claude Code version during the adapter task, including the MCP-loading interaction in item 4. Each is answered by the live probe test described in `ARCHITECTURE.md`, "Input encoding", or by the engine tests, and the answer is written back into the document that depends on it; the item is then deleted here.
+The core v1 decisions are recorded. The items below remain to be verified against the pinned Claude Code version during the adapter task, including the MCP-loading interaction in item 4. Each is answered by the live probe test described in `ARCHITECTURE.md`, "Input encoding", and the answer is written back into the document that depends on it; the item is then deleted here.
 
 ## Verification items
 
@@ -14,6 +14,4 @@ The core v1 decisions are recorded. The items below remain to be verified agains
 4. Verify `--strict-mcp-config` against the pinned version; it is listed in the [current CLI reference](https://code.claude.com/docs/en/cli-reference). Before enabling it, resolve its interaction with the documented repository-owned `.mcp.json` behavior: strict mode ignores that configuration as well as other discovered MCP servers.
 5. Whether `result.total_cost_usd` and `result.usage` are per turn or cumulative for the process, which sets the accumulation rule in `ARCHITECTURE.md`, "Cost accounting".
 6. Whether `system`/`init` includes `model` and `tools`; only `session_id` and `mcp_servers` are documented.
-7. Whether `SIGINT` sent with `kill` reaches the CLI as PID 1 on both engines without `Init: true`.
-8. Whether `UsernsMode: "keep-id:uid=1000,gid=1000"` is accepted through Podman's compatibility API.
-9. Verify multi-turn stdin with `--print`, nested subagent text with `--forward-subagent-text`, and changed profile prompts on resume with `--system-prompt-snapshot off` using the complete launch command in `ARCHITECTURE.md`, "Claude Code invocation".
+7. Verify multi-turn stdin with `--print`, nested subagent text with `--forward-subagent-text`, and changed profile prompts on resume with `--system-prompt-snapshot off` using the complete launch command in `ARCHITECTURE.md`, "Claude Code invocation".

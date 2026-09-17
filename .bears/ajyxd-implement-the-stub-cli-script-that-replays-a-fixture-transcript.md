@@ -1,16 +1,18 @@
 ---
 id: ajyxd
 title: Implement the stub CLI script that replays a fixture transcript
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:27:34.420418373Z"
-updated: "2026-09-16T20:51:51.775421513Z"
+updated: "2026-09-17T22:14:43.257478454Z"
 tags:
   - images
   - tests
 depends_on:
   - sywed
 parent: deex5
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

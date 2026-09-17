@@ -1,0 +1,16 @@
+# The build context is images/claude and needs exactly the Dockerfile and the
+# entrypoint script. Everything else is excluded, so a stray file in the
+# directory cannot end up in the image or bust the layer cache.
+*
+!Dockerfile
+!.dockerignore
+!mars-entrypoint
+
+# Belt and braces for the patterns that must never be in a context, whatever
+# the allow-list above does.
+tests/
+*.md
+.env
+.env.*
+*.key
+*.pem

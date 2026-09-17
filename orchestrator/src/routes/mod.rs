@@ -8,6 +8,7 @@ use axum::Router;
 
 use crate::prelude::*;
 
+pub mod cookies;
 pub mod health;
 pub mod throttle;
 

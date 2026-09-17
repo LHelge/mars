@@ -80,6 +80,11 @@ pub enum Error {
         message: String,
         conflicts: Vec<String>,
     },
+    /// An access token that did not verify; [`ClaimsError::status`] decides
+    /// the code, and it is always 401 `authentication required`. Presenting no
+    /// token at all is [`Error::Unauthorized`] instead.
+    #[error(transparent)]
+    Claims(#[from] ClaimsError),
     /// A container engine failure; [`EngineError::status`] decides the code.
     #[error(transparent)]
     Engine(#[from] EngineError),
@@ -140,6 +145,7 @@ impl Error {
             Error::GitConflict { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Error::Throttled(_) => StatusCode::TOO_MANY_REQUESTS,
             Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::Claims(err) => err.status(),
             Error::Engine(err) => err.status(),
             Error::Email(err) => err.status(),
             Error::Git(err) => err.status(),
@@ -292,6 +298,20 @@ mod tests {
             json!({ "status": 401, "error": "authentication required" }),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn a_rejected_access_token_is_401_and_says_no_more() {
+        for error in [ClaimsError::Invalid, ClaimsError::Expired] {
+            // Expired and forged answer identically: which half of a forgery
+            // worked is not something a caller gets to learn.
+            assert_maps_to(
+                Error::from(error),
+                StatusCode::UNAUTHORIZED,
+                json!({ "status": 401, "error": "authentication required" }),
+            )
+            .await;
+        }
     }
 
     #[tokio::test]

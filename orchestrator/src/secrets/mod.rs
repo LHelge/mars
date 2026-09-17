@@ -13,6 +13,7 @@ pub mod git_credential;
 pub mod keyring;
 pub mod resolve;
 pub mod rotation;
+pub mod service;
 
 pub use crypto::{VALUE_NONCE_LEN, aad, aad_for, open, reseal, rewrap, seal};
 pub use git_credential::{
@@ -24,6 +25,9 @@ pub use keyring::{
 };
 pub use resolve::{LaunchScope, ResolvedSecrets, resolve_for_launch};
 pub use rotation::{RotationReport, rewrap_outdated};
+pub use service::{
+    Actor, CreateSecret, DEFAULT_USES_LIMIT, MAX_USES_LIMIT, PatchSecret, SecretsService,
+};
 
 use crate::prelude::*;
 

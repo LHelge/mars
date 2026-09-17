@@ -29,8 +29,9 @@ pub use project::{
     ProjectUpdate, RemoteUrl, is_branch_name,
 };
 pub use secret::{
-    EncryptedValue, KeyVersionSample, NewSecret, ScopeRef, Secret, SecretError, SecretMeta,
-    SecretName, SecretResult, SecretScope, SecretUse, SecretUsePurpose,
+    EncryptedValue, KeyVersionSample, MAX_SECRET_VALUE_BYTES, NewSecret, ScopeRef, Secret,
+    SecretError, SecretMeta, SecretName, SecretResult, SecretScope, SecretUse, SecretUsePurpose,
+    validate_secret_value,
 };
 pub use session::{
     NewSession, Session, SessionError, SessionResult, SessionState, SessionTitle, StateChange,

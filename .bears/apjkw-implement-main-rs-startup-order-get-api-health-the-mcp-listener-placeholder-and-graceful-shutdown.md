@@ -1,16 +1,18 @@
 ---
 id: apjkw
 title: Implement main.rs startup order, GET /api/health, the MCP listener placeholder and graceful shutdown
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:29:02.388775972Z"
-updated: "2026-09-16T20:29:02.388775972Z"
+updated: "2026-09-17T05:42:06.235362784Z"
 tags:
   - orchestrator
   - core
 depends_on:
   - au4vs
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

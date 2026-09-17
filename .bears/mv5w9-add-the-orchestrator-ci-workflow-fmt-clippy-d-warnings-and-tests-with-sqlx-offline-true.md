@@ -1,16 +1,18 @@
 ---
 id: mv5w9
 title: "Add the Orchestrator CI workflow: fmt, clippy -D warnings and tests with SQLX_OFFLINE=true"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:29:26.192364222Z"
-updated: "2026-09-16T20:29:26.192364222Z"
+updated: "2026-09-17T05:44:18.754729774Z"
 tags:
   - infra
   - orchestrator
 depends_on:
   - apjkw
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

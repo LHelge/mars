@@ -1,10 +1,10 @@
 ---
 id: "9ecwn"
 title: "Write tests/engine.rs: live engine test suite gated on DOCKER_HOST"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:31:08.748480338Z"
-updated: "2026-09-16T20:31:15.251129122Z"
+updated: "2026-09-17T19:20:21.064641842Z"
 tags:
   - orchestrator
   - engine
@@ -14,6 +14,8 @@ depends_on:
   - "2f25v"
   - "3zfgh"
 parent: naqhy
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

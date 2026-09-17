@@ -59,3 +59,67 @@ jobs:
       # unset, so the engine tests stay skipped in this workflow.
       - name: Tests
         run: cargo test --features integration-tests
+
+  # `.sqlx/` is what lets the job above build with SQLX_OFFLINE=true. This job
+  # regenerates nothing: it rebuilds the query set against a real Postgres and
+  # fails when the committed cache no longer matches the queries in the crate.
+  sqlx-offline-data:
+    name: sqlx offline data is current
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: orchestrator
+    env:
+      # The check talks to the service container, so the offline cache must not
+      # short-circuit it.
+      SQLX_OFFLINE: "false"
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      SQLX_VERSION: 0.9.0
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup show
+          rustc --version
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: orchestrator
+
+      # The CLI version has to match the `sqlx` crate in orchestrator/Cargo.lock.
+      - name: Cache the sqlx CLI
+        id: cache-sqlx-cli
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-sqlx
+            ~/.cargo/bin/sqlx
+          key: sqlx-cli-${{ runner.os }}-${{ env.SQLX_VERSION }}
+
+      - name: Install the sqlx CLI
+        if: steps.cache-sqlx-cli.outputs.cache-hit != 'true'
+        run: cargo install sqlx-cli --version ${{ env.SQLX_VERSION }} --no-default-features --features postgres,rustls --locked
+
+      - name: Migrate
+        run: cargo sqlx migrate run
+
+      - name: Check that .sqlx matches the queries in the crate
+        run: cargo sqlx prepare --check -- --all-targets --features integration-tests

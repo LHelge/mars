@@ -1,14 +1,16 @@
 ---
 id: ncv5g
 title: Scaffold the frontend with Vite, React 19, TypeScript strict, Tailwind 4, ESLint and the dev proxy
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:25:50.512172037Z"
-updated: "2026-09-16T20:25:50.512172037Z"
+updated: "2026-09-17T05:17:15.492896328Z"
 tags:
   - frontend
   - infra
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

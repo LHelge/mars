@@ -1,16 +1,18 @@
 ---
 id: xxufa
 title: "Add the Frontend CI workflow: lint, typecheck and build on frontend/** changes"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:27:46.649858538Z"
-updated: "2026-09-16T20:27:46.649858538Z"
+updated: "2026-09-17T05:21:04.462573322Z"
 tags:
   - infra
   - frontend
 depends_on:
   - ncv5g
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -1,16 +1,18 @@
 ---
 id: vyfma
 title: Implement the prelude Error enum, IntoResponse mapping to {status, error} and the Result alias
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:27:09.564623059Z"
-updated: "2026-09-16T20:27:09.564623059Z"
+updated: "2026-09-17T05:25:00.807557374Z"
 tags:
   - orchestrator
   - core
 depends_on:
   - jeyrc
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

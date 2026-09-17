@@ -1,10 +1,10 @@
 ---
 id: fxyx2
 title: Add placeholder E2E and Images workflows with the documented triggers
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:29:46.468172730Z"
-updated: "2026-09-16T20:29:46.468172730Z"
+updated: "2026-09-17T05:26:19.856501679Z"
 tags:
   - infra
   - tests
@@ -12,6 +12,8 @@ depends_on:
   - bpwq5
   - xxufa
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

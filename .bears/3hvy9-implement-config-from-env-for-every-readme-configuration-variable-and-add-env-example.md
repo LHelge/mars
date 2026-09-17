@@ -1,16 +1,18 @@
 ---
 id: "3hvy9"
 title: "Implement Config::from_env() for every README configuration variable and add .env.example"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:26:39.136095593Z"
-updated: "2026-09-16T20:26:39.136095593Z"
+updated: "2026-09-17T05:28:46.750305854Z"
 tags:
   - orchestrator
   - core
 depends_on:
   - jeyrc
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

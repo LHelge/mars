@@ -1,16 +1,18 @@
 ---
 id: bpwq5
 title: "Add the Playwright skeleton: config with workers 1, test-helpers module and a smoke test"
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:27:34.842349010Z"
-updated: "2026-09-16T20:27:34.842349010Z"
+updated: "2026-09-17T05:24:18.648342990Z"
 tags:
   - frontend
   - tests
 depends_on:
   - ncv5g
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

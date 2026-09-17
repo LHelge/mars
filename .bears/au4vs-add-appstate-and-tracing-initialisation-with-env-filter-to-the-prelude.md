@@ -1,10 +1,10 @@
 ---
 id: au4vs
 title: Add AppState and tracing initialisation with env-filter to the prelude
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:28:15.561168698Z"
-updated: "2026-09-16T20:28:15.561168698Z"
+updated: "2026-09-17T05:28:47.905549642Z"
 tags:
   - orchestrator
   - core
@@ -12,6 +12,8 @@ depends_on:
   - "3hvy9"
   - vyfma
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

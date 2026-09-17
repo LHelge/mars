@@ -1,15 +1,17 @@
 ---
 id: jeyrc
 title: "Create the orchestrator crate skeleton: toolchain, crates, feature flag and module tree"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:25:24.141710023Z"
-updated: "2026-09-16T20:25:24.141710023Z"
+updated: "2026-09-17T05:19:37.268816146Z"
 tags:
   - orchestrator
   - core
   - infra
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

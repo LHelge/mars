@@ -15,7 +15,9 @@ use serde::Serialize;
 use crate::email::EmailError;
 use crate::engine::EngineError;
 use crate::git::GitError;
-use crate::models::{SecretError, SessionError, TaskError, UserError};
+use crate::models::{
+    ProfileError, ProjectError, SecretError, SessionError, SharedDirError, TaskError, UserError,
+};
 use crate::prelude::*;
 use crate::secrets::SecretsError;
 
@@ -108,6 +110,17 @@ pub enum Error {
     /// A user model rejected its input. The model decides the status.
     #[error(transparent)]
     User(#[from] UserError),
+    /// A project model rejected its input. The model decides the status.
+    #[error(transparent)]
+    Project(#[from] ProjectError),
+    /// A shared-directory model rejected its input. The model decides the
+    /// status.
+    #[error(transparent)]
+    SharedDir(#[from] SharedDirError),
+    /// An agent-profile model rejected its input. The model decides the
+    /// status.
+    #[error(transparent)]
+    Profile(#[from] ProfileError),
 }
 
 impl Error {
@@ -135,6 +148,9 @@ impl Error {
             Error::Session(err) => err.status(),
             Error::Task(err) => err.status(),
             Error::User(err) => err.status(),
+            Error::Project(err) => err.status(),
+            Error::SharedDir(err) => err.status(),
+            Error::Profile(err) => err.status(),
         }
     }
 }

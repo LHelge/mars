@@ -34,37 +34,9 @@ use uuid::Uuid;
 // The crate convention (`CLAUDE.md`, "Backend conventions"). Models report
 // their own error rather than the crate-wide one, so the glob is here for the
 // doc links and for what these models grow into.
+use crate::models::agent_profile::is_secret_name;
 #[allow(unused_imports)]
 use crate::prelude::*;
-
-/// Longest accepted secret name, in characters (`docs/data-model.md`,
-/// `secrets`): `^[A-Z][A-Z0-9_]{0,127}$` is one leading letter plus at most
-/// 127 more characters.
-pub const MAX_SECRET_NAME_CHARS: usize = 128;
-
-/// Does `raw` match the secret-name pattern, `^[A-Z][A-Z0-9_]{0,127}$`?
-///
-/// Environment-variable style, because that is how a secret reaches the
-/// container (`ARCHITECTURE.md`, "Secrets", Injection). Hand-written rather
-/// than a regular expression, the way [`crate::models::is_state_name`] is.
-///
-/// TODO: the agent-profile model carries the same check as a public
-/// `is_secret_name`, for the names listed in a profile's `secrets`. The two
-/// are one rule and should become one function; the follow-up is filed
-/// separately. Until then, changing the pattern means changing both.
-fn is_secret_name(raw: &str) -> bool {
-    let mut characters = raw.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    if !first.is_ascii_uppercase() {
-        return false;
-    }
-    if raw.chars().count() > MAX_SECRET_NAME_CHARS {
-        return false;
-    }
-    characters.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-}
 
 /// Every way a secret model can reject its input.
 ///
@@ -466,6 +438,7 @@ pub struct SecretUse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::agent_profile::MAX_SECRET_NAME_CHARS;
 
     /// Not key material: obviously fake bytes wherever a test needs the
     /// encrypted half of a row (`CLAUDE.md`, rule 3).

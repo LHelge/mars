@@ -22,25 +22,10 @@ use uuid::Uuid;
 // their own error rather than the crate-wide one, so the glob is here for the
 // doc links.
 #[allow(unused_imports)]
+use crate::models::agent_profile::ProfileKind;
+// The crate convention (`CLAUDE.md`, "Backend conventions"); see `task.rs`.
+#[allow(unused_imports)]
 use crate::prelude::*;
-
-/// What kind of agent a profile — and therefore a session launched from it —
-/// is (`docs/data-model.md`, "Enums").
-///
-/// **Temporary duplicate.** The canonical definition belongs to
-/// `models/agent_profile.rs`, which is being written alongside this module;
-/// `sessions.kind` is copied from the profile at launch and this crate needs
-/// the type to read the column. The two are reconciled into one definition
-/// when both land.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
-#[serde(rename_all = "snake_case")]
-#[sqlx(type_name = "profile_kind", rename_all = "snake_case")]
-pub enum ProfileKind {
-    /// Keeps talking: parked between turns, resumed on the next message.
-    Conversational,
-    /// One prompt, one run. Never parked, resumed or retried.
-    Ephemeral,
-}
 
 /// Where a session is in its lifecycle (`ARCHITECTURE.md`, "Session
 /// lifecycle").

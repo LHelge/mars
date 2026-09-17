@@ -1,16 +1,18 @@
 ---
 id: u6zkz
 title: Investigate the incomplete keep-id uid mapping Podman 6.1.2 produces under concurrent rootless container starts
-status: open
+status: done
 priority: P1
 created: "2026-09-17T19:49:57.463573029Z"
-updated: "2026-09-17T19:49:57.463573029Z"
+updated: "2026-09-17T22:04:34.024448070Z"
 tags:
   - orchestrator
   - engine
 depends_on:
   - "9ecwn"
 parent: naqhy
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

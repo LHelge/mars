@@ -5,10 +5,13 @@
 #
 # Cherry-picks every commit in main..<branch> onto main (the branch base is
 # often behind main, so a fast-forward is rarely possible), removes the
-# branch's worktree and the branch, forces a rebuild of the orchestrator crate
-# when backend files changed (a shared CARGO_TARGET_DIR can hold a test binary
-# compiled in a deleted worktree), runs the quality chains for the areas the
+# branch's worktree and the branch, runs the quality chains for the areas the
 # commits touched, and on success marks the Bears task done with `bea`.
+#
+# The backend chain builds into orchestrator/target-main, the coordinator's own
+# target directory that no subagent worktree ever builds into: nothing in it
+# can be a sibling's stale artifact, so the chain runs incrementally and no
+# source touching is needed. Subagents keep sharing orchestrator/target.
 #
 # On a cherry-pick conflict the script stops. Resolve the files, run
 # `git cherry-pick --continue`, then rerun with `--after-conflict` to do the
@@ -81,24 +84,53 @@ if [ "$VERIFY" -eq 1 ]; then
     export DOCKER_HOST="unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
   fi
   if echo "$CHANGED" | grep -q '^orchestrator/'; then
-    echo "== backend chain (DOCKER_HOST=${DOCKER_HOST:-unset})"
+    TARGET_DIR="$REPO/orchestrator/target-main"
+    echo "== backend chain (CARGO_TARGET_DIR=$TARGET_DIR, DOCKER_HOST=${DOCKER_HOST:-unset})"
+    # Two full target directories live here; a link step that runs out of room
+    # fails late and confusingly, so say it before the chain instead.
+    FREE_GB="$(df -Pk "$REPO" | awk 'NR==2 {print int($4 / 1048576)}')"
+    if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt 25 ]; then
+      echo "!! only ${FREE_GB} GB free on $REPO; target-main needs about the size of" >&2
+      echo "   orchestrator/target (18 GB today) and a link step may fail mid-way" >&2
+    fi
+    mkdir -p "$TARGET_DIR"
+    CHAIN_LOG="$TARGET_DIR/merge-chain.log"
+    : > "$CHAIN_LOG"
     (
       cd orchestrator
-      # A shared CARGO_TARGET_DIR lets cargo mistake a sibling worktree's test
-      # binary for a fresh one and skip compiling main's sources entirely
-      # (`cargo clean -p` alone was seen leaving such a binary in place), so
-      # every source file is touched to force a real rebuild of this crate.
-      find src tests migrations -type f -exec touch {} +
+      # target-main is the coordinator's alone: no worktree builds into it, so
+      # cargo cannot reuse a sibling's artifact here and the chain is
+      # incremental. Never point this at orchestrator/target.
+      export CARGO_TARGET_DIR="$TARGET_DIR"
+      # `sqlx::migrate!` embeds the SQL at compile time and cargo does not
+      # notice a changed `.sql` file, so the Migrator's users are touched.
+      if echo "$CHANGED" | grep -q '^orchestrator/migrations/'; then
+        touch tests/common/db.rs tests/migrations.rs src/main.rs
+      fi
+      # fmt is independent of the target directory, and cheapest, so it is first.
       cargo fmt --check
-      cargo clippy --all-targets -- -D warnings
-      cargo clippy --all-targets --features integration-tests -- -D warnings
+      cargo clippy --all-targets -- -D warnings 2>&1 | tee -a "$CHAIN_LOG"
+      cargo clippy --all-targets --features integration-tests -- -D warnings 2>&1 | tee -a "$CHAIN_LOG"
       if [ -n "${DOCKER_HOST:-}" ]; then
-        cargo test --features integration-tests
+        cargo test --features integration-tests 2>&1 | tee -a "$CHAIN_LOG"
       else
         echo "!! no container engine: skipping tests named health_*; CI runs them"
-        cargo test --features integration-tests -- --skip health_
+        cargo test --features integration-tests -- --skip health_ 2>&1 | tee -a "$CHAIN_LOG"
       fi
     )
+    # If the merged commits changed the crate's sources, the chain must have
+    # compiled them. A "clean" chain that compiled nothing verified nothing.
+    if echo "$CHANGED" | grep -qE '^orchestrator/(src|tests|migrations)/'; then
+      if ! grep -q 'Compiling mars-orchestrator' "$CHAIN_LOG"; then
+        echo "!! the chain never printed 'Compiling mars-orchestrator' although $BRANCH" >&2
+        echo "   changed orchestrator sources, so it verified a stale build." >&2
+        echo "   Output: $CHAIN_LOG. Check that nothing else builds into $TARGET_DIR," >&2
+        echo "   then delete it and rerun the chain by hand. (A chain you already ran" >&2
+        echo "   by hand on this same commit leaves nothing to compile and trips this too.)" >&2
+        exit 1
+      fi
+      echo "== chain compiled mars-orchestrator (log: $CHAIN_LOG)"
+    fi
   fi
   if echo "$CHANGED" | grep -q '^frontend/'; then
     echo "== frontend chain"

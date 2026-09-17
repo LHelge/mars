@@ -8,6 +8,12 @@
 
 pub mod db;
 
+/// The live engine suite's helpers: connecting or skipping on `DOCKER_HOST`,
+/// throwaway container specifications, unique names and the cleanup that runs
+/// whether a scenario passed or panicked. Plain `bollard` and the crate's own
+/// public engine API, so it needs no mock and stays ungated like `common::db`.
+pub mod engine;
+
 /// Locks, counts and timings for the concurrency suites. Plain SQL and the
 /// crate's advisory-lock key, so it needs no mock and stays ungated.
 pub mod races;

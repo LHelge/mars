@@ -326,6 +326,15 @@ where
     F: FnOnce(Arc<Cleanup>) -> Fut,
     Fut: Future<Output = ()>,
 {
+    // Scenarios run one at a time. Rootless Podman 6.1.2 has been seen
+    // giving a container created with `keep-id` while other containers were
+    // starting a mapping with no sub-uid range, so a `0:0` container fails to
+    // start with "doesn't map UID 0" about one run in three (Bears u6zkz).
+    // The suite verifies the adapter's contract, not the engine's concurrency,
+    // so it stays out of that race until the cause is known.
+    static SERIAL: Mutex<()> = Mutex::const_new(());
+    let _serial = SERIAL.lock().await;
+
     let cleanup = Arc::new(Cleanup::default());
     let outcome = AssertUnwindSafe(body(Arc::clone(&cleanup)))
         .catch_unwind()

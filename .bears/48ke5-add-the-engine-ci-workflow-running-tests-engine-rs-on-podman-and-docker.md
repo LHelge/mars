@@ -1,10 +1,10 @@
 ---
 id: "48ke5"
 title: Add the Engine CI workflow running tests/engine.rs on Podman and Docker
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:31:39.405256184Z"
-updated: "2026-09-16T20:31:39.405256184Z"
+updated: "2026-09-17T19:58:56.564963968Z"
 tags:
   - infra
   - engine
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - "9ecwn"
 parent: naqhy
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

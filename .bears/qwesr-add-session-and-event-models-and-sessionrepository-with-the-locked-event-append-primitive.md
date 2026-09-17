@@ -1,10 +1,10 @@
 ---
 id: qwesr
 title: Add session and event models and SessionRepository with the locked event-append primitive
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:31:14.957852491Z"
-updated: "2026-09-17T07:17:22.163689832Z"
+updated: "2026-09-17T07:42:19.003776131Z"
 tags:
   - orchestrator
   - core

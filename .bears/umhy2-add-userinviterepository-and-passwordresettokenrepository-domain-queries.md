@@ -1,16 +1,18 @@
 ---
 id: umhy2
 title: Add UserInviteRepository and PasswordResetTokenRepository domain queries
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:28:08.083469761Z"
-updated: "2026-09-16T20:51:51.591017585Z"
+updated: "2026-09-17T09:05:31.145244651Z"
 tags:
   - orchestrator
   - auth
 depends_on:
   - p5tsd
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

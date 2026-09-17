@@ -1,16 +1,18 @@
 ---
 id: rb2xf
 title: "Add auth primitives: JWT Claims, Argon2id password hashing, opaque token generation, refresh cookie and the User DTO shape"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:27:16.329398231Z"
-updated: "2026-09-16T20:51:51.630071023Z"
+updated: "2026-09-17T09:08:20.276305875Z"
 tags:
   - orchestrator
   - auth
 depends_on:
   - p5tsd
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

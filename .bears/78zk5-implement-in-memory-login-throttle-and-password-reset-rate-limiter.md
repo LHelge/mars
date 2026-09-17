@@ -1,16 +1,18 @@
 ---
 id: "78zk5"
 title: Implement in-memory login throttle and password-reset rate limiter
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:28:32.263229827Z"
-updated: "2026-09-16T20:51:51.672140355Z"
+updated: "2026-09-17T09:03:10.887960862Z"
 tags:
   - orchestrator
   - auth
 depends_on:
   - p5tsd
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

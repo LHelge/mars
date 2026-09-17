@@ -124,4 +124,4 @@ if [ -n "$TASK" ]; then
   bea done "$TASK" --json >/dev/null && echo "== bears: $TASK done"
 fi
 
-echo "== ok; next: git push origin main"
+echo "== ok; next: review the next report or dispatch the next wave (push once when the epic closes)"

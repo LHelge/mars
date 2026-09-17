@@ -2,10 +2,10 @@
 id: p5tsd
 title: Database schema, models, repositories and test harness
 type: epic
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:11:44.236505473Z"
-updated: "2026-09-16T20:15:08.814397333Z"
+updated: "2026-09-17T08:29:34.016926725Z"
 tags:
   - orchestrator
   - core

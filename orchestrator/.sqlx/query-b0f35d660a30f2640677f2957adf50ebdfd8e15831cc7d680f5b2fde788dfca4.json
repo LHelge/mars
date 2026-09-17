@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE secrets\n            SET data_key_wrapped = $3,\n                data_key_nonce = $4,\n                key_version = $5,\n                updated_at = NOW()\n            WHERE id = $1 AND key_version = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Bytea",
+        "Bytea",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b0f35d660a30f2640677f2957adf50ebdfd8e15831cc7d680f5b2fde788dfca4"
+}

@@ -1,0 +1,142 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT s.id, s.scope AS \"scope: SecretScope\", s.scope_id, s.name,\n                   s.orchestrator_only, s.key_version, s.created_by, s.created_at, s.updated_at,\n                   (SELECT MAX(u.at) FROM secret_uses u WHERE u.secret_id = s.id)\n                       AS \"last_used_at?\"\n            FROM secrets s\n            WHERE s.id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "scope: SecretScope",
+        "type_info": {
+          "Custom": {
+            "name": "secret_scope",
+            "kind": {
+              "Enum": [
+                "global",
+                "user",
+                "project"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "scope"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "scope_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "scope_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "orchestrator_only",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "orchestrator_only"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "key_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "key_version"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "last_used_at?",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "b7cd9b3fd87c899a8c855902e29f40c1e3a3973c9b577506a8a11d647086a10d"
+}

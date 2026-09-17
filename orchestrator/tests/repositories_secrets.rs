@@ -237,7 +237,7 @@ async fn a_missing_secret_is_none_rather_than_an_error_on_every_write() {
     );
     assert!(
         !repository
-            .rewrap(&mut tx, missing, b"fake-wrapped", b"fake-nonce", 2)
+            .rewrap(&mut tx, missing, 1, b"fake-wrapped", b"fake-nonce", 2)
             .await
             .unwrap()
     );
@@ -543,6 +543,7 @@ async fn rotation_selects_only_older_rows_and_rewraps_without_touching_the_ciphe
             .rewrap(
                 &mut tx,
                 old_one.id,
+                1,
                 b"fake-rewrapped-data-key",
                 b"fake-rewrap-nonce",
                 3,
@@ -571,6 +572,7 @@ async fn rotation_selects_only_older_rows_and_rewraps_without_touching_the_ciphe
         .rewrap(
             &mut tx,
             old_two.id,
+            2,
             b"fake-rewrapped-data-key",
             b"fake-rewrap-nonce",
             3,

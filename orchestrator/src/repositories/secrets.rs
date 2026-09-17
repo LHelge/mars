@@ -10,11 +10,12 @@
 //! Three compositions are deliberately *not* here, because each is a policy
 //! rather than a statement:
 //!
-//! - *Resolution at launch.* Looking a name up in the order `global`,
-//!   `project`, `user` with the last one found winning, and skipping the name
-//!   entirely when the winner is `orchestrator_only`, is the resolver's
-//!   (`ARCHITECTURE.md`, "Secrets"). It composes that from
-//!   [`SecretRepository::find_by_name`].
+//! - *Resolution at launch.* Ordering `global`, `project`, `user` so that the
+//!   last one found wins, and skipping a name entirely when the winner is
+//!   `orchestrator_only`, is the resolver's (`ARCHITECTURE.md`, "Secrets").
+//!   [`SecretRepository::find_for_resolution`] reads every candidate row for a
+//!   launch in one query and [`SecretRepository::find_by_name`] reads one
+//!   scope; neither ranks them, because ranking is the rule itself.
 //! - *Renaming.* A rename re-encrypts the value under the new additional
 //!   authenticated data, because the name is part of it
 //!   (`docs/data-model.md`, `secrets`). [`SecretRepository::rename`] writes
@@ -47,6 +48,40 @@ use crate::repositories::unique_violation;
 /// subcommand passes to [`SecretRepository::list_for_rotation`]; tests pass a
 /// smaller one to exercise the bound.
 pub const ROTATION_BATCH: i64 = 100;
+
+/// Which user-scoped secrets one listing is allowed to show.
+///
+/// "User-scoped secrets are listed, changed and deleted only by their owner or
+/// an admin" (`SPEC.md`, "Secrets") is a decision about the caller, not about
+/// the rows, so the service makes it and hands the answer down as one of these
+/// two. [`UserFilter::Only`] with an empty vector is a caller who may see no
+/// user-scoped secret at all; that is a legitimate filter rather than a
+/// mistake, and `= ANY('{}')` matches nothing without a special case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserFilter {
+    /// Every user's, which is what an administrator sees.
+    All,
+    /// Only the listed users'.
+    Only(Vec<Uuid>),
+}
+
+/// The `WHERE` clause of `GET /secrets`, as three independent narrowings.
+///
+/// `scope` and `scope_id` are the query parameters `SPEC.md`, "Secrets" names,
+/// each optional and each `None` meaning "do not narrow on this"; `user_ids`
+/// is the visibility rule above. They compose, and nothing here validates the
+/// pair the way [`ScopeRef`] does — a filter is a question, so asking for
+/// `scope = global` together with a `scope_id` is an empty answer rather than
+/// a rejection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretListFilter {
+    /// Only this population, or every one of them.
+    pub scope: Option<SecretScope>,
+    /// Only this user or project, or every target.
+    pub scope_id: Option<Uuid>,
+    /// Whose user-scoped secrets the caller may see.
+    pub user_ids: UserFilter,
+}
 
 /// All SQL against `secrets` and `secret_uses` (`ARCHITECTURE.md`,
 /// "Orchestrator internals").
@@ -131,6 +166,69 @@ impl<'a> SecretRepository<'a> {
         Ok(secret)
     }
 
+    /// The secret with this id, locked for the rest of the caller's
+    /// transaction.
+    ///
+    /// `SELECT ... FOR UPDATE` because replacing a value and renaming are both
+    /// read-modify-write across a decrypt: the caller reads the row, opens it,
+    /// re-encrypts it and writes it back, and two requests that both read the
+    /// old row would each re-encrypt under an identity the other is about to
+    /// change (`docs/data-model.md`, `secrets`). The lock is on this one row
+    /// and nothing else — a secret is not part of a tracker or event
+    /// transaction, so no project or session row is involved
+    /// (`ARCHITECTURE.md`, "Task tracker").
+    ///
+    /// `None` is a secret that does not exist, and locks nothing; the route
+    /// turns that into 404.
+    pub async fn find_for_update(&self, tx: &mut PgConnection, id: Uuid) -> Result<Option<Secret>> {
+        let secret = sqlx::query_as!(
+            Secret,
+            r#"
+            SELECT id, scope AS "scope: SecretScope", scope_id, name, ciphertext, nonce,
+                   data_key_wrapped, data_key_nonce, key_version, orchestrator_only,
+                   created_by, created_at, updated_at
+            FROM secrets
+            WHERE id = $1
+            FOR UPDATE
+            "#,
+            id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        Ok(secret)
+    }
+
+    /// The secret with this id as the API shape, or `None`.
+    ///
+    /// The metadata half of [`SecretRepository::find`], for the routes that
+    /// answer a `SecretMeta` and never need the value (`SPEC.md`, "Secrets").
+    /// The four encrypted columns are not in the projection at all, so a
+    /// handler with no business decrypting a row is not even handed the bytes
+    /// to try.
+    ///
+    /// `last_used_at` is a correlated `MAX(secret_uses.at)` rather than a join
+    /// and a `GROUP BY`, served by `secret_uses_secret_idx`: one row in, one
+    /// row out, and no grouping to write.
+    pub async fn find_meta(&self, id: Uuid) -> Result<Option<SecretMeta>> {
+        let meta = sqlx::query_as!(
+            SecretMeta,
+            r#"
+            SELECT s.id, s.scope AS "scope: SecretScope", s.scope_id, s.name,
+                   s.orchestrator_only, s.key_version, s.created_by, s.created_at, s.updated_at,
+                   (SELECT MAX(u.at) FROM secret_uses u WHERE u.secret_id = s.id)
+                       AS "last_used_at?"
+            FROM secrets s
+            WHERE s.id = $1
+            "#,
+            id,
+        )
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(meta)
+    }
+
     /// The secret of this name in this scope, or `None`.
     ///
     /// The scope arrives as one validated [`ScopeRef`] rather than a loose
@@ -168,6 +266,89 @@ impl<'a> SecretRepository<'a> {
         Ok(secret)
     }
 
+    /// Whether a secret of this name exists in this scope.
+    ///
+    /// The `EXISTS` form of [`SecretRepository::find_by_name`], for the
+    /// callers that want the answer and not the row: the git credential
+    /// provider asking whether a project or a user has a `GIT_CREDENTIAL` at
+    /// all before it offers to authenticate, and the service checking a name
+    /// before it seals a value it would otherwise have to throw away. Moving
+    /// four encrypted columns to decide a boolean would be a row read for
+    /// nothing.
+    pub async fn exists_by_name(&self, scope: &ScopeRef, name: &SecretName) -> Result<bool> {
+        let exists = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM secrets
+                WHERE scope = $1 AND scope_id IS NOT DISTINCT FROM $2 AND name = $3
+            ) AS "exists!"
+            "#,
+            scope.scope() as SecretScope,
+            scope.scope_id(),
+            name.as_str(),
+        )
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(exists)
+    }
+
+    /// Every row any of `names` could resolve to for this project and this
+    /// user, in one query.
+    ///
+    /// Resolution walks `global`, `project(session.project_id)`,
+    /// `user(session.created_by)` and the last row found wins
+    /// (`ARCHITECTURE.md`, "Secrets", Resolution at launch). Composing that
+    /// from [`SecretRepository::find_by_name`] is three round trips per name on
+    /// the launch path, so this reads the whole candidate set at once and the
+    /// resolver groups it by name in memory.
+    ///
+    /// Precedence stays the resolver's, and so does skipping: an
+    /// `orchestrator_only` winner means the name is not injected *at all* and
+    /// a lower-precedence row must not leak through, which is a decision about
+    /// the group rather than about a row. This method therefore filters
+    /// nothing and orders only so that a batch is reproducible.
+    ///
+    /// `$3::uuid IS NOT NULL` is spelled out rather than left to
+    /// `scope_id = $3`: a session whose creator has been deleted has no user
+    /// scope at all, and saying so is better than resting that on `NULL = NULL`
+    /// being unknown.
+    pub async fn find_for_resolution(
+        &self,
+        names: &[String],
+        project_id: Uuid,
+        user_id: Option<Uuid>,
+    ) -> Result<Vec<Secret>> {
+        let candidates = sqlx::query_as!(
+            Secret,
+            r#"
+            SELECT id, scope AS "scope: SecretScope", scope_id, name, ciphertext, nonce,
+                   data_key_wrapped, data_key_nonce, key_version, orchestrator_only,
+                   created_by, created_at, updated_at
+            FROM secrets
+            WHERE name = ANY($1)
+              AND (scope = 'global'
+                   OR (scope = 'project' AND scope_id = $2)
+                   OR (scope = 'user' AND $3::uuid IS NOT NULL AND scope_id = $3))
+            ORDER BY name, scope
+            "#,
+            names,
+            project_id,
+            user_id,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        debug!(
+            project_id = %project_id,
+            requested = names.len(),
+            rows = candidates.len(),
+            "resolution candidates selected"
+        );
+
+        Ok(candidates)
+    }
+
     /// Every secret in this scope as the API shape, by name (`GET /secrets`).
     ///
     /// The `LEFT JOIN` is what makes `last_used_at` an aggregate rather than a
@@ -194,6 +375,58 @@ impl<'a> SecretRepository<'a> {
         )
         .fetch_all(self.pool)
         .await?;
+
+        Ok(meta)
+    }
+
+    /// The secrets one listing request may see, by scope and then by name.
+    ///
+    /// The three clauses of [`SecretListFilter`], each of which narrows only
+    /// when it is set: `GET /secrets?scope=&scope_id=` are the caller's
+    /// question and `user_ids` is the visibility the service resolved from who
+    /// is asking (`SPEC.md`, "Secrets"). The rule stays in the `WHERE` clause
+    /// rather than in a filter over the result, so a row the caller may not see
+    /// is never read (`CLAUDE.md`, "Backend conventions").
+    ///
+    /// `s.scope <> 'user' OR $3 OR s.scope_id = ANY($4)` is the whole of it:
+    /// `global` and `project` secrets are visible to every user, and a `user`
+    /// one only to an administrator or to the listed owners.
+    ///
+    /// `ORDER BY s.scope` is the enum's declaration order — `global`, `user`,
+    /// `project` (`docs/data-model.md`, "Enums") — not alphabetical; what it
+    /// guarantees is that a listing is grouped by population and stable, not
+    /// which population comes first.
+    pub async fn list_meta_filtered(&self, filter: &SecretListFilter) -> Result<Vec<SecretMeta>> {
+        // `All` binds an empty array it never compares against, because the
+        // `$3` disjunct has already answered the clause.
+        let all_users = matches!(filter.user_ids, UserFilter::All);
+        let visible: &[Uuid] = match &filter.user_ids {
+            UserFilter::All => &[],
+            UserFilter::Only(ids) => ids,
+        };
+
+        let meta = sqlx::query_as!(
+            SecretMeta,
+            r#"
+            SELECT s.id, s.scope AS "scope: SecretScope", s.scope_id, s.name,
+                   s.orchestrator_only, s.key_version, s.created_by, s.created_at, s.updated_at,
+                   (SELECT MAX(u.at) FROM secret_uses u WHERE u.secret_id = s.id)
+                       AS "last_used_at?"
+            FROM secrets s
+            WHERE ($1::secret_scope IS NULL OR s.scope = $1)
+              AND ($2::uuid IS NULL OR s.scope_id = $2)
+              AND (s.scope <> 'user' OR $3::bool OR s.scope_id = ANY($4))
+            ORDER BY s.scope, s.name
+            "#,
+            filter.scope as Option<SecretScope>,
+            filter.scope_id,
+            all_users,
+            visible,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        debug!(rows = meta.len(), "secrets listed");
 
         Ok(meta)
     }
@@ -393,10 +626,20 @@ impl<'a> SecretRepository<'a> {
     /// (`ARCHITECTURE.md`, "Secrets", Rotation). Returns whether a row
     /// matched, so a sweep can notice a secret deleted between the batch and
     /// the write instead of failing.
+    ///
+    /// `expected_key_version` is the version the batch read, and it is in the
+    /// `WHERE` clause because the sweep runs outside any transaction: between
+    /// the select and this statement a `PUT /secrets/{id}` can have replaced
+    /// the value, which writes a *new* data key under the newest master key.
+    /// Writing the re-wrap of the old data key over that would make the row
+    /// undecryptable. Guarding on the version the row still had means the
+    /// stale write matches nothing; `Ok(false)` is the sweep's "skipped", not
+    /// an error, and the row is already current anyway.
     pub async fn rewrap(
         &self,
         tx: &mut PgConnection,
         id: Uuid,
+        expected_key_version: i32,
         data_key_wrapped: &[u8],
         data_key_nonce: &[u8],
         key_version: i32,
@@ -404,13 +647,14 @@ impl<'a> SecretRepository<'a> {
         let result = sqlx::query!(
             r#"
             UPDATE secrets
-            SET data_key_wrapped = $2,
-                data_key_nonce = $3,
-                key_version = $4,
+            SET data_key_wrapped = $3,
+                data_key_nonce = $4,
+                key_version = $5,
                 updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND key_version = $2
             "#,
             id,
+            expected_key_version,
             data_key_wrapped,
             data_key_nonce,
             key_version,
@@ -419,9 +663,35 @@ impl<'a> SecretRepository<'a> {
         .await?;
 
         let rewrapped = result.rows_affected() > 0;
-        debug!(secret_id = %id, key_version, rewrapped, "secret data key re-wrapped");
+        debug!(
+            secret_id = %id,
+            expected_key_version,
+            key_version,
+            rewrapped,
+            "secret data key re-wrapped"
+        );
 
         Ok(rewrapped)
+    }
+
+    /// How many rows are still wrapped by a master key older than `newest`.
+    ///
+    /// What a rotation sweep reports before it starts and what tells an
+    /// operator whether an old master key can be dropped from the environment:
+    /// "Once no row references the old version, it can be removed"
+    /// (`ARCHITECTURE.md`, "Secrets", Rotation). A separate statement from
+    /// [`SecretRepository::list_for_rotation`] because a sweep asks it once,
+    /// not once per batch, and `secrets_key_version_idx` answers it without
+    /// reading a row.
+    pub async fn count_below_version(&self, newest: i32) -> Result<i64> {
+        let remaining = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM secrets WHERE key_version < $1"#,
+            newest,
+        )
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(remaining)
     }
 
     /// Every distinct `key_version` in the table, ascending.
@@ -470,6 +740,41 @@ impl<'a> SecretRepository<'a> {
         .await?;
 
         Ok(samples)
+    }
+
+    /// Whether the user or project a scope points at still exists.
+    ///
+    /// `scope_id` has no foreign key — the scope decides which table it points
+    /// at — so nothing in the schema stops a secret being created for a user
+    /// deleted a moment ago; "the repository validates existence"
+    /// (`docs/data-model.md`, `secrets`) is this. The service calls it before
+    /// an insert and answers 404 for a scope that is not there.
+    ///
+    /// `global` has no target, so it is true without a query. The answer is a
+    /// snapshot either way: the row could be deleted immediately afterwards,
+    /// which is what [`SecretRepository::list_orphans`] and the reaper are for.
+    pub async fn scope_exists(&self, scope: &ScopeRef) -> Result<bool> {
+        let exists = match scope.scope() {
+            SecretScope::Global => true,
+            SecretScope::User => {
+                sqlx::query_scalar!(
+                    r#"SELECT EXISTS(SELECT 1 FROM users WHERE id = $1) AS "exists!""#,
+                    scope.scope_id(),
+                )
+                .fetch_one(self.pool)
+                .await?
+            }
+            SecretScope::Project => {
+                sqlx::query_scalar!(
+                    r#"SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1) AS "exists!""#,
+                    scope.scope_id(),
+                )
+                .fetch_one(self.pool)
+                .await?
+            }
+        };
+
+        Ok(exists)
     }
 
     /// The ids of secrets whose scope target no longer exists.
@@ -546,7 +851,14 @@ impl<'a> SecretRepository<'a> {
     /// limit is applied without sorting the whole history. `id` breaks ties so
     /// two uses recorded in the same transaction — and therefore sharing
     /// `NOW()` — still come back in a stable order.
+    ///
+    /// `limit` is clamped to at least one row. A zero or negative limit is the
+    /// caller's mistake — the route validates `?limit=` before it gets here —
+    /// and `LIMIT 0` would answer an empty list, which reads as a secret that
+    /// has never been used rather than as a bad request.
     pub async fn list_uses(&self, secret_id: Uuid, limit: i64) -> Result<Vec<SecretUse>> {
+        let limit = limit.max(1);
+
         let uses = sqlx::query_as!(
             SecretUse,
             r#"

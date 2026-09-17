@@ -1,10 +1,10 @@
 ---
 id: msbxs
 title: "Implement admin invite management: POST/GET /users/invites, DELETE /users/invites/{id}, POST /users/invites/{id}/resend"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:31:13.777280918Z"
-updated: "2026-09-16T20:31:13.777280918Z"
+updated: "2026-09-17T10:39:37.165543846Z"
 tags:
   - orchestrator
   - auth
@@ -14,6 +14,8 @@ depends_on:
   - umhy2
   - "8pnnv"
 parent: qacxf
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

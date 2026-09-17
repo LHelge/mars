@@ -110,7 +110,7 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
-    use crate::email::PlaceholderEmailClient;
+    use crate::email::LogEmailClient;
     use crate::engine::{EngineError, PlaceholderEngine};
     use crate::git::{CommitIdentity, PlaceholderCredentialProvider};
     use crate::secrets::{MASTER_KEY_LEN, SecretsKeyring};
@@ -164,7 +164,7 @@ mod tests {
             Arc::new(config),
             pool,
             engine,
-            Arc::new(PlaceholderEmailClient),
+            Arc::new(LogEmailClient),
             Arc::new(PlaceholderCredentialProvider::new(CommitIdentity {
                 name: "Mars Bot".to_string(),
                 email: "mars-bot@example.invalid".to_string(),

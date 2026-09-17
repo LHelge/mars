@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use futures_util::FutureExt;
-use mars_orchestrator::email::{EmailClient, PlaceholderEmailClient};
+use mars_orchestrator::email::{EmailClient, LogEmailClient, ResendClient};
 use mars_orchestrator::engine::{ContainerEngine, PlaceholderEngine};
 use mars_orchestrator::git::{
     CommitIdentity, GitCredentialProvider, PlaceholderCredentialProvider,
@@ -109,11 +109,11 @@ async fn main() {
     let mcp = bind(mcp_port).await;
     info!(api_port, mcp_port, "listening");
 
-    // The three collaborators have no production implementation yet: the
-    // container engine, authentication and git operations epics each replace
-    // their placeholder with the real thing behind the same trait.
+    // The remaining collaborators have no production implementation yet: the
+    // container engine and git operations epics each replace their placeholder
+    // with the real thing behind the same trait.
     let engine: Arc<dyn ContainerEngine> = Arc::new(PlaceholderEngine);
-    let email: Arc<dyn EmailClient> = Arc::new(PlaceholderEmailClient);
+    let email: Arc<dyn EmailClient> = select_email_client(&config);
     let git_credentials: Arc<dyn GitCredentialProvider> =
         Arc::new(PlaceholderCredentialProvider::new(CommitIdentity {
             name: config.git_bot_name.clone(),
@@ -157,6 +157,31 @@ async fn main() {
     }
 
     info!("orchestrator stopped");
+}
+
+/// Pick the delivery path for outgoing mail, or exit.
+///
+/// `RESEND_API_KEY` set means real delivery; unset means the whole message,
+/// link included, goes to this log instead, which is what local development
+/// uses (`README.md`, "Configuration", ADR 0014, ADR 0026). The key itself is
+/// never logged (rule 3).
+fn select_email_client(config: &Config) -> Arc<dyn EmailClient> {
+    let Some(api_key) = config.resend_api_key.clone() else {
+        info!(
+            "RESEND_API_KEY is unset; invitation and reset links are written to this log (ADR 0026)"
+        );
+        return Arc::new(LogEmailClient::new());
+    };
+
+    // `Config::from_env` already refuses a key without a sender; this is the
+    // same rule stated where the client is built, so neither can drift.
+    let Some(from) = config.mail_from.clone() else {
+        error!("missing required configuration: MAIL_FROM (required when RESEND_API_KEY is set)");
+        std::process::exit(1);
+    };
+
+    info!(mail_from = %from, "email is delivered through Resend");
+    Arc::new(ResendClient::new(api_key, from))
 }
 
 /// Bind one listener on all interfaces, or exit.

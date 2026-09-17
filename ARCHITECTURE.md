@@ -162,17 +162,19 @@ orchestrator/
 | HTTP, WebSocket, SSE | `axum` (features `ws`), `axum-extra` (`cookie`, `typed-header`), `tower-http` (`trace`, `cors`) |
 | Database | `sqlx` (`postgres`, `runtime-tokio`, `uuid`, `chrono`, `json`) |
 | Container engine | `bollard` |
-| MCP server | `rmcp` (server, Streamable HTTP transport) |
+| MCP server | `rmcp` (`server`, `transport-streamable-http-server`) |
 | Async runtime | `tokio` (`full`), `tokio-stream`, `futures-util` |
 | Auth | `jsonwebtoken`, `argon2`, `sha2` |
 | Secrets | `aes-gcm`, `rand`, `zeroize`, `base64` |
 | Serialisation | `serde`, `serde_json` |
 | Errors | `thiserror` |
 | Logging | `tracing`, `tracing-subscriber` (`env-filter`) |
-| Email | `reqwest` against the Resend HTTP API (no SDK crate) |
+| Email | `reqwest` (default features off, `json`, `rustls`) against the Resend HTTP API (no SDK crate) |
 | Ids, time | `uuid` (`v4`, `serde`), `chrono` (`serde`) |
 | Config | `dotenvy` |
 | Tests | `axum-test`, `testcontainers-modules` (`postgres`), `tempfile` |
+
+`bollard` tracks the version `testcontainers` depends on: both pull `bollard-stubs` at an exact version, so a mismatched pair cannot resolve. Bump the two together.
 
 **Errors.** One `Error` enum in `src/prelude/error.rs` with `#[from]` variants for `sqlx::Error`, `ClaimsError`, each model error (`UserError`, `TaskError`, ...), `EngineError`, `GitError`, `SecretsError` and `EmailError`, plus `NotFound`, `Forbidden`, `Conflict(String)`, `BadRequest(String)` and `Internal(String)`. `impl IntoResponse for Error` maps to `{ "status": <u16>, "error": "<message>" }`; internal errors are logged with `tracing::error!` and answered with a generic message. `Result<T>` is `std::result::Result<T, Error>`. MCP tool handlers map `Error` to MCP error codes in `src/mcp/error.rs`.
 

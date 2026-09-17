@@ -1,0 +1,396 @@
+#!/usr/bin/env python3
+"""Stub Claude Code CLI for Mars end-to-end tests.
+
+Accepts the argv the orchestrator's Claude backend builds (ARCHITECTURE.md,
+"Claude Code invocation"), emits a system/init line, then replays a stream-json
+fixture: one turn per stdin line in interactive mode (--input-format
+stream-json), or the whole fixture back to back in one-shot mode. No model
+credentials are needed, so the session-owner tests and Playwright can run
+against real containers.
+
+Environment: MARS_STUB_FIXTURE (default /opt/mars-stub/fixtures/default.jsonl),
+MARS_STUB_LINE_DELAY_MS (default 0), MARS_STUB_EXIT_AFTER_TURNS (default unset),
+MARS_STUB_EXIT_CODE (default 1), CLAUDE_CONFIG_DIR (transcript copy).
+Only JSON lines go to stdout (--version and --help excepted); everything else
+goes to stderr.
+"""
+
+import json
+import os
+import signal
+import sys
+import time
+import uuid
+
+DEFAULT_FIXTURE = "/opt/mars-stub/fixtures/default.jsonl"
+TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "Task"]
+VERSION = "0.0.0-stub (Claude Code stub)"
+USAGE = (
+    "claude (Claude Code stub): a dependency-free replay of a recorded stream-json "
+    "transcript for Mars tests. It accepts and ignores the flags of the real CLI, "
+    "emits a system/init line, and then replays the fixture named by "
+    "MARS_STUB_FIXTURE (default " + DEFAULT_FIXTURE + ") one turn per JSON line "
+    "read on stdin under --input-format stream-json, or every turn back to back "
+    "otherwise. MARS_STUB_LINE_DELAY_MS paces the output, MARS_STUB_EXIT_AFTER_TURNS "
+    "with MARS_STUB_EXIT_CODE ends the run after a given number of results, and "
+    "CLAUDE_CONFIG_DIR receives a copy of the transcript. SIGINT ends the turn with "
+    "a result and exits 0; SIGTERM exits 143."
+)
+
+VALUELESS = {
+    "--print", "-p", "--verbose", "--forward-subagent-text",
+    "--include-partial-messages", "--strict-mcp-config", "--bare",
+}
+VALUED = {
+    "--output-format", "--input-format", "--model", "--append-system-prompt",
+    "--mcp-config", "--permission-mode", "--permission-prompts",
+    "--system-prompt-snapshot", "--resume",
+}
+
+STATE = {
+    "session_id": "",
+    "transcript": None,
+    "transcript_failed": False,
+    "delay": 0.0,
+    "results": 0,
+    "exit_after": None,
+    "exit_code": 1,
+    "first_line": True,
+    "interruptible": True,
+    "interrupted": False,
+}
+
+
+class Interrupted(Exception):
+    """Raised out of the SIGINT handler into the emit and readline loops."""
+
+
+class StubExit(Exception):
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def warn(message):
+    sys.stderr.write("stub: " + message + "\n")
+    sys.stderr.flush()
+
+
+def parse_args(argv):
+    opts = {"flags": set(), "values": {}, "positional": []}
+    warned = set()
+    rest_positional = False
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        i += 1
+        if rest_positional:
+            opts["positional"].append(arg)
+            continue
+        if arg == "--":
+            rest_positional = True
+            continue
+        if arg == "--version":
+            sys.stdout.write(VERSION + "\n")
+            raise StubExit(0)
+        if arg in ("--help", "-h"):
+            sys.stdout.write(USAGE + "\n")
+            raise StubExit(0)
+        if arg.startswith("--") and "=" in arg:
+            name, _, value = arg.partition("=")
+            if name in VALUED:
+                opts["values"][name] = value
+            elif name in VALUELESS:
+                opts["flags"].add(name)
+            elif name not in warned:
+                warned.add(name)
+                warn("ignoring unknown flag " + name)
+            continue
+        if arg in VALUELESS:
+            opts["flags"].add(arg)
+            continue
+        if arg in VALUED:
+            if i < len(argv):
+                opts["values"][arg] = argv[i]
+                i += 1
+            else:
+                warn("missing value for " + arg)
+            continue
+        if arg.startswith("-") and arg != "-":
+            if arg not in warned:
+                warned.add(arg)
+                warn("ignoring unknown flag " + arg)
+            continue
+        opts["positional"].append(arg)
+    return opts
+
+
+def load_turns(path, include_partial):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        sys.stderr.write("stub: fixture not found: " + path + "\n")
+        sys.stderr.flush()
+        raise StubExit(1)
+    turns = []
+    current = []
+    for number, raw in enumerate(lines, 1):
+        text = raw.strip()
+        if not text:
+            continue
+        try:
+            obj = json.loads(text)
+        except ValueError:
+            warn("skipping malformed fixture line %d" % number)
+            continue
+        if not isinstance(obj, dict):
+            warn("skipping non-object fixture line %d" % number)
+            continue
+        kind = obj.get("type")
+        if kind == "system" and obj.get("subtype") == "init":
+            continue
+        if kind == "stream_event" and not include_partial:
+            continue
+        current.append(obj)
+        if kind == "result":
+            turns.append(current)
+            current = []
+    if current:
+        turns.append(current)
+    return turns
+
+
+def load_mcp_servers(path):
+    if not path:
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+    except (OSError, ValueError):
+        warn("mcp config unreadable: " + path)
+        return []
+    servers = config.get("mcpServers") if isinstance(config, dict) else None
+    if not isinstance(servers, dict):
+        warn("no mcpServers in " + path)
+        return []
+    return [{"name": name, "status": "connected"} for name in servers]
+
+
+def write_transcript(line):
+    path = STATE["transcript"]
+    if not path or STATE["transcript_failed"]:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError as error:
+        STATE["transcript_failed"] = True
+        warn("could not write transcript %s: %s" % (path, error))
+
+
+def interruptible_sleep(seconds):
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 0.02))
+        if STATE["interrupted"] and STATE["interruptible"]:
+            raise Interrupted()
+
+
+def emit(obj):
+    if STATE["delay"] and not STATE["first_line"]:
+        interruptible_sleep(STATE["delay"])
+    STATE["first_line"] = False
+    payload = dict(obj)
+    payload["session_id"] = STATE["session_id"]
+    line = json.dumps(payload, separators=(",", ":"))
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+    write_transcript(line)
+    if payload.get("type") == "result":
+        STATE["results"] += 1
+        if STATE["exit_after"] is not None and STATE["results"] >= STATE["exit_after"]:
+            raise StubExit(STATE["exit_code"])
+
+
+def make_result(started):
+    return {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "num_turns": 1,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "session_id": STATE["session_id"],
+        "total_cost_usd": 0.001,
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+        "permission_denials": [],
+    }
+
+
+def make_assistant(text):
+    return {
+        "type": "assistant",
+        "message": {
+            "id": "msg_stub_%d" % (STATE["results"] + 1),
+            "type": "message",
+            "role": "assistant",
+            "model": "stub",
+            "content": [{"type": "text", "text": "Stub reply to: " + text}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    }
+
+
+def emit_turn(turn):
+    started = time.monotonic()
+    try:
+        for obj in turn:
+            emit(obj)
+    except Interrupted:
+        STATE["interruptible"] = False
+        STATE["delay"] = 0.0
+        emit(make_result(started))
+        raise StubExit(0)
+    if not turn or turn[-1].get("type") != "result":
+        emit(make_result(started))
+
+
+def message_text(line):
+    stripped = line.strip()
+    try:
+        obj = json.loads(stripped)
+    except ValueError:
+        return stripped
+    if not isinstance(obj, dict):
+        return stripped
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else obj.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block["text"]
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ]
+        if parts:
+            return "".join(parts)
+    if isinstance(obj.get("text"), str):
+        return obj["text"]
+    return stripped
+
+
+def run_interactive(turns):
+    index = 0
+    while True:
+        try:
+            line = sys.stdin.readline()
+        except (Interrupted, KeyboardInterrupt, OSError):
+            return 0
+        if line == "":
+            return 0
+        if index < len(turns):
+            turn = turns[index]
+            index += 1
+        else:
+            turn = [make_assistant(message_text(line))]
+        emit_turn(turn)
+
+
+def run_oneshot(turns, prompt):
+    if not turns:
+        turns = [[make_assistant(prompt)]]
+    for turn in turns:
+        emit_turn(turn)
+    return 0
+
+
+def env_int(name, default):
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        warn("ignoring non-numeric %s=%s" % (name, raw))
+        return default
+
+
+def run(argv):
+    opts = parse_args(argv)
+    STATE["delay"] = max(0, env_int("MARS_STUB_LINE_DELAY_MS", 0)) / 1000.0
+    STATE["exit_after"] = env_int("MARS_STUB_EXIT_AFTER_TURNS", None)
+    STATE["exit_code"] = env_int("MARS_STUB_EXIT_CODE", 1)
+
+    resume = opts["values"].get("--resume")
+    STATE["session_id"] = resume or str(uuid.uuid4())
+
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if config_dir:
+        STATE["transcript"] = os.path.join(
+            config_dir, "projects", "-session-work", STATE["session_id"] + ".jsonl"
+        )
+        if resume and not os.path.exists(STATE["transcript"]):
+            warn("no transcript to resume at " + STATE["transcript"])
+
+    fixture = os.environ.get("MARS_STUB_FIXTURE") or DEFAULT_FIXTURE
+    turns = load_turns(fixture, "--include-partial-messages" in opts["flags"])
+    servers = load_mcp_servers(opts["values"].get("--mcp-config"))
+
+    emit({
+        "type": "system",
+        "subtype": "init",
+        "cwd": "/session/work",
+        "session_id": STATE["session_id"],
+        "tools": TOOLS,
+        "mcp_servers": servers,
+        "model": "stub",
+        "permissionMode": "bypassPermissions",
+    })
+
+    if opts["values"].get("--input-format") == "stream-json":
+        return run_interactive(turns)
+    if opts["positional"]:
+        return run_oneshot(turns, opts["positional"][0])
+    return run_oneshot(turns, sys.stdin.read().strip())
+
+
+def main(argv):
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
+
+    def on_sigint(_signum, _frame):
+        STATE["interrupted"] = True
+        if STATE["interruptible"]:
+            raise Interrupted()
+
+    def on_sigterm(_signum, _frame):
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        os._exit(143)
+
+    signal.signal(signal.SIGINT, on_sigint)
+    signal.signal(signal.SIGTERM, on_sigterm)
+    try:
+        return run(argv)
+    except StubExit as exit_request:
+        return exit_request.code
+    except (Interrupted, KeyboardInterrupt):
+        return 0
+    except BrokenPipeError:
+        os._exit(0)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

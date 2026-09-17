@@ -1,10 +1,15 @@
-//! `POST /api/auth/login`, `/refresh`, `/logout`, `/request-password-reset`
-//! and `/reset-password` (`SPEC.md`, "Auth (`/api/auth`)").
+//! `POST /api/auth/login`, `/refresh`, `/logout`, `/accept-invite`,
+//! `/request-password-reset` and `/reset-password`, plus `GET
+//! /api/auth/invite/{token}` (`SPEC.md`, "Auth (`/api/auth`)").
 //!
-//! The five routes nobody has to be signed in to reach: three that hand out
-//! credentials — and the only ones that write `refresh_tokens` rows for an
-//! ordinary sign-in — and the two halves of the reset-by-email flow, which
-//! hand out none. What they share is the rule
+//! The seven routes nobody has to be signed in to reach: the three that manage
+//! an ordinary sign-in's `refresh_tokens` rows, the two halves of the
+//! reset-by-email flow, which hand out none, and the two halves of invite
+//! acceptance — the lookup the accept page previews the invitation with, and
+//! the acceptance itself, which is the only way a user who was not seeded
+//! comes into existence (ADR 0013) and signs them in as it creates them.
+//!
+//! What the credential-issuing routes share is the rule
 //! from `docs/data-model.md`, "Users and authentication" and ADR 0025:
 //!
 //! > Login, refresh, reset-link issuance, password changes and reset-token
@@ -20,34 +25,41 @@
 //! token and set the cookie. That is what makes a concurrent password change
 //! either revoke the new credential or be observed by it, never neither.
 //!
-//! None of the five takes an extractor from `routes::extractors`: login
+//! None of the seven takes an extractor from `routes::extractors`: login
 //! authenticates with a password, refresh and logout with the cookie, the two
-//! reset routes with nothing at all, and a user with `must_change_password`
-//! reaches all of them (`SPEC.md`, "Authentication"). The *other* password
+//! reset routes and the two invite routes with nothing at all, and a user with
+//! `must_change_password` reaches all of them (`SPEC.md`, "Authentication"). The *other* password
 //! mutation — `POST /users/{id}/password`, the one a signed-in user or an
 //! administrator performs — lives in [`crate::routes::users`] and shares this
 //! module's [`TokenPairResponse`], [`hash_blocking`] and [`verify_blocking`].
 //!
 //! **Lock order.** One user-row lock, then that user's `refresh_tokens` rows.
-//! No project, session or administrator-membership lock is taken here.
+//! Invite acceptance is the one exception, and only because the user it is
+//! about does not exist yet: it locks the *invite* row and creates the user
+//! and its first refresh token under that lock. No project, session or
+//! administrator-membership lock is taken here — an accepted invite can only
+//! ever add an administrator (`SPEC.md`, "Users").
 
 use std::net::SocketAddr;
 
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Extension, Router};
 use axum_extra::extract::CookieJar;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
+use uuid::Uuid;
 
 use crate::email::EmailMessage;
 use crate::models::user::{hash_password, verify_password};
-use crate::models::{OpaqueToken, Password, RefreshToken, User};
+use crate::models::{Email, NewUser, OpaqueToken, Password, RefreshToken, User, Username};
 use crate::prelude::*;
-use crate::repositories::{PasswordResetTokenRepository, RefreshTokenRepository, UserRepository};
+use crate::repositories::{
+    PasswordResetTokenRepository, RefreshTokenRepository, UserInviteRepository, UserRepository,
+};
 use crate::routes::cookies::{clear_refresh_cookie, refresh_cookie};
 use crate::routes::throttle::client_addr;
 
@@ -74,6 +86,16 @@ const TOO_MANY_LOGIN_ATTEMPTS: &str = "too many login attempts";
 /// somebody else's account.
 const INVALID_RESET_TOKEN: &str = "invalid or expired token";
 
+/// What both invite routes answer for a token that is unknown, already
+/// accepted or expired (`SPEC.md`, "Auth (`/api/auth`)": "400 if expired, used
+/// or unknown").
+///
+/// One message for all three, and deliberately the same one from the lookup
+/// and from the acceptance: an unauthenticated caller holding a guessed token
+/// learns only that it is not a live invitation, never that an address was
+/// invited and has already signed up.
+const INVALID_INVITE: &str = "invalid or expired invite";
+
 /// An Argon2id hash a login for an unknown username is verified against.
 ///
 /// Not a credential: the PHC string of the obviously fake password
@@ -94,6 +116,8 @@ pub fn routes() -> Router<AppState> {
         .route("/login", post(login))
         .route("/refresh", post(refresh))
         .route("/logout", post(logout))
+        .route("/invite/{token}", get(lookup_invite))
+        .route("/accept-invite", post(accept_invite))
         .route("/request-password-reset", post(request_password_reset))
         .route("/reset-password", post(reset_password))
 }
@@ -575,6 +599,167 @@ pub(crate) async fn hash_blocking(password: Password) -> Result<String> {
             Error::Internal("password hashing failed".to_string())
         })?
         .map_err(Error::from)
+}
+
+/// `GET /auth/invite/{token}` → `{ email, admin, expires_at }`.
+///
+/// The preview the accept page renders before anybody types anything: it is
+/// what lets the form say *which* address was invited and whether accepting
+/// makes an administrator, neither of which the invitee can be asked to
+/// retype.
+///
+/// The response carries those three fields and nothing else — not the invite
+/// id, not `invited_by`, not `created_at`. A [`UserInvite`] serialises to the
+/// six-key admin `Invite` DTO, and answering that here would hand an
+/// unauthenticated caller the identity of the administrator who sent it, so
+/// this is a DTO of its own rather than the row.
+///
+/// Unlocked and read-only ([`UserInviteRepository::find_open_by_hash`], whose
+/// `WHERE` is the whole validity rule). Nothing may be decided from it:
+/// acceptance re-reads the same row under a lock.
+///
+/// [`UserInvite`]: crate::models::UserInvite
+#[derive(Debug, Serialize)]
+struct InviteLookupResponse {
+    email: String,
+    admin: bool,
+    expires_at: DateTime<Utc>,
+}
+
+/// Preview an invitation, or 400.
+///
+/// The path parameter is hashed exactly as it arrived — no trimming. A path
+/// segment has no surrounding whitespace to lose, and `%20` in a link is a
+/// different token, not a typo to be repaired.
+async fn lookup_invite(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> Result<Json<InviteLookupResponse>> {
+    let Some(invite) = UserInviteRepository::new(&state.pool)
+        .find_open_by_hash(&OpaqueToken::hash_of(&token))
+        .await?
+    else {
+        // No `invite_id` to log: there is no row. The token itself is never
+        // logged (rule 3), so this rejection is deliberately silent.
+        return Err(invalid_invite());
+    };
+
+    Ok(Json(InviteLookupResponse {
+        email: invite.email,
+        admin: invite.admin,
+        expires_at: invite.expires_at,
+    }))
+}
+
+/// `POST /auth/accept-invite` (`{ token, username, password }`).
+///
+/// There is no `email` field and no `admin` field: both come from the invite,
+/// which is the point of the invitation being the credential (`SPEC.md`,
+/// "User-facing features": there is no self-registration). A caller who could
+/// choose either would be registering, not accepting.
+#[derive(Debug, Deserialize)]
+struct AcceptInviteRequest {
+    token: String,
+    username: String,
+    password: String,
+}
+
+/// Spend an invitation: create the user it names and sign them in. 201 with
+/// `{ user, access_token }` and the `refresh_token` cookie.
+///
+/// The only way a user who was not seeded by the first migration comes into
+/// existence (ADR 0013), so everything that makes a user is decided here, and
+/// the order is the contract:
+///
+/// 1. the username and the password validated, and the password hashed, all
+///    *before* `BEGIN` — a malformed body must never reach the invite lock,
+///    and Argon2 is tens of milliseconds that a held row lock has no business
+///    paying for;
+/// 2. `BEGIN` and [`UserInviteRepository::lock_open_by_hash`], which is both
+///    the authoritative validity check and the serialisation point: two
+///    browsers submitting the same link do not race, the second waits and then
+///    finds no open invite;
+/// 3. the insert into `users`, whose two unique constraints decide the 409s —
+///    a username somebody else took while this form was open, and an address
+///    that has become a user by some other path;
+/// 4. [`UserInviteRepository::mark_accepted`] and
+///    [`issue_pair`], then `COMMIT`.
+///
+/// All of steps 2 to 4 are one transaction, so a failure at any of them leaves
+/// neither a user without a spent invite nor a spent invite without a user. A
+/// 409 in step 3 in particular rolls the invite back to open, which is what
+/// lets the invitee simply try another username — and, when it was the
+/// *address* that clashed, lets an administrator revoke an invitation that can
+/// no longer be accepted.
+///
+/// `must_change_password` is false: the invitee chose this password seconds
+/// ago, and the flag exists for the seeded administrator's documented default
+/// (`docs/data-model.md`, `users`). `notify_email` comes from the column
+/// default, which is true.
+async fn accept_invite(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(body): Json<AcceptInviteRequest>,
+) -> Result<(StatusCode, CookieJar, Json<TokenPairResponse>)> {
+    // Cheap rejections first, then the hash, then the transaction.
+    let username = Username::parse(&body.username)?;
+    let password = Password::parse(&body.password)?;
+
+    // Trimmed, unlike the path parameter of `lookup_invite`: this one is a
+    // JSON string a client assembled, and a token pasted with a trailing
+    // newline is the same invitation.
+    let token_hash = OpaqueToken::hash_of(body.token.trim());
+    let password_hash = hash_blocking(password).await?;
+
+    let invites = UserInviteRepository::new(&state.pool);
+    let mut tx = state.pool.begin().await?;
+
+    let Some(invite) = invites.lock_open_by_hash(&mut tx, &token_hash).await? else {
+        return Err(invalid_invite());
+    };
+
+    let new_user = NewUser {
+        id: Uuid::new_v4(),
+        username,
+        // The stored address, not one the caller sent. `Email::parse` is
+        // idempotent on an already normalised value, so this re-parse is a
+        // type conversion rather than a second normalisation.
+        email: Email::parse(&invite.email)?,
+        password_hash,
+        admin: invite.admin,
+        must_change_password: false,
+    };
+
+    let user = UserRepository::new(&state.pool)
+        .insert(&mut tx, &new_user)
+        .await?;
+
+    // Under the row lock this can only be true; the guard is what makes the
+    // acceptance correct without depending on the caller having locked.
+    if !invites.mark_accepted(&mut tx, invite.id, user.id).await? {
+        return Err(invalid_invite());
+    }
+
+    let (raw, _) = issue_pair(&state, &mut tx, &user).await?;
+    tx.commit().await?;
+
+    // After the commit and from the inserted row, like every other route that
+    // issues a pair (`docs/data-model.md`, "Users and authentication").
+    let access_token = Claims::for_user(&user, Utc::now()).encode(&state.config)?;
+
+    // The two ids and the role, never the token and never the address.
+    info!(invite_id = %invite.id, user_id = %user.id, admin = user.admin, "invite accepted");
+
+    Ok((
+        StatusCode::CREATED,
+        jar.add(refresh_cookie(&state.config, &raw)),
+        Json(TokenPairResponse { user, access_token }),
+    ))
+}
+
+/// The 400 both invite routes share; see [`INVALID_INVITE`].
+fn invalid_invite() -> Error {
+    Error::BadRequest(INVALID_INVITE.to_string())
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@
 //! [`build_probe_spec`]), so nothing here can log one (CLAUDE.md rule 3).
 
 use std::fs::{self, DirBuilder, OpenOptions};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 // Shadows the prelude's one-parameter `Result<T>` alias, as every module under
 // `engine/` does: the probe reports the engine's own [`EngineError`].
@@ -65,9 +65,25 @@ const PROBE_FILE: &str = "probe-ok";
 /// (`ARCHITECTURE.md`, "Session container specification").
 const PROBE_SUBDIRS: [&str; 3] = ["work", "home", "log"];
 
-/// The mode every probe directory is created with, matching the session
+/// The mode the probe directory itself is created with, matching the session
 /// directories the launcher creates.
+///
+/// It stays the ordinary mode because nothing writes into it: the check reads
+/// the orchestrator's own uid off this directory and the container writes one
+/// level down, in [`PROBE_SUBDIR_MODE`].
 const PROBE_DIR_MODE: u32 = 0o755;
+
+/// The mode the three session subdirectories are given after creation.
+///
+/// World-writable on purpose, so that the check measures ownership and not
+/// permission (`ARCHITECTURE.md`, "Engine adapter", Startup probe). Under
+/// Docker the container's uid 1000 is uid 1000 on the host, so against a
+/// 0o755 directory owned by an orchestrator running as some other uid the
+/// container cannot write its file at all and the probe reports an exit code
+/// instead of the uid mismatch that actually caused it. These directories are
+/// throwaway — created under `DATA_DIR/tmp`, removed after the probe, swept by
+/// orphan cleanup if the process dies — so the mode weakens nothing.
+const PROBE_SUBDIR_MODE: u32 = 0o777;
 
 /// Everything the probe needs that `Config` decides.
 ///
@@ -293,7 +309,12 @@ fn create_probe_dirs(probe_dir: &Path) -> Result<(), EngineError> {
     builder.recursive(true).mode(PROBE_DIR_MODE);
 
     for subdir in PROBE_SUBDIRS {
-        builder.create(probe_dir.join(subdir))?;
+        let path = probe_dir.join(subdir);
+        builder.create(&path)?;
+        // Separately from the builder's mode, which the process umask masks:
+        // the container has to be able to write here whatever umask the
+        // service was started with.
+        fs::set_permissions(&path, fs::Permissions::from_mode(PROBE_SUBDIR_MODE))?;
     }
     Ok(())
 }
@@ -440,6 +461,41 @@ mod tests {
                  on Podman check that keep-id:uid=1000,gid=1000 is supported, \
                  on Docker run the orchestrator as uid 1000 with DATA_DIR_HOST owned by uid 1000"
             )
+        );
+    }
+
+    /// The subdirectories the container writes into are world-writable
+    /// whatever the umask, so that a host which does not honour the uid
+    /// contract fails on the ownership check with the message naming both
+    /// uids, rather than on a write the container was never allowed to make.
+    #[test]
+    fn the_probe_subdirectories_are_world_writable() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let probe_dir = probe_dir_in(dir.path(), "0123456789abcdef");
+
+        create_probe_dirs(&probe_dir).expect("the probe directories are created");
+
+        for subdir in PROBE_SUBDIRS {
+            let mode = fs::metadata(probe_dir.join(subdir))
+                .expect("the subdirectory is there")
+                .mode()
+                & 0o777;
+            assert_eq!(
+                mode, PROBE_SUBDIR_MODE,
+                "{subdir} is not writable by the container's uid"
+            );
+        }
+
+        // The directory the uid check reads its reference off is not part of
+        // that, and is left at the ordinary session mode.
+        let mode = fs::metadata(&probe_dir)
+            .expect("the probe directory is there")
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode & 0o002,
+            0,
+            "the probe directory itself should not be world-writable: {mode:o}"
         );
     }
 

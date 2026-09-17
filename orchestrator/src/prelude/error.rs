@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::email::EmailError;
 use crate::engine::EngineError;
 use crate::git::GitError;
-use crate::models::{TaskError, UserError};
+use crate::models::{SecretError, TaskError, UserError};
 use crate::prelude::*;
 use crate::secrets::SecretsError;
 
@@ -35,8 +35,8 @@ const INTERNAL_MESSAGE: &str = "internal error";
 /// has to delegate:
 ///
 /// - `ClaimsError` → 401
-/// - `UserError`, `ProjectError`, `SessionError`, `TaskError`, ... → 400 or 409
-///   per the model's own `status()`
+/// - `UserError`, `ProjectError`, `SessionError`, `TaskError`, `SecretError`,
+///   ... → 400 or 409 per the model's own `status()`
 /// - `EngineError` → 500, or 409 for state conflicts
 /// - `GitError` → 500, or 422 when it carries conflicting paths
 ///   ([`Error::GitConflict`])
@@ -94,6 +94,10 @@ pub enum Error {
     /// repositories can use `fetch_one` and let this conversion do the work.
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+    /// A secret model rejected its input. The model decides the status. This
+    /// is the caller's mistake; [`Error::Secrets`] is the keyring's.
+    #[error(transparent)]
+    Secret(#[from] SecretError),
     /// A tracker model rejected its input. The model decides the status.
     #[error(transparent)]
     Task(#[from] TaskError),
@@ -123,6 +127,7 @@ impl Error {
             Error::Secrets(err) => err.status(),
             Error::Database(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             Error::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::Secret(err) => err.status(),
             Error::Task(err) => err.status(),
             Error::User(err) => err.status(),
         }

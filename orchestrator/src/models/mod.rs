@@ -1,6 +1,7 @@
 //! Domain types and their validation (`User`, `Project`, `Session`, `Task`,
 //! `Secret`, ...). Models never contain SQL; each carries its own error enum.
 
+pub mod secret;
 pub mod task;
 pub mod task_comment;
 pub mod task_dependency;
@@ -10,6 +11,10 @@ pub mod task_session;
 pub mod task_state;
 pub mod user;
 
+pub use secret::{
+    EncryptedValue, MAX_SECRET_NAME_CHARS, NewSecret, ScopeRef, Secret, SecretError, SecretMeta,
+    SecretName, SecretResult, SecretScope, SecretUse, SecretUsePurpose,
+};
 pub use task::{Label, MAX_TITLE_CHARS, NewTask, Priority, Task, TaskError, TaskResult, TaskTitle};
 pub use task_comment::{NewTaskComment, TaskComment};
 pub use task_dependency::{TaskDependency, TaskDependencyKind};

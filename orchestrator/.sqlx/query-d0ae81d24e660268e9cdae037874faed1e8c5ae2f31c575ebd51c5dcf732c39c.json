@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT key_version AS \"key_version!\" FROM secrets ORDER BY key_version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key_version!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "key_version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d0ae81d24e660268e9cdae037874faed1e8c5ae2f31c575ebd51c5dcf732c39c"
+}

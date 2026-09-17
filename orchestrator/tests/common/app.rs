@@ -21,6 +21,7 @@ use std::path::Path;
 use axum_test::TestServer;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use chrono::{TimeDelta, Utc};
 use mars_orchestrator::build_api_router;
 use mars_orchestrator::email::EmailClient;
 use mars_orchestrator::email::mock::MockEmailClient;
@@ -28,11 +29,14 @@ use mars_orchestrator::engine::ContainerEngine;
 use mars_orchestrator::engine::mock::MockContainerEngine;
 use mars_orchestrator::git::GitCredentialProvider;
 use mars_orchestrator::git::mock::MockGitCredentialProvider;
+use mars_orchestrator::models::{Email, NewUser, User, Username};
 use mars_orchestrator::prelude::*;
+use mars_orchestrator::repositories::UserRepository;
 use mars_orchestrator::secrets::SecretsKeyring;
 use tempfile::TempDir;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::ContainerAsync;
+use uuid::Uuid;
 
 use super::db;
 
@@ -46,6 +50,12 @@ use super::db;
 /// A literal rather than a `query!`: this file introduces no compile-time
 /// checked query, so `.sqlx/` never has to carry one for the harness
 /// (`CLAUDE.md`, "Backend conventions").
+/// Not a credential: an obviously fake stand-in for an Argon2id PHC string,
+/// so arranging a user costs no hashing (`CLAUDE.md`, rule 3). Nothing
+/// verifies against it; a test that logs in hashes a real fake password
+/// itself.
+const FAKE_PASSWORD_HASH: &str = "$argon2id$fake$hash";
+
 const DELETE_SEEDED_ADMIN: &str =
     "DELETE FROM users WHERE id = '00000000-0000-0000-0000-000000000001'";
 
@@ -168,6 +178,65 @@ impl TestApp {
     pub fn reset_limiters(&self) {
         self.state.login_throttle.reset();
         self.state.reset_rate_limit.reset();
+    }
+
+    /// Insert a user directly, bypassing the routes.
+    ///
+    /// Every route test needs a row to authenticate as, and most of them do
+    /// not care how it got there, so this is the one-call arrangement: a
+    /// committed `users` row with [`FAKE_PASSWORD_HASH`] and the two
+    /// authorization flags the caller asked for. A test that cares about the
+    /// password itself hashes its own and inserts through
+    /// [`UserRepository`].
+    pub async fn insert_user(
+        &self,
+        username: &str,
+        email: &str,
+        admin: bool,
+        must_change_password: bool,
+    ) -> User {
+        let user = NewUser {
+            id: Uuid::new_v4(),
+            username: Username::parse(username).expect("the test username is valid"),
+            email: Email::parse(email).expect("the test email is valid"),
+            password_hash: FAKE_PASSWORD_HASH.to_string(),
+            admin,
+            must_change_password,
+        };
+
+        let mut tx = self.pool.begin().await.expect("a transaction begins");
+        let inserted = UserRepository::new(&self.pool)
+            .insert(&mut tx, &user)
+            .await
+            .expect("the test user inserts");
+        tx.commit().await.expect("the transaction commits");
+
+        inserted
+    }
+
+    /// A valid access token for `user`, minted from the harness
+    /// configuration.
+    ///
+    /// The same `Claims::for_user` the login route uses, so a test token is
+    /// indistinguishable from a real one — including `auth_version`, which is
+    /// what makes a token minted before a password change fail afterwards.
+    /// A test that wants a *wrong* claim (an `admin` snapshot the row
+    /// contradicts, a stale `auth_version`) edits the struct and calls
+    /// [`TestApp::encode`].
+    pub fn token_for(&self, user: &User) -> String {
+        self.encode(&Claims::for_user(user, Utc::now()))
+    }
+
+    /// An access token for `user` that expired an hour ago.
+    pub fn expired_token_for(&self, user: &User) -> String {
+        self.encode(&Claims::for_user(user, Utc::now() - TimeDelta::hours(1)))
+    }
+
+    /// Sign `claims` with the harness `JWT_SECRET`.
+    pub fn encode(&self, claims: &Claims) -> String {
+        claims
+            .encode(&self.state.config)
+            .expect("the test claims sign")
     }
 }
 

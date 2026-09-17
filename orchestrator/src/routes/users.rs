@@ -1,11 +1,12 @@
 //! `/api/users` (`SPEC.md`, "Users (`/api/users`)").
 //!
-//! Six routes: the two a user points at themselves — `GET /users/me`, which is
+//! The two routes a user points at themselves — `GET /users/me`, which is
 //! exempt from the password-change gate so a user who has to change their
 //! password can still be rendered, and `PATCH /users/me`, which sets the one
-//! field they own — and the four an administrator points at anybody, plus the
-//! read every authenticated user is allowed ("every user sees every user in
-//! v1").
+//! field they own — the ones an administrator points at anybody, the read
+//! every authenticated user is allowed ("every user sees every user in v1"),
+//! and `POST /users/{id}/password`, which is either of the first two kinds
+//! depending on whose id it is given and is the other route the gate exempts.
 //!
 //! The interesting part is the administrator-membership invariant: "At least
 //! one administrator must remain. Both deleting an administrator and changing
@@ -37,13 +38,19 @@
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::routing::post;
+use axum_extra::extract::CookieJar;
+use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::models::{User, UserUpdate, Username};
+use crate::models::{OpaqueToken, Password, User, UserUpdate, Username};
 use crate::prelude::*;
 use crate::repositories::UserRepository;
+use crate::routes::auth::{TokenPairResponse, hash_blocking, verify_blocking};
+use crate::routes::cookies::refresh_cookie;
 use crate::routes::{AdminUser, CurrentUser, UngatedUser};
 
 /// The 409 an administrator gets for demoting the last one (`SPEC.md`,
@@ -70,6 +77,7 @@ pub fn routes() -> Router<AppState> {
         .route("/me", get(me).patch(update_me))
         .route("/", get(list))
         .route("/{id}", get(find).put(replace).delete(remove))
+        .route("/{id}/password", post(change_password))
 }
 
 /// `GET /users/me` → the signed-in user.
@@ -262,4 +270,192 @@ async fn remove(
     debug!(user_id = %id, actor_id = %caller.id, "user deleted");
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- password ----
+
+/// The 403 a non-administrator gets for aiming this route at somebody else.
+///
+/// The same string `routes::extractors` uses for an administrator-only route:
+/// this one is not administrator-only — it is self-service *or* administrator
+/// — so the check is in the handler rather than in [`AdminUser`], but a caller
+/// must not be able to tell the two situations apart.
+const ADMIN_REQUIRED: &str = "admin required";
+
+/// The 401 for a caller whose row disappeared between the extractor and the
+/// lock; the same string every other failed authentication answers with.
+const AUTHENTICATION_REQUIRED: &str = "authentication required";
+
+/// The 400 for a self-service change that left `current_password` out.
+const CURRENT_PASSWORD_REQUIRED: &str = "current password required";
+
+/// The 400 for a self-service change whose `current_password` did not verify
+/// against the locked row.
+const CURRENT_PASSWORD_INCORRECT: &str = "current password is incorrect";
+
+/// `POST /users/{id}/password` (`{ current_password?, password }`).
+///
+/// `current_password` is required when `id` is the caller's own id and ignored
+/// otherwise: an administrator setting somebody else's password does not know
+/// the old one, which is the point of the route (`SPEC.md`, "Authentication").
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChangePasswordRequest {
+    current_password: Option<String>,
+    password: String,
+}
+
+/// `POST /users/{id}/password` → `{ user, access_token }` (self) or 204
+/// (administrator).
+///
+/// [`UngatedUser`], because this is the route that *clears* the
+/// password-change gate: the seeded administrator's first login ends here, and
+/// a user sent to the change-password page has to be able to reach it
+/// (`SPEC.md`, "Authentication"). A gated administrator may also change
+/// somebody else's password — the exemption is listed without qualification —
+/// though the frontend never offers it.
+///
+/// Two flows behind one path, split on `id`, because `SPEC.md` gives them one
+/// row in "Users (`/api/users`)" and two different answers. What they share is
+/// [`UserRepository::apply_password_change`]: whichever one runs, the hash,
+/// `auth_version`, `must_change_password`, every refresh token and every
+/// outstanding reset link move together or not at all (ADR 0025).
+///
+/// The response type is [`Response`] rather than a tuple because the two
+/// answers do not have one shape: 200 with a body and a `Set-Cookie`, or 204
+/// with neither.
+async fn change_password(
+    State(state): State<AppState>,
+    UngatedUser(caller): UngatedUser,
+    jar: CookieJar,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ChangePasswordRequest>,
+) -> Result<Response> {
+    if id == caller.id {
+        change_own_password(&state, jar, &caller, body).await
+    } else {
+        change_another_password(&state, &caller, id, body).await
+    }
+}
+
+/// The self-service change: 200 `{ user, access_token }` and a fresh
+/// `refresh_token` cookie.
+///
+/// "A self-service change requires `current_password` and creates a
+/// replacement refresh token in that transaction, then returns its cookie and
+/// a matching access token after commit; this browser stays signed in"
+/// (`SPEC.md`, "Authentication"). The replacement is created *by*
+/// [`UserRepository::apply_password_change`], after its blanket revocation and
+/// inside the same transaction, which is why this handler does not call
+/// `auth::issue_pair`: a token inserted before the revocation would revoke
+/// itself, and one inserted after the commit would leave a window in which the
+/// browser holds no usable token at all.
+///
+/// The order is the one `docs/data-model.md` requires of a credential
+/// mutation, and the expensive part is deliberately outside the lock:
+///
+/// 1. the new password validated and hashed on the blocking pool;
+/// 2. `BEGIN` and the user-row lock;
+/// 3. `current_password` verified against the row the lock returned — not
+///    against the copy the extractor read, which may predate a password change
+///    that committed while this request waited (ADR 0025);
+/// 4. the mutation, `COMMIT`, and only then the token and the cookie.
+///
+/// Step 3 spends an Argon2 verification while holding the row lock. That is
+/// the sanctioned cost: the alternative is verifying twice, and the lock is
+/// per user, so what waits behind it is that one user's own concurrent
+/// credential work.
+async fn change_own_password(
+    state: &AppState,
+    jar: CookieJar,
+    caller: &User,
+    body: ChangePasswordRequest,
+) -> Result<Response> {
+    let Some(current_password) = body.current_password else {
+        debug!(user_id = %caller.id, "password change refused: no current password");
+        return Err(Error::BadRequest(CURRENT_PASSWORD_REQUIRED.to_string()));
+    };
+
+    let password = Password::parse(&body.password)?;
+    let password_hash = hash_blocking(password).await?;
+
+    let users = UserRepository::new(&state.pool);
+    let mut tx = state.pool.begin().await?;
+
+    let Some(locked) = users.lock_user(&mut tx, caller.id).await? else {
+        // Deleted between the extractor's read and the lock.
+        return Err(Error::Unauthorized(AUTHENTICATION_REQUIRED.to_string()));
+    };
+
+    if !verify_blocking(locked.password_hash.clone(), current_password).await? {
+        debug!(user_id = %caller.id, "password change refused: wrong current password");
+        return Err(Error::BadRequest(CURRENT_PASSWORD_INCORRECT.to_string()));
+    }
+
+    let replacement = OpaqueToken::generate();
+    let updated = users
+        .apply_password_change(&mut tx, locked.id, &password_hash, Some(&replacement.hash))
+        .await?;
+    tx.commit().await?;
+
+    // From the committed row, so the claims carry the new `auth_version` and
+    // the cleared `must_change_password` — which is what makes the token
+    // minted a moment ago stop working and this one start.
+    let access_token = Claims::for_user(&updated, Utc::now()).encode(&state.config)?;
+
+    info!(user_id = %updated.id, "password changed");
+
+    Ok((
+        StatusCode::OK,
+        jar.add(refresh_cookie(&state.config, &replacement.raw)),
+        Json(TokenPairResponse {
+            user: updated,
+            access_token,
+        }),
+    )
+        .into_response())
+}
+
+/// An administrator setting somebody else's password: 204, no cookie, no body.
+///
+/// "Changing another user's password returns 204 without changing the acting
+/// admin's credentials" (`SPEC.md`, "Authentication"), so nothing here touches
+/// the caller's row or tokens — only the target's, whose logins are all revoked
+/// and whose `must_change_password` is cleared by the shared statement.
+/// `current_password` is ignored rather than validated: the whole point is
+/// that the administrator does not know it.
+///
+/// The role is read from `caller`, which the extractor loaded from the
+/// database, never from the access token's `admin` claim (ADR 0025). The
+/// administrator-membership advisory lock is not taken: a password is not
+/// `admin`, and this cannot change how many administrators exist.
+async fn change_another_password(
+    state: &AppState,
+    caller: &User,
+    id: Uuid,
+    body: ChangePasswordRequest,
+) -> Result<Response> {
+    if !caller.admin {
+        debug!(user_id = %id, actor_id = %caller.id, "password change refused: not an administrator");
+        return Err(Error::Forbidden(ADMIN_REQUIRED.to_string()));
+    }
+
+    let password = Password::parse(&body.password)?;
+    let password_hash = hash_blocking(password).await?;
+
+    let users = UserRepository::new(&state.pool);
+    let mut tx = state.pool.begin().await?;
+
+    let Some(target) = users.lock_user(&mut tx, id).await? else {
+        return Err(Error::NotFound);
+    };
+
+    users
+        .apply_password_change(&mut tx, target.id, &password_hash, None)
+        .await?;
+    tx.commit().await?;
+
+    info!(user_id = %id, actor_id = %caller.id, "password changed by an administrator");
+
+    Ok(StatusCode::NO_CONTENT.into_response())
 }

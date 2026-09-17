@@ -1,8 +1,10 @@
-//! `POST /api/auth/login`, `POST /api/auth/refresh` and `POST /api/auth/logout`
-//! (`SPEC.md`, "Auth (`/api/auth`)").
+//! `POST /api/auth/login`, `/refresh`, `/logout`, `/request-password-reset`
+//! and `/reset-password` (`SPEC.md`, "Auth (`/api/auth`)").
 //!
-//! The three routes that hand out credentials, and the only ones that write
-//! `refresh_tokens` rows for an ordinary sign-in. What they share is the rule
+//! The five routes nobody has to be signed in to reach: three that hand out
+//! credentials — and the only ones that write `refresh_tokens` rows for an
+//! ordinary sign-in — and the two halves of the reset-by-email flow, which
+//! hand out none. What they share is the rule
 //! from `docs/data-model.md`, "Users and authentication" and ADR 0025:
 //!
 //! > Login, refresh, reset-link issuance, password changes and reset-token
@@ -18,10 +20,13 @@
 //! token and set the cookie. That is what makes a concurrent password change
 //! either revoke the new credential or be observed by it, never neither.
 //!
-//! None of the three takes an extractor from `routes::extractors`: login
-//! authenticates with a password, refresh and logout with the cookie, and a
-//! user with `must_change_password` reaches all three (`SPEC.md`,
-//! "Authentication").
+//! None of the five takes an extractor from `routes::extractors`: login
+//! authenticates with a password, refresh and logout with the cookie, the two
+//! reset routes with nothing at all, and a user with `must_change_password`
+//! reaches all of them (`SPEC.md`, "Authentication"). The *other* password
+//! mutation — `POST /users/{id}/password`, the one a signed-in user or an
+//! administrator performs — lives in [`crate::routes::users`] and shares this
+//! module's [`TokenPairResponse`], [`hash_blocking`] and [`verify_blocking`].
 //!
 //! **Lock order.** One user-row lock, then that user's `refresh_tokens` rows.
 //! No project, session or administrator-membership lock is taken here.
@@ -38,10 +43,11 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 
-use crate::models::user::verify_password;
-use crate::models::{OpaqueToken, RefreshToken, User};
+use crate::email::EmailMessage;
+use crate::models::user::{hash_password, verify_password};
+use crate::models::{OpaqueToken, Password, RefreshToken, User};
 use crate::prelude::*;
-use crate::repositories::{RefreshTokenRepository, UserRepository};
+use crate::repositories::{PasswordResetTokenRepository, RefreshTokenRepository, UserRepository};
 use crate::routes::cookies::{clear_refresh_cookie, refresh_cookie};
 use crate::routes::throttle::client_addr;
 
@@ -57,6 +63,16 @@ const INVALID_CREDENTIALS: &str = "invalid username or password";
 
 /// The 429 message (`SPEC.md`, "Auth (`/api/auth`)").
 const TOO_MANY_LOGIN_ATTEMPTS: &str = "too many login attempts";
+
+/// What `POST /auth/reset-password` answers for a token that is unknown,
+/// already spent, expired, or issued before a password change that
+/// invalidated it.
+///
+/// One message for all four, for the reason
+/// [`PasswordResetTokenRepository::find_valid_by_hash_for_user`] gives:
+/// telling a caller which of them applies is telling them something about
+/// somebody else's account.
+const INVALID_RESET_TOKEN: &str = "invalid or expired token";
 
 /// An Argon2id hash a login for an unknown username is verified against.
 ///
@@ -78,6 +94,8 @@ pub fn routes() -> Router<AppState> {
         .route("/login", post(login))
         .route("/refresh", post(refresh))
         .route("/logout", post(logout))
+        .route("/request-password-reset", post(request_password_reset))
+        .route("/reset-password", post(reset_password))
 }
 
 /// `POST /auth/login` (`SPEC.md`, "Auth (`/api/auth`)").
@@ -318,6 +336,173 @@ async fn logout(State(state): State<AppState>, jar: CookieJar) -> Result<(Status
     ))
 }
 
+/// `POST /auth/request-password-reset` (`{ identifier }`).
+///
+/// `identifier` is "your username or email": the form cannot know which the
+/// user typed, and neither can this handler (`SPEC.md`, "Authentication").
+#[derive(Debug, Deserialize)]
+struct RequestPasswordResetRequest {
+    identifier: String,
+}
+
+/// Mail a reset link, or quietly do nothing — 204 either way.
+///
+/// The response is a constant: 204 with an empty body for a known identifier,
+/// an unknown one, a rate-limited one and a failed delivery alike (`SPEC.md`,
+/// "Auth (`/api/auth`)": "→ 204 (always)"). Anything else would turn this
+/// endpoint into an account-enumeration oracle, which is the whole reason it
+/// is shaped like this.
+///
+/// The limiter call and the lookup therefore both happen for *every* request,
+/// before either result is consulted: an early `return` on an unknown
+/// identifier would skip the limiter and make the two paths differ in work
+/// done, which is measurable even when the body is not. What the two paths do
+/// not spend is an Argon2 hash — neither of them hashes anything, so there is
+/// no asymmetry to hide.
+///
+/// The insert is under the user-row lock, the way `docs/data-model.md` requires
+/// of reset-link issuance: a password change committing between the lock and
+/// this insert would otherwise leave a live link behind that its own
+/// invalidation had already passed by (ADR 0025). The mail goes out *after*
+/// the commit, so a link can never be delivered for a transaction that rolled
+/// back.
+async fn request_password_reset(
+    State(state): State<AppState>,
+    Json(body): Json<RequestPasswordResetRequest>,
+) -> Result<StatusCode> {
+    let identifier = body.identifier.trim().to_string();
+    let users = UserRepository::new(&state.pool);
+
+    // Both, unconditionally, and in this order: `allow` records the request,
+    // so a limited identifier costs a lookup too.
+    let allowed = state.reset_rate_limit.allow(&identifier);
+    let candidate = users.find_by_username_or_email(&identifier).await?;
+
+    let (Some(user), true) = (candidate, allowed) else {
+        // Never the identifier at `info`: it is a username or an email address
+        // somebody typed, and this is the one endpoint an unauthenticated
+        // stranger can write to.
+        debug!(allowed, "password reset request not acted on");
+        return Ok(StatusCode::NO_CONTENT);
+    };
+
+    let token = OpaqueToken::generate();
+    let expires_at = Utc::now() + PASSWORD_RESET_TTL;
+
+    let mut tx = state.pool.begin().await?;
+
+    let Some(locked) = users.lock_user(&mut tx, user.id).await? else {
+        // Deleted between the lookup and the lock. Nothing to mail.
+        return Ok(StatusCode::NO_CONTENT);
+    };
+
+    PasswordResetTokenRepository::new(&state.pool)
+        .insert(&mut tx, locked.id, &token.hash, expires_at)
+        .await?;
+    tx.commit().await?;
+
+    // The one place the raw token is assembled into a link, and it goes
+    // straight into the message. `LogEmailClient` is the only thing allowed to
+    // log it (rule 3, ADR 0026); nothing here does.
+    let link = format!(
+        "{}/reset-password/{}",
+        state.config.public_url.trim_end_matches('/'),
+        token.raw
+    );
+    let message = EmailMessage::password_reset(&locked.email, &link, expires_at);
+
+    // A provider failure is the operator's problem, not the caller's: the row
+    // is committed, the answer stays 204, and the user can ask again.
+    match state.email.send(message).await {
+        Ok(()) => info!(user_id = %locked.id, "password reset link sent"),
+        Err(err) => error!(user_id = %locked.id, error = %err, "the password reset email failed"),
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /auth/reset-password` (`{ token, password }`).
+///
+/// `token` is the raw value out of the emailed link; only its SHA-256 hex is
+/// stored, so it is hashed here and compared as bytes.
+#[derive(Debug, Deserialize)]
+struct ResetPasswordRequest {
+    token: String,
+    password: String,
+}
+
+/// Spend a reset link and set a new password. 204, no cookie, no body.
+///
+/// A reset does not log anybody in (`SPEC.md`, "Authentication": "Reset by
+/// link returns 204 without logging the user in; they then log in with the new
+/// password"), which is why [`UserRepository::apply_password_change`] is
+/// called with `None`: every one of the user's refresh tokens is revoked and
+/// none is issued.
+///
+/// The sequence is the one `docs/data-model.md`, `password_reset_tokens`
+/// prescribes, and the order is the contract:
+///
+/// 1. the unlocked [`PasswordResetTokenRepository::find_by_hash`], purely to
+///    learn which user row to lock — a presented token is all there is to go
+///    on;
+/// 2. the new password validated and hashed, *outside* any transaction,
+///    because Argon2 is tens of milliseconds and a user-row lock is not a
+///    place to spend them;
+/// 3. `BEGIN`, the user-row lock, and
+///    [`PasswordResetTokenRepository::find_valid_by_hash_for_user`] under it —
+///    the read the decision is actually made on, which is what makes a token
+///    invalidated by a concurrent password change lose the race rather than
+///    win it;
+/// 4. the mutation and `COMMIT`.
+///
+/// Step 2 sits where it does rather than after step 3 because the hash has to
+/// exist before the transaction opens; a caller whose token is already invalid
+/// never reaches it, because step 1 has refused them.
+async fn reset_password(
+    State(state): State<AppState>,
+    Json(body): Json<ResetPasswordRequest>,
+) -> Result<StatusCode> {
+    let token_hash = OpaqueToken::hash_of(&body.token);
+    let tokens = PasswordResetTokenRepository::new(&state.pool);
+
+    let Some(located) = tokens.find_by_hash(&token_hash).await? else {
+        return Err(invalid_reset_token());
+    };
+
+    let password = Password::parse(&body.password)?;
+    let password_hash = hash_blocking(password).await?;
+
+    let users = UserRepository::new(&state.pool);
+    let mut tx = state.pool.begin().await?;
+
+    let Some(locked) = users.lock_user(&mut tx, located.user_id).await? else {
+        // The user was deleted; the token row went with them or is about to.
+        return Err(invalid_reset_token());
+    };
+
+    if tokens
+        .find_valid_by_hash_for_user(&mut tx, &token_hash, locked.id)
+        .await?
+        .is_none()
+    {
+        return Err(invalid_reset_token());
+    }
+
+    users
+        .apply_password_change(&mut tx, locked.id, &password_hash, None)
+        .await?;
+    tx.commit().await?;
+
+    info!(user_id = %locked.id, "password reset through an emailed link");
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The 400 every reset-token rejection shares; see [`INVALID_RESET_TOKEN`].
+fn invalid_reset_token() -> Error {
+    Error::BadRequest(INVALID_RESET_TOKEN.to_string())
+}
+
 /// The raw refresh token in `jar`, if the cookie is there and not empty.
 ///
 /// An empty value is treated as absent: that is exactly what
@@ -356,13 +541,40 @@ fn unauthorized() -> Error {
 /// ever logged, and the `JoinError` of a panicking task widens into the
 /// crate-wide 500 rather than into a failed verification: a check that did not
 /// run must not authenticate anyone.
-async fn verify_blocking(hash: String, candidate: String) -> Result<bool> {
+///
+/// `pub(crate)` for `POST /users/{id}/password`, which checks
+/// `current_password` the same way.
+pub(crate) async fn verify_blocking(hash: String, candidate: String) -> Result<bool> {
     tokio::task::spawn_blocking(move || verify_password(&hash, &candidate))
         .await
         .map_err(|err| {
             error!(error = %err, "the password verification task did not finish");
             Error::Internal("password verification failed".to_string())
         })
+}
+
+/// Hash `password` on the blocking pool, for the same reason
+/// [`verify_blocking`] verifies there.
+///
+/// Takes a [`Password`] rather than a `String`, so a caller cannot reach this
+/// without having applied the 10–128 rule first (`SPEC.md`, "User-facing
+/// features") — the validation is the type. The plaintext crosses a thread
+/// boundary and is dropped with the closure; `Password` prints a placeholder,
+/// so it cannot reach a log line even through a `Debug` field.
+///
+/// Both failures are 500 and both are already logged where they happen: a
+/// panicking task here, and Argon2's own failure inside
+/// [`crate::models::user::hash_password`] as [`crate::models::UserError::Hash`].
+///
+/// `pub(crate)` for `POST /users/{id}/password`.
+pub(crate) async fn hash_blocking(password: Password) -> Result<String> {
+    tokio::task::spawn_blocking(move || hash_password(password.expose()))
+        .await
+        .map_err(|err| {
+            error!(error = %err, "the password hashing task did not finish");
+            Error::Internal("password hashing failed".to_string())
+        })?
+        .map_err(Error::from)
 }
 
 #[cfg(test)]

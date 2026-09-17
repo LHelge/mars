@@ -308,7 +308,7 @@ The CLI's state directory is relocated onto the project's data directory with `C
 
 Credentials: `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is injected like any other secret the profile declares. The launcher refuses to start a session whose resolved environment contains both, because the CLI's precedence rules would silently pick the API key. Token lifetime is not managed: when the CLI fails to authenticate, the translator emits an `error` event with `fatal: true` that names the secret that was injected (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`) and its scope, the session is parked, and the user replaces the secret and sends the next message.
 
-Permissions are full auto: `--permission-mode bypassPermissions` plus `--permission-prompts none` so nothing ever waits for an answer. `--permission-prompts none` requires Claude Code 2.1.259 or later; the CLI version is pinned by the adapter task once one is tested end to end, and is recorded in the session image tag. Denials (from tool allow-lists in the repository's settings, or from the CLI's own safety rules) arrive as `permission_denied` system messages and are listed in `result.permission_denials`; both are translated to `permission_denied` events.
+Permissions are full auto: `--permission-mode bypassPermissions` plus `--permission-prompts none` so nothing ever waits for an answer. `--permission-prompts none` requires Claude Code 2.1.259 or later; the version is pinned in `images/claude/Dockerfile` (`ARG CLAUDE_CODE_VERSION`) and recorded in the image tag, and the adapter's live probe against that pinned version confirms it or is the reason to bump it. Denials (from tool allow-lists in the repository's settings, or from the CLI's own safety rules) arrive as `permission_denied` system messages and are listed in `result.permission_denials`; both are translated to `permission_denied` events.
 
 Both launch modes use `--print` for the streaming protocol, `--forward-subagent-text` to include subagent text and thinking, and `--system-prompt-snapshot off` to apply current profile prompts on resume. These flags are documented in the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference); their combined behavior is verified by the pinned-version adapter probe. Subagent messages carry `parent_tool_use_id`. The translator keeps it on every event it emits so the frontend can nest a subagent's transcript under the tool call that started it.
 
@@ -324,7 +324,7 @@ This shape is not spelled out in the CLI reference documentation; it is the shap
 
 ### Session image
 
-Session images are built from `images/claude/Dockerfile`; v1 ships that one image and profiles reference images by name. Per-project toolchains are a later extension (a setup script run by the entrypoint before the CLI). The contract every session image must honour:
+Session images are built from `images/claude/Dockerfile`; v1 ships that one image for real work and profiles reference images by name. It is tagged `mars-session-claude:<CLAUDE_CODE_VERSION>`, the pinned CLI version the Dockerfile's `ARG` carries, and `mars-session-claude:latest` is an alias for the same build, which is what `SESSION_IMAGE_DEFAULT` names by default (`README.md`, "Session image"). Per-project toolchains are a later extension (a setup script run by the entrypoint before the CLI). The contract every session image must honour:
 
 - an unprivileged user `agent` (uid 1000) with `HOME=/session/home`; the CLI always runs as this user, never as root, which also sidesteps any restriction the CLI may place on bypass-permissions mode under root;
 - the CLI on `PATH`, pinned to a version recorded in the image tag;
@@ -333,7 +333,12 @@ Session images are built from `images/claude/Dockerfile`; v1 ships that one imag
 
 The entrypoint is the place where the tmpfs-file-plus-export-and-unset secrets pattern goes when it is adopted (see "Secrets", "Injection").
 
-A second image, `images/stub/`, honours the same contract for end-to-end tests. Its "CLI" is a script that emits a `system`/`init` line, then replays a fixture transcript (`stream-json` lines, one turn per line read from stdin, or the whole file under `-p`), and exits cleanly on `SIGINT`. It needs no model credentials, so Playwright and the session-owner tests run against real containers.
+A second image, `images/stub/`, honours the same contract for end-to-end tests and is tagged `mars-session-stub:latest`. Its "CLI" is installed at `/usr/local/bin/claude` like the real one, but is a dependency-free replay of a recorded `stream-json` transcript, so it needs no model credentials and Playwright and the session-owner tests run against real containers. What it replays and how it ends:
+
+- the fixture is `/opt/mars-stub/fixtures/default.jsonl`, overridden per container with `MARS_STUB_FIXTURE`; `MARS_STUB_LINE_DELAY_MS` paces the output, and `MARS_STUB_EXIT_AFTER_TURNS` with `MARS_STUB_EXIT_CODE` ends the run after a given number of turns so a crash can be tested;
+- it emits a `system`/`init` line first, whose `mcp_servers` mirror the `mcpServers` of the file passed with `--mcp-config`, so a session sees the servers the launcher actually wrote;
+- the fixture is split into turns at each `result` line: under `--input-format stream-json` one turn is replayed per line read from stdin and, once the turns are exhausted, a synthesised assistant reply and `result` answer every further line; under `-p` the whole file is replayed back to back;
+- it exits **0** on stdin EOF and on `SIGINT`, in the latter case after closing the turn in progress with a trailing `result`, and **143** on `SIGTERM`.
 
 ### Session container specification
 

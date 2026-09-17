@@ -17,8 +17,13 @@
 //!   it returns the row read *under* it so a caller cannot accidentally act on
 //!   a value it read before waiting.
 //!
-//! Token-table statements beyond the row types themselves belong to the
-//! authentication epic.
+//! One statement here is not about `users` alone. A password change has to
+//! update the hash, bump `auth_version`, revoke the user's refresh tokens and
+//! spend its outstanding reset tokens *atomically*, so
+//! [`UserRepository::apply_password_change`] owns all four statements rather
+//! than delegating three of them to
+//! [`crate::repositories::RefreshTokenRepository`]. Every other token-table
+//! statement lives with its own table.
 
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -149,6 +154,48 @@ impl<'a> UserRepository<'a> {
         Ok(user)
     }
 
+    /// The user whose username *or* email is `identifier`, or `None`.
+    ///
+    /// What a password-reset request has to work with: the form asks for "your
+    /// username or email" and the caller cannot know which it was given
+    /// (`SPEC.md`, "Authentication"). Both comparisons happen in the one
+    /// statement so the choice is not a read-then-read.
+    ///
+    /// The two comparisons are deliberately different, because the two columns
+    /// are stored differently (see [`UserRepository::find_by_username`] and
+    /// [`UserRepository::find_by_email`]): the username is matched verbatim,
+    /// the email against `identifier` trimmed and lower-cased, which is the
+    /// same normalisation [`crate::models::Email::parse`] applies before a row
+    /// is stored. Passing something that is not a valid address is fine — it
+    /// simply matches no email.
+    ///
+    /// Both can match at once, when one user's username is another user's
+    /// email address. `ORDER BY` settles it in favour of the username owner:
+    /// the identifier was typed into a field that offers a username first, and
+    /// a rule in the statement is better than whichever row Postgres happened
+    /// to return.
+    pub async fn find_by_username_or_email(&self, identifier: &str) -> Result<Option<User>> {
+        let email = identifier.trim().to_lowercase();
+
+        let user = sqlx::query_as!(
+            User,
+            r#"
+            SELECT id, username, email, password_hash, auth_version,
+                   must_change_password, admin, notify_email, created_at, updated_at
+            FROM users
+            WHERE username = $1 OR email = $2
+            ORDER BY (username = $1) DESC
+            LIMIT 1
+            "#,
+            identifier,
+            email,
+        )
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(user)
+    }
+
     /// Every user, oldest first (`GET /users`).
     ///
     /// `id` breaks ties so two users created in the same transaction — and
@@ -209,6 +256,111 @@ impl<'a> UserRepository<'a> {
         debug!(user_id = %id, updated = updated.is_some(), "user updated");
 
         Ok(updated)
+    }
+
+    /// Perform the whole password mutation in the caller's transaction and
+    /// return the user as it now stands.
+    ///
+    /// The one statement sequence `docs/data-model.md`, "Users and
+    /// authentication" requires to be atomic: "Password changes and resets
+    /// atomically update `password_hash`, clear `must_change_password`,
+    /// increment `auth_version`, revoke all of the user's existing refresh
+    /// tokens and invalidate outstanding reset tokens." Splitting it across
+    /// repositories would let a caller commit three of the four; keeping it
+    /// here means a caller cannot. The three flows `SPEC.md`,
+    /// "Authentication" lists — self-service change, an administrator changing
+    /// someone else's password, and a reset link — differ only in
+    /// `replacement`.
+    ///
+    /// `replacement` is the SHA-256 hex of a fresh refresh token, or `None`.
+    /// `Some` is the self-service change, which keeps the acting browser
+    /// signed in by inserting its replacement *inside* this transaction, after
+    /// the blanket revocation; the token gets the documented 30-day life. An
+    /// administrator's change and a reset link pass `None` and log nobody in
+    /// (ADR 0025).
+    ///
+    /// Every timestamp comes from the database's `NOW()`, which in Postgres is
+    /// the start of this transaction, so the revocations, the spent reset
+    /// tokens and the replacement's expiry are all measured from one clock.
+    ///
+    /// **Caller's contract.** Take
+    /// [`UserRepository::lock_user`] first and revalidate against the row it
+    /// returned — a current-password check made before the lock is not
+    /// evidence once the lock is granted. Return the new credentials only
+    /// after the transaction commits.
+    ///
+    /// A missing id is [`Error::NotFound`]: `RETURNING` yields no row, and
+    /// there is nothing to revoke either. The token statements are
+    /// unconditional and match zero rows for a user who has none.
+    pub async fn apply_password_change(
+        &self,
+        tx: &mut PgConnection,
+        id: Uuid,
+        password_hash: &str,
+        replacement: Option<&str>,
+    ) -> Result<User> {
+        let user = sqlx::query_as!(
+            User,
+            r#"
+            UPDATE users
+            SET password_hash = $2,
+                auth_version = auth_version + 1,
+                must_change_password = FALSE,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING id, username, email, password_hash, auth_version,
+                      must_change_password, admin, notify_email, created_at, updated_at
+            "#,
+            id,
+            password_hash,
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+        let revoked = sqlx::query!(
+            "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
+            id,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        let spent = sqlx::query!(
+            "UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL",
+            id,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        // After the revocation, never before it: a replacement inserted first
+        // would revoke itself.
+        if let Some(token_hash) = replacement {
+            sqlx::query!(
+                r#"
+                INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)
+                VALUES ($1, $2, $3, NOW() + INTERVAL '30 days')
+                "#,
+                Uuid::new_v4(),
+                id,
+                token_hash,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // Counts and the new version, never a hash or a token (rule 3).
+        debug!(
+            user_id = %id,
+            auth_version = user.auth_version,
+            revoked,
+            spent,
+            replaced = replacement.is_some(),
+            "password changed",
+        );
+
+        Ok(user)
     }
 
     /// Delete a user, reporting whether a row matched.

@@ -1,10 +1,10 @@
 ---
 id: czbdm
 title: Unify the Secret-to-EncryptedValue conversion and the value-size check across the secrets modules
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-17T13:46:23.578765519Z"
-updated: "2026-09-17T13:57:08.346830555Z"
+updated: "2026-09-17T14:26:10.172072415Z"
 tags:
   - orchestrator
   - secrets

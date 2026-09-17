@@ -2,10 +2,10 @@
 id: t36d2
 title: Secrets manager
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:12:07.402364467Z"
-updated: "2026-09-16T20:15:11.929002446Z"
+updated: "2026-09-17T15:02:45.607845463Z"
 tags:
   - orchestrator
   - secrets

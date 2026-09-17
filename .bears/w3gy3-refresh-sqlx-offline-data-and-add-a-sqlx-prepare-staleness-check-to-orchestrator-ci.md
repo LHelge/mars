@@ -1,10 +1,10 @@
 ---
 id: w3gy3
 title: Refresh .sqlx offline data and add a sqlx prepare staleness check to Orchestrator CI
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:33:29.826633868Z"
-updated: "2026-09-17T08:20:54.518672262Z"
+updated: "2026-09-17T08:27:16.846403777Z"
 tags:
   - orchestrator
   - core

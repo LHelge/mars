@@ -1,16 +1,18 @@
 ---
 id: trxaf
 title: Write back open questions 7 and 8 into ARCHITECTURE.md from the engine test results
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:32:04.342490296Z"
-updated: "2026-09-16T20:32:04.342490296Z"
+updated: "2026-09-17T20:35:54.724451099Z"
 tags:
   - docs
   - engine
 depends_on:
   - "48ke5"
 parent: naqhy
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

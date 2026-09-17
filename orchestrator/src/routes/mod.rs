@@ -9,6 +9,7 @@ use axum::Router;
 use crate::prelude::*;
 
 pub mod health;
+pub mod throttle;
 
 /// Every resource router, merged into the one router nested under `/api`.
 pub fn routes() -> Router<AppState> {

@@ -26,6 +26,7 @@ pub mod sse;
 pub mod ws;
 
 use std::future::Future;
+use std::net::SocketAddr;
 
 use axum::Router;
 use axum::extract::Request;
@@ -76,7 +77,15 @@ pub async fn run(
     let shutdown = shutdown.shared();
     let api_shutdown = shutdown.clone();
 
-    let api_server = axum::serve(api, build_api_router(state)).with_graceful_shutdown(api_shutdown);
+    // `into_make_service_with_connect_info` so handlers can extract
+    // `ConnectInfo<SocketAddr>`: the login throttle keys on the peer address
+    // when nginx has not set `X-Forwarded-For`
+    // (`routes::throttle::client_addr`).
+    let api_server = axum::serve(
+        api,
+        build_api_router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(api_shutdown);
     let mcp_server = axum::serve(mcp, mcp::placeholder_router()).with_graceful_shutdown(shutdown);
 
     let (api_result, mcp_result) = tokio::join!(api_server, mcp_server);

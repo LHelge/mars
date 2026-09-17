@@ -66,9 +66,11 @@ pub enum Error {
     /// conventional message; the auth epic decides per call site.
     #[error("{0}")]
     Unauthorized(String),
-    /// The caller is rate limited. 429.
-    #[error("too many requests")]
-    Throttled,
+    /// The caller is rate limited. 429. The string is the client-visible
+    /// message: the login route says `too many login attempts` (`SPEC.md`,
+    /// "Auth (`/api/auth`)"), other call sites their own.
+    #[error("{0}")]
+    Throttled(String),
     /// An unexpected internal failure. 500; the string is logged, never sent.
     #[error("{0}")]
     Internal(String),
@@ -136,7 +138,7 @@ impl Error {
             Error::NotFound => StatusCode::NOT_FOUND,
             Error::Conflict(_) => StatusCode::CONFLICT,
             Error::GitConflict { .. } => StatusCode::UNPROCESSABLE_ENTITY,
-            Error::Throttled => StatusCode::TOO_MANY_REQUESTS,
+            Error::Throttled(_) => StatusCode::TOO_MANY_REQUESTS,
             Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Engine(err) => err.status(),
             Error::Email(err) => err.status(),
@@ -340,11 +342,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn throttled_is_429() {
+    async fn throttled_is_429_with_the_call_site_s_message() {
         assert_maps_to(
-            Error::Throttled,
+            Error::Throttled("too many login attempts".into()),
             StatusCode::TOO_MANY_REQUESTS,
-            json!({ "status": 429, "error": "too many requests" }),
+            json!({ "status": 429, "error": "too many login attempts" }),
         )
         .await;
     }

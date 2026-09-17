@@ -18,10 +18,15 @@ async fn merge_conflict() -> Result<()> {
     })
 }
 
+async fn throttled() -> Result<()> {
+    Err(Error::Throttled("too many login attempts".into()))
+}
+
 fn server() -> TestServer {
     let app = Router::new()
         .route("/conflict", get(conflicting))
-        .route("/git-conflict", get(merge_conflict));
+        .route("/git-conflict", get(merge_conflict))
+        .route("/throttled", get(throttled));
     TestServer::new(app)
 }
 
@@ -43,4 +48,12 @@ async fn git_conflict_answers_422_with_conflicting_paths() {
         "error": "merge failed with conflicts",
         "conflicts": ["src/main.rs"],
     }));
+}
+
+#[tokio::test]
+async fn throttled_answers_429_with_the_call_site_s_message() {
+    let response = server().get("/throttled").await;
+
+    response.assert_status(StatusCode::TOO_MANY_REQUESTS);
+    response.assert_json(&json!({ "status": 429, "error": "too many login attempts" }));
 }

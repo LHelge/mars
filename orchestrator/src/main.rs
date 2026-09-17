@@ -2,10 +2,12 @@
 //!
 //! The startup order is the one in `ARCHITECTURE.md`, "Orchestrator
 //! internals" and "Restart procedure": configuration, tracing, keyring, pool,
-//! migrations, keyring verification, then the recovery and background work each
-//! epic adds, then the two listeners. Nothing here is conditional — a step that
+//! migrations, keyring verification, the container engine (socket, session
+//! networks, startup probe), then the recovery and background work each epic
+//! adds, then the two listeners. Nothing here is conditional — a step that
 //! fails is fatal and the process exits rather than serving in a half-built
-//! state.
+//! state, and every engine step is above the binds so a host with a broken
+//! engine never answers on a port at all.
 //!
 //! Everything up to and including the keyring verification is [`bootstrap`],
 //! because the `rotate-secrets` subcommand needs exactly that much and nothing
@@ -23,7 +25,7 @@ use std::time::Duration;
 
 use futures_util::FutureExt;
 use mars_orchestrator::email::{EmailClient, LogEmailClient, ResendClient};
-use mars_orchestrator::engine::{ContainerEngine, PlaceholderEngine};
+use mars_orchestrator::engine::{EngineError, bootstrap_engine};
 use mars_orchestrator::git::{
     CommitIdentity, GitCredentialProvider, PlaceholderCredentialProvider,
 };
@@ -179,7 +181,33 @@ async fn serve(bootstrap: Bootstrap) {
         keyring,
     } = bootstrap;
 
-    // Container engine epic: ensure networks, startup probe
+    // Above the binds, and only on this path: `rotate-secrets` sweeps the
+    // database and needs no engine at all, so the shared bootstrap stops at
+    // the keyring verification.
+    let engine = match bootstrap_engine(&config).await {
+        Ok(engine) => engine,
+        Err(err) => {
+            match &err {
+                // The engine ran the probe container and the result was wrong:
+                // the message names the uid pair and the fix for this engine
+                // (`ARCHITECTURE.md`, "Engine adapter", Startup probe).
+                EngineError::Probe(_) => {
+                    error!(reason = %err, "startup probe failed; refusing to start")
+                }
+                // The one line that names the socket, so an operator whose user
+                // cannot read it can fix the permissions. It is a startup log
+                // and never an answer to a caller (rule 3).
+                EngineError::Connection(_) => error!(
+                    reason = %err,
+                    docker_host = %config.docker_host,
+                    "the container engine is unreachable; refusing to start"
+                ),
+                _ => error!(reason = %err, "the container engine refused a startup step"),
+            }
+            std::process::exit(EXIT_FAILURE);
+        }
+    };
+
     // Session lifecycle epic: adopt running containers, fail sessions in creating
     // Background jobs epic: CronService::start
 
@@ -195,10 +223,9 @@ async fn serve(bootstrap: Bootstrap) {
     let mcp = bind(mcp_port).await;
     info!(api_port, mcp_port, "listening");
 
-    // The remaining collaborators have no production implementation yet: the
-    // container engine and git operations epics each replace their placeholder
-    // with the real thing behind the same trait.
-    let engine: Arc<dyn ContainerEngine> = Arc::new(PlaceholderEngine);
+    // The git credential provider has no production implementation yet: the
+    // git operations epic replaces its placeholder with the real thing behind
+    // the same trait.
     let email: Arc<dyn EmailClient> = select_email_client(&config);
     let git_credentials: Arc<dyn GitCredentialProvider> =
         Arc::new(PlaceholderCredentialProvider::new(CommitIdentity {

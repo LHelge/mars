@@ -31,8 +31,8 @@ use async_trait::async_trait;
 
 // The crate convention (`CLAUDE.md`, "Backend conventions"). The engine
 // reports its own [`EngineError`] rather than the crate-wide one, so the glob
-// is here for the doc links and for what this module grows into.
-#[allow(unused_imports)]
+// is here for [`Config`], [`Arc`] and the `tracing` macros [`bootstrap_engine`]
+// uses, and for the doc links.
 use crate::prelude::*;
 
 pub mod bollard;
@@ -44,6 +44,11 @@ pub mod types;
 
 #[cfg(feature = "integration-tests")]
 pub mod mock;
+
+// `self::`, because a plain `bollard::` in this one module is the submodule
+// below and not the crate (see `bollard`'s own module documentation).
+use self::bollard::BollardEngine;
+use self::probe::{ProbeInput, run_startup_probe};
 
 pub use error::EngineError;
 pub use types::{
@@ -153,14 +158,84 @@ pub trait ContainerEngine: Send + Sync {
     fn as_any(&self) -> &dyn Any;
 }
 
-/// The engine used until the wiring task of the container engine epic replaces
-/// it with the bollard adapter.
+/// Connect to the engine, create the session networks and run the startup
+/// probe: everything the orchestrator does between the migrations and binding
+/// its listeners.
 ///
-/// It answers `ping` with `Ok(())`, which keeps `GET /api/health` reporting
-/// `engine: true` exactly as the scaffold's `engine_ready()` placeholder did,
-/// and every real operation with [`EngineError::Unsupported`], so a caller
-/// that reaches for one before the adapter exists fails loudly instead of
-/// appearing to work.
+/// The order is the documented one (`ARCHITECTURE.md`, "Orchestrator
+/// internals", "Networks" and "Restart procedure"): the networks exist before
+/// any container is created on them, and the probe runs before any session is
+/// adopted. A failure here is fatal at startup — the caller logs it once and
+/// exits without binding a port — because an unreachable socket or a uid
+/// mapping that does not hold would otherwise surface as every session failing
+/// later, in less obvious ways.
+///
+/// It is one function rather than three calls in `main.rs` so that the engine
+/// test suite drives exactly the sequence the binary does, on both engines.
+///
+/// The probe is a startup gate and nothing else: no health check, no reconnect
+/// and no later launch runs it again.
+///
+/// # Errors
+///
+/// [`EngineError::Connection`] when the socket `DOCKER_HOST` names cannot be
+/// reached, [`EngineError::Probe`] when the probe container ran but did not
+/// prove what it has to prove, and whatever the engine answered when a network
+/// could not be created. Nothing here logs a failure; the caller does, once.
+pub async fn bootstrap_engine(config: &Config) -> Result<Arc<dyn ContainerEngine>, EngineError> {
+    // `connect` writes the one startup line that carries the engine kind, its
+    // version and the socket path (rule 3: the path appears there and nowhere
+    // else), so nothing is logged again here.
+    let engine = BollardEngine::connect(&config.docker_host).await?;
+
+    // Created if missing and left alone if they exist. The sessions network is
+    // internal — no route off the host — and the egress one is how a session
+    // reaches the world (`ARCHITECTURE.md`, "Networks"). An existing network
+    // whose `internal` flag disagrees is a warning from the adapter, not a
+    // startup failure: the operator is told, and the orchestrator carries on.
+    engine
+        .ensure_network(&config.session_network_internal, true)
+        .await?;
+    engine
+        .ensure_network(&config.session_network_egress, false)
+        .await?;
+    info!(
+        internal = %config.session_network_internal,
+        egress = %config.session_network_egress,
+        "session networks ready"
+    );
+
+    // The same `HostConfig` a session gets, over the same data directory: what
+    // passes here is what a launch can rely on.
+    run_startup_probe(
+        &engine,
+        ProbeInput {
+            image: config.session_image_default.clone(),
+            data_dir: config.data_dir.clone(),
+            data_dir_host: config.data_dir_host.clone(),
+            network_internal: config.session_network_internal.clone(),
+            network_egress: config.session_network_egress.clone(),
+            extra_hosts: config.session_extra_hosts.clone(),
+        },
+    )
+    .await?;
+
+    Ok(Arc::new(engine))
+}
+
+/// The engine fixture for tests that exercise no engine behaviour at all.
+///
+/// The binary builds a [`BollardEngine`] through [`bootstrap_engine`]; this is
+/// what stands in the state of a test that only needs *an* engine — the
+/// shutdown test, which compiles without the `integration-tests` feature and
+/// so cannot reach `mock::MockEngine`, and the unit tests around [`AppState`]
+/// and the router.
+///
+/// It answers `ping` with `Ok(())`, so `GET /api/health` reports
+/// `engine: true`, and every real operation with
+/// [`EngineError::Unsupported`], so a caller that reaches for one fails loudly
+/// instead of appearing to work. A test that wants engine behaviour uses the
+/// mock instead.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlaceholderEngine;
 
@@ -282,6 +357,45 @@ mod tests {
 
         assert!(engine.list_by_label(LABEL_SESSION_ID).await.is_err());
         assert!(engine.inspect(&id).await.is_err());
+    }
+
+    /// The bootstrap stops at its first step: a `DOCKER_HOST` no engine can be
+    /// reached at is an [`EngineError::Connection`], which is the variant
+    /// startup names the socket for, and no network is created and no probe
+    /// container is run on the way there. Everything past the connection needs
+    /// a real engine and belongs to the engine test suite.
+    #[tokio::test]
+    async fn the_bootstrap_refuses_an_unusable_docker_host() {
+        let vars: std::collections::HashMap<String, String> = [
+            ("PUBLIC_URL", "https://mars.example.invalid"),
+            ("JWT_SECRET", "not-a-real-signing-secret"),
+            ("DATABASE_URL", "postgres://mars:fake@localhost:5432/mars"),
+            ("DOCKER_HOST", "ssh://nothing.example.invalid"),
+            ("DATA_DIR_HOST", "/srv/mars/data"),
+            ("SECRETS_MASTER_KEYS", "1=not-a-real-key"),
+            ("GIT_BOT_NAME", "Mars Bot"),
+            ("GIT_BOT_EMAIL", "mars-bot@example.invalid"),
+            ("SESSION_IMAGE_DEFAULT", "mars-session-claude:dev"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+        let config = Config::from_vars(|name| vars.get(name).cloned()).expect("the fixture loads");
+
+        // Matched rather than `expect_err`, because the success type is an
+        // `Arc<dyn ContainerEngine>` and the trait is not `Debug`.
+        let Err(error) = bootstrap_engine(&config).await else {
+            panic!("no engine answers that address");
+        };
+        assert!(
+            matches!(error, EngineError::Connection(_)),
+            "unexpected: {error:?}"
+        );
+        // The scheme is named, the address itself never is (rule 3).
+        assert!(
+            !error.to_string().contains("nothing.example.invalid"),
+            "the address leaked into the error: {error}"
+        );
     }
 
     #[test]

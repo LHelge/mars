@@ -1,12 +1,22 @@
 //! `/api/users` (`SPEC.md`, "Users (`/api/users`)").
 //!
-//! The two routes a user points at themselves — `GET /users/me`, which is
-//! exempt from the password-change gate so a user who has to change their
-//! password can still be rendered, and `PATCH /users/me`, which sets the one
-//! field they own — the ones an administrator points at anybody, the read
-//! every authenticated user is allowed ("every user sees every user in v1"),
-//! and `POST /users/{id}/password`, which is either of the first two kinds
-//! depending on whose id it is given and is the other route the gate exempts.
+//! The routes split three ways. The two a user points at themselves — `GET
+//! /users/me`, which is exempt from the password-change gate so a user who has
+//! to change their password can still be rendered, and `PATCH /users/me`,
+//! which sets the one field they own — the ones an administrator points at
+//! anybody, plus the read every authenticated user is allowed ("every user
+//! sees every user in v1") — and the four invite routes, which are how a user
+//! comes to exist at all (ADR 0013). `POST /users/{id}/password` is either of
+//! the first two kinds depending on whose id it is given and is the other
+//! route the gate exempts.
+//!
+//! The invite routes hand out a credential, so they are written around one
+//! rule: the raw token exists only in the emailed link. The row stores its
+//! SHA-256, no response carries it, and the only place the whole link is ever
+//! written down is `LogEmailClient`, the documented local-development
+//! exception (ADR 0026). Creating and resending therefore commit first and
+//! send afterwards — a mail failure is a 500 over a live invite, which
+//! `POST /users/invites/{id}/resend` then recovers.
 //!
 //! The interesting part is the administrator-membership invariant: "At least
 //! one administrator must remain. Both deleting an administrator and changing
@@ -39,16 +49,16 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::routing::post;
+use axum::routing::{delete, get, post};
 use axum_extra::extract::CookieJar;
 use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::models::{OpaqueToken, Password, User, UserUpdate, Username};
+use crate::email::EmailMessage;
+use crate::models::{Email, OpaqueToken, Password, User, UserInvite, UserUpdate, Username};
 use crate::prelude::*;
-use crate::repositories::UserRepository;
+use crate::repositories::{UserInviteRepository, UserRepository, user_invites};
 use crate::routes::auth::{TokenPairResponse, hash_blocking, verify_blocking};
 use crate::routes::cookies::refresh_cookie;
 use crate::routes::{AdminUser, CurrentUser, UngatedUser};
@@ -70,15 +80,186 @@ const SELF_DELETION: &str = "cannot delete yourself";
 /// `/me` is registered before `/{id}`, so the literal segment wins over the
 /// parameter and `GET /users/me` is never read as a lookup of the user whose
 /// id is the string `me` (which would be a 400 from the `Uuid` path
-/// rejection). The invites routes of the next task register their literal
-/// `/invites` in front of `/{id}` for the same reason.
+/// rejection). `/invites` and `/invites/{id}` are registered in front of
+/// `/{id}` for the same reason.
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/me", get(me).patch(update_me))
+        .route("/invites", get(list_invites).post(create_invite))
+        .route("/invites/{id}", delete(revoke_invite))
+        .route("/invites/{id}/resend", post(resend_invite))
         .route("/", get(list))
         .route("/{id}", get(find).put(replace).delete(remove))
         .route("/{id}/password", post(change_password))
 }
+
+// ---- invites ----
+
+/// `POST /users/invites` (`{ email, admin? }`).
+///
+/// `admin` is optional and defaults to `false`; it decides whether the user
+/// created by *accepting* this invite is an administrator (`docs/data-model.md`,
+/// `user_invites`). `deny_unknown_fields` for the reason given on
+/// [`UpdateMeRequest`]: a client that sends `username` here has misunderstood
+/// the flow — the invitee chooses their own username — and is told so.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateInviteRequest {
+    email: String,
+    admin: Option<bool>,
+}
+
+/// `POST /users/invites` → the stored invite (201, administrators only).
+///
+/// The sequence is the one `SPEC.md`, "Users" and `docs/data-model.md`,
+/// `user_invites` prescribe between them:
+///
+/// 1. normalise and validate the address ([`Email::parse`] trims and
+///    lower-cases it, so the two unique indexes compare what the caller meant),
+/// 2. `BEGIN`,
+/// 3. [`UserInviteRepository::delete_expired_open_for_email`] — the partial
+///    unique index is blind to `expires_at`, so a dead invite would otherwise
+///    refuse the replacement,
+/// 4. [`UserInviteRepository::insert`], which decides *both* conflicts in one
+///    statement: an address that already belongs to a user, and a second open
+///    invite for the address,
+/// 5. `COMMIT`, and only then the email.
+///
+/// Steps 3 and 4 share a transaction so the address is never left with no
+/// invite at all, and so a concurrent acceptance of an invite for the same
+/// address is caught by `users_email_key` at accept time rather than by a
+/// pre-read here.
+///
+/// The email goes out *after* the commit, so a mail failure leaves the invite
+/// row standing and `POST /users/invites/{id}/resend` recovers it; the
+/// alternative — sending inside the transaction — would deliver links to
+/// invites that rolled back. The raw token exists only in the link
+/// ([`OpaqueToken`]); the row holds its hash, the response holds neither and
+/// nothing here logs either (rule 3, ADR 0026).
+async fn create_invite(
+    State(state): State<AppState>,
+    AdminUser(caller): AdminUser,
+    Json(body): Json<CreateInviteRequest>,
+) -> Result<(StatusCode, Json<UserInvite>)> {
+    let email = Email::parse(&body.email)?;
+    let admin = body.admin.unwrap_or(false);
+    let token = OpaqueToken::generate();
+    let expires_at = user_invites::expires_at(Utc::now());
+
+    let invites = UserInviteRepository::new(&state.pool);
+    let mut tx = state.pool.begin().await?;
+    invites
+        .delete_expired_open_for_email(&mut tx, &email)
+        .await?;
+    let invite = invites
+        .insert(
+            &mut tx,
+            &email,
+            &token.hash,
+            admin,
+            Some(caller.id),
+            expires_at,
+        )
+        .await?;
+    tx.commit().await?;
+
+    info!(invite_id = %invite.id, invited_by = %caller.id, admin, "invite created");
+
+    deliver(&state, &invite, &token.raw).await?;
+
+    Ok((StatusCode::CREATED, Json(invite)))
+}
+
+/// `GET /users/invites` → the open invites, newest first (administrators
+/// only).
+///
+/// Open means unaccepted *and* unexpired: an expired invite is not something
+/// an administrator can do anything with except resend it by id, and it
+/// disappears from here the moment it lapses, whether or not the reaper has
+/// deleted the row yet.
+async fn list_invites(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+) -> Result<Json<Vec<UserInvite>>> {
+    Ok(Json(
+        UserInviteRepository::new(&state.pool).list_open().await?,
+    ))
+}
+
+/// `DELETE /users/invites/{id}` → 204 (administrators only).
+///
+/// Revocation deletes the row, so the emailed link stops resolving
+/// immediately: `GET /auth/invite/{token}` looks the token hash up and finds
+/// nothing, which is the documented 400. An accepted invite is not deleted —
+/// it is the record of how a user came to exist and deleting it would not
+/// un-create them — so it answers 404, exactly like an unknown id.
+async fn revoke_invite(
+    State(state): State<AppState>,
+    AdminUser(caller): AdminUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    if !UserInviteRepository::new(&state.pool)
+        .delete_open(id)
+        .await?
+    {
+        return Err(Error::NotFound);
+    }
+
+    info!(invite_id = %id, actor_id = %caller.id, "invite revoked");
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /users/invites/{id}/resend` → the invite with its new expiry
+/// (administrators only).
+///
+/// Resending mints a *new* token rather than repeating the old one, so one
+/// invite always has exactly one live link and the earlier email stops working
+/// the moment this commits (`SPEC.md`, "Users"). The expiry restarts at seven
+/// days, which is what makes this the recovery path for both an invite that
+/// lapsed and one whose email never arrived — including one whose first send
+/// failed, since [`create_invite`] commits the row before it sends.
+///
+/// An accepted invite has nothing to resend and answers 404; an expired one
+/// does not, because resending it is the point.
+async fn resend_invite(
+    State(state): State<AppState>,
+    AdminUser(caller): AdminUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<UserInvite>> {
+    let token = OpaqueToken::generate();
+
+    let invite = UserInviteRepository::new(&state.pool)
+        .rotate_token(id, &token.hash, user_invites::expires_at(Utc::now()))
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    info!(invite_id = %invite.id, actor_id = %caller.id, "invite resent");
+
+    deliver(&state, &invite, &token.raw).await?;
+
+    Ok(Json(invite))
+}
+
+/// Send `invite`'s invitation, carrying `raw_token` in the link.
+///
+/// The link is `<PUBLIC_URL>/invite/<token>`; `Config` already strips trailing
+/// slashes from `public_url`, so the join is a plain `format!`.
+///
+/// A failure is logged with the invite id — never the address, the link or the
+/// token (rule 3) — and returned, which [`Error::Email`] renders as a generic
+/// 500. The invite row survives it, so the administrator's next move is
+/// [`resend_invite`].
+async fn deliver(state: &AppState, invite: &UserInvite, raw_token: &str) -> Result<()> {
+    let link = format!("{}/invite/{}", state.config.public_url, raw_token);
+    let message = EmailMessage::invitation(&invite.email, &link, invite.expires_at);
+
+    state.email.send(message).await.inspect_err(|err| {
+        error!(invite_id = %invite.id, error = %err, "the invitation could not be sent");
+    })
+}
+
+// ---- users ----
 
 /// `GET /users/me` → the signed-in user.
 ///

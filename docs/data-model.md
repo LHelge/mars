@@ -66,7 +66,7 @@ There is no self-registration. The `users` migration seeds one administrator (`u
 | --- | --- | --- | --- |
 | `id` | `UUID` | PK | The seeded admin has a fixed id `00000000-0000-0000-0000-000000000001`. |
 | `username` | `TEXT` | NOT NULL, UNIQUE | 3–32 chars, validated in the model. |
-| `email` | `TEXT` | NOT NULL, UNIQUE | Stored lower-cased and trimmed. Comes from the invite, so it is known to be deliverable. The seeded admin's is `admin@localhost`. |
+| `email` | `TEXT` | NOT NULL, UNIQUE | Stored lower-cased and trimmed, at most 254 characters (the RFC 5321 maximum), validated in the model. Comes from the invite, so it is known to be deliverable. The seeded admin's is `admin@localhost`. |
 | `password_hash` | `TEXT` | NOT NULL | Argon2id PHC string. Never serialised. |
 | `auth_version` | `BIGINT` | NOT NULL DEFAULT 0, CHECK (`auth_version >= 0`) | Included in access-token claims; incremented atomically on every password change or reset. Compared with the current user on requests and stream authorization checks. Internal; not part of the `User` DTO. |
 | `must_change_password` | `BOOLEAN` | NOT NULL DEFAULT FALSE | While true, every endpoint except login, logout, refresh, `GET /users/me` and the password change returns 403 (`SPEC.md`, "Authentication"). |
@@ -103,7 +103,7 @@ An admin invites an email address; the invitee follows the emailed link, chooses
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
 | `id` | `UUID` | PK | |
-| `email` | `TEXT` | NOT NULL | Lower-cased and trimmed. At most one open invite per email (partial unique index below). |
+| `email` | `TEXT` | NOT NULL | Lower-cased, trimmed and length-limited exactly as `users.email`. At most one open invite per email (partial unique index below). |
 | `token_hash` | `TEXT` | NOT NULL, UNIQUE | SHA-256 of the raw token in the link. |
 | `admin` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Whether the resulting user is an admin. |
 | `invited_by` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |

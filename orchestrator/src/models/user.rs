@@ -212,18 +212,32 @@ impl std::fmt::Debug for Password {
 /// The normalisation is the point: `users_email_key` and
 /// `user_invites_open_email_idx` compare the stored bytes, so ` Ada@Example.COM `
 /// and `ada@example.com` have to collide (`docs/data-model.md`, "Users and
-/// authentication"). Anything beyond the shape below is left to delivery —
-/// addresses arrive from an invite that was actually sent, so a syntactic
-/// check here only has to keep the unique index honest.
+/// authentication"). The length limit is the other half: the column is `TEXT`,
+/// so [`EMAIL_MAX_CHARS`] is what keeps an address the mail provider could
+/// never accept out of an invite. Anything beyond the shape and the length
+/// below is left to delivery — addresses arrive from an invite that was
+/// actually sent, so a syntactic check here only has to keep the unique index
+/// honest.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct Email(String);
+
+/// The longest address [`Email::parse`] accepts (`docs/data-model.md`,
+/// `users`): the RFC 5321 maximum for a reverse or forward path.
+pub const EMAIL_MAX_CHARS: usize = 254;
 
 impl Email {
     /// Trim and lower-case `raw`, then accept it when it is exactly one `@`
     /// with a non-empty local part, a non-empty domain and no whitespace.
     pub fn parse(raw: &str) -> UserResult<Self> {
         let normalised = raw.trim().to_lowercase();
+
+        // The longest address an SMTP path can carry (RFC 5321). The column is
+        // `TEXT`, so without this an invite could be created for an address no
+        // provider would ever accept.
+        if normalised.chars().count() > EMAIL_MAX_CHARS {
+            return Err(UserError::InvalidEmail);
+        }
 
         let Some((local, domain)) = normalised.split_once('@') else {
             return Err(UserError::InvalidEmail);
@@ -630,6 +644,21 @@ mod tests {
             Email::parse("ada@example.com\tx"),
             Err(UserError::InvalidEmail)
         );
+    }
+
+    #[test]
+    fn email_rejects_an_address_longer_than_the_smtp_maximum() {
+        let domain = "@example.test";
+        let local = "a".repeat(EMAIL_MAX_CHARS - domain.len());
+        let longest = format!("{local}{domain}");
+        assert_eq!(longest.len(), EMAIL_MAX_CHARS);
+        assert_eq!(
+            Email::parse(&longest).map(|parsed| parsed.as_str().len()),
+            Ok(EMAIL_MAX_CHARS)
+        );
+
+        let too_long = format!("a{longest}");
+        assert_eq!(Email::parse(&too_long), Err(UserError::InvalidEmail));
     }
 
     #[test]

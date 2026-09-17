@@ -1,0 +1,42 @@
+#!/bin/sh
+# mars-entrypoint — the entrypoint every Mars session image ships as
+# /usr/local/bin/mars-entrypoint (ARCHITECTURE.md, "Session image").
+#
+# Contract:
+#   - The orchestrator passes the agent CLI and its flags as the container
+#     command; this script `exec`s them, so the CLI is PID 1 and receives
+#     SIGINT/SIGTERM from `kill` directly. No tee, no subshell and no wrapper
+#     process: a wrapper would make the CLI PID 2 and swallow those signals,
+#     and nothing reads the container's own stdout anyway.
+#   - stdout is appended to /session/log/stream.jsonl, which the orchestrator
+#     tails by byte offset as its event source (ADR 0010: the `tee` of that
+#     decision is realised as this redirect). stderr is appended to
+#     /session/log/stderr.log. Both are opened in append mode, so a relaunch
+#     against the same session volume extends the logs instead of truncating.
+#   - stdin is left untouched: the orchestrator attaches it and writes one
+#     JSON line per user message.
+#   - The working directory is /session/work and HOME defaults to
+#     /session/home (ARCHITECTURE.md, "Session container specification").
+#   - The mounts arrive writable by uid 1000 already (ARCHITECTURE.md,
+#     "Uid contract"), so this script never chowns or chmods /session/*.
+#   - PATH belongs to the Dockerfile; this script does not touch it.
+#   - Nothing but the two error messages below is ever written by this script:
+#     the arguments and the environment may hold secrets (CLAUDE.md, rule 3).
+
+set -eu
+
+[ "$#" -gt 0 ] || { echo "mars-entrypoint: no command given" >&2; exit 2; }
+
+cd /session/work || { echo "mars-entrypoint: /session/work missing" >&2; exit 1; }
+
+mkdir -p /session/log
+
+export HOME="${HOME:-/session/home}"
+
+# Secrets injection hardening hook (ARCHITECTURE.md, "Secrets", "Injection"):
+# when the tmpfs pattern is adopted, each /run/secrets/* file is exported into
+# the environment and then deleted here, before the exec below, so the values
+# live only in the CLI process's environment. Not implemented in v1, which
+# injects secrets as container environment variables.
+
+exec "$@" >>/session/log/stream.jsonl 2>>/session/log/stderr.log

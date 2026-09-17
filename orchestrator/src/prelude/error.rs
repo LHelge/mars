@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::email::EmailError;
 use crate::engine::EngineError;
 use crate::git::GitError;
-use crate::models::TaskError;
+use crate::models::{TaskError, UserError};
 use crate::prelude::*;
 use crate::secrets::SecretsError;
 
@@ -97,6 +97,9 @@ pub enum Error {
     /// A tracker model rejected its input. The model decides the status.
     #[error(transparent)]
     Task(#[from] TaskError),
+    /// A user model rejected its input. The model decides the status.
+    #[error(transparent)]
+    User(#[from] UserError),
 }
 
 impl Error {
@@ -121,6 +124,7 @@ impl Error {
             Error::Database(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             Error::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Task(err) => err.status(),
+            Error::User(err) => err.status(),
         }
     }
 }

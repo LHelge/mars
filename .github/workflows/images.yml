@@ -1,3 +1,16 @@
+# The session container images (ARCHITECTURE.md, "Session image"): the real
+# `images/claude` and the credential-free `images/stub` that Playwright and the
+# session-owner tests run against.
+#
+# Two jobs. `lint` checks what can be checked without an engine: the two
+# entrypoint copies are byte-identical, both Dockerfiles pass hadolint, the
+# stub's unit tests pass, every fixture is valid JSONL and nothing under
+# `images/` looks like a credential (CLAUDE.md, rule 3). `build-and-smoke`
+# builds both images and runs `images/smoke-test.sh` against them, once on
+# Docker and once on rootless Podman: ADR 0004 makes rootless Podman the target
+# engine and Docker the one that must keep working, so the image contract is
+# proven on both. Nothing is pushed to a registry in v1 and no secret is
+# referenced; the tags exist only for the length of the job.
 name: Images
 
 on:
@@ -6,6 +19,7 @@ on:
     paths: ["images/**", ".github/workflows/images.yml"]
   pull_request:
     paths: ["images/**", ".github/workflows/images.yml"]
+  workflow_dispatch:
 
 concurrency:
   group: images-${{ github.ref }}
@@ -15,24 +29,246 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build ${{ matrix.image }}
+  lint:
+    name: Lint the entrypoint, Dockerfiles and stub
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        image: [claude, stub]
+    timeout-minutes: 10
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
 
-      - name: Build the session image
+      # ubuntu-latest ships shellcheck, and hadolint is a one-file container,
+      # so both run as plain commands rather than through a third-party action:
+      # the exact invocation is then reproducible on a developer machine.
+      - name: Shellcheck the entrypoint and the smoke test
+        run: shellcheck images/claude/mars-entrypoint images/stub/mars-entrypoint images/smoke-test.sh
+
+      # The stub image exists to honour the same contract as the claude image
+      # (ARCHITECTURE.md, "Session image"), so its entrypoint is a copy, not a
+      # variant. This is the guard that keeps the two from drifting.
+      - name: Entrypoint copies are identical
         run: |
-          if [ -d "images/${{ matrix.image }}" ]; then
-            docker build -t "mars-session-${{ matrix.image }}:ci" "images/${{ matrix.image }}"
-          else
-            echo "images/${{ matrix.image }} not present yet"
+          if ! cmp images/claude/mars-entrypoint images/stub/mars-entrypoint; then
+            echo "::error::entrypoint copies differ"
+            exit 1
           fi
 
-      # Session images epic: smoke-run the entrypoint
+      # DL3008 (pin apt versions) is ignored by policy: both images are rebuilt
+      # on every `images/**` change and a pinned apt version would rot faster
+      # than it protects. Every other suppression is an inline
+      # `# hadolint ignore=` comment in the Dockerfile that explains itself.
+      - name: Hadolint the Dockerfiles
+        run: |
+          for dockerfile in images/claude/Dockerfile images/stub/Dockerfile; do
+            echo "== ${dockerfile}"
+            docker run --rm -i hadolint/hadolint:v2.15.1 \
+              hadolint --ignore DL3008 - < "${dockerfile}"
+          done
+
+      - name: Stub unit tests
+        run: python3 -m unittest discover -s images/stub/tests
+
+      # The stub replays these line by line; one malformed line would surface
+      # as a puzzling end-to-end failure instead of a build failure.
+      - name: Fixtures are valid JSONL
+        run: |
+          python3 -c '
+          import glob, json, sys
+          paths = sorted(glob.glob("images/stub/fixtures/*.jsonl"))
+          if not paths:
+              sys.exit("no fixtures found under images/stub/fixtures")
+          for path in paths:
+              count = 0
+              with open(path, encoding="utf-8") as handle:
+                  for number, line in enumerate(handle, 1):
+                      if not line.strip():
+                          sys.exit(f"{path}:{number}: blank line")
+                      try:
+                          json.loads(line)
+                      except json.JSONDecodeError as error:
+                          sys.exit(f"{path}:{number}: {error}")
+                      count += 1
+              print(f"{path}: {count} valid JSON lines")
+          '
+
+      # CLAUDE.md, rule 3. The fixtures and the smoke test do carry obviously
+      # fake bearer tokens; the length bound is what tells those apart from a
+      # real one.
+      - name: No credentials under images/
+        run: |
+          if grep -rEn 'sk-ant-|ghp_|Bearer [A-Za-z0-9]{20,}' images/; then
+            echo "::error::credential-shaped string under images/ (CLAUDE.md, rule 3)"
+            exit 1
+          fi
+
+  build-and-smoke:
+    name: Build and smoke (${{ matrix.engine }})
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      # Each engine is its own evidence; a Docker failure must not hide the
+      # Podman result or the other way round.
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+    env:
+      # The smoke script creates its temp tree here and keeps it, so the logs
+      # of a failed run can be uploaded. RUNNER_TEMP is under the runner's home
+      # directory, which is what rootless Podman needs for the bind sources;
+      # it is also an absolute path the upload action can glob, which `~` is
+      # not.
+      SMOKE_KEEP_DIR: ${{ runner.temp }}/smoke-${{ matrix.engine }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Report the Docker version
+        if: matrix.engine == 'docker'
+        run: docker version
+
+      # Ubuntu 24.04's own package is Podman 4.9.x, which has
+      # `keep-id:uid=,gid=`; the OpenSUSE kubic repository is therefore not
+      # needed. uidmap supplies newuidmap and newgidmap, slirp4netns the
+      # rootless network and fuse-overlayfs the rootless storage driver. This
+      # leg drives the CLI only, so no compatibility socket is started.
+      - name: Install Podman
+        if: matrix.engine == 'podman'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          podman version
+
+      # Rootless Podman keeps its runtime state here. A hosted runner has no
+      # login session, so the directory does not exist until it is made.
+      - name: Set XDG_RUNTIME_DIR
+        if: matrix.engine == 'podman'
+        run: |
+          dir="/run/user/$(id -u)"
+          sudo mkdir -p "${dir}"
+          sudo chown "$(id -u):$(id -g)" "${dir}"
+          sudo chmod 0700 "${dir}"
+          echo "XDG_RUNTIME_DIR=${dir}" >> "$GITHUB_ENV"
+
+      # Rootless Podman needs a sub-uid and sub-gid range for the runner user.
+      # GitHub's image normally has one; create it when it does not.
+      - name: Ensure sub-uid and sub-gid ranges
+        if: matrix.engine == 'podman'
+        run: |
+          if ! grep -q "^$(id -un):" /etc/subuid || ! grep -q "^$(id -un):" /etc/subgid; then
+            sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+            podman system migrate
+          fi
+          grep "^$(id -un):" /etc/subuid /etc/subgid
+
+      - name: Report the Podman configuration
+        if: matrix.engine == 'podman'
+        run: podman info
+
+      # ADR 0004 targets rootless Podman, so a rootful daemon here would be
+      # evidence for the wrong thing: fail loudly instead.
+      - name: Check that Podman is rootless
+        if: matrix.engine == 'podman'
+        run: |
+          rootless="$(podman info --format '{{.Host.Security.Rootless}}')"
+          echo "rootless: ${rootless}"
+          if [ "${rootless}" != "true" ]; then
+            echo "::error::podman is not rootless; ADR 0004 targets the rootless engine"
+            exit 1
+          fi
+
+      # `--userns=keep-id:uid=1000,gid=1000` is what makes the uid contract
+      # hold (ARCHITECTURE.md, "Uid contract") and it needs newuidmap plus the
+      # subordinate ranges above. Without them every smoke check fails on a
+      # permission error; this says so in one line instead.
+      - name: Check the rootless user namespace
+        if: matrix.engine == 'podman'
+        run: |
+          if ! podman unshare cat /proc/self/uid_map; then
+            echo "::error::rootless user namespaces are unavailable, so keep-id:uid=1000,gid=1000 cannot work (ARCHITECTURE.md, \"Uid contract\")"
+            exit 1
+          fi
+
+      - name: Set up Buildx
+        if: matrix.engine == 'docker'
+        uses: docker/setup-buildx-action@v3
+
+      # The claude image installs the pinned CLI from npm, so a transient
+      # registry failure is not a contract failure: the step is allowed to fail
+      # and retried once below. `load: true` puts the result in the daemon's
+      # image store, which is where the smoke script looks for it; nothing is
+      # pushed. The layer cache is skipped on a fork PR, whose token cannot
+      # write to the Actions cache.
+      - name: Build the claude session image
+        id: claude-docker
+        if: matrix.engine == 'docker'
+        continue-on-error: true
+        uses: docker/build-push-action@v6
+        with:
+          context: images/claude
+          tags: mars-session-claude:ci
+          load: true
+          push: false
+          cache-from: type=gha
+          cache-to: ${{ !github.event.pull_request.head.repo.fork && 'type=gha,mode=max' || '' }}
+
+      - name: Build the claude session image (second attempt)
+        if: matrix.engine == 'docker' && steps.claude-docker.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with:
+          context: images/claude
+          tags: mars-session-claude:ci
+          load: true
+          push: false
+          cache-from: type=gha
+
+      # Plain `docker build`, so the E2E workflow can reuse this one line to
+      # get the stub image it needs without any reusable-workflow plumbing.
+      - name: Build the stub session image
+        if: matrix.engine == 'docker'
+        run: docker build -t mars-session-stub:ci images/stub
+
+      - name: Build the claude session image
+        if: matrix.engine == 'podman'
+        run: |
+          for attempt in 1 2; do
+            if podman build -t mars-session-claude:ci images/claude; then
+              exit 0
+            fi
+            echo "::warning::claude image build attempt ${attempt} failed; the npm registry is the usual cause"
+            [ "${attempt}" = 2 ] || sleep 15
+          done
+          echo "::error::the claude session image failed to build twice"
+          exit 1
+
+      - name: Build the stub session image
+        if: matrix.engine == 'podman'
+        run: podman build -t mars-session-stub:ci images/stub
+
+      # The script's own `ok:` and `FAIL:` lines are the report; it prints no
+      # argument list and no environment (CLAUDE.md, rule 3).
+      - name: Smoke test the session images
+        run: images/smoke-test.sh
+        env:
+          ENGINE: ${{ matrix.engine }}
+          CLAUDE_IMAGE: mars-session-claude:ci
+          STUB_IMAGE: mars-session-stub:ci
+
+      # The per-session stream.jsonl and stderr.log of a failed run, which is
+      # what a `FAIL:` line is diagnosed from. The smoke mcp.json is
+      # deliberately not matched.
+      - name: Upload the smoke test logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-logs-${{ matrix.engine }}
+          path: |
+            ${{ env.SMOKE_KEEP_DIR }}/**/log/*
+            ${{ env.SMOKE_KEEP_DIR }}/**/engine.out
+          if-no-files-found: ignore
+
+      # Diagnostics only: the script removes its own containers, so anything
+      # still named `smoke-*` is a check that died mid-flight.
+      - name: Leftover smoke containers
+        if: always()
+        run: ${{ matrix.engine }} ps -a --filter "name=smoke-"

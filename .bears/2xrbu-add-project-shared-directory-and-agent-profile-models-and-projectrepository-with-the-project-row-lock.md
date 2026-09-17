@@ -1,10 +1,10 @@
 ---
 id: "2xrbu"
 title: Add project, shared-directory and agent-profile models and ProjectRepository with the project row lock
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:30:40.445907825Z"
-updated: "2026-09-17T07:17:20.157266248Z"
+updated: "2026-09-17T07:45:39.286495925Z"
 tags:
   - orchestrator
   - core

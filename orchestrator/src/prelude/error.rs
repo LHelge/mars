@@ -1,0 +1,355 @@
+//! The crate-wide error type, its HTTP mapping and the `Result` alias.
+//!
+//! `ARCHITECTURE.md`, "Orchestrator internals" (Errors) and `SPEC.md`, "REST
+//! API" define the contract implemented here: every failure answers
+//! `{ "status": <u16>, "error": "<message>" }` with the same status code on the
+//! response, git conflicts additionally carry `conflicts`, and internal
+//! failures are logged once and answered with a generic message.
+
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
+use axum::extract::{FromRequest, Request};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use serde::Serialize;
+
+use crate::prelude::*;
+
+/// The message every 5xx response carries; internal detail never leaves the log.
+const INTERNAL_MESSAGE: &str = "internal error";
+
+/// The crate-wide error type.
+///
+/// Handlers, repositories and services return [`Result`] and let `?` widen
+/// their own errors into this enum. `Display` is always the client-visible
+/// message for the 4xx variants; 5xx variants keep their detail for the log
+/// line only.
+///
+/// Later epics add their own `#[from]` variants in place rather than wrapping
+/// at the call site. Each of those types exposes `fn status(&self) ->
+/// StatusCode` and a `Display` that is safe to show a client, so this enum only
+/// has to delegate:
+///
+/// - `ClaimsError` → 401
+/// - `UserError`, `ProjectError`, `SessionError`, `TaskError`, ... → 400 or 409
+///   per the model's own `status()`
+/// - `EngineError` → 500, or 409 for state conflicts
+/// - `GitError` → 500, or 422 when it carries conflicting paths
+///   ([`Error::GitConflict`])
+/// - `SecretsError` → 500
+/// - `EmailError` → 500
+///
+/// Axum's own extractor rejections convert into [`Error::BadRequest`], so the
+/// [`Json`] extractor wrapper re-exported from this prelude answers malformed
+/// request bodies in the documented shape instead of axum's plain text.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// The resource does not exist, or is out of the caller's scope. 404.
+    #[error("not found")]
+    NotFound,
+    /// Authenticated, but not permitted. 403.
+    #[error("forbidden")]
+    Forbidden,
+    /// A state conflict: claim lost, duplicate name, dependency cycle. 409.
+    #[error("{0}")]
+    Conflict(String),
+    /// Validation failure or malformed input. 400.
+    #[error("{0}")]
+    BadRequest(String),
+    /// Missing or invalid credentials. 401. `authentication required` is the
+    /// conventional message; the auth epic decides per call site.
+    #[error("{0}")]
+    Unauthorized(String),
+    /// The caller is rate limited. 429.
+    #[error("too many requests")]
+    Throttled,
+    /// An unexpected internal failure. 500; the string is logged, never sent.
+    #[error("{0}")]
+    Internal(String),
+    /// A git operation that failed on conflicting paths. 422, with `conflicts`.
+    #[error("git conflict")]
+    GitConflict {
+        message: String,
+        conflicts: Vec<String>,
+    },
+    /// Any database failure. 500, except `RowNotFound`, which is 404 so
+    /// repositories can use `fetch_one` and let this conversion do the work.
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+impl Error {
+    /// The HTTP status this error maps to.
+    ///
+    /// Public so the WebSocket, SSE and MCP layers can reuse the mapping
+    /// without building an HTTP response.
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Error::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            Error::Forbidden => StatusCode::FORBIDDEN,
+            Error::NotFound => StatusCode::NOT_FOUND,
+            Error::Conflict(_) => StatusCode::CONFLICT,
+            Error::GitConflict { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            Error::Throttled => StatusCode::TOO_MANY_REQUESTS,
+            Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::Database(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
+            Error::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+/// The only JSON shape an error ever produces (`SPEC.md`, "REST API").
+#[derive(Debug, Serialize)]
+struct ErrorBody {
+    status: u16,
+    error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conflicts: Option<Vec<String>>,
+}
+
+impl IntoResponse for Error {
+    fn into_response(self) -> Response {
+        let status = self.status();
+
+        match &self {
+            Error::Database(sqlx::Error::RowNotFound) => {}
+            Error::Database(err) => error!(error = ?err, "internal error"),
+            Error::Internal(detail) => error!(error = %detail, "internal error"),
+            other => debug!(status = status.as_u16(), error = %other, "request failed"),
+        }
+
+        let (message, conflicts) = match &self {
+            Error::GitConflict { message, conflicts } => (message.clone(), Some(conflicts.clone())),
+            Error::Database(sqlx::Error::RowNotFound) => (Error::NotFound.to_string(), None),
+            _ if status.is_server_error() => (INTERNAL_MESSAGE.to_string(), None),
+            other => (other.to_string(), None),
+        };
+
+        let body = ErrorBody {
+            status: status.as_u16(),
+            error: message,
+            conflicts,
+        };
+
+        (status, axum::Json(body)).into_response()
+    }
+}
+
+impl From<JsonRejection> for Error {
+    fn from(rejection: JsonRejection) -> Self {
+        Error::BadRequest(rejection.body_text())
+    }
+}
+
+impl From<PathRejection> for Error {
+    fn from(rejection: PathRejection) -> Self {
+        Error::BadRequest(rejection.body_text())
+    }
+}
+
+impl From<QueryRejection> for Error {
+    fn from(rejection: QueryRejection) -> Self {
+        Error::BadRequest(rejection.body_text())
+    }
+}
+
+/// `axum::Json` with [`Error`] as its rejection, so a malformed body answers in
+/// the documented `{ status, error }` shape. Handlers use this wrapper for both
+/// request extraction and responses; it shadows `axum::Json` in every module
+/// that does `use crate::prelude::*;`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Json<T>(pub T);
+
+impl<T, S> FromRequest<S> for Json<T>
+where
+    axum::Json<T>: FromRequest<S, Rejection = JsonRejection>,
+    S: Send + Sync,
+{
+    type Rejection = Error;
+
+    async fn from_request(req: Request, state: &S) -> std::result::Result<Self, Self::Rejection> {
+        let axum::Json(value) = axum::Json::<T>::from_request(req, state).await?;
+        Ok(Self(value))
+    }
+}
+
+impl<T: Serialize> IntoResponse for Json<T> {
+    fn into_response(self) -> Response {
+        axum::Json(self.0).into_response()
+    }
+}
+
+/// The crate-wide result type.
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request as HttpRequest, header::CONTENT_TYPE};
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    async fn response_of(error: Error) -> (StatusCode, String) {
+        let response = error.into_response();
+        let status = response.status();
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    async fn assert_maps_to(error: Error, expected_status: StatusCode, expected_body: Value) {
+        let (status, body) = response_of(error).await;
+        assert_eq!(status, expected_status);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            expected_body,
+            "unexpected body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bad_request_is_400() {
+        assert_maps_to(
+            Error::BadRequest("username is too short".into()),
+            StatusCode::BAD_REQUEST,
+            json!({ "status": 400, "error": "username is too short" }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn unauthorized_is_401() {
+        assert_maps_to(
+            Error::Unauthorized("authentication required".into()),
+            StatusCode::UNAUTHORIZED,
+            json!({ "status": 401, "error": "authentication required" }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn forbidden_is_403() {
+        assert_maps_to(
+            Error::Forbidden,
+            StatusCode::FORBIDDEN,
+            json!({ "status": 403, "error": "forbidden" }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn not_found_is_404() {
+        assert_maps_to(
+            Error::NotFound,
+            StatusCode::NOT_FOUND,
+            json!({ "status": 404, "error": "not found" }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn conflict_is_409() {
+        assert_maps_to(
+            Error::Conflict("duplicate name".into()),
+            StatusCode::CONFLICT,
+            json!({ "status": 409, "error": "duplicate name" }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn git_conflict_is_422_with_conflicting_paths() {
+        assert_maps_to(
+            Error::GitConflict {
+                message: "merge failed with conflicts".into(),
+                conflicts: vec!["src/main.rs".into(), "README.md".into()],
+            },
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "status": 422,
+                "error": "merge failed with conflicts",
+                "conflicts": ["src/main.rs", "README.md"],
+            }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn throttled_is_429() {
+        assert_maps_to(
+            Error::Throttled,
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({ "status": 429, "error": "too many requests" }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn internal_is_500_and_never_leaks_its_detail() {
+        let (status, body) = response_of(Error::Internal("secret detail".into())).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({ "status": 500, "error": "internal error" }),
+        );
+        assert!(!body.contains("secret detail"), "leaked body: {body}");
+    }
+
+    #[tokio::test]
+    async fn database_row_not_found_is_404() {
+        assert_maps_to(
+            Error::Database(sqlx::Error::RowNotFound),
+            StatusCode::NOT_FOUND,
+            json!({ "status": 404, "error": "not found" }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn other_database_errors_are_500_without_detail() {
+        let (status, body) = response_of(Error::Database(sqlx::Error::Protocol(
+            "unexpected packet from server".into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({ "status": 500, "error": "internal error" }),
+        );
+        assert!(!body.contains("unexpected packet"), "leaked body: {body}");
+    }
+
+    #[tokio::test]
+    async fn json_rejection_is_a_bad_request() {
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from("{ not json"))
+            .unwrap();
+
+        let error = Json::<Value>::from_request(request, &())
+            .await
+            .expect_err("malformed JSON must be rejected");
+
+        assert!(matches!(error, Error::BadRequest(_)));
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn json_extractor_accepts_a_valid_body() {
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"name":"mars"}"#))
+            .unwrap();
+
+        let Json(value) = Json::<Value>::from_request(request, &()).await.unwrap();
+        assert_eq!(value, json!({ "name": "mars" }));
+    }
+}

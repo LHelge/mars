@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM user_invites\n            WHERE email = $1 AND accepted_at IS NULL AND expires_at <= NOW()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "852ac409051242cff25975e55c5037f14c41ac4ad5236faedaaaa7cdd8dcf77f"
+}

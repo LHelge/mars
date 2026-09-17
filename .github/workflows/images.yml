@@ -25,7 +25,7 @@ jobs:
         image: [claude, stub]
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build the session image
         run: |

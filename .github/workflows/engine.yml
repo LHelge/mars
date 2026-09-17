@@ -51,7 +51,7 @@ jobs:
         working-directory: orchestrator
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # rustup reads orchestrator/rust-toolchain.toml here and installs the
       # pinned channel.

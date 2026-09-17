@@ -29,7 +29,7 @@ jobs:
         working-directory: orchestrator
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The debug test binaries plus the cached target directory and the
       # testcontainers Postgres image outran the runner disk (pulling
@@ -103,7 +103,7 @@ jobs:
           --health-retries 10
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -118,7 +118,7 @@ jobs:
       # The CLI version has to match the `sqlx` crate in orchestrator/Cargo.lock.
       - name: Cache the sqlx CLI
         id: cache-sqlx-cli
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/cargo-sqlx

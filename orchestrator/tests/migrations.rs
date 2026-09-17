@@ -8,6 +8,9 @@
 //! by an `.up.sql` and never dropped, fails here rather than on the next
 //! developer's database.
 //!
+//! The second test covers the one thing a migration puts in a fresh database
+//! rather than in its schema: the seeded administrator.
+//!
 //! Needs a container engine; see `tests/common/db.rs`.
 
 mod common;
@@ -15,6 +18,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use common::db::MIGRATOR;
 use sqlx::PgPool;
 
@@ -86,6 +90,57 @@ async fn every_migration_applies_and_fully_reverses() {
         expected,
         "re-applying after a full revert recorded a different set of migrations"
     );
+}
+
+/// The `users` migration seeds the bootstrap administrator with the fixed
+/// default password documented in `README.md`, "Start" (ADR 0024).
+///
+/// The hash is a literal in the migration, so nothing verifies it at
+/// deployment time: a mistyped PHC string would lock the operator out of a
+/// fresh instance with no way in. Verifying it here is the only check there
+/// is.
+#[tokio::test]
+async fn seeded_admin_is_present_with_changeme_hash() {
+    let (_postgres, pool) = common::db::test_pool().await;
+
+    let (username, email, password_hash, must_change_password, admin): (
+        String,
+        String,
+        String,
+        bool,
+        bool,
+    ) = sqlx::query_as(
+        "SELECT username, email, password_hash, must_change_password, admin \
+         FROM users \
+         WHERE id = '00000000-0000-0000-0000-000000000001'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the seeded administrator exists at the documented fixed id");
+
+    assert_eq!(username, "admin");
+    assert_eq!(email, "admin@localhost");
+    assert!(
+        must_change_password,
+        "the seeded administrator must be forced to change the default password"
+    );
+    assert!(admin, "the seeded administrator is an admin");
+
+    let parsed = PasswordHash::new(&password_hash).expect("the seeded hash is a valid PHC string");
+    assert_eq!(
+        parsed.algorithm.as_str(),
+        "argon2id",
+        "the seeded hash is Argon2id"
+    );
+    Argon2::default()
+        .verify_password(b"changeme", &parsed)
+        .expect("the seeded hash is the hash of the documented default password");
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&pool)
+        .await
+        .expect("the users table is readable");
+    assert_eq!(count, 1, "the migration seeds exactly one user");
 }
 
 /// How many migrations sqlx has recorded as applied.

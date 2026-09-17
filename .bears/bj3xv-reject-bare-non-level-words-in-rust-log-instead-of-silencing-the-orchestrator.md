@@ -1,16 +1,18 @@
 ---
 id: bj3xv
 title: Reject bare non-level words in RUST_LOG instead of silencing the orchestrator
-status: open
+status: done
 priority: P3
 created: "2026-09-17T05:33:40.860822059Z"
-updated: "2026-09-17T05:33:40.860822059Z"
+updated: "2026-09-17T06:20:48.834415608Z"
 tags:
   - orchestrator
   - core
 depends_on:
   - au4vs
 parent: sywed
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -2,10 +2,10 @@
 id: sywed
 title: Repository scaffolding, tooling and CI
 type: epic
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:11:32.579396406Z"
-updated: "2026-09-16T20:11:32.579396406Z"
+updated: "2026-09-17T06:20:48.859629595Z"
 tags:
   - infra
   - orchestrator

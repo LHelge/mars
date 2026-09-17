@@ -71,7 +71,7 @@ Timestamps are RFC 3339 strings. Ids are UUID strings.
 | --- | --- | --- | --- |
 | GET | `/users/me` | JWT | → `User` |
 | PATCH | `/users/me` | JWT | `{notify_email?}` → `User` |
-| GET | `/users` | admin | → `User[]` |
+| GET | `/users` | admin | → `User[]` ordered by `username` |
 | GET | `/users/{id}` | JWT | → `User` |
 | PUT | `/users/{id}` | admin | `{username, admin}` → `User` (409 if demoting the last admin) |
 | DELETE | `/users/{id}` | admin | → 204 (409 for the last admin or yourself) |

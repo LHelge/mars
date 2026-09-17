@@ -196,10 +196,11 @@ impl<'a> UserRepository<'a> {
         Ok(user)
     }
 
-    /// Every user, oldest first (`GET /users`).
+    /// Every user, by username (`GET /users`).
     ///
-    /// `id` breaks ties so two users created in the same transaction — and
-    /// therefore sharing `NOW()` — still come back in a stable order.
+    /// The order is the one `GET /users` answers in (`SPEC.md`, "Users"), and
+    /// the column it sorts on is unique, so the listing is stable without a
+    /// tie-breaker and a client never has to sort it again.
     pub async fn list(&self) -> Result<Vec<User>> {
         let users = sqlx::query_as!(
             User,
@@ -207,7 +208,7 @@ impl<'a> UserRepository<'a> {
             SELECT id, username, email, password_hash, auth_version,
                    must_change_password, admin, notify_email, created_at, updated_at
             FROM users
-            ORDER BY created_at, id
+            ORDER BY username
             "#,
         )
         .fetch_all(self.pool)

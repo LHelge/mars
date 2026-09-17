@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, username, email, password_hash, auth_version,\n                   must_change_password, admin, notify_email, created_at, updated_at\n            FROM users\n            ORDER BY created_at, id\n            ",
+  "query": "\n            SELECT id, username, email, password_hash, auth_version,\n                   must_change_password, admin, notify_email, created_at, updated_at\n            FROM users\n            ORDER BY username\n            ",
   "describe": {
     "columns": [
       {
@@ -130,5 +130,5 @@
       false
     ]
   },
-  "hash": "21b475fc6603268ab5fd953620413c70e75bd296684ab00c2f1a7c64e7fc8808"
+  "hash": "20d92f8b3a55f860ebc6c0b0fc2bf5773c9f409d7d4d3f2f3dd17fc88d047154"
 }

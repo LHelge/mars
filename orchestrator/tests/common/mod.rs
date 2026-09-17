@@ -8,6 +8,10 @@
 
 pub mod db;
 
+/// Locks, counts and timings for the concurrency suites. Plain SQL and the
+/// crate's advisory-lock key, so it needs no mock and stays ungated.
+pub mod races;
+
 /// `TestApp` needs the mocks, which exist only behind the `integration-tests`
 /// feature, so the module is gated rather than the items inside it: the test
 /// binaries that only use `common::db` still compile without the feature.

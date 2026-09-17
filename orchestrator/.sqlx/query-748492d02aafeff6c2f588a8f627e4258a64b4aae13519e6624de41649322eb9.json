@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT DISTINCT ON (key_version)\n                   key_version AS \"key_version!\",\n                   data_key_wrapped AS \"data_key_wrapped!\",\n                   data_key_nonce AS \"data_key_nonce!\"\n            FROM secrets\n            ORDER BY key_version, id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key_version!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "key_version"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "data_key_wrapped!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "data_key_wrapped"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "data_key_nonce!",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "data_key_nonce"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "748492d02aafeff6c2f588a8f627e4258a64b4aae13519e6624de41649322eb9"
+}

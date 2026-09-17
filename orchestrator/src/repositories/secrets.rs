@@ -34,8 +34,8 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::models::{
-    EncryptedValue, NewSecret, ScopeRef, Secret, SecretMeta, SecretName, SecretScope, SecretUse,
-    SecretUsePurpose,
+    EncryptedValue, KeyVersionSample, NewSecret, ScopeRef, Secret, SecretMeta, SecretName,
+    SecretScope, SecretUse, SecretUsePurpose,
 };
 use crate::prelude::*;
 use crate::repositories::unique_violation;
@@ -439,6 +439,37 @@ impl<'a> SecretRepository<'a> {
         .await?;
 
         Ok(versions)
+    }
+
+    /// One row per distinct `key_version`, with its wrapping.
+    ///
+    /// What the startup check actually reads: knowing which versions are
+    /// present is not enough to know the configured master keys can still
+    /// open them, so this hands the keyring a sample it can try to unwrap
+    /// (`ARCHITECTURE.md`, "Secrets", Keyring). `DISTINCT ON` with a matching
+    /// `ORDER BY` picks the lowest id per version, which makes the sample the
+    /// same row on every start and the query one index scan rather than a
+    /// full table read. An empty table returns an empty vector and the check
+    /// passes trivially.
+    ///
+    /// The bytes are a wrapped data key, never a value, and neither they nor
+    /// the nonce are logged anywhere on this path (rule 3).
+    pub async fn distinct_key_version_samples(&self) -> Result<Vec<KeyVersionSample>> {
+        let samples = sqlx::query_as!(
+            KeyVersionSample,
+            r#"
+            SELECT DISTINCT ON (key_version)
+                   key_version AS "key_version!",
+                   data_key_wrapped AS "data_key_wrapped!",
+                   data_key_nonce AS "data_key_nonce!"
+            FROM secrets
+            ORDER BY key_version, id
+            "#
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(samples)
     }
 
     /// The ids of secrets whose scope target no longer exists.

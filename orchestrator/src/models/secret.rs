@@ -373,6 +373,36 @@ pub struct SecretMeta {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
+/// One stored row per distinct `key_version`, for the startup check.
+///
+/// [`crate::secrets::SecretsKeyring::verify_against_db`] unwraps one sample
+/// per version present in the table before the orchestrator serves anything,
+/// so a master key missing from the environment is found at boot rather than
+/// at a session launch (`ARCHITECTURE.md`, "Secrets", Keyring).
+///
+/// The two byte fields are the wrapping of a data key rather than a value,
+/// but they are still key material: `Debug` shows the version and nothing
+/// else, and there is no `Serialize` (`CLAUDE.md`, rule 3).
+#[derive(Clone, PartialEq, Eq)]
+pub struct KeyVersionSample {
+    /// The version every row in this group is wrapped under.
+    pub key_version: i32,
+    /// The sampled row's wrapped data key.
+    pub data_key_wrapped: Vec<u8>,
+    /// The nonce that wrap used.
+    pub data_key_nonce: Vec<u8>,
+}
+
+impl std::fmt::Debug for KeyVersionSample {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyVersionSample")
+            .field("key_version", &self.key_version)
+            .field("data_key_wrapped", &"<redacted>")
+            .field("data_key_nonce", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Why a secret was read (`docs/data-model.md`, `secret_uses`).
 ///
 /// Stored as `TEXT` rather than an enum type: the document lists no `CHECK`

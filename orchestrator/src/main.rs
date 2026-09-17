@@ -93,6 +93,17 @@ async fn main() {
     }
     info!("migrations applied");
 
+    // After the migrations, because the table has to exist, and before
+    // anything serves: a master key that is missing or wrong would otherwise
+    // only be discovered at a session launch (`ARCHITECTURE.md`, "Secrets",
+    // Keyring). The error lists every offending version and no key material
+    // (rule 3).
+    if let Err(err) = keyring.verify_against_db(&pool).await {
+        error!(error = %err, "the stored secrets cannot be read with the configured master keys");
+        std::process::exit(1);
+    }
+    info!("stored secrets verified against the master keyring");
+
     // Container engine epic: ensure networks, startup probe
     // Session lifecycle epic: adopt running containers, fail sessions in creating
     // Background jobs epic: CronService::start

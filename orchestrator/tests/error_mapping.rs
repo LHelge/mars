@@ -11,6 +11,11 @@ async fn conflicting() -> Result<()> {
     Err(Error::Conflict("duplicate name".into()))
 }
 
+async fn rejected_token() -> Result<()> {
+    // What an authenticated route does when `Claims::decode` refuses.
+    Err(ClaimsError::Expired.into())
+}
+
 async fn merge_conflict() -> Result<()> {
     Err(Error::GitConflict {
         message: "merge failed with conflicts".into(),
@@ -25,6 +30,7 @@ async fn throttled() -> Result<()> {
 fn server() -> TestServer {
     let app = Router::new()
         .route("/conflict", get(conflicting))
+        .route("/expired-token", get(rejected_token))
         .route("/git-conflict", get(merge_conflict))
         .route("/throttled", get(throttled));
     TestServer::new(app)
@@ -56,4 +62,12 @@ async fn throttled_answers_429_with_the_call_site_s_message() {
 
     response.assert_status(StatusCode::TOO_MANY_REQUESTS);
     response.assert_json(&json!({ "status": 429, "error": "too many login attempts" }));
+}
+
+#[tokio::test]
+async fn a_rejected_access_token_answers_401_with_the_documented_body() {
+    let response = server().get("/expired-token").await;
+
+    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_json(&json!({ "status": 401, "error": "authentication required" }));
 }

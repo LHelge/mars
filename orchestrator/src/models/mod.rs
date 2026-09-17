@@ -14,6 +14,7 @@ pub mod task_event;
 pub mod task_handoff;
 pub mod task_session;
 pub mod task_state;
+pub mod token;
 pub mod user;
 
 pub use agent_profile::{
@@ -52,6 +53,7 @@ pub use task_state::{
     DEFAULT_TASK_STATES, MAX_STATE_NAME_CHARS, NewTaskState, TaskState, TaskStateKind,
     TaskStateName, is_state_name,
 };
+pub use token::{OpaqueToken, TOKEN_HASH_CHARS};
 pub use user::{
     Email, MAX_PASSWORD_CHARS, MAX_USERNAME_CHARS, MIN_PASSWORD_CHARS, MIN_USERNAME_CHARS, NewUser,
     Password, PasswordResetToken, RefreshToken, User, UserError, UserInvite, UserResult,

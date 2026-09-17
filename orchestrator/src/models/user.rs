@@ -6,12 +6,16 @@
 //! from. Validation lives here, SQL lives in `repositories/` (`CLAUDE.md`,
 //! "Backend conventions").
 //!
-//! Nothing in this module hashes, compares or issues a credential: that is the
-//! authentication epic's. What it does guarantee is the *stored* form of the
-//! three fields a unique index or a login depends on — the username, the email
-//! and the password the caller chose — so a row can never reach the database
-//! untrimmed, differently cased or out of bounds.
+//! What this module guarantees is the *stored* form of the three fields a
+//! unique index or a login depends on — the username, the email and the
+//! password the caller chose — so a row can never reach the database untrimmed,
+//! differently cased or out of bounds. It also owns the one-way function that
+//! turns a [`Password`] into the `password_hash` column and the one that checks
+//! a candidate against it ([`hash_password`], [`verify_password`]); issuing
+//! credentials from that check is the routes' job, not this module's.
 
+use argon2::Argon2;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -57,18 +61,69 @@ pub enum UserError {
     /// The email was not a single `local@domain` address.
     #[error("email must be an address of the form local@domain")]
     InvalidEmail,
+    /// Argon2 could not hash the password. Not the caller's fault: with the
+    /// default parameters and a generated salt this only happens if the
+    /// system's randomness or the hasher itself fails.
+    #[error("hashing the password failed")]
+    Hash,
 }
 
 impl UserError {
     /// The HTTP status this rejection maps to.
     ///
-    /// Every variant is malformed input, so every variant is 400. A username
-    /// or email that is well formed but already taken is decided against the
-    /// database and surfaces as [`Error::Conflict`] from the repository
-    /// instead (`SPEC.md`, "Users").
+    /// Every input rejection is 400: a username or email that is well formed
+    /// but already taken is decided against the database and surfaces as
+    /// [`Error::Conflict`] from the repository instead (`SPEC.md`, "Users").
+    /// [`UserError::Hash`] is the exception — it is this process failing, not
+    /// the caller — so it is 500 and the crate-wide [`Error`] logs it and
+    /// answers with the generic message.
     pub fn status(&self) -> StatusCode {
-        StatusCode::BAD_REQUEST
+        match self {
+            UserError::InvalidUsername | UserError::InvalidPassword | UserError::InvalidEmail => {
+                StatusCode::BAD_REQUEST
+            }
+            UserError::Hash => StatusCode::INTERNAL_SERVER_ERROR,
+        }
     }
+}
+
+/// The Argon2id PHC string to store in `users.password_hash`.
+///
+/// `Argon2::default()` is Argon2id v19 at the OWASP-recommended parameters
+/// (`m=19456, t=2, p=1`), the same ones the seeded administrator's hash in the
+/// `users` migration was produced with, and it generates a fresh 16-byte salt
+/// per call — so hashing one password twice gives two different strings, which
+/// is the point of a salt (`docs/data-model.md`, `users`).
+///
+/// This is CPU-bound for tens of milliseconds by design. Request handlers call
+/// it inside `tokio::task::spawn_blocking` so one login cannot stall the
+/// runtime's worker thread.
+pub fn hash_password(password: &str) -> UserResult<String> {
+    Argon2::default()
+        .hash_password(password.as_bytes())
+        .map(|hash| hash.to_string())
+        .map_err(|err| {
+            // The error describes parameters and lengths, never the password.
+            error!(error = %err, "hashing a password failed");
+            UserError::Hash
+        })
+}
+
+/// Whether `candidate` is the password behind `hash`.
+///
+/// Total: a `hash` that is not a PHC string this build understands — truncated,
+/// from another algorithm, or empty because some row was written wrong — is a
+/// failed verification, not a panic and not an error the caller has to handle.
+/// The comparison itself is constant-time inside `argon2`.
+///
+/// The parameters come from `hash`, not from [`hash_password`], so hashes
+/// written with older cost settings keep verifying after the defaults move.
+///
+/// As CPU-bound as [`hash_password`], and called the same way.
+pub fn verify_password(hash: &str, candidate: &str) -> bool {
+    Argon2::default()
+        .verify_password(candidate.as_bytes(), hash)
+        .is_ok()
 }
 
 /// The result type the user models return.
@@ -204,11 +259,14 @@ impl std::fmt::Display for Email {
 
 /// A `users` row, column for column (`docs/data-model.md`, `users`).
 ///
-/// `password_hash` and `auth_version` are `#[serde(skip)]` so that a row can
-/// never be serialised into a response by accident. The API-facing `User` —
-/// `{ id, username, email, admin, must_change_password, notify_email,
-/// created_at }` (`SPEC.md`, "Users") — is assembled by the routes from this
-/// row; it also leaves out `updated_at`, which is internal bookkeeping.
+/// Serialising this row *is* the API-facing `User` — `{ id, username, email,
+/// admin, must_change_password, notify_email, created_at }` (`SPEC.md`,
+/// "Users") — so routes return the row itself rather than copying it into a
+/// DTO. What makes that safe is that the three columns outside that list are
+/// `#[serde(skip)]`: `password_hash` and `auth_version` must never leave the
+/// process, and `updated_at` is internal bookkeeping the contract does not
+/// mention. A test asserts the exact key set, so adding a column without
+/// deciding about it fails rather than leaking it.
 ///
 /// There is no `Deserialize`: a `User` only ever comes out of the database,
 /// and deriving it would make an empty `password_hash` constructible from JSON.
@@ -225,6 +283,7 @@ pub struct User {
     pub admin: bool,
     pub notify_email: bool,
     pub created_at: DateTime<Utc>,
+    #[serde(skip)]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -373,7 +432,7 @@ mod tests {
     const FAKE_HASH: &str = "$argon2id$fake$hash";
 
     #[test]
-    fn every_error_is_a_bad_request_with_a_message() {
+    fn every_input_rejection_is_a_bad_request_with_a_message() {
         for error in [
             UserError::InvalidUsername,
             UserError::InvalidPassword,
@@ -382,6 +441,19 @@ mod tests {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
             assert!(!error.to_string().is_empty(), "{error:?} has no message");
         }
+    }
+
+    #[test]
+    fn a_hashing_failure_is_this_process_failing_not_the_caller() {
+        assert_eq!(
+            UserError::Hash.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a failure of our own hasher must not be reported as bad input"
+        );
+        assert_eq!(
+            Error::from(UserError::Hash).status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]
@@ -594,9 +666,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_user_row_never_serialises_its_hash_or_auth_version() {
-        let user = User {
+    fn a_user() -> User {
+        User {
             id: Uuid::nil(),
             username: "ada".into(),
             email: "ada@example.com".into(),
@@ -607,9 +678,13 @@ mod tests {
             notify_email: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
-        };
+        }
+    }
 
-        let json = serde_json::to_value(&user).unwrap();
+    #[test]
+    fn a_user_row_never_serialises_its_hash_or_auth_version() {
+        let json = serde_json::to_value(a_user()).unwrap();
+
         assert!(json.get("password_hash").is_none(), "leaked: {json}");
         assert!(json.get("auth_version").is_none(), "leaked: {json}");
         assert_eq!(json["username"], "ada");
@@ -653,6 +728,99 @@ mod tests {
                 "invited_by"
             ]
         );
+    }
+
+    #[test]
+    fn a_user_serialises_to_exactly_the_documented_fields() {
+        // `SPEC.md`, "Users": `User = { id, username, email, admin,
+        // must_change_password, notify_email, created_at }` — no more, no less.
+        const SPEC_FIELDS: &[&str] = &[
+            "admin",
+            "created_at",
+            "email",
+            "id",
+            "must_change_password",
+            "notify_email",
+            "username",
+        ];
+
+        let json = serde_json::to_value(a_user()).unwrap();
+        let object = json.as_object().expect("a user serialises to an object");
+
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+
+        assert_eq!(keys, SPEC_FIELDS, "the serialised shape is: {json}");
+    }
+
+    #[test]
+    fn a_password_hashes_to_a_phc_string_and_verifies() {
+        let password = "correct horse battery";
+
+        let hash = hash_password(password).unwrap();
+
+        assert!(
+            hash.starts_with("$argon2id$v=19$"),
+            "unexpected hash: {hash}"
+        );
+        assert!(!hash.contains(password), "leaked: {hash}");
+        assert!(verify_password(&hash, password));
+    }
+
+    #[test]
+    fn the_wrong_password_does_not_verify() {
+        let hash = hash_password("correct horse battery").unwrap();
+
+        assert!(!verify_password(&hash, "correct horse batterY"));
+        assert!(!verify_password(&hash, "correct horse batter"));
+        assert!(!verify_password(&hash, ""));
+    }
+
+    #[test]
+    fn the_same_password_hashes_differently_every_time() {
+        let one = hash_password("correct horse battery").unwrap();
+        let two = hash_password("correct horse battery").unwrap();
+
+        assert_ne!(one, two, "the salt is not fresh");
+        // Both still verify: the salt travels inside the PHC string.
+        assert!(verify_password(&one, "correct horse battery"));
+        assert!(verify_password(&two, "correct horse battery"));
+    }
+
+    #[test]
+    fn a_malformed_hash_verifies_as_false_and_never_panics() {
+        for hash in [
+            "",
+            "   ",
+            FAKE_HASH,
+            "not a phc string",
+            "$argon2id$",
+            // Truncated after the salt.
+            "$argon2id$v=19$m=19456,t=2,p=1$LdkhVNG/wlqQnG2ibpyNiA",
+            // A parameter that is not a number.
+            "$argon2id$v=19$m=wat,t=2,p=1$LdkhVNG/wlqQnG2ibpyNiA$8Bl44TOasplKBxanrfHFXTjyUXCZ4EAe30zLkRQmscE",
+            // Another algorithm's PHC string.
+            "$scrypt$ln=16,r=8,p=1$LdkhVNG/wlqQnG2ibpyNiA$8Bl44TOasplKBxanrfHFXTjyUXCZ4EAe30zLkRQmscE",
+        ] {
+            assert!(
+                !verify_password(hash, "correct horse battery"),
+                "accepted a malformed hash: {hash}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_seeded_administrator_hash_still_verifies() {
+        // The row the `users` migration seeds, with the default password
+        // `README.md`, "Start" documents and the first login is forced to
+        // change. Not a credential of any deployment: it is public, fixed and
+        // `must_change_password` is true (ADR 0024). Here it pins the Argon2
+        // parameters — a default this crate moves away from would stop this
+        // build from verifying the hashes already in every database.
+        const SEEDED: &str = "$argon2id$v=19$m=19456,t=2,p=1$LdkhVNG/wlqQnG2ibpyNiA$8Bl44TOasplKBxanrfHFXTjyUXCZ4EAe30zLkRQmscE";
+
+        assert!(verify_password(SEEDED, "changeme"));
+        assert!(!verify_password(SEEDED, "changeme "));
     }
 
     #[test]

@@ -1,17 +1,17 @@
 ---
 name: implement-epic
-description: Implement a Bears epic end to end by dispatching one fresh Opus subagent per task in an isolated git worktree, in dependency-ordered waves, while this session reviews every branch, merges it onto main, runs the quality chains, tracks progress in Bears and pushes with CI green. Use this whenever the user wants an epic, a batch of Bears tasks or "the next epic" implemented, wants tasks worked in parallel by subagents, or asks you to review and merge subagent work; also when they say "start implementing", "do the next epic" or "work through the ready tasks", even if they do not mention subagents.
+description: Implement a Bears epic end to end by dispatching one fresh Opus subagent per task in an isolated git worktree, in dependency-ordered waves, while this session reviews every branch, merges it onto main, runs the local quality chains as the gate for each task, tracks progress in Bears and pushes once at the end of the epic with CI green. Use this whenever the user wants an epic, a batch of Bears tasks or "the next epic" implemented, wants tasks worked in parallel by subagents, or asks you to review and merge subagent work; also when they say "start implementing", "do the next epic" or "work through the ready tasks", even if they do not mention subagents.
 ---
 
 # Implement an epic with subagents
 
-You are the coordinator. Subagents write code; you plan waves, review diffs, merge, verify, keep Bears current and push. Never implement a task yourself while running this workflow unless the user asks for it: fresh-context subagents keep each task's context small, and your context is reserved for reviewing all of them.
+You are the coordinator. Subagents write code; you plan waves, review diffs, merge, verify locally, keep Bears current and push once when the epic closes. Never implement a task yourself while running this workflow unless the user asks for it: fresh-context subagents keep each task's context small, and your context is reserved for reviewing all of them.
 
 ## Before starting
 
 1. Confirm the environment once and note the results for the report:
    - `podman --version` and the socket at `$XDG_RUNTIME_DIR/podman/podman.sock`; export `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock` for every cargo command (the testcontainers health test and the engine tests need it). Without an engine, tell subagents to write Docker-dependent tests anyway and skip them locally with `-- --skip <prefix>`; CI runs them.
-   - `git status` clean on `main`, `main` equal to `origin/main`. If `.bears/` is dirty, commit it first as a `chore(infra)` commit.
+   - `git status` clean on `main`. `main` is equal to `origin/main`, or ahead of it only by merged task commits and Bears commits from an epic that was interrupted before its closing push; anything else is resolved before dispatching. If `.bears/` is dirty, commit it first as a `chore(infra)` commit.
    - Bears tools reach this repository: `mcp__bears__list_epics` shows the Mars epics. The MCP server is bound to the session's starting directory; if it shows another project's tasks, use `bea ... --json` from the repository root instead (CLAUDE.md, rule 2).
 2. Pick the epic: `list_epics`, then `get_graph` with `epic: <id>` and `get_task` on every task. Build the waves from the dependency graph: wave 1 is every task without unmet dependencies, wave n+1 is what becomes ready when wave n is merged. Tasks in the same wave run in parallel.
 3. Tell the user in one line which epic and how many waves, then start; do not wait for confirmation unless something in the epic is unclear.
@@ -61,13 +61,7 @@ Use the bundled script; it does the repetitive part the same way every time:
 
 It cherry-picks the branch's commits onto `main` (cherry-pick rather than fast-forward, because the branch base is often behind `main`), removes the worktree and branch, forces a rebuild of the orchestrator crate when backend files changed, runs the backend and/or frontend quality chains for the areas the commits touched, and on success marks the task done with `bea`. On a conflict it stops with the conflicted files listed; resolve them, `git cherry-pick --continue`, then rerun the script with `--after-conflict` to finish the cleanup and verification.
 
-After each merge, push `main`:
-
-```bash
-git -C /home/lhelge/dev/mars push origin main
-```
-
-Pushing per merge keeps `origin/main` equal to `main`, so the next wave's worktrees start from the right base, and CI validates each task on its own rather than a whole epic at once. Do not wait for CI before dispatching the next wave; check runs with `gh run list` when a wave is done and stop dispatching if one is red.
+Do not push after a merge. The local chains the script runs are the gate for each task: they are the same commands the Orchestrator and Frontend workflows run, and with `DOCKER_HOST` set they include the testcontainers and Podman engine tests. `main` stays ahead of `origin/main` for the length of the epic and is pushed once when the epic closes, so CI runs once per epic instead of once per task and nobody waits on a runner between waves. The next wave's worktrees start from local `main` because the dispatch template begins with `git reset --hard main`; keep that line. If a wave has to be checkpointed (the epic spans more than a day, or the user asks), push at the wave boundary and go on dispatching without waiting for the run.
 
 Commit `.bears/` state changes at the end of each wave as `chore(infra): track <epic> progress in Bears (<epic id>)`; the tracker files are part of the repository, and a subagent's branch must never carry them.
 
@@ -90,8 +84,9 @@ Commit `.bears/` state changes at the end of each wave as `chore(infra): track <
 When the last task is merged and pushed:
 
 1. Run the complete chains on `main` once more: backend from CLAUDE.md "Code quality" with `DOCKER_HOST` set and no `--skip`; frontend including `npm run test:e2e`.
-2. `complete_task` on the epic (or `bea done <epic>`), commit `.bears/`, push, and wait for the CI runs on that commit (`gh run watch <id> --exit-status`).
-3. Report to the user: which tasks merged (one line each), what CI says, every deviation from the task texts, every follow-up task filed, anything that could not be verified and why, and the next ready epic.
+2. `complete_task` on the epic (or `bea done <epic>`), commit `.bears/`, then push `main` once: `git -C /home/lhelge/dev/mars push origin main`. This is the epic's only push and the only time CI runs for it.
+3. Wait for the runs on that commit (`gh run list --commit <sha>`, then `gh run watch <id> --exit-status` for each). The Docker half of the Engine workflow is the one check the local chains cannot cover, so it is the run most likely to be new information. A red run is fixed forward on `main` with a `fix` commit that names the task id, pushed again and watched again; it is never left for the next epic.
+4. Report to the user: which tasks merged (one line each), what CI says, every deviation from the task texts, every follow-up task filed, anything that could not be verified and why, and the next ready epic.
 
 ## Suggesting improvements
 

@@ -1,10 +1,10 @@
 ---
 id: yuk96
 title: Write images/smoke-test.sh exercising the entrypoint, signals and stub replay on a real engine
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:29:45.029954126Z"
-updated: "2026-09-16T20:29:45.029954126Z"
+updated: "2026-09-17T22:38:09.412735326Z"
 tags:
   - images
   - tests
@@ -12,6 +12,8 @@ depends_on:
   - "64jkc"
   - nfz7m
 parent: deex5
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

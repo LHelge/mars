@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COALESCE(MAX((payload->>'_offset')::bigint), 0) AS \"offset!\"\n            FROM events\n            WHERE session_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "offset!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0add5ecd47bd0b81969400c1a5b60bffe9da441364253e1de7b50721d36a96bc"
+}

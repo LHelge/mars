@@ -227,10 +227,10 @@ One agent instance. The row outlives the container: a session may be relaunched 
 | `cost_usd` | `DOUBLE PRECISION` | NOT NULL DEFAULT 0 | Accumulated from `result` events (`ARCHITECTURE.md`, "Cost accounting"). |
 | `input_tokens` | `BIGINT` | NOT NULL DEFAULT 0 | Same. |
 | `output_tokens` | `BIGINT` | NOT NULL DEFAULT 0 | Same. |
-| `error` | `TEXT` | NULL | Reason for `failed`. |
+| `error` | `TEXT` | NULL | Reason for `failed`; cleared on the `failed → parked` retry. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 | `parked_at` | `TIMESTAMPTZ` | NULL | Set on each transition to `parked`. |
-| `ended_at` | `TIMESTAMPTZ` | NULL | Set on transition to `done` or `failed`. |
+| `ended_at` | `TIMESTAMPTZ` | NULL | Set on transition to `done` or `failed`; cleared on the `failed → parked` retry. |
 
 Indexes: `sessions_project_created_idx (project_id, created_at DESC)`, `sessions_state_idx (state)`, `sessions_container_id_idx (container_id)`, `sessions_task_idx (task_id) WHERE task_id IS NOT NULL`.
 

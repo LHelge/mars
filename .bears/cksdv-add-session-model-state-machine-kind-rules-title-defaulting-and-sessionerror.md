@@ -1,10 +1,10 @@
 ---
 id: cksdv
 title: "Add Session model: state machine, kind rules, title defaulting and SessionError"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:28:22.693124755Z"
-updated: "2026-09-16T20:51:51.994353910Z"
+updated: "2026-09-18T20:06:16.290773900Z"
 tags:
   - orchestrator
   - sessions
@@ -14,6 +14,7 @@ depends_on:
   - pkaee
   - "8vnwy"
 parent: s52qg
+attempts: 1
 ---
 
 ## Summary

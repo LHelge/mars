@@ -1,10 +1,10 @@
 ---
 id: "98che"
 title: Add the shared-directories route module with clear and delete refused while sessions run
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:33:15.407841193Z"
-updated: "2026-09-18T11:05:33.990174209Z"
+updated: "2026-09-18T11:59:14.835341414Z"
 tags:
   - orchestrator
   - projects

@@ -1,10 +1,10 @@
 ---
 id: cpmj2
 title: "Add the agent-profiles route module: list, create, get, update and delete under /projects/{pid}/profiles"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:32:51.067210122Z"
-updated: "2026-09-18T11:05:32.692869439Z"
+updated: "2026-09-18T11:59:12.785806723Z"
 tags:
   - orchestrator
   - projects

@@ -1,10 +1,10 @@
 ---
 id: u3eta
 title: Add the live probe test against the pinned Claude Code CLI and the fixture recorder
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:29:52.595200909Z"
-updated: "2026-09-16T20:29:52.595200909Z"
+updated: "2026-09-18T18:08:16.884033045Z"
 tags:
   - orchestrator
   - agent
@@ -13,6 +13,7 @@ depends_on:
   - m4vdn
   - eeswv
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

@@ -20,9 +20,18 @@
 //! `GET /projects/{id}/branches` (`ARCHITECTURE.md`, "Git model", Project
 //! clone; `SPEC.md`, "Projects"). [`paths`] is where under `DATA_DIR` any of
 //! it lives (`ARCHITECTURE.md`, "Storage").
+//!
+//! [`diff`] is the read-only pair built on the same plumbing: the diff between
+//! two fixed commits behind `GET /projects/{pid}/git/diff`, and the session
+//! branch listing behind `GET /projects/{pid}/git/session-branches` and the
+//! `list_session_branches` MCP tool (`ARCHITECTURE.md`, "Git model", Diff;
+//! `SPEC.md`, "Git"). `diff::diff` is reached through its module rather than
+//! re-exported here, so that the name of the operation and the name of the
+//! module cannot be mistaken for each other at a call site.
 
 pub mod command;
 pub mod credentials;
+pub mod diff;
 pub mod error;
 pub mod integrate;
 pub mod lock;
@@ -38,6 +47,7 @@ pub use credentials::{
     CommitIdentity, CredentialConfig, GitActor, GitCredential, GitCredentialProvider,
     PatCredentialProvider,
 };
+pub use diff::{MAX_PATCH_BYTES, session_branches};
 pub use error::GitError;
 pub use integrate::{MergeOutcome, merge, requested_by_trailer};
 pub use lock::{ProjectGitGuard, ProjectGitLocks};

@@ -1,10 +1,10 @@
 ---
 id: "32s57"
 title: Define AgentEvent and SessionInput types with the storage and API serialisation contract
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:26:41.546633971Z"
-updated: "2026-09-16T20:51:51.937571055Z"
+updated: "2026-09-18T15:21:14.489609247Z"
 tags:
   - orchestrator
   - agent
@@ -13,6 +13,7 @@ depends_on:
   - deex5
   - p5tsd
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

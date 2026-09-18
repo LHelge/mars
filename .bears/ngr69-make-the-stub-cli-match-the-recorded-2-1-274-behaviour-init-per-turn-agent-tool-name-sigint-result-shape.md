@@ -1,10 +1,10 @@
 ---
 id: ngr69
 title: "Make the stub CLI match the recorded 2.1.274 behaviour: init per turn, Agent tool name, SIGINT result shape"
-status: open
+status: done
 priority: P2
 created: "2026-09-18T08:02:08.320358728Z"
-updated: "2026-09-18T08:02:08.320358728Z"
+updated: "2026-09-18T15:21:16.468076258Z"
 tags:
   - images
   - tests
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - h3e43
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

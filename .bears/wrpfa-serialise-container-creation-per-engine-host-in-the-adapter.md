@@ -1,16 +1,17 @@
 ---
 id: wrpfa
 title: Serialise container creation per engine host in the adapter
-status: open
+status: done
 priority: P1
 created: "2026-09-17T22:04:52.094559078Z"
-updated: "2026-09-17T22:04:52.094559078Z"
+updated: "2026-09-18T20:06:17.805741226Z"
 tags:
   - orchestrator
   - engine
 depends_on:
   - u6zkz
 parent: s52qg
+attempts: 1
 ---
 
 ## Summary

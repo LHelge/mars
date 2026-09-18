@@ -1,10 +1,10 @@
 ---
 id: "6m8br"
 title: Write the normalised engine semantics into the trait and ARCHITECTURE.md and add the conformance suite run against the mock always and bollard under DOCKER_HOST
-status: open
+status: done
 priority: P1
 created: "2026-09-17T20:00:39.780107523Z"
-updated: "2026-09-17T20:05:17.201360405Z"
+updated: "2026-09-18T21:08:26.402205772Z"
 tags:
   - orchestrator
   - engine
@@ -15,6 +15,7 @@ depends_on:
   - "48ke5"
   - trxaf
 parent: quxdn
+attempts: 1
 ---
 
 ## Summary

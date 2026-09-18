@@ -1,10 +1,10 @@
 ---
 id: mvrfc
 title: "Add launch preparation: session directory layout, MCP token generation and hashing, atomic mcp.json write and relaunch token rotation"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:30:05.913685711Z"
-updated: "2026-09-16T20:30:05.913685711Z"
+updated: "2026-09-18T21:19:10.959346289Z"
 tags:
   - orchestrator
   - sessions
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - "88tdh"
 parent: s52qg
+attempts: 1
 ---
 
 ## Summary

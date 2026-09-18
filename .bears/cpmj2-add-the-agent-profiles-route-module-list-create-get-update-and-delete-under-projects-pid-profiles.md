@@ -1,10 +1,10 @@
 ---
 id: cpmj2
 title: "Add the agent-profiles route module: list, create, get, update and delete under /projects/{pid}/profiles"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:32:51.067210122Z"
-updated: "2026-09-16T20:32:51.067210122Z"
+updated: "2026-09-18T11:05:32.692869439Z"
 tags:
   - orchestrator
   - projects
@@ -13,6 +13,8 @@ depends_on:
   - "5ywhm"
   - cgj5v
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

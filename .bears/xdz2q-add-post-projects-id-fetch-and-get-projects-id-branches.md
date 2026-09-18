@@ -1,10 +1,10 @@
 ---
 id: xdz2q
 title: Add POST /projects/{id}/fetch and GET /projects/{id}/branches
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-16T20:31:49.216725076Z"
-updated: "2026-09-16T20:31:49.216725076Z"
+updated: "2026-09-18T11:05:36.689277850Z"
 tags:
   - orchestrator
   - projects
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - cgj5v
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

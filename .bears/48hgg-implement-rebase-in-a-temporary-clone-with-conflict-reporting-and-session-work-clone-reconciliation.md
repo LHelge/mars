@@ -1,10 +1,10 @@
 ---
 id: "48hgg"
 title: Implement rebase in a temporary clone with conflict reporting and session work-clone reconciliation
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:31:20.730476390Z"
-updated: "2026-09-18T01:18:55.428288965Z"
+updated: "2026-09-18T01:41:36.497456928Z"
 tags:
   - orchestrator
   - git

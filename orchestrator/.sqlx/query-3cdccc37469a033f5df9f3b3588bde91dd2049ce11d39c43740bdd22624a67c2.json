@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, project_id, name, kind as \"kind: ProfileKind\",\n                   backend as \"backend: AgentBackend\", model, system_prompt, permission_mode,\n                   image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,\n                   is_default, created_at, updated_at\n            FROM agent_profiles\n            WHERE project_id = $1\n            ORDER BY name\n            ",
+  "query": "\n            INSERT INTO agent_profiles (\n                id, project_id, name, kind, backend, model, system_prompt, permission_mode,\n                image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,\n                is_default\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)\n            RETURNING id, project_id, name, kind as \"kind: ProfileKind\",\n                      backend as \"backend: AgentBackend\", model, system_prompt, permission_mode,\n                      image, runtime, mcp_tools, secrets,\n                      ARRAY[]::text[] as \"serves_states!\", partial_messages, idle_timeout_secs,\n                      is_default, created_at, updated_at\n            ",
   "describe": {
     "columns": [
       {
@@ -156,6 +156,12 @@
       },
       {
         "ordinal": 12,
+        "name": "serves_states!",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
         "name": "partial_messages",
         "type_info": "Bool",
         "origin": {
@@ -166,7 +172,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "idle_timeout_secs",
         "type_info": "Int4",
         "origin": {
@@ -177,7 +183,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "is_default",
         "type_info": "Bool",
         "origin": {
@@ -188,7 +194,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -199,7 +205,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -212,7 +218,40 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "profile_kind",
+            "kind": {
+              "Enum": [
+                "conversational",
+                "ephemeral"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "agent_backend",
+            "kind": {
+              "Enum": [
+                "claude"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "Bool",
+        "Int4",
+        "Bool"
       ]
     },
     "nullable": [
@@ -228,6 +267,7 @@
       true,
       false,
       false,
+      null,
       false,
       false,
       false,
@@ -235,5 +275,5 @@
       false
     ]
   },
-  "hash": "736f3f57d5acc51eeb372de4c512ec8c0f587fd1ca3e1f1b146c6f351e99522b"
+  "hash": "3cdccc37469a033f5df9f3b3588bde91dd2049ce11d39c43740bdd22624a67c2"
 }

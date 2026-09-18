@@ -19,9 +19,10 @@ pub mod token;
 pub mod user;
 
 pub use agent_profile::{
-    AgentBackend, AgentProfile, DEFAULT_IDLE_TIMEOUT_SECS, MAX_SECRET_NAME_CHARS, NewAgentProfile,
-    PERMISSION_MODE_BYPASS, ProfileError, ProfileKind, ProfileResult, ProfileUpdate,
-    is_secret_name,
+    AgentBackend, AgentProfile, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_SERVED_STATE, KNOWN_MCP_TOOLS,
+    MAX_IMAGE_CHARS, MAX_MODEL_CHARS, MAX_PROFILE_NAME_CHARS, MAX_SECRET_NAME_CHARS,
+    MAX_SYSTEM_PROMPT_BYTES, NewAgentProfile, PERMISSION_MODE_BYPASS, ProfileError, ProfileInput,
+    ProfileKind, ProfileResult, ProfileUpdate, is_secret_name,
 };
 pub use event::{EventRow, INTERNAL_FIELD_PREFIX, NewEvent, OFFSET_FIELD};
 pub use git::{

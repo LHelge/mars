@@ -986,6 +986,24 @@ async fn a_profile_survives_an_insert_find_list_update_delete_round_trip() {
     assert_eq!(cleared.model, None);
     assert_eq!(cleared.runtime, None);
 
+    // The default profile cannot be deleted, so the flag is handed to the
+    // other profile first; the transfer itself is asserted in
+    // `tests/repositories_profiles.rs`.
+    let implementer = repository
+        .find_profile(project.id, ephemeral.id)
+        .await
+        .unwrap()
+        .expect("the second profile exists");
+    let mut promote = ProfileUpdate::from(&implementer);
+    promote.is_default = Some(true);
+    let mut tx = pool.begin().await.unwrap();
+    repository
+        .update_profile(&mut tx, project.id, implementer.id, &promote)
+        .await
+        .unwrap()
+        .expect("the profile exists");
+    tx.commit().await.unwrap();
+
     // Out of scope, so nothing is updated or deleted.
     let mut tx = pool.begin().await.unwrap();
     assert!(
@@ -1016,17 +1034,18 @@ async fn a_profile_survives_an_insert_find_list_update_delete_round_trip() {
     tx.commit().await.unwrap();
 
     assert_eq!(repository.list_profiles(project.id).await.unwrap().len(), 1);
-    assert!(
+    assert_eq!(
         repository
             .find_default_profile(project.id)
             .await
             .unwrap()
-            .is_none()
+            .map(|profile| profile.id),
+        Some(implementer.id),
     );
 }
 
 #[tokio::test]
-async fn a_duplicate_profile_name_or_second_default_is_a_conflict() {
+async fn a_duplicate_profile_name_is_a_conflict() {
     let (_postgres, pool) = common::db::test_pool().await;
     let repository = ProjectRepository::new(&pool);
     let project = seeded_project(&pool).await;
@@ -1043,17 +1062,8 @@ async fn a_duplicate_profile_name_or_second_default_is_a_conflict() {
     assert_conflict(error, "profile name already taken");
     tx.rollback().await.unwrap();
 
-    let mut second_default = new_profile(project.id, "planner");
-    second_default.is_default = true;
-    let mut tx = pool.begin().await.unwrap();
-    let error = repository
-        .insert_profile(&mut tx, &second_default)
-        .await
-        .expect_err("a project has one default profile");
-    assert_conflict(error, "project already has a default profile");
-    tx.rollback().await.unwrap();
-
-    // The same two conflicts through the update path.
+    // The same conflict through the update path. The default-profile rules
+    // live in `tests/repositories_profiles.rs`.
     let planner = insert_profile(&pool, &new_profile(project.id, "planner")).await;
     let mut tx = pool.begin().await.unwrap();
     let mut rename = ProfileUpdate::from(
@@ -1069,22 +1079,6 @@ async fn a_duplicate_profile_name_or_second_default_is_a_conflict() {
         .await
         .expect_err("the name is taken");
     assert_conflict(error, "profile name already taken");
-    tx.rollback().await.unwrap();
-
-    let mut tx = pool.begin().await.unwrap();
-    let mut promote = ProfileUpdate::from(
-        &repository
-            .find_profile(project.id, planner)
-            .await
-            .unwrap()
-            .unwrap(),
-    );
-    promote.is_default = true;
-    let error = repository
-        .update_profile(&mut tx, project.id, planner, &promote)
-        .await
-        .expect_err("a project has one default profile");
-    assert_conflict(error, "project already has a default profile");
     tx.rollback().await.unwrap();
 
     // Another project has its own default slot and its own names.

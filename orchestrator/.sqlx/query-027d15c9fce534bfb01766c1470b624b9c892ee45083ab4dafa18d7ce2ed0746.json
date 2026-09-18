@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, project_id, name, kind as \"kind: ProfileKind\",\n                   backend as \"backend: AgentBackend\", model, system_prompt, permission_mode,\n                   image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,\n                   is_default, created_at, updated_at\n            FROM agent_profiles\n            WHERE project_id = $1 AND is_default\n            ",
+  "query": "\n            SELECT p.id, p.project_id, p.name, p.kind as \"kind: ProfileKind\",\n                   p.backend as \"backend: AgentBackend\", p.model, p.system_prompt,\n                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,\n                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)\n                       as \"serves_states!\",\n                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.created_at,\n                   p.updated_at\n            FROM agent_profiles AS p\n            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id\n            LEFT JOIN task_states AS ts ON ts.id = ps.state_id\n            WHERE p.project_id = $1\n            GROUP BY p.id\n            ORDER BY p.name\n            ",
   "describe": {
     "columns": [
       {
@@ -156,6 +156,12 @@
       },
       {
         "ordinal": 12,
+        "name": "serves_states!",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
         "name": "partial_messages",
         "type_info": "Bool",
         "origin": {
@@ -166,7 +172,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "idle_timeout_secs",
         "type_info": "Int4",
         "origin": {
@@ -177,7 +183,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "is_default",
         "type_info": "Bool",
         "origin": {
@@ -188,7 +194,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -199,7 +205,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -228,6 +234,7 @@
       true,
       false,
       false,
+      null,
       false,
       false,
       false,
@@ -235,5 +242,5 @@
       false
     ]
   },
-  "hash": "c415b4edda0cfbaa1b26abb67b728f7715912fd943d3f0ed88b516a526e1c11d"
+  "hash": "027d15c9fce534bfb01766c1470b624b9c892ee45083ab4dafa18d7ce2ed0746"
 }

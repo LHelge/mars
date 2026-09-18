@@ -121,10 +121,12 @@ impl<'a> ProjectRepository<'a> {
         Ok(project)
     }
 
-    /// Every project, by name (`GET /projects`).
+    /// Every project, oldest first (`GET /projects`).
     ///
-    /// `id` breaks ties, which the unique index on `name` makes impossible
-    /// today but costs nothing and keeps the order total.
+    /// `created_at` rather than `name`, because the list is the project
+    /// switcher's order and a project does not move in it when it is renamed
+    /// (`SPEC.md`, "Projects"). `id` breaks ties, which two projects created in
+    /// the same microsecond would otherwise leave to the planner.
     pub async fn list(&self) -> Result<Vec<Project>> {
         let projects = sqlx::query_as!(
             Project,
@@ -138,7 +140,7 @@ impl<'a> ProjectRepository<'a> {
                        WHERE s.scope = 'project' AND s.scope_id = p.id AND s.name = $1
                    ) AS "has_credential!"
             FROM projects p
-            ORDER BY p.name, p.id
+            ORDER BY p.created_at, p.id
             "#,
             GIT_CREDENTIAL_NAME,
         )

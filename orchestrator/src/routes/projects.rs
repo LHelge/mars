@@ -1,0 +1,485 @@
+//! `/api/projects` (`SPEC.md`, "Projects (`/api/projects`)").
+//!
+//! The project's own five endpoints: the list, the create, the read, the edit
+//! and the clone retry. The git sub-resource lives in [`crate::routes::git`]
+//! and is merged onto the same `/projects` prefix (`routes::mod`).
+//!
+//! Almost nothing is decided here. Creating a project is one transaction in
+//! [`create_project`], which validates every field, seeds the task states and
+//! the default profile and stores the credential; the background clone is
+//! [`clone_job::spawn`], started **after** that transaction committed, because
+//! the job re-reads the row it is about to work on. `PUT` hands its fields to
+//! the models, which are what turn a bad name, branch or attempt budget into
+//! the documented 400, and `retry-clone` is [`ProjectRepository::mark_cloning_from_error`],
+//! whose `status = 'error'` guard is in the `WHERE` clause so two concurrent
+//! retries cannot both start a job.
+//!
+//! What this module does decide:
+//!
+//! - an empty `PUT` body is a 200 that returns the current row and writes
+//!   nothing, which is what a client re-sending an unedited form sends;
+//! - a `PUT` that moves `default_branch` on a `ready` project checks the new
+//!   name against the repository and moves the bare `HEAD` to it **before** the
+//!   row is written, under the project git lock and with no transaction open
+//!   (ADR 0021; [`set_default_branch`]). On a `cloning` or `error` project the
+//!   value is stored unchecked, because there may be no repository yet and the
+//!   clone job validates it against the fetched heads;
+//! - `mark_cloning_from_error` answering `None` is 404 or 409, told apart by a
+//!   follow-up read: the row is either gone or in another status.
+//!
+//! **The credential never comes back out.** It reaches [`NewProjectRequest`]
+//! and is sealed into the project-scoped `GIT_CREDENTIAL` secret; the response
+//! is [`ProjectDto`], which has no field for it, and [`CreateProjectBody`]
+//! derives no [`std::fmt::Debug`], so no log line, span field or `#[instrument]`
+//! on this path can render one (`CLAUDE.md`, rule 3; `SPEC.md`, "Projects").
+
+use axum::Router;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::routing::{get, post};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::git::{DataPaths, GitError, set_default_branch};
+use crate::models::{BranchName, MaxAttempts, Project, ProjectName, ProjectStatus, ProjectUpdate};
+use crate::prelude::*;
+use crate::projects::{NewProjectRequest, clone_job, create_project};
+use crate::repositories::ProjectRepository;
+use crate::routes::{CurrentUser, Path};
+
+/// What a `retry-clone` on a project that is not in `error` is told (409).
+const NOT_IN_ERROR: &str = "project is not in error state";
+
+/// The router nested under `/api/projects`.
+///
+/// One line per path, in the order of the table in `SPEC.md`, "Projects"; the
+/// git routes carry their own `{pid}/git/…` paths and are merged onto this
+/// prefix beside these (`routes::mod`).
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list).post(create))
+        .route("/{id}", get(fetch).put(update))
+        .route("/{id}/retry-clone", post(retry_clone))
+}
+
+/// `Project = { id, name, remote_url, default_branch, status, status_message,
+/// last_fetched_at, max_attempts, created_at, has_credential }` (`SPEC.md`,
+/// "Projects").
+///
+/// A projection rather than the row, which also carries `created_by`,
+/// `next_task_number` and `updated_at`: the first two are internal bookkeeping
+/// and the third is not part of the documented shape, so the response is
+/// written from the contract rather than from whatever columns the table
+/// happens to have. There is no `credential` field to forget to remove.
+#[derive(Debug, Serialize)]
+struct ProjectDto {
+    id: Uuid,
+    name: String,
+    remote_url: String,
+    default_branch: Option<String>,
+    status: ProjectStatus,
+    status_message: Option<String>,
+    last_fetched_at: Option<DateTime<Utc>>,
+    max_attempts: i16,
+    created_at: DateTime<Utc>,
+    has_credential: bool,
+}
+
+impl From<Project> for ProjectDto {
+    fn from(project: Project) -> Self {
+        Self {
+            id: project.id,
+            name: project.name,
+            remote_url: project.remote_url,
+            default_branch: project.default_branch,
+            status: project.status,
+            status_message: project.status_message,
+            last_fetched_at: project.last_fetched_at,
+            max_attempts: project.max_attempts,
+            created_at: project.created_at,
+            has_credential: project.has_credential,
+        }
+    }
+}
+
+// ---- list ----
+
+/// `GET /projects` → every project, oldest first.
+async fn list(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+) -> Result<Json<Vec<ProjectDto>>> {
+    let projects = ProjectRepository::new(&state.pool).list().await?;
+
+    Ok(Json(projects.into_iter().map(ProjectDto::from).collect()))
+}
+
+// ---- create ----
+
+/// `POST /projects` (`{ name, remote_url, default_branch?, credential? }`).
+///
+/// No `Debug`, deliberately: `credential` is the remote's password or token,
+/// and a derived one would put it into every `?`-formatted tracing field that
+/// ever carried this struct (rule 3). [`NewProjectRequest`] has a hand-written
+/// one for the same reason, and nothing on this path is `#[instrument]`ed.
+///
+/// `deny_unknown_fields` for the reason the other route modules give: a client
+/// that sends `status` or `max_attempts` here has misunderstood the endpoint —
+/// the first is the clone job's and the second is `PUT`'s — and is told so
+/// rather than silently ignored.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateProjectBody {
+    name: String,
+    remote_url: String,
+    /// Absent means "discover it from the remote's `HEAD`", which the clone job
+    /// does (`SPEC.md`, "Projects").
+    default_branch: Option<String>,
+    /// Stored as the project-scoped, orchestrator-only secret `GIT_CREDENTIAL`
+    /// and never returned. Allowed on a public repository too; it is simply
+    /// stored.
+    credential: Option<String>,
+}
+
+/// `POST /projects` → the created project, `cloning` (201; 400 for any invalid
+/// field, 409 for a name that is taken).
+///
+/// The clone job is spawned after [`create_project`] committed and named with
+/// the requesting user, who becomes the `secret_uses` actor of its credential
+/// lookup (`docs/data-model.md`, `secret_uses`).
+async fn create(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Json(body): Json<CreateProjectBody>,
+) -> Result<(StatusCode, Json<ProjectDto>)> {
+    let project = create_project(
+        &state,
+        NewProjectRequest {
+            name: body.name,
+            remote_url: body.remote_url,
+            default_branch: body.default_branch,
+            credential: body.credential,
+        },
+        user.id,
+    )
+    .await?;
+
+    clone_job::spawn(state.clone(), project.id, Some(user.id));
+    info!(project_id = %project.id, "project clone started");
+
+    Ok((StatusCode::CREATED, Json(project.into())))
+}
+
+// ---- fetch ----
+
+/// `GET /projects/{id}` → the project, or 404.
+async fn fetch(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ProjectDto>> {
+    let project = ProjectRepository::new(&state.pool)
+        .find(id)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    Ok(Json(project.into()))
+}
+
+// ---- update ----
+
+/// `PUT /projects/{id}` (`{ name?, default_branch?, max_attempts? }`).
+///
+/// Every field optional and `None` meaning "leave it alone", so `{}` is legal
+/// and answers the current row. `remote_url` is not among them — the mirror on
+/// disk was cloned from it, so pointing a project at another remote is a new
+/// project — and neither are `status`, `status_message` and `last_fetched_at`,
+/// which are the clone and fetch jobs' (`SPEC.md`, "Projects"). Sending one of
+/// those is a 400 rather than a silent no-op on a field the caller believes
+/// they just changed.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateProjectBody {
+    name: Option<String>,
+    default_branch: Option<String>,
+    max_attempts: Option<i16>,
+}
+
+impl UpdateProjectBody {
+    /// The validated update, or the model's own 400.
+    ///
+    /// The three models are where the rules live, so a name of 101 characters,
+    /// a branch git would not store and an attempt budget outside 1–20 are
+    /// rejected here with the same message they would get anywhere else
+    /// (`CLAUDE.md`, "Backend conventions").
+    fn resolve(&self) -> Result<ProjectUpdate> {
+        Ok(ProjectUpdate {
+            name: self.name.as_deref().map(ProjectName::parse).transpose()?,
+            default_branch: self
+                .default_branch
+                .as_deref()
+                .map(BranchName::parse)
+                .transpose()?,
+            max_attempts: self.max_attempts.map(MaxAttempts::parse).transpose()?,
+        })
+    }
+}
+
+/// `PUT /projects/{id}` → the stored project (400 invalid, 404 unknown, 409 a
+/// name that is taken).
+///
+/// The order is the documented one: validate the body, load the project, do the
+/// git work if there is any, then write the row. The git lock is taken and
+/// released before the transaction opens, so no database transaction is ever
+/// open while git runs and no transaction holding the project row ever waits
+/// for a git lock (ADR 0021).
+async fn update(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateProjectBody>,
+) -> Result<Json<ProjectDto>> {
+    let update = body.resolve()?;
+
+    let projects = ProjectRepository::new(&state.pool);
+    let project = projects.find(id).await?.ok_or(Error::NotFound)?;
+
+    // Nothing to write: answer the row as it is rather than moving
+    // `updated_at` for an edit that changes no field.
+    if update.is_empty() {
+        return Ok(Json(project.into()));
+    }
+
+    if let Some(branch) = moved_default_branch(&project, &update) {
+        let paths = DataPaths::from_config(&state.config);
+        let guard = state.git_locks.lock(id).await;
+
+        set_default_branch(&guard, &paths, branch)
+            .await
+            .map_err(|error| match error {
+                // The repository has no such integration head. The name is the
+                // caller's, so this is their 400 and not the git layer's 500.
+                GitError::UnknownRef(_) => Error::BadRequest(format!(
+                    "default_branch {branch:?} is not an integration head of this project"
+                )),
+                other => Error::from(other),
+            })?;
+    }
+
+    let mut tx = state.pool.begin().await?;
+    let updated = projects
+        .update(&mut tx, id, &update)
+        .await?
+        .ok_or(Error::NotFound)?;
+    tx.commit().await?;
+
+    info!(project_id = %id, "project updated");
+
+    Ok(Json(updated.into()))
+}
+
+/// The integration head this update moves `HEAD` to, or `None` when there is no
+/// git work to do.
+///
+/// Three ways there is none: the body named no `default_branch`, it named the
+/// one the project already has, or the project is not `ready` — which means
+/// there may be no repository on disk at all, and the clone job is what
+/// validates the stored name against the fetched heads (`SPEC.md`, "Projects").
+fn moved_default_branch<'a>(project: &Project, update: &'a ProjectUpdate) -> Option<&'a str> {
+    let branch = update.default_branch.as_ref()?.as_str();
+
+    (project.status == ProjectStatus::Ready && project.default_branch.as_deref() != Some(branch))
+        .then_some(branch)
+}
+
+// ---- retry-clone ----
+
+/// `POST /projects/{id}/retry-clone` → the project, `cloning` again (404
+/// unknown, 409 from any other status).
+///
+/// The transition is one guarded `UPDATE`, so two concurrent retries cannot
+/// both win: the second matches no row, finds the project `cloning`, and is the
+/// documented 409. The job is spawned after the transaction committed, for the
+/// reason [`create`] gives.
+async fn retry_clone(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ProjectDto>> {
+    let projects = ProjectRepository::new(&state.pool);
+
+    let mut tx = state.pool.begin().await?;
+    let retried = projects.mark_cloning_from_error(&mut tx, id).await?;
+
+    let Some(project) = retried else {
+        tx.rollback().await?;
+
+        // `None` is "no row matched", which is either of two answers; the row
+        // itself says which.
+        return Err(match projects.find(id).await? {
+            Some(_) => Error::Conflict(NOT_IN_ERROR.to_string()),
+            None => Error::NotFound,
+        });
+    };
+    tx.commit().await?;
+
+    clone_job::spawn(state.clone(), project.id, Some(user.id));
+    info!(project_id = %id, "project clone retried");
+
+    Ok(Json(project.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// A project row with the fields these tests care about; the rest are the
+    /// defaults a freshly created project has.
+    fn project(status: ProjectStatus, default_branch: Option<&str>) -> Project {
+        Project {
+            id: Uuid::from_u128(1),
+            name: "mars".to_string(),
+            remote_url: "https://example.invalid/org/repo.git".to_string(),
+            default_branch: default_branch.map(str::to_string),
+            status,
+            status_message: None,
+            created_by: None,
+            last_fetched_at: None,
+            max_attempts: 3,
+            next_task_number: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            has_credential: false,
+        }
+    }
+
+    /// The documented ten fields, and none of the three the row adds.
+    #[test]
+    fn the_response_carries_exactly_the_documented_fields() {
+        let row = project(ProjectStatus::Cloning, None);
+        let rendered =
+            serde_json::to_value(ProjectDto::from(row.clone())).expect("the projection serialises");
+
+        assert_eq!(
+            rendered,
+            json!({
+                "id": row.id,
+                "name": "mars",
+                "remote_url": row.remote_url,
+                "default_branch": null,
+                "status": "cloning",
+                "status_message": null,
+                "last_fetched_at": null,
+                "max_attempts": 3,
+                "created_at": row.created_at,
+                "has_credential": false,
+            })
+        );
+    }
+
+    /// The create body holds a credential, so the one thing a unit test can
+    /// prove about it without a database is that the documented shape parses
+    /// and that the optional halves may be left out. The value is an obviously
+    /// fake credential (rule 3).
+    #[test]
+    fn a_create_body_takes_the_documented_shape() {
+        let minimal: CreateProjectBody = serde_json::from_value(json!({
+            "name": "mars",
+            "remote_url": "https://example.invalid/org/repo.git",
+        }))
+        .expect("the minimal body parses");
+
+        assert_eq!(minimal.name, "mars");
+        assert_eq!(minimal.default_branch, None);
+        assert_eq!(minimal.credential, None);
+
+        let full: CreateProjectBody = serde_json::from_value(json!({
+            "name": "mars",
+            "remote_url": "https://example.invalid/org/repo.git",
+            "default_branch": "release/2.0",
+            "credential": "fake-git-credential-for-tests",
+        }))
+        .expect("the full body parses");
+
+        assert_eq!(full.default_branch.as_deref(), Some("release/2.0"));
+        assert_eq!(
+            full.credential.as_deref(),
+            Some("fake-git-credential-for-tests")
+        );
+    }
+
+    /// An empty `PUT` body is legal and changes nothing.
+    #[test]
+    fn an_empty_update_body_resolves_to_an_empty_update() {
+        let body: UpdateProjectBody = serde_json::from_value(json!({})).expect("`{}` parses");
+
+        assert!(body.resolve().expect("nothing to validate").is_empty());
+    }
+
+    /// Each field goes through its own model, which is where the 400 comes
+    /// from.
+    #[test]
+    fn every_invalid_field_is_a_bad_request() {
+        for raw in [
+            json!({ "name": "  " }),
+            json!({ "name": "m".repeat(101) }),
+            json!({ "default_branch": "refs/heads/main" }),
+            json!({ "max_attempts": 0 }),
+            json!({ "max_attempts": 21 }),
+        ] {
+            let body: UpdateProjectBody =
+                serde_json::from_value(raw.clone()).expect("the body parses");
+            let error = body.resolve().expect_err("the value is refused");
+
+            assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{raw}");
+        }
+    }
+
+    /// The git half of `PUT` runs only for a `ready` project whose
+    /// `default_branch` actually moves.
+    #[test]
+    fn the_head_moves_only_for_a_ready_project_that_changed_branch() {
+        let change = UpdateProjectBody {
+            name: None,
+            default_branch: Some("release/2.0".to_string()),
+            max_attempts: None,
+        }
+        .resolve()
+        .expect("the branch name is valid");
+
+        assert_eq!(
+            moved_default_branch(&project(ProjectStatus::Ready, Some("main")), &change),
+            Some("release/2.0")
+        );
+
+        // The same value it already has, and a project that has no repository
+        // to check against yet.
+        assert_eq!(
+            moved_default_branch(&project(ProjectStatus::Ready, Some("release/2.0")), &change),
+            None
+        );
+        for status in [ProjectStatus::Cloning, ProjectStatus::Error] {
+            assert_eq!(
+                moved_default_branch(&project(status, Some("main")), &change),
+                None,
+                "{status:?}"
+            );
+        }
+
+        // An update that names no branch at all.
+        let rename = UpdateProjectBody {
+            name: Some("phobos".to_string()),
+            default_branch: None,
+            max_attempts: None,
+        }
+        .resolve()
+        .expect("the name is valid");
+        assert_eq!(
+            moved_default_branch(&project(ProjectStatus::Ready, Some("main")), &rename),
+            None
+        );
+    }
+}

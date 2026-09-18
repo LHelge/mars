@@ -188,12 +188,13 @@ async fn a_project_survives_an_insert_find_list_update_delete_round_trip() {
     );
     assert!(repository.find(Uuid::new_v4()).await.unwrap().is_none());
 
-    // Listing is by name, not by insertion order.
+    // Listing is oldest first, whatever the names sort like: `apollo` is
+    // created second and listed second (`SPEC.md`, "Projects").
     let other = insert(&pool, &new_project("apollo")).await;
     let listed = repository.list().await.unwrap();
     assert_eq!(
         listed.iter().map(|project| project.id).collect::<Vec<_>>(),
-        [other.id, inserted.id]
+        [inserted.id, other.id]
     );
 
     let update = ProjectUpdate {

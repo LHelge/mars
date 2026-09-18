@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT p.id, p.name, p.remote_url, p.default_branch,\n                   p.status as \"status: ProjectStatus\", p.status_message, p.created_by,\n                   p.last_fetched_at, p.max_attempts, p.next_task_number, p.created_at,\n                   p.updated_at,\n                   EXISTS (\n                       SELECT 1 FROM secrets s\n                       WHERE s.scope = 'project' AND s.scope_id = p.id AND s.name = $1\n                   ) AS \"has_credential!\"\n            FROM projects p\n            ORDER BY p.name, p.id\n            ",
+  "query": "\n            SELECT p.id, p.name, p.remote_url, p.default_branch,\n                   p.status as \"status: ProjectStatus\", p.status_message, p.created_by,\n                   p.last_fetched_at, p.max_attempts, p.next_task_number, p.created_at,\n                   p.updated_at,\n                   EXISTS (\n                       SELECT 1 FROM secrets s\n                       WHERE s.scope = 'project' AND s.scope_id = p.id AND s.name = $1\n                   ) AS \"has_credential!\"\n            FROM projects p\n            ORDER BY p.created_at, p.id\n            ",
   "describe": {
     "columns": [
       {
@@ -174,5 +174,5 @@
       null
     ]
   },
-  "hash": "4a9fdecc967dfdd697e95508f58e905abfd938e44c9569bb7d016a01672706fb"
+  "hash": "dc8ef2d1febe417bf6db966472b2c66209c9d8838eecd24c68eeaf768ff734da"
 }

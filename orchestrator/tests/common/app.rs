@@ -38,6 +38,7 @@ use mars_orchestrator::models::{Email, NewUser, User, Username};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;
 use mars_orchestrator::secrets::SecretsKeyring;
+use mars_orchestrator::session::SessionRegistry;
 use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -121,12 +122,12 @@ impl TestApp {
         let email = Arc::new(MockEmailClient::new());
         let git = Arc::new(MockGitCredentialProvider::new());
 
-        // `AppState::new` takes everything the state holds today. The fields
-        // later epics add in place — the `SessionRegistry` of the session
-        // lifecycle epic and the broadcast senders for event fan-out
-        // (`ARCHITECTURE.md`, "Orchestrator internals") — are constructed here
-        // with their own `Default`/`new()` when they arrive, and `TestApp`
-        // grows a field for the ones a test has to reach.
+        // `AppState::new` takes everything the state holds today, including
+        // the empty `SessionRegistry`. The fields later epics add in place —
+        // the broadcast senders for event fan-out (`ARCHITECTURE.md`,
+        // "Orchestrator internals") — are constructed there with their own
+        // `Default`/`new()` when they arrive, and `TestApp` grows an accessor
+        // for the ones a test has to reach.
         let state = AppState::new(
             Arc::new(config),
             pool.clone(),
@@ -171,6 +172,16 @@ impl TestApp {
     /// `GitCredentialProvider::as_any`.
     pub fn mock_git(&self) -> &MockGitCredentialProvider {
         &self.git
+    }
+
+    /// The registry the handlers reach session owners through
+    /// (`ARCHITECTURE.md`, "Session owner task").
+    ///
+    /// The same registry, not a copy: a test that registers an owner here sees
+    /// what a handler forwards to it, and a test that asserts on a handler's
+    /// input reads the queue from here.
+    pub fn session_registry(&self) -> &SessionRegistry {
+        &self.state.session_registry
     }
 
     /// Forget every failed login and password-reset request counted so far.

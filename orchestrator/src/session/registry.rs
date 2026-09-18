@@ -1,0 +1,801 @@
+//! The in-memory map from session id to the running owner's handle
+//! (`ARCHITECTURE.md`, "Orchestrator internals", "Session owner task",
+//! "Session lifecycle"; ADR 0020).
+//!
+//! Every path that wants to reach a session's process — the REST input
+//! endpoint, the WebSocket handler, the launcher, the idle reaper and the
+//! shutdown hook — goes through [`SessionRegistry`]. That is what makes the
+//! CLI's stdin single-writer: the registry hands out no file descriptor, only
+//! a bounded channel to the one task that owns the attached stdin
+//! (`ARCHITECTURE.md`, "Session owner task").
+//!
+//! The registry holds four things per session: the channel to its owner, the
+//! queue of inputs accepted while no owner is attached, the coarse phase that
+//! decides between forwarding and queueing, and the session's
+//! [`SessionKind`], so the WebSocket handler can answer an ephemeral session's
+//! input without a database round-trip. It holds no pending-prompt cursor: the
+//! pinned CLI never asks the host a question under the permission flags Mars
+//! launches it with, so there is one input kind and nothing to answer
+//! (ADR 0033; `SPEC.md`, "WebSocket: session stream").
+//!
+//! Nothing here is durable. A restart loses every queue, which v1 accepts
+//! (`ARCHITECTURE.md`, "Input delivery across restarts"; ADR 0020).
+//!
+//! The registry decides deliverability only. Whether a session may take input
+//! at all is the session model's rule — [`crate::models::Session::accepts_input`],
+//! which is what refuses an ephemeral session and a `done` or `failed` one —
+//! and the service applies it before calling [`SessionRegistry::submit`].
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Mutex, MutexGuard};
+
+use chrono::{DateTime, Utc};
+use tokio::sync::mpsc;
+use uuid::Uuid;
+
+use crate::events::SessionInput;
+use crate::models::SessionKind;
+use crate::prelude::*;
+
+/// How many commands the owner's channel buffers.
+///
+/// The owner reads its channel in the same loop that tails the transcript, so
+/// this only has to cover a burst while it is busy translating a line. A
+/// deeper buffer would not help: an owner that is not reading at all is an
+/// owner whose session wants relaunching, not one whose inputs want hoarding.
+const CHANNEL_CAPACITY: usize = 64;
+
+/// How many inputs may wait for an owner that is not attached yet.
+///
+/// Waiting inputs are in memory and are lost on a restart (ADR 0020), so the
+/// queue is a burst buffer for the seconds a launch takes, not a mailbox.
+/// Beyond this the submission is refused rather than silently dropped.
+const MAX_QUEUED: usize = 256;
+
+/// The receiving half of one session owner's command channel.
+///
+/// [`SessionRegistry::register`] returns it and the spawned owner task takes
+/// ownership of it; the registry keeps only the sender.
+pub type OwnerRx = mpsc::Receiver<OwnerCommand>;
+
+/// One accepted input, with who sent it and when it was accepted.
+///
+/// `user_id` is `None` for an input the orchestrator itself submits — a
+/// session's launch prompt — and `client_id` is the client-generated string
+/// echoed back in `input_accepted` so optimistic UI can reconcile (`SPEC.md`,
+/// "WebSocket: session stream"). `accepted_at` is when the registry took it,
+/// which is what the owner records on the `user_message` event.
+#[derive(Debug, Clone)]
+pub struct QueuedInput {
+    /// What the user sent.
+    pub input: SessionInput,
+    /// The user who sent it, or `None` when the orchestrator did.
+    pub user_id: Option<Uuid>,
+    /// The client's own id for this input, echoed back on acknowledgement.
+    pub client_id: Option<String>,
+    /// When the registry accepted it.
+    pub accepted_at: DateTime<Utc>,
+}
+
+/// What can be said to a session owner.
+#[derive(Debug)]
+pub enum OwnerCommand {
+    /// Write this input to the CLI's stdin, recording a `user_message` event
+    /// first (`ARCHITECTURE.md`, "Session owner task").
+    Input(QueuedInput),
+    /// Stop the session: SIGINT now, SIGTERM after the grace period
+    /// (`ARCHITECTURE.md`, "Session lifecycle").
+    Stop,
+    /// Leave the loop without touching the container.
+    ///
+    /// Orchestrator shutdown and the tests use it: the container keeps
+    /// running and is adopted again on the next start (`ARCHITECTURE.md`,
+    /// "Restart procedure").
+    Shutdown,
+}
+
+/// How far along a registered session is, as far as input delivery cares.
+///
+/// Coarser than [`crate::models::SessionState`] on purpose: `done` and
+/// `failed` sessions have no entry at all, and the registry never consults the
+/// database, so these three are the only distinctions it can make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Registered, no stdin yet: inputs queue (`ARCHITECTURE.md`, "Session
+    /// lifecycle").
+    Creating,
+    /// An owner is attached to stdin: inputs are forwarded.
+    Running,
+    /// No process: inputs queue and the caller relaunches.
+    Parked,
+}
+
+/// What became of a submitted input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubmitResult {
+    /// Handed to the live owner.
+    Forwarded,
+    /// Waiting for the owner that is being launched or resumed.
+    Queued,
+    /// Queued, and the caller must call the launcher's resume: the session is
+    /// parked and nothing is launching it (`ARCHITECTURE.md`, "Session
+    /// lifecycle", `parked → running`).
+    ParkedNeedsRelaunch,
+    /// Refused, with the reason the caller puts in `input_rejected` or the
+    /// HTTP error (`SPEC.md`, "WebSocket: session stream").
+    Rejected(String),
+}
+
+/// One registered session.
+#[derive(Debug)]
+struct Entry {
+    /// The session's kind, so the WebSocket handler can read it without a
+    /// database round-trip. The registry itself never looks at it: the
+    /// ephemeral rule belongs to the session model.
+    kind: SessionKind,
+    /// Which of the three input regimes applies.
+    phase: Phase,
+    /// The live owner's channel, `None` once the session is parked.
+    tx: Option<mpsc::Sender<OwnerCommand>>,
+    /// Inputs accepted while no owner was attached, oldest first.
+    queue: VecDeque<QueuedInput>,
+}
+
+/// Everything behind the one mutex.
+#[derive(Debug, Default)]
+struct State {
+    /// One entry per session that has been registered and not removed.
+    sessions: HashMap<Uuid, Entry>,
+    /// The sessions a launch or resume is in progress for.
+    ///
+    /// Separate from `sessions` because a launch guard is taken before the
+    /// session is registered — that is the point of it — and a resume is taken
+    /// for a parked session that a restart left with no entry at all.
+    launching: HashSet<Uuid>,
+}
+
+/// The handles to the running session owner tasks (`ARCHITECTURE.md`,
+/// "Orchestrator internals").
+///
+/// Cloning shares the map: the copy in [`AppState`] and the copy a spawned
+/// launcher holds are the same registry. The map is behind a
+/// `std::sync::Mutex` held only for a lookup and a `try_send`, never across an
+/// `.await`.
+#[derive(Debug, Clone, Default)]
+pub struct SessionRegistry {
+    /// The map and the launch flags.
+    state: Arc<Mutex<State>>,
+}
+
+impl SessionRegistry {
+    /// An empty registry; entries appear as sessions are launched.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a session about to be launched and return its owner's
+    /// receiver.
+    ///
+    /// The channel is created here rather than by the owner so that an input
+    /// arriving between `register` and the owner's first poll is buffered
+    /// instead of refused. Re-registering a session that is already known —
+    /// the resume of a parked session — keeps its queue, so inputs accepted
+    /// while it was parked are still delivered when it reaches `Running`, and
+    /// replaces its channel.
+    pub fn register(&self, session_id: Uuid, kind: SessionKind, phase: Phase) -> OwnerRx {
+        let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let mut state = self.state();
+
+        match state.sessions.get_mut(&session_id) {
+            Some(entry) => {
+                entry.kind = kind;
+                entry.phase = phase;
+                entry.tx = Some(tx);
+            }
+            None => {
+                state.sessions.insert(
+                    session_id,
+                    Entry {
+                        kind,
+                        phase,
+                        tx: Some(tx),
+                        queue: VecDeque::new(),
+                    },
+                );
+            }
+        }
+
+        debug!(session_id = %session_id, phase = ?phase, "registered a session owner");
+        rx
+    }
+
+    /// Switch a session to `Running` and take everything that queued while it
+    /// was not.
+    ///
+    /// Called when stdin is attached, which is when the session becomes
+    /// `running`: the pinned CLI writes nothing at all — `init` included —
+    /// until it has read its first stdin line, so waiting for an event before
+    /// flushing the queue would deadlock (ADR 0032; `ARCHITECTURE.md`, "Launch
+    /// sequence"). The caller sends the returned inputs to the owner in the
+    /// order they came back. An unknown id is a no-op returning nothing, which
+    /// is what an owner adopted after a restart sees before it registers
+    /// itself.
+    pub fn mark_running(&self, session_id: Uuid) -> Vec<QueuedInput> {
+        let mut state = self.state();
+        let Some(entry) = state.sessions.get_mut(&session_id) else {
+            return Vec::new();
+        };
+
+        entry.phase = Phase::Running;
+        let drained: Vec<QueuedInput> = entry.queue.drain(..).collect();
+
+        if !drained.is_empty() {
+            debug!(
+                session_id = %session_id,
+                queued = drained.len(),
+                "delivering the inputs that queued before stdin was attached"
+            );
+        }
+        drained
+    }
+
+    /// Mark a session parked: its owner is gone, its queue stays.
+    ///
+    /// Dropping the sender closes the channel, so a caller that raced this
+    /// call and forwarded an input sees the send fail and requeues it. An
+    /// unknown id is a no-op.
+    pub fn mark_parked(&self, session_id: Uuid) {
+        let mut state = self.state();
+        if let Some(entry) = state.sessions.get_mut(&session_id) {
+            entry.phase = Phase::Parked;
+            entry.tx = None;
+            debug!(session_id = %session_id, "session owner detached; session parked");
+        }
+    }
+
+    /// Forget a session entirely: it ended, failed or was deleted.
+    ///
+    /// Anything still queued is dropped. The count is logged, never the text
+    /// (rule 3).
+    pub fn remove(&self, session_id: Uuid) {
+        let Some(entry) = self.state().sessions.remove(&session_id) else {
+            return;
+        };
+
+        if !entry.queue.is_empty() {
+            warn!(
+                session_id = %session_id,
+                dropped = entry.queue.len(),
+                "dropping queued inputs for a session that ended"
+            );
+        }
+    }
+
+    /// Offer one input to a session.
+    ///
+    /// The caller has already checked that the session may take input at all
+    /// ([`crate::models::Session::accepts_input`]); this decides only where the
+    /// input goes. See [`SubmitResult`] for the four answers; on
+    /// [`SubmitResult::ParkedNeedsRelaunch`] the input is already queued and
+    /// the caller resumes the session, which drains it.
+    pub fn submit(&self, session_id: Uuid, input: QueuedInput) -> SubmitResult {
+        let mut state = self.state();
+        let relaunching = state.launching.contains(&session_id);
+        let Some(entry) = state.sessions.get_mut(&session_id) else {
+            return SubmitResult::Rejected("session has no owner".to_string());
+        };
+
+        match entry.phase {
+            Phase::Running => {
+                let Some(tx) = entry.tx.as_ref() else {
+                    // Running without a channel cannot happen — `register` is
+                    // the only way into this phase — but treat it like a
+                    // closed one rather than trusting the invariant.
+                    return park_and_queue(session_id, entry, input, relaunching);
+                };
+
+                match tx.try_send(OwnerCommand::Input(input)) {
+                    Ok(()) => {
+                        debug!(session_id = %session_id, "input forwarded to the session owner");
+                        SubmitResult::Forwarded
+                    }
+                    // The owner exited between the phase check and the send.
+                    // Park the entry so the next input queues too, and tell
+                    // the caller to relaunch.
+                    Err(mpsc::error::TrySendError::Closed(command)) => {
+                        let input = match command {
+                            OwnerCommand::Input(input) => input,
+                            // `try_send` hands back exactly what it was given.
+                            OwnerCommand::Stop | OwnerCommand::Shutdown => unreachable!(),
+                        };
+                        park_and_queue(session_id, entry, input, relaunching)
+                    }
+                    // The owner is alive but behind. Queueing here would
+                    // reorder this input behind the next one that fits, so
+                    // refuse it instead and let the user resend.
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        warn!(
+                            session_id = %session_id,
+                            "the session owner's channel is full; input refused"
+                        );
+                        SubmitResult::Rejected("input queue full".to_string())
+                    }
+                }
+            }
+            Phase::Creating => push(session_id, entry, input, SubmitResult::Queued),
+            // A relaunch already under way will drain the queue; asking the
+            // caller for a second one would race it.
+            Phase::Parked => push(session_id, entry, input, queued_answer(relaunching)),
+        }
+    }
+
+    /// Ask a session's owner to stop: SIGINT now, SIGTERM after the grace
+    /// period.
+    ///
+    /// `Error::Conflict` when there is no live owner to ask, which is what the
+    /// REST stop endpoint answers for a session that is not running.
+    pub fn stop(&self, session_id: Uuid) -> Result<()> {
+        let mut state = self.state();
+        let sent = state
+            .sessions
+            .get(&session_id)
+            .and_then(|entry| entry.tx.as_ref())
+            .is_some_and(|tx| tx.try_send(OwnerCommand::Stop).is_ok());
+
+        if !sent {
+            // A closed channel means the owner is already gone; park the entry
+            // so nothing else tries to forward to it.
+            if let Some(entry) = state.sessions.get_mut(&session_id)
+                && entry.tx.as_ref().is_some_and(mpsc::Sender::is_closed)
+            {
+                entry.phase = Phase::Parked;
+                entry.tx = None;
+            }
+            return Err(Error::Conflict("session is not running".to_string()));
+        }
+
+        debug!(session_id = %session_id, "asked the session owner to stop");
+        Ok(())
+    }
+
+    /// Whether a live owner is reachable for this session right now.
+    pub fn is_live(&self, session_id: Uuid) -> bool {
+        self.state()
+            .sessions
+            .get(&session_id)
+            .and_then(|entry| entry.tx.as_ref())
+            .is_some_and(|tx| !tx.is_closed())
+    }
+
+    /// The registered kind of a session, without a database round-trip.
+    ///
+    /// `None` when the session is not registered; the caller then reads the
+    /// row, which it has to do anyway to know the session exists.
+    pub fn kind(&self, session_id: Uuid) -> Option<SessionKind> {
+        self.state()
+            .sessions
+            .get(&session_id)
+            .map(|entry| entry.kind)
+    }
+
+    /// Claim the right to launch or resume one session.
+    ///
+    /// `None` while another launch of the same session holds the guard, which
+    /// is what keeps a user message to a parked session and an explicit resume
+    /// from starting two containers. The guard releases on drop, including
+    /// when the launching task is cancelled or panics.
+    pub fn try_begin_launch(&self, session_id: Uuid) -> Option<LaunchGuard> {
+        if !self.state().launching.insert(session_id) {
+            debug!(session_id = %session_id, "a launch of this session is already in progress");
+            return None;
+        }
+
+        Some(LaunchGuard {
+            session_id,
+            state: Arc::clone(&self.state),
+        })
+    }
+
+    /// Whether a launch or resume of this session is in progress. Test and
+    /// diagnostic use only.
+    pub fn is_launching(&self, session_id: Uuid) -> bool {
+        self.state().launching.contains(&session_id)
+    }
+
+    /// The phase of a registered session. Test and diagnostic use only.
+    pub fn phase(&self, session_id: Uuid) -> Option<Phase> {
+        self.state()
+            .sessions
+            .get(&session_id)
+            .map(|entry| entry.phase)
+    }
+
+    /// How many inputs are waiting for this session. Test and diagnostic use
+    /// only.
+    pub fn queued(&self, session_id: Uuid) -> usize {
+        self.state()
+            .sessions
+            .get(&session_id)
+            .map_or(0, |entry| entry.queue.len())
+    }
+
+    /// How many sessions have an entry. Test and diagnostic use only.
+    pub fn tracked_sessions(&self) -> usize {
+        self.state().sessions.len()
+    }
+
+    /// The state, recovering from a poisoned lock rather than propagating a
+    /// panic. Nothing under this lock can panic — the critical sections are
+    /// hash lookups, a `VecDeque` push and a non-blocking send — so a poisoned
+    /// mutex means an unrelated failure, and refusing every input because of
+    /// it would be worse than carrying on.
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Park an entry whose channel turned out to be closed and queue the input
+/// that could not be sent, so the caller's relaunch delivers it.
+fn park_and_queue(
+    session_id: Uuid,
+    entry: &mut Entry,
+    input: QueuedInput,
+    relaunching: bool,
+) -> SubmitResult {
+    debug!(
+        session_id = %session_id,
+        "the session owner is gone; queueing the input and parking the session"
+    );
+    entry.phase = Phase::Parked;
+    entry.tx = None;
+
+    push(session_id, entry, input, queued_answer(relaunching))
+}
+
+/// What a parked session answers a queued input: the caller relaunches unless
+/// somebody already is.
+fn queued_answer(relaunching: bool) -> SubmitResult {
+    if relaunching {
+        SubmitResult::Queued
+    } else {
+        SubmitResult::ParkedNeedsRelaunch
+    }
+}
+
+/// Append an input to an entry's queue and say what to answer.
+///
+/// `Queued` when it fits and `queued_answer` is what the caller wants said
+/// instead, `Rejected("input queue full")` when the queue is at its bound.
+/// Never logs the text (rule 3).
+fn push(
+    session_id: Uuid,
+    entry: &mut Entry,
+    input: QueuedInput,
+    queued_answer: SubmitResult,
+) -> SubmitResult {
+    if entry.queue.len() >= MAX_QUEUED {
+        warn!(
+            session_id = %session_id,
+            queued = entry.queue.len(),
+            "the input queue is full; input refused"
+        );
+        return SubmitResult::Rejected("input queue full".to_string());
+    }
+
+    entry.queue.push_back(input);
+    debug!(
+        session_id = %session_id,
+        queued = entry.queue.len(),
+        "input queued until the session is running"
+    );
+    queued_answer
+}
+
+/// Proof that the holder is the one launching or resuming a session.
+///
+/// Dropping it lets the next launch in. It deliberately carries no permission
+/// beyond that: the launcher still registers the session and marks it running
+/// through the registry.
+#[derive(Debug)]
+pub struct LaunchGuard {
+    /// The session being launched.
+    session_id: Uuid,
+    /// The registry's state, so the flag can be cleared on drop.
+    state: Arc<Mutex<State>>,
+}
+
+impl LaunchGuard {
+    /// The session this guard covers.
+    ///
+    /// Helpers that take the guard as proof of the claim read the id from it
+    /// rather than from a second parameter, so the id and the claim cannot
+    /// disagree.
+    pub fn session_id(&self) -> Uuid {
+        self.session_id
+    }
+}
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .launching
+            .remove(&self.session_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(text: &str) -> QueuedInput {
+        QueuedInput {
+            input: SessionInput::Message {
+                text: text.to_string(),
+            },
+            user_id: Some(Uuid::new_v4()),
+            client_id: Some(format!("client-{text}")),
+            accepted_at: Utc::now(),
+        }
+    }
+
+    /// The text of the input the owner received, whatever kind it is.
+    fn received_text(command: OwnerCommand) -> String {
+        match command {
+            OwnerCommand::Input(queued) => queued.input.text().to_string(),
+            other => panic!("expected an input command, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn inputs_queue_while_creating_and_drain_in_order_when_running() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let _rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+
+        assert_eq!(
+            registry.submit(session, message("one")),
+            SubmitResult::Queued
+        );
+        assert_eq!(
+            registry.submit(session, message("two")),
+            SubmitResult::Queued
+        );
+        assert_eq!(registry.queued(session), 2);
+
+        let drained = registry.mark_running(session);
+        let texts: Vec<&str> = drained.iter().map(|input| input.input.text()).collect();
+
+        assert_eq!(texts, vec!["one", "two"], "FIFO, oldest first");
+        assert_eq!(registry.queued(session), 0);
+        assert_eq!(registry.phase(session), Some(Phase::Running));
+    }
+
+    #[tokio::test]
+    async fn an_input_to_a_running_session_reaches_the_owner() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let mut rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        assert!(registry.mark_running(session).is_empty());
+
+        assert_eq!(
+            registry.submit(session, message("hello")),
+            SubmitResult::Forwarded
+        );
+
+        let command = rx.recv().await.expect("the owner receives the input");
+        assert_eq!(received_text(command), "hello");
+        assert!(registry.is_live(session));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_session_has_no_owner() {
+        let registry = SessionRegistry::new();
+
+        assert_eq!(
+            registry.submit(Uuid::new_v4(), message("hello")),
+            SubmitResult::Rejected("session has no owner".to_string()),
+        );
+        assert!(registry.mark_running(Uuid::new_v4()).is_empty());
+        assert_eq!(registry.tracked_sessions(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_first_input_to_a_parked_session_asks_for_a_relaunch_and_the_second_queues() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        registry.mark_running(session);
+        drop(rx);
+        registry.mark_parked(session);
+
+        assert_eq!(
+            registry.submit(session, message("one")),
+            SubmitResult::ParkedNeedsRelaunch,
+            "the input is queued and the caller resumes the session"
+        );
+
+        // The caller now claims the resume; a second input must not ask for
+        // another one.
+        let guard = registry
+            .try_begin_launch(session)
+            .expect("no other launch is in progress");
+        assert_eq!(
+            registry.submit(session, message("two")),
+            SubmitResult::Queued
+        );
+
+        // The resume registers the session again, keeping the queue, and the
+        // drain hands both inputs over in order.
+        let _rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        let drained = registry.mark_running(session);
+        drop(guard);
+
+        let texts: Vec<&str> = drained.iter().map(|input| input.input.text()).collect();
+        assert_eq!(texts, vec!["one", "two"]);
+    }
+
+    #[tokio::test]
+    async fn a_closed_owner_channel_parks_the_session_instead_of_forwarding() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        registry.mark_running(session);
+
+        // The owner exits without anybody telling the registry.
+        drop(rx);
+        assert!(!registry.is_live(session));
+
+        assert_eq!(
+            registry.submit(session, message("hello")),
+            SubmitResult::ParkedNeedsRelaunch,
+        );
+        assert_eq!(registry.phase(session), Some(Phase::Parked));
+        assert_eq!(registry.queued(session), 1, "the input is not lost");
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_refuses_further_inputs() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let _rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+
+        for index in 0..MAX_QUEUED {
+            assert_eq!(
+                registry.submit(session, message(&index.to_string())),
+                SubmitResult::Queued,
+            );
+        }
+
+        assert_eq!(
+            registry.submit(session, message("one too many")),
+            SubmitResult::Rejected("input queue full".to_string()),
+        );
+        assert_eq!(registry.queued(session), MAX_QUEUED);
+    }
+
+    #[tokio::test]
+    async fn a_full_owner_channel_refuses_rather_than_reordering() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let _rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        registry.mark_running(session);
+
+        // The owner never polls, so the channel fills at its capacity.
+        for index in 0..CHANNEL_CAPACITY {
+            assert_eq!(
+                registry.submit(session, message(&index.to_string())),
+                SubmitResult::Forwarded,
+            );
+        }
+
+        assert_eq!(
+            registry.submit(session, message("one too many")),
+            SubmitResult::Rejected("input queue full".to_string()),
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_reaches_a_live_owner_and_conflicts_without_one() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let mut rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        registry.mark_running(session);
+
+        registry.stop(session).expect("a live owner can be stopped");
+        assert!(matches!(rx.recv().await, Some(OwnerCommand::Stop)));
+
+        registry.mark_parked(session);
+        let error = registry
+            .stop(session)
+            .expect_err("a parked session has no owner to stop");
+        assert!(matches!(error, Error::Conflict(message) if message == "session is not running"));
+
+        let error = registry
+            .stop(Uuid::new_v4())
+            .expect_err("an unknown session has no owner either");
+        assert!(matches!(error, Error::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn stop_on_a_closed_channel_conflicts_and_parks_the_entry() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        registry.mark_running(session);
+        drop(rx);
+
+        let error = registry
+            .stop(session)
+            .expect_err("an exited owner cannot be stopped");
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(registry.phase(session), Some(Phase::Parked));
+    }
+
+    #[tokio::test]
+    async fn only_one_launch_of_a_session_runs_at_a_time() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+
+        let guard = registry
+            .try_begin_launch(session)
+            .expect("the first claim wins");
+        assert_eq!(guard.session_id(), session);
+        assert!(registry.is_launching(session));
+        assert!(
+            registry.try_begin_launch(session).is_none(),
+            "a second concurrent launch must be refused"
+        );
+
+        // Another session is unaffected.
+        let other = registry
+            .try_begin_launch(Uuid::new_v4())
+            .expect("launches of different sessions are independent");
+
+        drop(guard);
+        assert!(!registry.is_launching(session));
+        assert!(
+            registry.try_begin_launch(session).is_some(),
+            "the guard releases the claim on drop"
+        );
+        drop(other);
+    }
+
+    #[tokio::test]
+    async fn remove_forgets_the_entry_and_its_queue() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let _rx = registry.register(session, SessionKind::Ephemeral, Phase::Creating);
+        registry.submit(session, message("lost"));
+
+        assert_eq!(registry.kind(session), Some(SessionKind::Ephemeral));
+        assert_eq!(registry.tracked_sessions(), 1);
+
+        registry.remove(session);
+
+        assert_eq!(registry.tracked_sessions(), 0);
+        assert_eq!(registry.kind(session), None);
+        assert!(!registry.is_live(session));
+        // Removing twice is harmless.
+        registry.remove(session);
+    }
+
+    #[tokio::test]
+    async fn a_clone_shares_the_map() {
+        let registry = SessionRegistry::new();
+        let clone = registry.clone();
+        let session = Uuid::new_v4();
+
+        let _rx = clone.register(session, SessionKind::Conversational, Phase::Creating);
+
+        assert_eq!(registry.tracked_sessions(), 1);
+        assert_eq!(
+            registry.submit(session, message("one")),
+            SubmitResult::Queued
+        );
+        assert_eq!(clone.queued(session), 1);
+    }
+}

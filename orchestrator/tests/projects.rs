@@ -696,6 +696,30 @@ async fn a_default_branch_on_a_project_without_a_repository_is_stored_unchecked(
     );
 }
 
+#[tokio::test]
+async fn a_default_branch_move_whose_row_write_conflicts_leaves_head_alone() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let upstream = upstream_with(&["release/2.0"]).await;
+    let (id, _) = cloned_project(&app, &user, "mars", &upstream).await;
+    // The name the update below collides with.
+    created(&app, &user, &new_project("phobos", UNREACHABLE_REMOTE)).await;
+
+    let response = app
+        .put_as(&user, &project_path(id))
+        .json(&json!({ "name": "phobos", "default_branch": "release/2.0" }))
+        .await;
+
+    response.assert_status(StatusCode::CONFLICT);
+    response.assert_json(&json!({ "status": 409, "error": "project name already taken" }));
+
+    // The row write failed, so the repository must not have moved either.
+    assert_eq!(head_branch(&app, id).await, "refs/heads/main");
+    let read = app.get_as(&user, &project_path(id)).await.json::<Value>();
+    assert_eq!(read["name"], json!("mars"));
+    assert_eq!(read["default_branch"], json!("main"));
+}
+
 // ---- retry-clone ----
 
 #[tokio::test]

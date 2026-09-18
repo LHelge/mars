@@ -48,9 +48,12 @@
 //! `GET /projects/{id}/branches` (`SPEC.md`, "Projects").
 //!
 //! [`set_default_branch`] is the one other write a `ready` project's repository
-//! takes: `PUT /projects/{id}` changing `default_branch` checks that the name
-//! is an integration head and moves the symbolic `HEAD` to it, which is the
-//! same `git symbolic-ref` the initialisation ends with.
+//! takes: `PUT /projects/{id}` changing `default_branch` moves the symbolic
+//! `HEAD` to the new integration head, which is the same `git symbolic-ref` the
+//! initialisation ends with. The check that the name *is* an integration head
+//! is [`verify_default_branch`], a separate call so that the route can verify,
+//! write its row and only then move `HEAD` — all under one guard, so a row
+//! write that fails never leaves `HEAD` ahead of the row.
 //!
 //! **Locking.** The caller holds the project git lock and passes the guard;
 //! nothing here acquires one (`ARCHITECTURE.md`, "Git model", Serialization).
@@ -221,14 +224,15 @@ pub async fn init_project_repo(
     })
 }
 
-/// Point the project repository's `HEAD` at the integration head `branch`.
+/// Is `branch` a name this project's `HEAD` could be moved to?
 ///
-/// What `PUT /projects/{id}` runs when the caller changes `default_branch` on
-/// a project that is already `ready` (`SPEC.md`, "Projects"): the branch has to
-/// be one of Mars's own integration heads, and the bare repository's symbolic
-/// `HEAD` has to name it, because "`HEAD` points at the default integration
-/// branch" is what [`init_project_repo`] established and what a session clone
-/// reads (`ARCHITECTURE.md`, "Git model", Project clone).
+/// The check half of a `default_branch` change (`SPEC.md`, "Projects"): the
+/// name has to be one Mars could store as a ref at all, and one of Mars's own
+/// integration heads. It writes nothing, so a caller may run it, write its row
+/// and only then call [`set_default_branch`] under the same guard — which is
+/// what `PUT /projects/{id}` does, so that a row write which still fails
+/// (a name collision, the project deleted in between) cannot leave `HEAD`
+/// naming a branch the row does not.
 ///
 /// The existence check is deliberately *not* [`refs::resolve`], which falls
 /// back to a tag of the same name for a bare head: a tag is not an integration
@@ -240,14 +244,51 @@ pub async fn init_project_repo(
 ///
 /// The caller holds the project git lock and passes the guard; the repository
 /// is the one that guard covers (`ARCHITECTURE.md`, "Git model",
-/// Serialization). Nothing else about the project is changed: the row is the
-/// caller's to write, after this returns and after the lock is released
-/// (ADR 0021).
+/// Serialization).
 ///
 /// # Errors
 ///
 /// - [`GitError::UnknownRef`] `<branch>` — no such integration head. The route
 ///   turns this into its own 400.
+/// - [`GitError::InvalidRef`] — `branch` is not a name a ref could have.
+/// - [`GitError::Command`] — `for-each-ref` failed.
+pub async fn verify_default_branch(
+    guard: &ProjectGitGuard,
+    paths: &DataPaths,
+    branch: &str,
+) -> std::result::Result<(), GitError> {
+    let repo = paths.project_repo(guard.project_id());
+
+    // Through the ref parser first, so a name that could not be a branch is
+    // refused before it reaches `for-each-ref` or `symbolic-ref`, exactly as
+    // `init_project_repo` refuses a requested default.
+    refs::GitRef::parse(&format!("{HEADS}{branch}"))?;
+
+    if !has_integration_head(&repo, branch).await? {
+        return Err(GitError::UnknownRef(branch.to_string()));
+    }
+
+    Ok(())
+}
+
+/// Point the project repository's `HEAD` at the integration head `branch`.
+///
+/// The write half of what `PUT /projects/{id}` runs when the caller changes
+/// `default_branch` on a project that is already `ready` (`SPEC.md`,
+/// "Projects"): the bare repository's symbolic `HEAD` has to name the new
+/// branch, because "`HEAD` points at the default integration branch" is what
+/// [`init_project_repo`] established and what a session clone reads
+/// (`ARCHITECTURE.md`, "Git model", Project clone).
+///
+/// That the branch exists is [`verify_default_branch`]'s answer, taken under
+/// the same guard before the caller's row write; `symbolic-ref` itself would
+/// accept a name with no ref behind it. The guard is the project git lock and
+/// the repository is the one it covers (`ARCHITECTURE.md`, "Git model",
+/// Serialization); the caller's transaction is still open when this runs, and
+/// rolls back if it fails, so the two writes cannot disagree (ADR 0021).
+///
+/// # Errors
+///
 /// - [`GitError::InvalidRef`] — `branch` is not a name a ref could have.
 /// - [`GitError::Command`] — git refused to move `HEAD`.
 pub async fn set_default_branch(
@@ -258,14 +299,7 @@ pub async fn set_default_branch(
     let project_id = guard.project_id();
     let repo = paths.project_repo(project_id);
 
-    // Through the ref parser first, so a name that could not be a branch is
-    // refused before it reaches `for-each-ref` or `symbolic-ref`, exactly as
-    // `init_project_repo` refuses a requested default.
     refs::GitRef::parse(&format!("{HEADS}{branch}"))?;
-
-    if !has_integration_head(&repo, branch).await? {
-        return Err(GitError::UnknownRef(branch.to_string()));
-    }
 
     point_head_at(&repo, branch).await?;
 

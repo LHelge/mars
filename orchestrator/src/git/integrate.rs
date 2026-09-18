@@ -547,10 +547,21 @@ async fn reconcile(
 /// after a blank line, which is what makes it a trailer git itself can read
 /// back with `git interpret-trailers --parse`.
 pub fn requested_by_trailer(actor: &GitActor) -> String {
+    format!("{TRAILER_KEY}: {}", requested_by(actor))
+}
+
+/// Who asked, as the trailer and the `git` outcome events spell it:
+/// `user:<uuid>`, `session:<uuid>` or `system`.
+///
+/// One definition rather than two, because the `requested_by` field of a
+/// merge, rebase or push event's `detail` (`SPEC.md`, "AgentEvent") has to
+/// name the actor exactly as the commit it produced does
+/// (`ARCHITECTURE.md`, "Git model", Commit identity).
+pub fn requested_by(actor: &GitActor) -> String {
     match actor {
-        GitActor::User(user_id) => format!("{TRAILER_KEY}: user:{user_id}"),
-        GitActor::Session(session_id) => format!("{TRAILER_KEY}: session:{session_id}"),
-        GitActor::System => format!("{TRAILER_KEY}: system"),
+        GitActor::User(user_id) => format!("user:{user_id}"),
+        GitActor::Session(session_id) => format!("session:{session_id}"),
+        GitActor::System => "system".to_string(),
     }
 }
 

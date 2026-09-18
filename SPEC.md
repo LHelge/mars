@@ -334,6 +334,22 @@ type AgentEvent = AgentEventBase & (
 
 Agent/tool output and user-provided transcript content may contain secrets. v1 applies no automatic secret detection or redaction before storing or displaying this content, including `tool_call`, `tool_result`, `text`, `thinking`, `user_message` and `raw` payloads (ADR 0027). Normal translation and size limits still apply. The `thinking.redacted` flag reflects backend-provided redaction; it is not a Mars secret-filtering guarantee. Orchestrator-generated diagnostics and event metadata must not copy values from credential handling.
 
+The `git` event's `detail` is one shape per `op`:
+
+```ts
+type GitDetail =
+  // op: "sync"
+  | { ref: string; commit?: string; error?: string }
+  // op: "merge"
+  | { source: string; target: string; commit?: string; fast_forward?: boolean; conflicts?: string[]; requested_by: string; error?: string }
+  // op: "rebase"
+  | { branch: string; onto: string; commit?: string; conflicts?: string[]; work_tree?: "updated" | "reconciliation_required" | "not_applicable"; requested_by: string; error?: string }
+  // op: "push"
+  | { ref: string; remote_branch: string; commit?: string; force: boolean; compare_url?: string; requested_by: string; error?: string };
+```
+
+Optional fields are omitted rather than null: `commit`, `fast_forward` and `compare_url` appear when `ok` is true, `conflicts` and `error` when it is false. `ref`, `source`, `target`, `branch` and `onto` are API ref names, except a task merge's `source`, which is the hand-off id. `requested_by` is `user:<uuid>`, `session:<uuid>` or `system`, the same value the commit's `Requested-By` trailer carries. `error` is the generic user-facing message from the same failure the REST call would answer with — never git's stderr and never a credential. The event is written on every session whose ref took part and on the calling session when an agent asked (`ARCHITECTURE.md`, "Git model", Merge, rebase, push).
+
 Translation rules for the Claude backend, from `stream-json` lines:
 
 - `system`/`init` → `init`; `session_id` is stored as `cli_session_id`; `resumed` is true when the launch used `--resume`.

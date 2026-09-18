@@ -167,6 +167,39 @@ impl Error {
             Error::Profile(err) => err.status(),
         }
     }
+
+    /// The message a client is allowed to see.
+    ///
+    /// Public for the same reason [`Error::status`] is: the response body is
+    /// not the only place this message goes. A `git` outcome event records the
+    /// failure of a merge, a rebase or a push in its `detail.error`
+    /// (`SPEC.md`, "AgentEvent"), and that field is this message — never git's
+    /// stderr, which may name a path or a remote, and never an internal
+    /// detail (`CLAUDE.md` rule 3). Every 5xx answers the generic
+    /// `internal error`; the detail stays in the log line
+    /// [`IntoResponse`](Error::into_response) writes.
+    pub fn user_message(&self) -> String {
+        match self {
+            Error::GitConflict { message, .. } => message.clone(),
+            // `From<GitError>` routes conflicts to `GitConflict`, so this only
+            // catches one constructed by hand. It is here so a 422 can never
+            // go out without the message the contract promises.
+            Error::Git(GitError::Conflict { .. }) => GIT_CONFLICT_MESSAGE.to_string(),
+            Error::Database(sqlx::Error::RowNotFound) => Error::NotFound.to_string(),
+            other if other.status().is_server_error() => INTERNAL_MESSAGE.to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    /// The conflicting paths this failure carries, for the 422 body's
+    /// `conflicts` and the `git` event detail's (`SPEC.md`, "REST API").
+    pub fn conflicts(&self) -> Option<Vec<String>> {
+        match self {
+            Error::GitConflict { conflicts, .. } => Some(conflicts.clone()),
+            Error::Git(GitError::Conflict { paths }) => Some(paths.clone()),
+            _ => None,
+        }
+    }
 }
 
 /// Not `#[from]`, because one git failure does not belong in
@@ -213,23 +246,13 @@ impl IntoResponse for Error {
             other => debug!(status = status.as_u16(), error = %other, "request failed"),
         }
 
-        let (message, conflicts) = match &self {
-            Error::GitConflict { message, conflicts } => (message.clone(), Some(conflicts.clone())),
-            // `From<GitError>` routes conflicts to `GitConflict`, so this only
-            // catches one constructed by hand. It is here so a 422 can never
-            // go out without the `conflicts` the contract promises.
-            Error::Git(GitError::Conflict { paths }) => {
-                (GIT_CONFLICT_MESSAGE.to_string(), Some(paths.clone()))
-            }
-            Error::Database(sqlx::Error::RowNotFound) => (Error::NotFound.to_string(), None),
-            _ if status.is_server_error() => (INTERNAL_MESSAGE.to_string(), None),
-            other => (other.to_string(), None),
-        };
-
+        // The same two answers a `git` outcome event records, so a failure
+        // cannot describe itself one way in the response and another in the
+        // session transcript.
         let body = ErrorBody {
             status: status.as_u16(),
-            error: message,
-            conflicts,
+            error: self.user_message(),
+            conflicts: self.conflicts(),
         };
 
         (status, axum::Json(body)).into_response()

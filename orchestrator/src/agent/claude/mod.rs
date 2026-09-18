@@ -1,0 +1,151 @@
+//! The Claude Code adapter (`ARCHITECTURE.md`, "Claude Code invocation").
+//!
+//! A stub for now: the launch command's flag set, the native-output translator
+//! and the stdin encoding each arrive with their own task, verified against the
+//! pinned CLI version by the adapter probe. Until then `launch_command` names
+//! the binary and nothing else, `translate` keeps every line verbatim as a
+//! `raw` event, and `encode_input` writes the SDK user-message shape
+//! (`ARCHITECTURE.md`, "Input encoding").
+
+use std::any::Any;
+
+use serde_json::json;
+
+use super::{AgentBackend, Command, LaunchContext, TranslateState};
+use crate::events::{AgentEvent, AgentEventBody, SessionInput};
+use crate::models::AgentBackend as Backend;
+use crate::prelude::*;
+
+/// The Claude Code version this adapter is written against.
+///
+/// The same version `images/claude/Dockerfile` pins with
+/// `ARG CLAUDE_CODE_VERSION` and records in the image tag, and the version the
+/// fixtures under `tests/fixtures/claude/` were recorded from. A bump changes
+/// all three together and adds fixtures rather than editing old ones
+/// (`CLAUDE.md`, "Testing expectations").
+pub const CLAUDE_CLI_VERSION: &str = "2.1.274";
+
+/// The CLI binary as it is found on the session image's `PATH`.
+pub const CLAUDE_CLI_BINARY: &str = "claude";
+
+/// The Claude Code adapter.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClaudeBackend;
+
+impl ClaudeBackend {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl AgentBackend for ClaudeBackend {
+    /// The binary only, until the flag-building task fills this in against the
+    /// invocation documented in `ARCHITECTURE.md`, "Claude Code invocation".
+    fn launch_command(&self, _ctx: &LaunchContext) -> Command {
+        Command {
+            argv: vec![CLAUDE_CLI_BINARY.to_string()],
+        }
+    }
+
+    /// Every line verbatim, until the translator tasks replace this.
+    ///
+    /// A line that is not JSON at all is still kept, as a JSON string, so
+    /// nothing the CLI wrote is lost between here and the real translator.
+    fn translate(&self, line: &str, _state: &mut TranslateState) -> Vec<AgentEvent> {
+        let native = serde_json::from_str(line).unwrap_or_else(|_| json!(line));
+        vec![
+            AgentEventBody::Raw {
+                backend: Backend::Claude,
+                native,
+            }
+            .into(),
+        ]
+    }
+
+    fn encode_input(&self, input: &SessionInput) -> Result<String> {
+        let line = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": input.text() }],
+            },
+        });
+        Ok(format!("{line}\n"))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{LaunchMode, TranslateConfig};
+    use super::*;
+
+    #[test]
+    fn the_pinned_version_matches_the_image() {
+        let dockerfile = include_str!("../../../../images/claude/Dockerfile");
+        assert!(
+            dockerfile.contains(&format!("ARG CLAUDE_CODE_VERSION={CLAUDE_CLI_VERSION}")),
+            "the adapter's pin and the image's pin have drifted apart",
+        );
+    }
+
+    #[test]
+    fn the_launch_command_names_the_cli() {
+        let ctx = LaunchContext::new(LaunchMode::Conversational { resume: None });
+        assert_eq!(
+            ClaudeBackend::new().launch_command(&ctx).argv.first(),
+            Some(&"claude".to_string()),
+        );
+    }
+
+    #[test]
+    fn every_line_is_raw_for_now() {
+        let mut state = TranslateState::new(TranslateConfig::default());
+        let events = ClaudeBackend::new().translate(r#"{"type":"system"}"#, &mut state);
+        assert_eq!(
+            events,
+            vec![
+                AgentEventBody::Raw {
+                    backend: Backend::Claude,
+                    native: json!({ "type": "system" }),
+                }
+                .into()
+            ],
+        );
+
+        let events = ClaudeBackend::new().translate("not json", &mut state);
+        assert_eq!(
+            events,
+            vec![
+                AgentEventBody::Raw {
+                    backend: Backend::Claude,
+                    native: json!("not json"),
+                }
+                .into()
+            ],
+        );
+    }
+
+    #[test]
+    fn an_input_is_encoded_as_one_sdk_user_message_line() {
+        let encoded = ClaudeBackend::new()
+            .encode_input(&SessionInput::Message {
+                text: "hi".to_string(),
+            })
+            .unwrap();
+        assert!(encoded.ends_with('\n'));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(encoded.trim_end()).unwrap(),
+            json!({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "hi" }],
+                },
+            }),
+        );
+    }
+}

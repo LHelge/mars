@@ -18,7 +18,10 @@
 //! [`super::streams`]. Those are exactly the rows of the operation table in
 //! `ARCHITECTURE.md`, "Engine adapter", and nothing outside it is called.
 //!
-//! Every method here is one engine call plus a mapping. Retries, the grace
+//! Every method here is one engine call plus a mapping, with one exception:
+//! `create` takes a per-connection mutex first, because Podman cannot resolve
+//! `keep-id` for two containers at once (`ARCHITECTURE.md`, "Engine adapter",
+//! the `UsernsMode` row). Retries, the grace
 //! period between `SIGINT` and `SIGTERM` and the decision of what an exit code
 //! means belong to the session owner (`ARCHITECTURE.md`, "Stop semantics").
 //!
@@ -40,6 +43,7 @@ use std::fmt;
 // `engine/mod.rs` does, so the signatures below read as the trait declares
 // them: `Result<T, EngineError>`.
 use std::result::Result;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use async_trait::async_trait;
 // `bollard` names three types the engine's own vocabulary also names. They are
@@ -60,6 +64,7 @@ use bollard::query_parameters::{
 };
 use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::StreamExt;
+use tokio::sync::Mutex;
 
 use super::spec::to_bollard;
 use super::streams::{BollardExec, BollardStdin, resize_exec};
@@ -106,6 +111,31 @@ pub struct BollardEngine {
     kind: EngineKind,
     /// The engine's own version string, for the startup log and diagnostics.
     version: String,
+    /// Held across [`ContainerEngine::create`] and released before anything
+    /// else, so at most one container is being created on this connection at a
+    /// time (`ARCHITECTURE.md`, "Engine adapter", the `UsernsMode` row).
+    ///
+    /// Podman resolves `keep-id` by calling the non-thread-safe
+    /// `subid_get_uid_ranges` in `libsubid` inside the API service process,
+    /// once per create: two creates in flight corrupt each other's uid mapping
+    /// — no sub-uid range at all, or the range counted twice — and the
+    /// container then fails at `start`, or the service segfaults and fails
+    /// every request it is serving (Bears u6zkz). The mapping is already wrong
+    /// when `create` returns, so serialising `create` alone is enough.
+    ///
+    /// Taken whatever the engine is rather than only on
+    /// [`EngineKind::Podman`]: a create is a handful of milliseconds against a
+    /// local socket and sessions are not launched in bursts, so the branch
+    /// would buy Docker nothing measurable and cost the adapter a second code
+    /// path that only one engine ever exercises.
+    ///
+    /// Shared per engine host by [`create_lock_for`] rather than made per
+    /// adapter: a clone of the adapter must take the same lock, or there is no
+    /// lock, and so must a second adapter connected to the same socket — the
+    /// corruption is in the engine's own process, so what has to be serialised
+    /// is the host, not the client handle. `main` connects once, but the engine
+    /// suite connects per scenario and runs them in parallel.
+    create_lock: Arc<Mutex<()>>,
 }
 
 impl BollardEngine {
@@ -136,6 +166,7 @@ impl BollardEngine {
             docker,
             kind,
             version: version_string,
+            create_lock: create_lock_for(docker_host),
         })
     }
 
@@ -187,6 +218,26 @@ impl BollardEngine {
             },
         }
     }
+}
+
+/// The create lock for one engine host, created the first time that host is
+/// connected to and shared by every adapter connected to it afterwards.
+///
+/// Keyed by the trimmed `DOCKER_HOST` value, which is how the engine is named
+/// everywhere else in the process; two spellings of the same socket would get a
+/// lock each, and nothing in Mars spells it two ways. The registry is a plain
+/// `std` mutex because it is held only long enough to clone an `Arc` — never
+/// across an await.
+fn create_lock_for(docker_host: &str) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<StdMutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+    LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("the engine create-lock registry is not poisoned")
+        .entry(docker_host.trim().to_string())
+        .or_default()
+        .clone()
 }
 
 /// Build the client for `docker_host`, without talking to it.
@@ -602,6 +653,13 @@ impl ContainerEngine for BollardEngine {
         // shape is decided (`ARCHITECTURE.md`, "Session container
         // specification").
         let body = to_bollard(spec, self.kind);
+
+        // One create at a time on this connection, whatever the engine: Podman
+        // cannot resolve `keep-id` for two containers at once (see
+        // [`Self::create_lock`]). The guard covers the create call and nothing
+        // else — it is dropped when this `match` ends, before the caller's
+        // `connect_network` and `start`, which are safe concurrently.
+        let _creating = self.create_lock.lock().await;
 
         match self.docker.create_container(Some(options), body).await {
             Ok(response) => {

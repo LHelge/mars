@@ -123,6 +123,18 @@ impl CostDelta {
     }
 }
 
+/// Where one session's currently running process starts, in event sequences
+/// and in transcript bytes ([`SessionRepository::process_start`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProcessStart {
+    /// The sequence of the `state_change` that announced the launch, `0` when
+    /// the session has never been `running`. Events after it belong to this
+    /// process.
+    pub launch_seq: i64,
+    /// The transcript byte offset this process's own output starts at.
+    pub start_offset: u64,
+}
+
 /// The sequences one append occupied, inclusive at both ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppendedRange {
@@ -1208,6 +1220,55 @@ impl<'a> SessionRepository<'a> {
         .await?;
 
         Ok(max)
+    }
+
+    /// Where the session's *current* process begins, in both coordinates the
+    /// owner reconstructs translation state from (`ARCHITECTURE.md`,
+    /// "Durability and recovery").
+    ///
+    /// The process-launch boundary is the last `state_change` into `running`:
+    /// the launcher writes it when it attaches stdin, before any output of the
+    /// new process can be committed (`ARCHITECTURE.md`, "Launch sequence"), so
+    /// everything with a higher sequence belongs to the process that is running
+    /// now. [`ProcessStart::launch_seq`] is that sequence and
+    /// [`ProcessStart::start_offset`] is the highest transcript offset committed
+    /// *before* it — the byte the running process's own output starts at in a
+    /// `log/stream.jsonl` that earlier processes appended to as well.
+    ///
+    /// Both are `0` for a session that has never been `running`, which replays
+    /// the transcript from its first byte; that is the same answer as a session
+    /// whose first process is the current one.
+    pub async fn process_start(&self, session_id: Uuid) -> Result<ProcessStart> {
+        let row = sqlx::query!(
+            r#"
+            WITH launch AS (
+                SELECT COALESCE(MAX(seq), 0) AS seq
+                FROM events
+                WHERE session_id = $1
+                  AND kind = 'state_change'
+                  AND payload->>'to' = 'running'
+            )
+            SELECT
+                launch.seq AS "launch_seq!",
+                COALESCE(
+                    (
+                        SELECT MAX((payload->>'_offset')::bigint)
+                        FROM events
+                        WHERE session_id = $1 AND seq < launch.seq
+                    ),
+                    0
+                ) AS "start_offset!"
+            FROM launch
+            "#,
+            session_id,
+        )
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(ProcessStart {
+            launch_seq: row.launch_seq,
+            start_offset: row.start_offset.max(0) as u64,
+        })
     }
 }
 

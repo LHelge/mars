@@ -14,7 +14,7 @@ pub use password_reset_tokens::PasswordResetTokenRepository;
 pub use projects::ProjectRepository;
 pub use refresh_tokens::RefreshTokenRepository;
 pub use secrets::{SecretListFilter, SecretRepository, UserFilter};
-pub use sessions::{AppendedRange, CostDelta, SessionRepository, Transition};
+pub use sessions::{AppendedRange, CostDelta, ProcessStart, SessionRepository, Transition};
 pub use tasks::{StateFields, TaskFilter, TaskRepository};
 pub use user_invites::UserInviteRepository;
 pub use users::UserRepository;

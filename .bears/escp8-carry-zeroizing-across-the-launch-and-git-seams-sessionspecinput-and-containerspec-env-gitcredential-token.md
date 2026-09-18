@@ -1,10 +1,10 @@
 ---
 id: escp8
 title: "Carry Zeroizing across the launch and git seams: SessionSpecInput and ContainerSpec env, GitCredential token"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-17T20:03:49.284808788Z"
-updated: "2026-09-18T23:04:46.716244424Z"
+updated: "2026-09-18T23:46:56.485720451Z"
 tags:
   - orchestrator
   - secrets

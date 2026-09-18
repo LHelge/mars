@@ -1,10 +1,10 @@
 ---
 id: "88tdh"
 title: "Add SessionRepository domain queries: locked state transitions with session_state notify, native-line event batches with _offset and counters, event pagination"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:29:04.674000401Z"
-updated: "2026-09-16T20:29:04.674000401Z"
+updated: "2026-09-18T20:35:52.881514830Z"
 tags:
   - orchestrator
   - sessions
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - cksdv
 parent: s52qg
+attempts: 1
 ---
 
 ## Summary

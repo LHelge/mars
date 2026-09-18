@@ -1,11 +1,10 @@
 //! The Claude Code adapter (`ARCHITECTURE.md`, "Claude Code invocation").
 //!
-//! A stub for now: the launch command's flag set, the native-output translator
-//! and the stdin encoding each arrive with their own task, verified against the
-//! pinned CLI version by the adapter probe. Until then `launch_command` names
-//! the binary and nothing else, `translate` keeps every line verbatim as a
-//! `raw` event, and `encode_input` writes the SDK user-message shape
-//! (`ARCHITECTURE.md`, "Input encoding").
+//! Partly a stub still: the native-output translator arrives with its own
+//! task, verified against the pinned CLI version by the adapter probe. Until
+//! then `translate` keeps every line verbatim as a `raw` event. The launch
+//! command is built in [`launch`] and `encode_input` writes the SDK
+//! user-message shape (`ARCHITECTURE.md`, "Input encoding").
 
 use std::any::Any;
 
@@ -15,6 +14,8 @@ use super::{AgentBackend, Command, LaunchContext, TranslateState};
 use crate::events::{AgentEvent, AgentEventBody, SessionInput};
 use crate::models::AgentBackend as Backend;
 use crate::prelude::*;
+
+pub mod launch;
 
 /// The Claude Code version this adapter is written against.
 ///
@@ -26,7 +27,7 @@ use crate::prelude::*;
 pub const CLAUDE_CLI_VERSION: &str = "2.1.274";
 
 /// The CLI binary as it is found on the session image's `PATH`.
-pub const CLAUDE_CLI_BINARY: &str = "claude";
+pub const CLAUDE_CLI_BINARY: &str = launch::BINARY;
 
 /// The Claude Code adapter.
 #[derive(Debug, Clone, Copy, Default)]
@@ -39,12 +40,10 @@ impl ClaudeBackend {
 }
 
 impl AgentBackend for ClaudeBackend {
-    /// The binary only, until the flag-building task fills this in against the
-    /// invocation documented in `ARCHITECTURE.md`, "Claude Code invocation".
-    fn launch_command(&self, _ctx: &LaunchContext) -> Command {
-        Command {
-            argv: vec![CLAUDE_CLI_BINARY.to_string()],
-        }
+    /// The invocation documented in `ARCHITECTURE.md`, "Claude Code
+    /// invocation", built in [`launch`].
+    fn launch_command(&self, ctx: &LaunchContext) -> Command {
+        launch::launch_command(ctx)
     }
 
     /// Every line verbatim, until the translator tasks replace this.
@@ -93,11 +92,15 @@ mod tests {
     }
 
     #[test]
-    fn the_launch_command_names_the_cli() {
+    fn the_launch_command_is_the_documented_invocation() {
         let ctx = LaunchContext::new(LaunchMode::Conversational { resume: None });
         assert_eq!(
+            ClaudeBackend::new().launch_command(&ctx).argv,
+            launch::build_argv(&ctx),
+        );
+        assert_eq!(
             ClaudeBackend::new().launch_command(&ctx).argv.first(),
-            Some(&"claude".to_string()),
+            Some(&CLAUDE_CLI_BINARY.to_string()),
         );
     }
 

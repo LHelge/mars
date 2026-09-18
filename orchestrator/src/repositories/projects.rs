@@ -711,7 +711,15 @@ impl<'a> ProjectRepository<'a> {
         Ok(profile)
     }
 
-    /// The project's profiles, by name, each with the states it serves.
+    /// The project's profiles, oldest first, each with the states it serves.
+    ///
+    /// Creation order rather than alphabetical, because it is the order
+    /// `SPEC.md`, "Agent profiles" documents for `GET
+    /// /projects/{pid}/profiles` and the one that keeps the seeded `default`
+    /// profile at the top of the list a user reads, whatever the profiles
+    /// added after it are called. The name breaks a tie, so two profiles
+    /// created in one transaction — which share `NOW()` — still list in a
+    /// fixed order.
     pub async fn list_profiles(&self, project_id: Uuid) -> Result<Vec<AgentProfile>> {
         let profiles = sqlx::query_as!(
             AgentProfile,
@@ -728,7 +736,7 @@ impl<'a> ProjectRepository<'a> {
             LEFT JOIN task_states AS ts ON ts.id = ps.state_id
             WHERE p.project_id = $1
             GROUP BY p.id
-            ORDER BY p.name
+            ORDER BY p.created_at, p.name
             "#,
             project_id,
         )

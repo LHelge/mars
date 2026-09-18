@@ -13,6 +13,7 @@ use crate::git::{GitCredentialProvider, ProjectGitLocks};
 use crate::prelude::*;
 use crate::routes::throttle::{LoginThrottle, ResetRateLimit};
 use crate::secrets::SecretsKeyring;
+use crate::session::SessionRegistry;
 
 /// The state cloned into every handler.
 ///
@@ -32,7 +33,6 @@ use crate::secrets::SecretsKeyring;
 ///
 /// | Field | Owning epic |
 /// | --- | --- |
-/// | `registry: SessionRegistry` | Session lifecycle |
 /// | the broadcast senders for event fan-out | Real-time delivery |
 ///
 /// Every field is cheap to clone: an `Arc`, a `PgPool` handle or a broadcast
@@ -64,6 +64,13 @@ pub struct AppState {
     /// and the deletion paths share this one table, which is the whole point
     /// of it living here.
     pub git_locks: Arc<ProjectGitLocks>,
+    /// The handles to the running session owner tasks (`ARCHITECTURE.md`,
+    /// "Session owner task"). The REST input endpoint, the WebSocket handler,
+    /// the launcher and the cron reapers reach a session's owner only through
+    /// this registry, which is what makes the CLI's stdin single-writer. It is
+    /// `Clone` with its map behind an `Arc` of its own, so it needs no second
+    /// `Arc` here.
+    pub session_registry: SessionRegistry,
 }
 
 impl AppState {
@@ -76,7 +83,10 @@ impl AppState {
     /// `reset()` on the field; a unit test of the limiters themselves builds
     /// its own with an injected clock. The git lock table is built here for
     /// the same reason, and a test that wants to take a git lock takes it
-    /// through `state.git_locks`, the very table the handlers wait on.
+    /// through `state.git_locks`, the very table the handlers wait on. The
+    /// session registry starts empty for the same reason again: a test that
+    /// registers an owner registers it in the registry the handlers forward
+    /// through.
     pub fn new(
         config: Arc<Config>,
         pool: PgPool,
@@ -95,6 +105,7 @@ impl AppState {
             login_throttle: Arc::new(LoginThrottle::new()),
             reset_rate_limit: Arc::new(ResetRateLimit::new()),
             git_locks: Arc::new(ProjectGitLocks::new()),
+            session_registry: SessionRegistry::new(),
         }
     }
 }
@@ -237,6 +248,29 @@ mod tests {
         state.reset_rate_limit.reset();
         assert_eq!(clone.login_throttle.tracked_keys(), 0);
         assert_eq!(clone.reset_rate_limit.tracked_keys(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_session_registry_is_shared_by_a_clone_and_starts_empty() {
+        use crate::models::SessionKind;
+        use crate::session::Phase;
+
+        let state = test_state();
+        let clone = state.clone();
+
+        assert_eq!(state.session_registry.tracked_sessions(), 0);
+
+        // A launcher holding the clone registers into the same map the
+        // WebSocket handler holding the original forwards through: that
+        // sharing is what makes stdin single-writer.
+        let session = Uuid::new_v4();
+        let _rx =
+            clone
+                .session_registry
+                .register(session, SessionKind::Conversational, Phase::Creating);
+
+        assert_eq!(state.session_registry.tracked_sessions(), 1);
+        assert!(state.session_registry.is_live(session));
     }
 
     #[tokio::test]

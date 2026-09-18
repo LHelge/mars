@@ -460,7 +460,7 @@ fn the_subagent_recording_proves_the_subagent_tool_name() {
 
 /// Every `AgentEventBody` kind the Claude translator can emit.
 ///
-/// `user_message`, `prompt`, `state_change`, `launch_warning` and `git` are not
+/// `user_message`, `state_change`, `launch_warning` and `git` are not
 /// here: the owner writes them, never the translator.
 const TRANSLATOR_EVENT_KINDS: [&str; 12] = [
     "error",

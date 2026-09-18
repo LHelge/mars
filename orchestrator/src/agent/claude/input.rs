@@ -3,17 +3,13 @@
 //!
 //! One JSON line per user input, in the SDK user-message shape. The shape is
 //! not in the CLI reference documentation; it is what the Agent SDK sends over
-//! the same protocol, and the live probe against the pinned version is what
-//! confirms it. Two consequences for this module: the shape is written in one
-//! place so the probe has one place to correct, and nothing is added to it on
-//! spec — no `session_id`, because the CLI is not known to want one
-//! (`docs/open-questions.md`, item 1).
-//!
-//! An `answer` is encoded exactly like a `message`. Under
-//! `--permission-prompts none` the CLI is not expected to ask anything, so
-//! there is no distinct answer shape to send; `reply_to` is orchestrator
-//! bookkeeping that ties the answer to the `prompt` event in the transcript and
-//! never reaches the CLI (`docs/open-questions.md`, item 3).
+//! the same protocol, and the live probe against the pinned version confirmed
+//! it: the recorded line carries neither `session_id` nor `parent_tool_use_id`
+//! and the CLI answered a turn to it
+//! (`tests/fixtures/claude/2.1.274/NOTES.md`, `stdin_shape`). Nothing is added
+//! to the line here, and there is one input kind to encode: the CLI never asks
+//! the host a question under Mars's permission flags, so there is no `answer`
+//! to encode differently (ADR 0033).
 
 use serde_json::Value;
 
@@ -93,31 +89,15 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_is_encoded_as_the_same_shape_without_its_reply_to() {
-        let answer = encode_input(&SessionInput::Answer {
-            reply_to: 7,
-            text: "yes".to_string(),
-        })
-        .unwrap();
-
-        assert_eq!(
-            answer,
-            encode_input(&SessionInput::Message {
-                text: "yes".to_string(),
-            })
-            .unwrap(),
-        );
-        assert!(!answer.contains("reply_to"));
-        assert!(!answer.contains('7'));
-    }
-
-    #[test]
-    fn the_line_carries_no_session_id() {
+    fn the_line_carries_no_session_id_or_parent_tool_use_id() {
+        // Neither is required: the probe's recorded line has neither and the
+        // CLI answered a turn to it (`ARCHITECTURE.md`, "Input encoding").
         let encoded = encode_input(&SessionInput::Message {
             text: "hi".to_string(),
         })
         .unwrap();
         assert!(!encoded.contains("session_id"));
+        assert!(!encoded.contains("parent_tool_use_id"));
     }
 
     #[test]
@@ -131,13 +111,6 @@ mod tests {
                 matches!(&error, Error::BadRequest(message) if message == EMPTY_INPUT),
                 "{text:?} produced {error:?}",
             );
-
-            let error = encode_input(&SessionInput::Answer {
-                reply_to: 1,
-                text: text.to_string(),
-            })
-            .unwrap_err();
-            assert!(matches!(&error, Error::BadRequest(message) if message == EMPTY_INPUT));
         }
     }
 

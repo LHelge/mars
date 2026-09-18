@@ -4,14 +4,15 @@ Everything the brief left undecided that has not yet been resolved. Each entry s
 
 The first review pass (2026-09-15) resolved 30 questions; their outcomes are in `SPEC.md`, `ARCHITECTURE.md`, `docs/data-model.md`, `README.md` and ADRs 0013 and 0014. The task-structure planning session (2026-09-16) resolved the last one, how task assignment is modelled, in ADR 0016.
 
-The core v1 decisions are recorded. The items below remain to be verified against the pinned Claude Code version during the adapter task, including the MCP-loading interaction in item 4. Each is answered by the live probe test described in `ARCHITECTURE.md`, "Input encoding", and the answer is written back into the document that depends on it; the item is then deleted here.
+**Nothing is open.** The verification items that remained were the ones only the real Claude Code CLI could answer, and the live probe (`orchestrator/tests/claude_probe.rs`) answered all of them against the pinned version on 2026-09-18. Its observations are in `orchestrator/tests/fixtures/claude/2.1.274/NOTES.md` with the recordings beside them, and the rules they establish are in the documents that own them:
 
-## Verification items
+- the stdin line shape, that neither `session_id` nor `parent_tool_use_id` is needed on it, that a mid-turn message queues rather than interrupts, and that a `control_request`/`interrupt` exists and behaves like `SIGINT` — `ARCHITECTURE.md`, "Input encoding";
+- that no prompt or permission question can reach the host under `--permission-mode bypassPermissions --permission-prompts none`, so the `prompt` event and the `answer` input do not exist — ADR 0033, with the contract in `SPEC.md`, "WebSocket: session stream" and "AgentEvent";
+- that `--strict-mcp-config` does suppress the repository's own `.mcp.json` servers and is therefore left off, and that an unreachable server is reported as `failed` without failing the turn — `ARCHITECTURE.md`, "Claude Code invocation";
+- that `result.total_cost_usd` is cumulative for the process while `usage` is per turn — `ARCHITECTURE.md`, "Cost accounting";
+- that `system`/`init` carries `model` and `tools` (and much else Mars ignores), and that nothing on it reports a resume — `ARCHITECTURE.md`, "Claude Code invocation"; `SPEC.md`, "AgentEvent", the `init` rule;
+- that multi-turn stdin, `--forward-subagent-text` and a changed profile prompt on `--resume` with `--system-prompt-snapshot off` all behave as ADR 0003 assumes — `ARCHITECTURE.md`, "Claude Code invocation";
+- that the CLI writes nothing until its first stdin line, which is why a session is `running` on stdin attach — ADR 0032, with the sequence in `ARCHITECTURE.md`, "Launch sequence";
+- that `kill` reaches PID 1 without an init process and that `keep-id` works through Podman's compat API — `ARCHITECTURE.md`, "Session image" and "Session container specification".
 
-1. The stdin user-message shape under `--input-format stream-json` (`{"type":"user","message":{...}}`), and whether `session_id` or `parent_tool_use_id` must be present on it.
-2. Whether a message written mid-turn interrupts or queues, and whether a `control_request` with subtype `interrupt` exists so that a turn can be stopped without parking the session.
-3. Whether any prompt-like message (AskUserQuestion, a permission request) can reach the host under `--permission-mode bypassPermissions --permission-prompts none`. If not, the `prompt` event kind and the `answer` input are removed from `SPEC.md`.
-4. Verify `--strict-mcp-config` against the pinned version; it is listed in the [current CLI reference](https://code.claude.com/docs/en/cli-reference). Before enabling it, resolve its interaction with the documented repository-owned `.mcp.json` behavior: strict mode ignores that configuration as well as other discovered MCP servers.
-5. Whether `result.total_cost_usd` and `result.usage` are per turn or cumulative for the process, which sets the accumulation rule in `ARCHITECTURE.md`, "Cost accounting".
-6. Whether `system`/`init` includes `model` and `tools`; only `session_id` and `mcp_servers` are documented.
-7. Verify multi-turn stdin with `--print`, nested subagent text with `--forward-subagent-text`, and changed profile prompts on resume with `--system-prompt-snapshot off` using the complete launch command in `ARCHITECTURE.md`, "Claude Code invocation".
+Every finding is version-specific: it holds for the CLI version pinned in `images/claude/Dockerfile` (`ARG CLAUDE_CODE_VERSION`), and the probe re-checks it on a bump. A new question is added back to this file under a heading of its own.

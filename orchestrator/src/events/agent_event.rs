@@ -108,8 +108,6 @@ pub enum AgentEventBody {
         user_id: Option<Uuid>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reply_to: Option<i64>,
     },
     /// A partial assistant text block; only emitted with partial messages on.
     TextDelta {
@@ -141,14 +139,6 @@ pub enum AgentEventBody {
         tool_use_id: Option<String>,
         name: String,
         reason: String,
-    },
-    /// A question that needs a [`SessionInput::Answer`](super::SessionInput)
-    /// quoting this event's `seq`.
-    Prompt {
-        prompt_id: String,
-        text: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        options: Option<Vec<String>>,
     },
     SubagentStart {
         tool_use_id: String,
@@ -223,7 +213,6 @@ impl AgentEventBody {
             Self::ToolCall { .. } => "tool_call",
             Self::ToolResult { .. } => "tool_result",
             Self::PermissionDenied { .. } => "permission_denied",
-            Self::Prompt { .. } => "prompt",
             Self::SubagentStart { .. } => "subagent_start",
             Self::SubagentEnd { .. } => "subagent_end",
             Self::Result { .. } => "result",
@@ -419,14 +408,12 @@ mod tests {
                 text: "hello".to_string(),
                 user_id: Some(user_id),
                 client_id: Some("c-1".to_string()),
-                reply_to: Some(7),
             },
             json!({
                 "kind": "user_message",
                 "text": "hello",
                 "user_id": user_id,
                 "client_id": "c-1",
-                "reply_to": 7,
             }),
         );
     }
@@ -438,7 +425,6 @@ mod tests {
                 text: "hello".to_string(),
                 user_id: None,
                 client_id: None,
-                reply_to: None,
             },
             json!({ "kind": "user_message", "text": "hello", "user_id": null }),
         );
@@ -520,23 +506,6 @@ mod tests {
                 reason: "not allowed".to_string(),
             },
             json!({ "kind": "permission_denied", "name": "WebFetch", "reason": "not allowed" }),
-        );
-    }
-
-    #[test]
-    fn a_prompt_round_trips() {
-        round_trip(
-            AgentEventBody::Prompt {
-                prompt_id: "p-1".to_string(),
-                text: "which one?".to_string(),
-                options: Some(vec!["a".to_string(), "b".to_string()]),
-            },
-            json!({
-                "kind": "prompt",
-                "prompt_id": "p-1",
-                "text": "which one?",
-                "options": ["a", "b"],
-            }),
         );
     }
 

@@ -1,10 +1,10 @@
 ---
 id: sdvbh
 title: "Add DELETE /projects/{id}: refuse while sessions run, cascade rows and secrets, remove mirror, CLI state, shared and session directories under the git lock"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:32:20.226061547Z"
-updated: "2026-09-18T11:05:35.412404470Z"
+updated: "2026-09-18T11:59:17.905158167Z"
 tags:
   - orchestrator
   - projects

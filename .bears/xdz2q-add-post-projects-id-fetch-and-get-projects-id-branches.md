@@ -1,10 +1,10 @@
 ---
 id: xdz2q
 title: Add POST /projects/{id}/fetch and GET /projects/{id}/branches
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:31:49.216725076Z"
-updated: "2026-09-18T11:05:36.689277850Z"
+updated: "2026-09-18T11:59:16.271409196Z"
 tags:
   - orchestrator
   - projects

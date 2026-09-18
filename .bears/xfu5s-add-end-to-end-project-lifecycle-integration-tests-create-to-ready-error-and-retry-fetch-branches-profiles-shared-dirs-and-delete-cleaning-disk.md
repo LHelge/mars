@@ -1,10 +1,10 @@
 ---
 id: xfu5s
 title: "Add end-to-end project lifecycle integration tests: create to ready, error and retry, fetch, branches, profiles, shared dirs and delete cleaning disk"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:33:51.965205095Z"
-updated: "2026-09-16T20:33:51.965205095Z"
+updated: "2026-09-18T11:50:17.705556139Z"
 tags:
   - orchestrator
   - projects
@@ -16,6 +16,8 @@ depends_on:
   - cpmj2
   - "98che"
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

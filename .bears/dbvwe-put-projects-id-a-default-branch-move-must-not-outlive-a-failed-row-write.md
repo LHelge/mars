@@ -1,10 +1,10 @@
 ---
 id: dbvwe
 title: "PUT /projects/{id}: a default_branch move must not outlive a failed row write"
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-18T11:09:46.766794158Z"
-updated: "2026-09-18T11:09:46.766794158Z"
+updated: "2026-09-18T11:50:20.209878103Z"
 tags:
   - orchestrator
   - projects
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - cgj5v
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

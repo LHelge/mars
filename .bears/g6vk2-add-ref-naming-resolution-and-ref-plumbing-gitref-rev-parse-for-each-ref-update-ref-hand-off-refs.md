@@ -1,16 +1,18 @@
 ---
 id: g6vk2
 title: Add ref naming, resolution and ref plumbing (GitRef, rev-parse, for-each-ref, update-ref, hand-off refs)
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:28:05.514988652Z"
-updated: "2026-09-16T20:28:05.514988652Z"
+updated: "2026-09-17T23:58:14.183728715Z"
 tags:
   - orchestrator
   - git
 depends_on:
   - bv7a5
 parent: z4u4e
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

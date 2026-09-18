@@ -1,0 +1,29 @@
+{
+  "events": [
+    {
+      "content": {
+        "__generate": "tool_result_bytes",
+        "n": 262144
+      },
+      "is_error": false,
+      "kind": "tool_result",
+      "tool_use_id": "toolu_synthetic_over_limit",
+      "truncated": true
+    },
+    {
+      "content": {
+        "__generate": "tool_result_bytes",
+        "n": 262144
+      },
+      "is_error": false,
+      "kind": "tool_result",
+      "tool_use_id": "toolu_synthetic_at_limit",
+      "truncated": false
+    }
+  ],
+  "state": {
+    "credential": null,
+    "partial_messages": false,
+    "resumed": false
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "events": [
+    {
+      "kind": "text_delta",
+      "text": "Hel"
+    },
+    {
+      "kind": "text_delta",
+      "text": "lo."
+    },
+    {
+      "kind": "text",
+      "message_id": "msg_synthetic_partial",
+      "text": "Hello."
+    }
+  ],
+  "state": {
+    "credential": null,
+    "partial_messages": true,
+    "resumed": false
+  }
+}

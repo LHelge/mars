@@ -203,6 +203,40 @@ impl<'a> SessionRepository<'a> {
         Ok(sessions)
     }
 
+    /// How many sessions of this project are `running` or `creating`.
+    ///
+    /// The one question behind every running-session refusal: deleting a
+    /// project, deleting or clearing a shared directory and the other
+    /// destructive project operations are 409 while a session is live
+    /// (`SPEC.md`, "Projects", "Shared directories"). It takes the caller's
+    /// connection because the count is only authoritative inside the
+    /// transaction that holds the project lock and then performs the deletion;
+    /// counting on the pool first and deleting afterwards is exactly the race
+    /// the lock exists to close (`ARCHITECTURE.md`, "Task tracker"; ADR 0021).
+    ///
+    /// `parked` does not count. The documented set is exactly `running` and
+    /// `creating` — the two states that have, or are about to have, a
+    /// container holding the project's files open.
+    pub async fn count_live_for_project(
+        &self,
+        tx: &mut PgConnection,
+        project_id: Uuid,
+    ) -> Result<i64> {
+        let count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
+            FROM sessions
+            WHERE project_id = $1
+              AND state IN ('running'::session_state, 'creating'::session_state)
+            "#,
+            project_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        Ok(count)
+    }
+
     /// Retitle a session and return the stored row, or `None` when no session
     /// has this id (`PUT /sessions/{id}`).
     ///

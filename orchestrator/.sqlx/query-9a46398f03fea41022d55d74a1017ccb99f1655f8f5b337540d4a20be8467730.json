@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE projects\n            SET status = $2,\n                status_message = $3,\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, created_at, updated_at\n            ",
+  "query": "\n            UPDATE projects\n            SET last_fetched_at = NOW(),\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $2\n                      ) AS \"has_credential!\"\n            ",
   "describe": {
     "columns": [
       {
@@ -145,23 +145,17 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 12,
+        "name": "has_credential!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        {
-          "Custom": {
-            "name": "project_status",
-            "kind": {
-              "Enum": [
-                "cloning",
-                "ready",
-                "error"
-              ]
-            }
-          }
-        },
         "Text"
       ]
     },
@@ -177,8 +171,9 @@
       false,
       false,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "552e779689d65a129b65721865ff66d713ce2445b14e3c9548a14548b851fac5"
+  "hash": "9a46398f03fea41022d55d74a1017ccb99f1655f8f5b337540d4a20be8467730"
 }

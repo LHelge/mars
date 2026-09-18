@@ -29,9 +29,9 @@ pub use git::{
     GitSyncDetail, SessionBranch, SyncOutcome,
 };
 pub use project::{
-    BranchName, DEFAULT_MAX_ATTEMPTS, MAX_MAX_ATTEMPTS, MAX_PROJECT_NAME_CHARS, MIN_MAX_ATTEMPTS,
-    MaxAttempts, NewProject, Project, ProjectError, ProjectName, ProjectResult, ProjectStatus,
-    ProjectUpdate, RemoteUrl, is_branch_name,
+    BranchName, DEFAULT_MAX_ATTEMPTS, MAX_BRANCH_NAME_CHARS, MAX_MAX_ATTEMPTS,
+    MAX_PROJECT_NAME_CHARS, MIN_MAX_ATTEMPTS, MaxAttempts, NewProject, Project, ProjectError,
+    ProjectName, ProjectResult, ProjectStatus, ProjectUpdate, RemoteUrl, is_branch_name,
 };
 pub use secret::{
     EncryptedValue, KeyVersionSample, MAX_SECRET_VALUE_BYTES, NewSecret, ScopeRef, Secret,

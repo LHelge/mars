@@ -23,11 +23,13 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use mars_orchestrator::models::{
-    AgentBackend, BranchName, MaxAttempts, NewAgentProfile, NewProject, NewSharedDir, ProfileKind,
-    ProfileUpdate, Project, ProjectName, ProjectStatus, ProjectUpdate, RemoteUrl,
+    AgentBackend, BranchName, EncryptedValue, MaxAttempts, NewAgentProfile, NewProject, NewSecret,
+    NewSharedDir, ProfileKind, ProfileUpdate, Project, ProjectName, ProjectStatus, ProjectUpdate,
+    RemoteUrl, ScopeRef, SecretName,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::ProjectRepository;
+use mars_orchestrator::repositories::{ProjectRepository, SecretRepository, SessionRepository};
+use mars_orchestrator::secrets::GIT_CREDENTIAL_NAME;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
@@ -121,6 +123,33 @@ async fn seed_session(pool: &PgPool, project_id: Uuid, profile_id: Uuid) -> Uuid
     .expect("the session seeds");
 
     id
+}
+
+/// Not key material: an obviously fake stand-in for the four encrypted
+/// columns of a secret this file only ever asks `EXISTS` about (`CLAUDE.md`,
+/// rule 3).
+fn fake_encrypted_value() -> EncryptedValue {
+    EncryptedValue {
+        ciphertext: b"fake-ciphertext".to_vec(),
+        nonce: b"fake-nonce".to_vec(),
+        data_key_wrapped: b"fake-wrapped-data-key".to_vec(),
+        data_key_nonce: b"fake-wrap-nonce".to_vec(),
+        key_version: 1,
+    }
+}
+
+/// Move a seeded session to `state` directly.
+///
+/// `SessionRepository::set_state` would do it, but it also writes the event
+/// and the notification that belong to a real transition; this file only needs
+/// the column to hold a value so that the live count has something to skip.
+async fn set_session_state(pool: &PgPool, id: Uuid, state: &str) {
+    sqlx::query("UPDATE sessions SET state = $2::session_state WHERE id = $1")
+        .bind(id)
+        .bind(state)
+        .execute(pool)
+        .await
+        .expect("the session state updates");
 }
 
 fn assert_conflict(error: Error, message: &str) {
@@ -426,6 +455,287 @@ async fn the_project_lock_serialises_task_numbering() {
     assert_eq!(after.next_task_number, 3);
     // Allocating a number is not an edit of the project.
     assert_eq!(after.updated_at, project.updated_at);
+}
+
+#[tokio::test]
+async fn a_project_reports_whether_it_has_a_git_credential() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let repository = ProjectRepository::new(&pool);
+
+    let inserted = insert(&pool, &new_project("mars")).await;
+    // The row is written by the secrets manager after the project exists, so
+    // a fresh project has none.
+    assert!(!inserted.has_credential);
+    assert!(
+        !repository
+            .find(inserted.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .has_credential
+    );
+
+    let secrets = SecretRepository::new(&pool);
+    let mut tx = pool.begin().await.unwrap();
+    let mut credential = NewSecret::new(
+        ScopeRef::project(inserted.id),
+        SecretName::parse(GIT_CREDENTIAL_NAME).unwrap(),
+        fake_encrypted_value(),
+    );
+    credential.orchestrator_only = true;
+    secrets.insert(&mut tx, &credential).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Every read computes it, not only `find`.
+    assert!(
+        repository
+            .find(inserted.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .has_credential
+    );
+    let listed = repository.list().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].has_credential);
+
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        repository
+            .update(&mut tx, inserted.id, &ProjectUpdate::default())
+            .await
+            .unwrap()
+            .unwrap()
+            .has_credential
+    );
+    assert!(
+        repository
+            .set_status(&mut tx, inserted.id, ProjectStatus::Error, Some("nope"))
+            .await
+            .unwrap()
+            .unwrap()
+            .has_credential
+    );
+    assert!(
+        repository
+            .mark_cloning_from_error(&mut tx, inserted.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .has_credential
+    );
+    tx.commit().await.unwrap();
+
+    // A secret of the same name in another scope, and another name in this
+    // one, are both somebody else's.
+    let other = insert(&pool, &new_project("apollo")).await;
+    let mut tx = pool.begin().await.unwrap();
+    secrets
+        .insert(
+            &mut tx,
+            &NewSecret::new(
+                ScopeRef::project(other.id),
+                SecretName::parse("NPM_TOKEN").unwrap(),
+                fake_encrypted_value(),
+            ),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert!(
+        !repository
+            .find(other.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .has_credential
+    );
+}
+
+#[tokio::test]
+async fn the_clone_transitions_are_guarded_by_the_current_status() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let repository = ProjectRepository::new(&pool);
+
+    let main = BranchName::parse("main").unwrap();
+    let inserted = insert(&pool, &new_project("mars")).await;
+
+    // A project that is still `cloning` has nothing to retry.
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        repository
+            .mark_cloning_from_error(&mut tx, inserted.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // The clone finishes once. The second call is the same job arriving after
+    // a restart, and it must change nothing.
+    assert_eq!(
+        repository
+            .mark_ready(&mut tx, inserted.id, &main)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        repository
+            .mark_ready(&mut tx, inserted.id, &main)
+            .await
+            .unwrap(),
+        0
+    );
+    // And a failure that arrives after the success is refused just as flatly.
+    assert_eq!(
+        repository
+            .mark_error(&mut tx, inserted.id, "remote HEAD is unborn")
+            .await
+            .unwrap(),
+        0
+    );
+    tx.commit().await.unwrap();
+
+    let ready = repository.find(inserted.id).await.unwrap().unwrap();
+    assert_eq!(ready.status, ProjectStatus::Ready);
+    assert_eq!(ready.default_branch.as_deref(), Some("main"));
+    assert_eq!(ready.status_message, None);
+    // The clone that just finished is also a fetch.
+    assert!(ready.last_fetched_at.is_some());
+    assert!(ready.updated_at > inserted.updated_at);
+
+    // An unknown project matches nothing either, and is not an error.
+    let mut tx = pool.begin().await.unwrap();
+    assert_eq!(
+        repository
+            .mark_ready(&mut tx, Uuid::new_v4(), &main)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        repository
+            .mark_error(&mut tx, Uuid::new_v4(), "gone")
+            .await
+            .unwrap(),
+        0
+    );
+
+    // A second project takes the failing path and is then retried.
+    let failed = insert(&pool, &new_project("apollo")).await;
+    assert_eq!(
+        repository
+            .mark_error(&mut tx, failed.id, "remote HEAD is unborn")
+            .await
+            .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
+
+    let stored = repository.find(failed.id).await.unwrap().unwrap();
+    assert_eq!(stored.status, ProjectStatus::Error);
+    assert_eq!(
+        stored.status_message.as_deref(),
+        Some("remote HEAD is unborn")
+    );
+
+    let mut tx = pool.begin().await.unwrap();
+    let retried = repository
+        .mark_cloning_from_error(&mut tx, failed.id)
+        .await
+        .unwrap()
+        .expect("the project was in error");
+    // A second retry finds it `cloning` already.
+    assert!(
+        repository
+            .mark_cloning_from_error(&mut tx, failed.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // And the reopened clone can now finish, from `cloning`.
+    assert_eq!(
+        repository
+            .mark_ready(&mut tx, failed.id, &main)
+            .await
+            .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
+
+    assert_eq!(retried.status, ProjectStatus::Cloning);
+    assert_eq!(retried.status_message, None);
+    assert!(retried.updated_at > stored.updated_at);
+}
+
+#[tokio::test]
+async fn only_running_and_creating_sessions_count_as_live() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let sessions = SessionRepository::new(&pool);
+    let project = seeded_project(&pool).await;
+    let other = insert(&pool, &new_project("apollo")).await;
+    let profile = insert_profile(&pool, &new_profile(project.id, "default")).await;
+    let other_profile = insert_profile(&pool, &new_profile(other.id, "default")).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    assert_eq!(
+        sessions
+            .count_live_for_project(&mut tx, project.id)
+            .await
+            .unwrap(),
+        0
+    );
+    tx.commit().await.unwrap();
+
+    // One of each state, plus one on another project that must never be
+    // counted here.
+    let creating = seed_session(&pool, project.id, profile).await;
+    let running = seed_session(&pool, project.id, profile).await;
+    set_session_state(&pool, running, "running").await;
+    for state in ["parked", "done", "failed"] {
+        let id = seed_session(&pool, project.id, profile).await;
+        set_session_state(&pool, id, state).await;
+    }
+    let elsewhere = seed_session(&pool, other.id, other_profile).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    assert_eq!(
+        sessions
+            .count_live_for_project(&mut tx, project.id)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        sessions
+            .count_live_for_project(&mut tx, other.id)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sessions
+            .count_live_for_project(&mut tx, Uuid::new_v4())
+            .await
+            .unwrap(),
+        0
+    );
+    tx.commit().await.unwrap();
+
+    set_session_state(&pool, creating, "done").await;
+    set_session_state(&pool, running, "failed").await;
+    set_session_state(&pool, elsewhere, "done").await;
+
+    let mut tx = pool.begin().await.unwrap();
+    assert_eq!(
+        sessions
+            .count_live_for_project(&mut tx, project.id)
+            .await
+            .unwrap(),
+        0
+    );
+    tx.commit().await.unwrap();
 }
 
 #[tokio::test]

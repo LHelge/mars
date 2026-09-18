@@ -163,6 +163,16 @@ pub enum AgentEventBody {
     /// A turn finished; `cost_usd` comes from the backend's total.
     Result {
         subtype: String,
+        /// How the turn ended, in the backend's own word (`completed`,
+        /// `aborted_streaming`, ...), when the backend says.
+        ///
+        /// What tells a turn the user stopped from a turn that failed: a
+        /// `SIGINT` ends the turn with `is_error: true` and
+        /// `terminal_reason: "aborted_streaming"`, which the owner must not
+        /// treat as a failure of the session (`ARCHITECTURE.md`, "Stop
+        /// semantics").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal_reason: Option<String>,
         is_error: bool,
         num_turns: i64,
         duration_ms: i64,
@@ -559,6 +569,7 @@ mod tests {
         round_trip(
             AgentEventBody::Result {
                 subtype: "success".to_string(),
+                terminal_reason: Some("completed".to_string()),
                 is_error: false,
                 num_turns: 3,
                 duration_ms: 1200,
@@ -569,6 +580,7 @@ mod tests {
             json!({
                 "kind": "result",
                 "subtype": "success",
+                "terminal_reason": "completed",
                 "is_error": false,
                 "num_turns": 3,
                 "duration_ms": 1200,

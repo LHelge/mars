@@ -10,11 +10,21 @@
 //!
 //! Two invariants hold for every branch. Nothing is dropped except where a rule
 //! says so: a line with no rule, a line that is not JSON and a line whose shape
-//! does not parse all become a `raw` event carrying what arrived, and the one
-//! deliberate exception is the `stream_event` branch, where everything but a
-//! text delta is dropped because the complete block follows in the `assistant`
-//! message. And nothing ever panics on native input — every field is optional,
-//! every extraction falls back.
+//! does not parse all become a `raw` event carrying what arrived. And nothing
+//! ever panics on native input — every field is optional, every extraction
+//! falls back.
+//!
+//! What a rule does drop, all of it recorded on 2.1.274
+//! (`images/claude/VERIFY.md`) and spelled out in `SPEC.md`, "AgentEvent":
+//! every `stream_event` but a text delta, because the complete block follows in
+//! the `assistant` message; the `system` subtypes that report the CLI's own
+//! progress ([`IGNORED_SYSTEM_SUBTYPES`]) and the top-level `rate_limit_event`,
+//! which carries account-wide usage that is not this session's transcript; the
+//! repeated `system`/`init` the CLI writes at the start of every turn; a
+//! `thinking` block whose text the CLI withheld; the CLI's echo of a message
+//! Mars wrote; and the `[Request interrupted by user]` line a `SIGINT` produces,
+//! which the `state_change` for the stop already says. Everything dropped is
+//! still in the transcript file on the session volume.
 
 use serde_json::{Map, Value};
 
@@ -33,6 +43,43 @@ use super::native::{
 /// (`SPEC.md`, "AgentEvent", the `assistant` rule). Matched exactly and
 /// case-sensitively, as the CLI writes them.
 pub const SUBAGENT_TOOL_NAMES: [&str; 2] = ["Task", "Agent"];
+
+/// Top-level line types that are deliberately ignored.
+///
+/// `rate_limit_event` reports the account's rate-limit windows and utilisation,
+/// which belongs to the credential and not to this session's transcript; it is
+/// dropped rather than stored as `raw`, and like every other line it is never
+/// logged above `debug` and never with its fields.
+const IGNORED_LINE_TYPES: [&str; 1] = ["rate_limit_event"];
+
+/// `system` subtypes that are deliberately ignored.
+///
+/// The CLI's own progress reporting, recorded on 2.1.274: `status` and
+/// `thinking_tokens` per request, the four `task_*` lines that surround a
+/// subagent (whose `subagent_start`, tool call, tool result and `subagent_end`
+/// events already describe it), `vcs_state_changed` after a commit, and
+/// `api_retry` for a request the CLI is retrying by itself. None of them adds
+/// anything a reader of the transcript can act on, and an `api_retry` run is
+/// long. `api_retry` is still scanned for the authentication failure it is the
+/// first report of; the scan runs on every `system` line, ignored or not.
+const IGNORED_SYSTEM_SUBTYPES: [&str; 8] = [
+    "api_retry",
+    "status",
+    "task_notification",
+    "task_progress",
+    "task_started",
+    "task_updated",
+    "thinking_tokens",
+    "vcs_state_changed",
+];
+
+/// The text of the `user` line the CLI writes when a turn was interrupted.
+///
+/// A `SIGINT` ends the turn with this line and then a `result` with
+/// `terminal_reason: "aborted_streaming"` (`ARCHITECTURE.md`, "Stop
+/// semantics"). Mars asked for the stop and writes its own `state_change`, so
+/// the CLI's echo of it is not stored a second time.
+const INTERRUPTED_BY_USER: &str = "[Request interrupted by user]";
 
 /// The `event.type` of the only stream event with a rule.
 const STREAM_CONTENT_BLOCK_DELTA: &str = "content_block_delta";
@@ -122,6 +169,7 @@ pub(crate) fn translate_line(line: &str, state: &mut TranslateState) -> Vec<Agen
         Some("assistant") => translate_assistant(&native, state),
         Some("stream_event") => translate_stream_event(&native),
         Some("user") => translate_user(&native, state),
+        Some(kind) if IGNORED_LINE_TYPES.contains(&kind) => Vec::new(),
         _ => vec![raw(native.clone())],
     };
 
@@ -150,8 +198,8 @@ fn translate_system(
     let mut events = match subtype {
         Some("init") => translate_init(native, state),
         Some("permission_denied") => translate_permission_denied(native, state),
-        // `status`, `api_retry`, `thinking_tokens`, `task_*`,
-        // `vcs_state_changed` and anything a later CLI adds.
+        Some(subtype) if IGNORED_SYSTEM_SUBTYPES.contains(&subtype) => Vec::new(),
+        // A subtype a later CLI adds, which nobody has decided about yet.
         _ => vec![raw(native.clone())],
     };
 
@@ -162,7 +210,13 @@ fn translate_system(
 }
 
 /// `system`/`init` (`SPEC.md`, "AgentEvent", `init`).
-fn translate_init(native: &Value, state: &TranslateState) -> Vec<AgentEvent> {
+///
+/// One event per process, not one per line: 2.1.274 writes an `init` line at
+/// the start of every turn (`images/claude/VERIFY.md`, "Observed on 2.1.274"),
+/// all of them carrying the one `session_id` of the process, and a repeat of
+/// what the owner already recorded is not news. A later line that reports a
+/// *different* session id is a different conversation, and is announced.
+fn translate_init(native: &Value, state: &mut TranslateState) -> Vec<AgentEvent> {
     let Ok(init) = serde_json::from_value::<NativeSystemInit>(native.clone()) else {
         warn!(kind = "init", "a system/init line did not parse");
         return vec![raw(native.clone())];
@@ -175,11 +229,24 @@ fn translate_init(native: &Value, state: &TranslateState) -> Vec<AgentEvent> {
         return vec![raw(native.clone())];
     };
 
+    // The turn's own refresh of what the process already announced.
+    if state.init_session_id.as_deref() == Some(cli_session_id.as_str()) {
+        debug!("refreshed the init state from a repeated system/init line");
+        return Vec::new();
+    }
+    state.init_session_id = Some(cli_session_id.clone());
+
     vec![
         AgentEventBody::Init {
             cli_session_id,
             model: init.model,
             tools: init.tools,
+            // The name and the status word, and nothing else: the recorded
+            // entry also carries `source` (`dynamic` for a server the launcher
+            // passed with `--mcp-config`), which says where the CLI found the
+            // server and not whether it works. An unreachable server is
+            // `status: "failed"`, which is what the launcher warns about
+            // (`ARCHITECTURE.md`, "MCP design").
             mcp_servers: init
                 .mcp_servers
                 .into_iter()
@@ -207,6 +274,12 @@ fn translate_permission_denied(native: &Value, state: &mut TranslateState) -> Ve
 }
 
 /// `result`, its denial list and any authentication failure it reports.
+///
+/// `terminal_reason` is carried through as the CLI wrote it. The turn a stop
+/// interrupted ends with `subtype: "error_during_execution"`, `is_error: true`
+/// and `terminal_reason: "aborted_streaming"`, which is a stop and not a
+/// failure; telling them apart is the owner's job and needs the field
+/// (`ARCHITECTURE.md`, "Stop semantics").
 fn translate_result(native: &Value, state: &mut TranslateState) -> Vec<AgentEvent> {
     let Ok(result) = serde_json::from_value::<NativeResult>(native.clone()) else {
         warn!(kind = "result", "a result line did not parse");
@@ -221,6 +294,7 @@ fn translate_result(native: &Value, state: &mut TranslateState) -> Vec<AgentEven
             subtype: result
                 .subtype
                 .unwrap_or_else(|| UNKNOWN_RESULT_SUBTYPE.to_string()),
+            terminal_reason: result.terminal_reason,
             is_error: result.is_error,
             num_turns: result.num_turns,
             duration_ms: result.duration_ms,
@@ -300,6 +374,14 @@ fn translate_content_block(
     match block {
         // Empty text is still an event: what to render is the frontend's call.
         NativeContentBlock::Text(text) => vec![AgentEventBody::Text { text: text.text }.into()],
+        // On 2.1.274 a thinking block arrives with an empty `thinking` text and
+        // a `signature` — the CLI forwards the proof that the model thought,
+        // not what it thought (`images/claude/VERIFY.md`). An event with no
+        // text is an empty bubble in the transcript and nothing to read, so a
+        // thinking block produces an event only when it carries text. A
+        // `redacted_thinking` block is different: its empty text is the point,
+        // and `redacted: true` is what the frontend renders.
+        NativeContentBlock::Thinking(thinking) if thinking.thinking.is_empty() => Vec::new(),
         NativeContentBlock::Thinking(thinking) => vec![
             AgentEventBody::Thinking {
                 text: thinking.thinking,
@@ -367,10 +449,21 @@ fn translate_content_block(
 /// message, and the content tells them apart. A line with `tool_result` blocks
 /// produces one `tool_result` event each, plus a `subagent_end` for a result
 /// that closes an open subagent. A line whose content is only text is a
-/// message: the orchestrator's own, echoed back and therefore already stored as
-/// `user_message` at write time, which the content hash recognises and drops;
-/// or someone else's — a subagent's prompt, the CLI's
-/// `[Request interrupted by user]` — which is kept as `raw`.
+/// message, and one of four things:
+///
+/// - the orchestrator's own, echoed back and therefore already stored as
+///   `user_message` at write time, which the content hash recognises and drops;
+/// - `[Request interrupted by user]`, the line a `SIGINT` produces, which the
+///   `state_change` written for the stop already says and which is dropped;
+/// - a subagent's prompt, which the CLI writes as the first frame of the
+///   subagent with the subagent's `parent_tool_use_id` on it. It is kept as
+///   `raw` under that id and is never matched against the echo hashes: an input
+///   Mars wrote goes to the top-level conversation, never into a subagent;
+/// - anything else, kept as `raw`.
+///
+/// A `user` line never becomes a `user_message` event: that kind is written by
+/// the owner when it writes the input, and nothing the CLI echoes back may
+/// produce a second one (`SPEC.md`, "AgentEvent", the `user` rule).
 fn translate_user(native: &Value, state: &mut TranslateState) -> Vec<AgentEvent> {
     let Ok(user) = serde_json::from_value::<NativeUser>(native.clone()) else {
         warn!(kind = "user", "a user line did not parse");
@@ -420,10 +513,22 @@ fn message_text(blocks: &[NativeUserBlock]) -> Option<String> {
     Some(text)
 }
 
-/// A message the CLI reported: dropped when it is the echo of one Mars wrote,
-/// kept as `raw` otherwise.
+/// A message the CLI reported: dropped when it is the echo of one Mars wrote or
+/// the interruption line a stop produces, kept as `raw` otherwise.
 fn message_events(native: &Value, text: &str, state: &mut TranslateState) -> Vec<AgentEvent> {
-    if state.take_sent_input(text) {
+    if text.trim() == INTERRUPTED_BY_USER {
+        debug!("suppressed the cli echo of an interrupted turn");
+        return Vec::new();
+    }
+
+    // A message inside a subagent is the subagent's prompt, not an echo of
+    // anything the owner wrote, so its text never consumes an input hash.
+    let in_subagent = native
+        .get("parent_tool_use_id")
+        .and_then(Value::as_str)
+        .is_some();
+
+    if !in_subagent && state.take_sent_input(text) {
         debug!("suppressed the cli echo of a message mars wrote");
         return Vec::new();
     }
@@ -719,11 +824,37 @@ mod tests {
     #[test]
     fn an_unknown_type_is_raw() {
         let mut state = state();
-        let line = json!({ "type": "rate_limit_event", "rate_limit_info": { "used": 0 } });
+        let line = json!({ "type": "compact_boundary", "trigger": "auto" });
         assert_eq!(
             translate_line(&line.to_string(), &mut state),
             vec![raw(line)],
         );
+    }
+
+    /// The recorded line (`images/stub/fixtures/default.jsonl`), with its
+    /// account-wide usage numbers already zeroed by the scrubber.
+    #[test]
+    fn a_rate_limit_event_is_ignored() {
+        let mut state = state();
+        let line = json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed",
+                "resetsAt": 0,
+                "rateLimitType": "five_hour",
+                "overageStatus": "allowed",
+                "overageResetsAt": 0,
+                "isUsingOverage": false,
+                "unifiedWindows": {
+                    "five_hour": { "utilization": 0, "resetsAt": 0 },
+                    "seven_day": { "utilization": 0, "resetsAt": 0 },
+                },
+            },
+            "uuid": "00000000-0000-4000-8000-000000000004",
+            "session_id": "00000000-0000-4000-8000-000000000001",
+        });
+
+        assert!(translate_line(&line.to_string(), &mut state).is_empty());
     }
 
     #[test]
@@ -786,6 +917,85 @@ mod tests {
         );
     }
 
+    /// The recorded `init` line, cut to the fields Mars reads
+    /// (`images/stub/fixtures/default.jsonl`).
+    fn recorded_init(session_id: &str) -> Value {
+        json!({
+            "type": "system",
+            "subtype": "init",
+            "cwd": "/session/work",
+            "session_id": session_id,
+            "tools": ["Task", "Agent", "Bash", "Read"],
+            "mcp_servers": [{
+                "name": "mars-orchestrator",
+                "status": "failed",
+                "source": "dynamic",
+            }],
+            "model": "claude-sonnet-5",
+            "permissionMode": "bypassPermissions",
+            "apiKeySource": "none",
+            "claude_code_version": "2.1.274",
+            "output_style": "default",
+        })
+    }
+
+    /// 2.1.274 writes an `init` line at the start of every turn, all of them
+    /// carrying the one `session_id` of the process
+    /// (`images/claude/VERIFY.md`, "Observed on 2.1.274").
+    #[test]
+    fn three_init_lines_of_one_process_produce_one_init_event() {
+        let mut state = state();
+        let line = recorded_init("00000000-0000-4000-8000-000000000001");
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(
+            events,
+            vec![
+                AgentEventBody::Init {
+                    cli_session_id: "00000000-0000-4000-8000-000000000001".to_string(),
+                    model: Some("claude-sonnet-5".to_string()),
+                    tools: vec![
+                        "Task".to_string(),
+                        "Agent".to_string(),
+                        "Bash".to_string(),
+                        "Read".to_string(),
+                    ],
+                    mcp_servers: vec![McpServerStatus {
+                        name: "mars-orchestrator".to_string(),
+                        // The unreachable server the recording used; the
+                        // launcher's `launch_warning` covers this status
+                        // (`ARCHITECTURE.md`, "MCP design").
+                        status: "failed".to_string(),
+                    }],
+                    resumed: false,
+                }
+                .into()
+            ],
+        );
+
+        // The second and third turn's lines refresh the state and say nothing.
+        assert!(translate_line(&line.to_string(), &mut state).is_empty());
+        assert!(translate_line(&line.to_string(), &mut state).is_empty());
+        assert_eq!(
+            state.init_session_id.as_deref(),
+            Some("00000000-0000-4000-8000-000000000001"),
+        );
+    }
+
+    #[test]
+    fn an_init_reporting_another_session_id_is_announced() {
+        let mut state = state();
+        assert_eq!(
+            translate_line(&recorded_init("first").to_string(), &mut state).len(),
+            1,
+        );
+
+        let events = translate_line(&recorded_init("second").to_string(), &mut state);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "init");
+        assert_eq!(state.init_session_id.as_deref(), Some("second"));
+    }
+
     #[test]
     fn an_init_without_a_session_id_is_raw() {
         let mut state = state();
@@ -842,22 +1052,92 @@ mod tests {
         );
     }
 
+    /// Every `system` subtype recorded on 2.1.274 that has no rule, in the
+    /// shape `images/stub/fixtures/default.jsonl` recorded it.
     #[test]
-    fn every_other_system_subtype_is_raw() {
+    fn the_progress_system_subtypes_are_ignored() {
         let mut state = state();
-        for subtype in [
-            "status",
-            "thinking_tokens",
-            "task_started",
-            "vcs_state_changed",
-        ] {
-            let line = json!({ "type": "system", "subtype": subtype, "session_id": "s" });
-            assert_eq!(
-                translate_line(&line.to_string(), &mut state),
-                vec![raw(line)],
-                "{subtype}",
+        let lines = [
+            json!({
+                "type": "system",
+                "subtype": "status",
+                "status": "requesting",
+                "session_id": "00000000-0000-4000-8000-000000000001",
+                "uuid": "00000000-0000-4000-8000-000000000003",
+            }),
+            json!({
+                "type": "system",
+                "subtype": "thinking_tokens",
+                "estimated_tokens": 50,
+                "estimated_tokens_delta": 50,
+                "session_id": "00000000-0000-4000-8000-000000000001",
+            }),
+            json!({
+                "type": "system",
+                "subtype": "task_started",
+                "task_id": "task0001",
+                "tool_use_id": "toolu_01FIXTURE0003",
+                "description": "Grep repo for 'main' call sites",
+                "subagent_type": "general-purpose",
+                "spawn_depth": 1,
+                "task_type": "local_agent",
+                "prompt": "Search this repository for the literal token `main`.",
+            }),
+            json!({
+                "type": "system",
+                "subtype": "task_progress",
+                "task_id": "task0001",
+                "tool_use_id": "toolu_01FIXTURE0003",
+                "last_tool_name": "Bash",
+                "usage": { "total_tokens": 15758, "tool_uses": 1, "duration_ms": 2726 },
+            }),
+            json!({
+                "type": "system",
+                "subtype": "task_updated",
+                "task_id": "task0001",
+                "patch": { "status": "completed", "end_time": 1789718312119_i64 },
+            }),
+            json!({
+                "type": "system",
+                "subtype": "task_notification",
+                "task_id": "task0001",
+                "tool_use_id": "toolu_01FIXTURE0003",
+                "status": "completed",
+                "output_file": "/scrubbed/path",
+                "summary": "Search results for the literal token `main`.",
+            }),
+            json!({
+                "type": "system",
+                "subtype": "vcs_state_changed",
+                "kind": "commit",
+                "branch": "main",
+                "cwd": "/session/work",
+            }),
+            json!({
+                "type": "system",
+                "subtype": "api_retry",
+                "error_status": 429,
+                "error": "rate_limit_error",
+                "attempt": 1,
+            }),
+        ];
+
+        for line in lines {
+            assert!(
+                translate_line(&line.to_string(), &mut state).is_empty(),
+                "{line}",
             );
         }
+    }
+
+    #[test]
+    fn a_system_subtype_with_no_rule_is_raw() {
+        let mut state = state();
+        let line = json!({ "type": "system", "subtype": "compact_boundary", "session_id": "s" });
+        assert_eq!(
+            translate_line(&line.to_string(), &mut state),
+            vec![raw(line)],
+        );
     }
 
     #[test]
@@ -872,6 +1152,7 @@ mod tests {
             "total_cost_usd": 0.0727456,
             "usage": { "input_tokens": 12, "output_tokens": 34 },
             "permission_denials": [],
+            "terminal_reason": "completed",
             "result": "done",
         });
 
@@ -881,6 +1162,7 @@ mod tests {
             vec![
                 AgentEventBody::Result {
                     subtype: "success".to_string(),
+                    terminal_reason: Some("completed".to_string()),
                     is_error: false,
                     num_turns: 3,
                     duration_ms: 5460,
@@ -1026,11 +1308,11 @@ mod tests {
             "attempt": 1,
         });
 
+        // The retry line itself is ignored; the failure it reports is not.
         let events = translate_line(&retry.to_string(), &mut state);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0], raw(retry.clone()));
+        assert_eq!(events.len(), 1);
         assert_eq!(
-            body(&events[1]),
+            body(&events[0]),
             &AgentEventBody::Error {
                 message: "Authentication failed with CLAUDE_CODE_OAUTH_TOKEN (user scope); \
                           replace the secret and send the next message."
@@ -1041,8 +1323,7 @@ mod tests {
 
         // Every later retry line, and the `result` that ends the run, are
         // translated without a second fatal error.
-        let events = translate_line(&retry.to_string(), &mut state);
-        assert_eq!(events, vec![raw(retry)]);
+        assert!(translate_line(&retry.to_string(), &mut state).is_empty());
 
         let line = json!({
             "type": "result",
@@ -1158,6 +1439,36 @@ mod tests {
             assert_eq!(event.message_id.as_deref(), Some("msg_01FIXTURE0001"));
         }
         assert!(state.open_subagents.is_empty());
+    }
+
+    /// 2.1.274 forwards the signature of a thinking block and not its text
+    /// (`images/claude/VERIFY.md`); an event with nothing to read is not
+    /// written, and the rest of the message still is.
+    #[test]
+    fn a_thinking_block_without_text_yields_nothing() {
+        let mut state = state();
+        let line = json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg_01FIXTURE0001",
+                "role": "assistant",
+                "content": [
+                    { "type": "thinking", "thinking": "", "signature": "fixture-signature" },
+                    { "type": "text", "text": "after" },
+                ],
+            },
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::from(AgentEventBody::Text {
+                    text: "after".to_string(),
+                })
+                .with_message_id("msg_01FIXTURE0001")
+            ],
+        );
     }
 
     #[test]
@@ -1702,36 +2013,116 @@ mod tests {
         );
     }
 
+    /// The subagent's first frame, as `images/stub/fixtures/default.jsonl`
+    /// recorded it: a `user` text line carrying the subagent's prompt and the
+    /// `parent_tool_use_id` of the `Agent` call that started it. It is kept as
+    /// `raw` under that id and never becomes a `user_message`.
     #[test]
-    fn the_messages_mars_did_not_write_are_raw() {
+    fn a_subagent_prompt_is_raw_under_its_parent() {
         let mut state = state();
-        // The CLI's own interruption line, and a subagent's prompt.
+        let prompt = json!({
+            "type": "user",
+            "parent_tool_use_id": "toolu_01FIXTURE0003",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Search this repository for the literal token `main`.",
+                }],
+            },
+            "session_id": "00000000-0000-4000-8000-000000000001",
+        });
+
+        let events = translate_line(&prompt.to_string(), &mut state);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "raw");
+        assert_eq!(
+            events[0].parent_tool_use_id.as_deref(),
+            Some("toolu_01FIXTURE0003"),
+        );
+    }
+
+    #[test]
+    fn a_subagent_prompt_never_consumes_an_input_hash() {
+        let mut state = state();
+        state.record_sent_input("Do the thing.");
+        let prompt = json!({
+            "type": "user",
+            "parent_tool_use_id": "toolu_01FIXTURE0003",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "Do the thing." }],
+            },
+        });
+
+        let events = translate_line(&prompt.to_string(), &mut state);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "raw");
+        // The owner's own echo, when it arrives, is still suppressed.
+        assert!(state.was_sent_input("Do the thing."));
+    }
+
+    /// `SIGINT`: the CLI ends the turn with an interruption line and a
+    /// `result` that reports the abort (`ARCHITECTURE.md`, "Stop semantics";
+    /// `images/claude/VERIFY.md`, "Observed on 2.1.274").
+    #[test]
+    fn a_stopped_turn_drops_the_echo_and_reports_the_abort() {
+        let mut state = state();
         let interrupted = json!({
             "type": "user",
             "message": {
                 "role": "user",
                 "content": [{ "type": "text", "text": "[Request interrupted by user]" }],
             },
+            "session_id": "00000000-0000-4000-8000-000000000001",
         });
-        assert_eq!(
-            translate_line(&interrupted.to_string(), &mut state),
-            vec![raw(interrupted)],
-        );
+        assert!(translate_line(&interrupted.to_string(), &mut state).is_empty());
 
-        let prompt = json!({
+        let line = json!({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": true,
+            "num_turns": 2,
+            "duration_ms": 8321,
+            "terminal_reason": "aborted_streaming",
+            "total_cost_usd": 0.0412,
+            "permission_denials": [],
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(
+            events,
+            vec![
+                AgentEventBody::Result {
+                    subtype: "error_during_execution".to_string(),
+                    terminal_reason: Some("aborted_streaming".to_string()),
+                    is_error: true,
+                    num_turns: 2,
+                    duration_ms: 8321,
+                    cost_usd: Some(0.0412),
+                    usage: None,
+                    permission_denials: vec![],
+                }
+                .into()
+            ],
+        );
+        // A stop is not an authentication failure and parks nothing by itself.
+        assert!(!state.authentication_failed);
+    }
+
+    #[test]
+    fn a_message_mars_did_not_write_is_raw() {
+        let mut state = state();
+        let line = json!({
             "type": "user",
-            "parent_tool_use_id": "toolu_01FIXTUREagent0000000001",
             "message": {
                 "role": "user",
-                "content": [{ "type": "text", "text": "Count the Rust modules." }],
+                "content": [{ "type": "text", "text": "Told you so." }],
             },
         });
-        let events = translate_line(&prompt.to_string(), &mut state);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind(), "raw");
         assert_eq!(
-            events[0].parent_tool_use_id.as_deref(),
-            Some("toolu_01FIXTUREagent0000000001"),
+            translate_line(&line.to_string(), &mut state),
+            vec![raw(line)],
         );
     }
 

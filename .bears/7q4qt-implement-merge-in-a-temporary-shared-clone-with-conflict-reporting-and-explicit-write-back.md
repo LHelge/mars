@@ -1,16 +1,18 @@
 ---
 id: "7q4qt"
 title: Implement merge in a temporary shared clone with conflict reporting and explicit write-back
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:30:53.713122733Z"
-updated: "2026-09-16T20:30:53.713122733Z"
+updated: "2026-09-18T01:22:55.599168927Z"
 tags:
   - orchestrator
   - git
 depends_on:
   - vztkg
 parent: z4u4e
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: nzchj
 title: Implement push with an explicit refspec, non-fast-forward as conflict and explicit force
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:31:47.287660741Z"
-updated: "2026-09-16T20:31:47.287660741Z"
+updated: "2026-09-18T01:18:18.771525812Z"
 tags:
   - orchestrator
   - git
@@ -12,6 +12,8 @@ depends_on:
   - vztkg
   - "7u3pu"
 parent: z4u4e
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -91,12 +91,8 @@ pub struct TranslateState {
     /// and the echo of the second becomes a `raw` event.
     pub(crate) sent_input_hashes: HashSet<[u8; 32]>,
     /// The `tool_use_id`s of subagents that started and have not ended, so
-    /// `subagent_end` is only emitted for one that was opened.
-    // `allow` rather than `expect`: the unit tests below do read the field,
-    // so an expectation would be unfulfilled in the test build. The Claude
-    // translator tasks are what read it in earnest, and the attribute goes
-    // when they do.
-    #[allow(dead_code)]
+    /// `subagent_end` is only emitted for one that was opened. The Claude
+    /// translator inserts one per `subagent_start` it emits.
     pub(crate) open_subagents: HashMap<String, ()>,
     /// Tool calls already reported as denied, so the `permission_denied`
     /// system message and the same denial in `result.permission_denials` do

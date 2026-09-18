@@ -1,10 +1,10 @@
 ---
 id: bt9q6
 title: "Implement SessionOwner input, exit and stop handling: user_message before stdin, parked/failed rules, SIGINT-then-SIGTERM with signal recorded, ephemeral end-of-run"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:32:13.309252641Z"
-updated: "2026-09-16T20:32:13.309252641Z"
+updated: "2026-09-18T23:04:43.073413993Z"
 tags:
   - orchestrator
   - sessions
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - qtx4x
 parent: s52qg
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: cgj5v
 title: "Add the projects route module: GET/POST /projects, GET/PUT /projects/{id} and POST /projects/{id}/retry-clone"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:31:16.970398856Z"
-updated: "2026-09-16T20:31:16.970398856Z"
+updated: "2026-09-18T10:35:41.458956297Z"
 tags:
   - orchestrator
   - projects
@@ -12,6 +12,8 @@ depends_on:
   - "5ywhm"
   - "26rj4"
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

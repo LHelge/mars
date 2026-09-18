@@ -12,8 +12,10 @@
 //! the git side is [`crate::git::mirror`]. This module is only the directories.
 
 pub mod clone_job;
+pub mod create;
 pub mod layout;
 
+pub use create::{DEFAULT_PROFILE_NAME, NewProjectRequest, create_project};
 pub use layout::{ProjectLayout, session_dir};
 
 // The crate convention (`CLAUDE.md`, "Backend conventions"); this module is a

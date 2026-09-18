@@ -32,11 +32,18 @@ use crate::repositories::{foreign_key_violation, unique_violation};
 impl TaskRepository<'_> {
     /// Insert the documented default state set and return it in board order.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**,
-    /// in the same one that inserts the project: a project without states has
-    /// no default state to put its first task in. The set itself is
-    /// [`DEFAULT_TASK_STATES`], which is the model's, not this file's, so the
-    /// list exists once.
+    /// **Call in the transaction that inserts the project**: a project without
+    /// states has no default state to put its first task in
+    /// ([`crate::projects::create_project`]). That one transaction is the
+    /// exception to the rule the rest of this module states, and it is not a
+    /// weaker one: [`TaskRepository::begin_mutation`] cannot open it, because
+    /// the project row it would lock does not exist yet, and there is nothing
+    /// for a lock to serialise against while the row is still invisible to
+    /// every other transaction. A caller that seeds the states of a project
+    /// that already exists — a test fixture, say — opens the usual mutation.
+    ///
+    /// The set itself is [`DEFAULT_TASK_STATES`], which is the model's, not
+    /// this file's, so the list exists once.
     pub async fn insert_default_states(
         &self,
         tx: &mut PgConnection,

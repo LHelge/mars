@@ -28,6 +28,7 @@
 //! fields any line in this module carries are `project_id`, `purpose` and a
 //! `key_version` (`CLAUDE.md`, rule 3).
 
+use sqlx::PgConnection;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -168,10 +169,7 @@ pub async fn set_project_git_credential(
         return Ok(());
     }
 
-    let sealed = seal(keyring, &aad_for(&scope, &name), value.as_bytes())?;
-    let mut new = NewSecret::new(scope, name.clone(), sealed);
-    new.orchestrator_only = true;
-    new.created_by = created_by;
+    let new = seal_credential(keyring, project_id, &value, created_by)?;
 
     let mut tx = pool.begin().await?;
     match SecretRepository::new(pool).insert(&mut tx, &new).await {
@@ -199,6 +197,73 @@ pub async fn set_project_git_credential(
         }
         Err(error) => Err(error),
     }
+}
+
+/// Store a brand-new project's remote credential inside the caller's
+/// transaction.
+///
+/// The creation half of [`set_project_git_credential`]:
+/// [`crate::projects::create_project`] writes the project row, its task
+/// states, its default profile and this secret in one `BEGIN … COMMIT`, so a
+/// keyring failure here rolls the project back and a duplicate project name
+/// leaves no orphaned credential behind (`SPEC.md`, "Projects";
+/// `docs/data-model.md`, `secrets`).
+///
+/// Insert-only, unlike its pool-taking sibling, and that is the whole
+/// difference: the project is being created in this very transaction, so it
+/// cannot already have a `GIT_CREDENTIAL` row to replace. A conflict is
+/// therefore a genuine surprise and is the caller's to answer, which for the
+/// creation path means rolling everything back.
+///
+/// `pool` is only what the repository borrows; every statement runs on `tx`.
+#[instrument(skip_all, fields(project_id = %project_id))]
+pub async fn insert_project_git_credential(
+    pool: &PgPool,
+    tx: &mut PgConnection,
+    keyring: &SecretsKeyring,
+    project_id: Uuid,
+    value: &Zeroizing<String>,
+    created_by: Option<Uuid>,
+) -> Result<()> {
+    // The same check, and so the same 400 text, as a value arriving through
+    // `POST /api/secrets` (`CLAUDE.md`, "Backend conventions").
+    validate_secret_value(value)?;
+
+    let new = seal_credential(keyring, project_id, value, created_by)?;
+    SecretRepository::new(pool).insert(&mut *tx, &new).await?;
+
+    // `debug!` where the pool-taking path says `info!`: the row is written but
+    // not committed, and the caller's transaction may still roll it back, so
+    // an "it was stored" line here could outlive the row it describes. The
+    // creation that commits it logs once (`crate::projects::create_project`).
+    debug!("the project's git credential was inserted");
+
+    Ok(())
+}
+
+/// The `secrets` row a project's credential is stored as.
+///
+/// Both write paths come through here, so the fixed name, the fresh data key
+/// bound to that name and scope, and the `orchestrator_only` flag that keeps
+/// the launch resolver from ever injecting it are decided in one place rather
+/// than twice (`docs/data-model.md`, `secrets`; ADR 0006). The plaintext is
+/// borrowed, sealed and left behind: nothing here copies, formats or returns
+/// it (rule 3).
+fn seal_credential(
+    keyring: &SecretsKeyring,
+    project_id: Uuid,
+    value: &Zeroizing<String>,
+    created_by: Option<Uuid>,
+) -> Result<NewSecret> {
+    let scope = ScopeRef::project(project_id);
+    let name = credential_name();
+
+    let sealed = seal(keyring, &aad_for(&scope, &name), value.as_bytes())?;
+    let mut new = NewSecret::new(scope, name, sealed);
+    new.orchestrator_only = true;
+    new.created_by = created_by;
+
+    Ok(new)
 }
 
 /// Whether this project has a remote credential at all.

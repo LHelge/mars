@@ -1,10 +1,10 @@
 ---
 id: w8ezk
 title: Define the AgentBackend trait, LaunchContext, TranslateState and backend selection with a mock
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:27:16.163281732Z"
-updated: "2026-09-17T04:57:36.177787413Z"
+updated: "2026-09-18T15:43:22.730773970Z"
 tags:
   - orchestrator
   - agent
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - "32s57"
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

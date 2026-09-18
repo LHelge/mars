@@ -148,8 +148,10 @@ pub trait ContainerEngine: Send + Sync {
     /// [`Signal::Sigint`] then [`Signal::Sigterm`] (`ARCHITECTURE.md`, "Stop
     /// semantics"); this is the plain stop used when ending a session.
     ///
-    /// A container that has already exited is `Ok`, because being stopped is
-    /// what the caller asked for and it already is; a missing container is
+    /// A container that is not running — one that has already exited, or one
+    /// that was never started — is `Ok`, because being stopped is what the
+    /// caller asked for and it already is: both engines answer 304 and the
+    /// adapter reads it as success. A missing container is
     /// [`EngineError::NotFound`].
     async fn stop(&self, id: &ContainerId, grace_secs: u32) -> Result<(), EngineError>;
 

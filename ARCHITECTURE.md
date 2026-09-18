@@ -625,7 +625,7 @@ Anything outside this table is not used without being verified on both engines f
 - `create` — a name already in use is `Conflict`; an image the engine does not have is `NotFound` naming the image. At most one create per engine host is in flight (the `UsernsMode` row).
 - `connect_network` — a container already on the network is `Ok`, so connecting is idempotent; a missing container or network is `NotFound`.
 - `start` — a container that is already running is `Ok`: both engines answer 304 and the adapter reads it as success, so a start that races another start cannot fail on it. A missing container is `NotFound`.
-- `stop` — a container that has already exited is `Ok`, because being stopped is what the caller asked for and it already is; a missing container is `NotFound`.
+- `stop` — a container that is not running, whether it has already exited or was never started, is `Ok`, because being stopped is what the caller asked for and it already is: both engines answer 304 and the adapter reads it as success. A missing container is `NotFound`.
 - `kill` — a container that has exited is `Conflict`, which the session owner reads as "it is already gone" rather than as a failure; a missing container is `NotFound`. A named signal reaches the container's main process without `Init: true` (see "Session image").
 - `remove` — a missing container is `Ok`, because a container that is not there is already removed; a running container is `Conflict` without `force` and `Ok` with it. Docker refuses the unforced removal with 409 and Podman with 500, exactly as they differ over the exec, and the adapter reports both as a conflict.
 - `inspect` — a missing container is `NotFound`, which is the answer recovery reads as "the container is gone" and parks the session on.

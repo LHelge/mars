@@ -13,12 +13,12 @@
 //! answers something else makes every test built on it agree with the wrong
 //! thing.
 //!
-//! **What the mock does not answer yet.** Five scenarios are `#[ignore]`d with
-//! Bears `n7tzv` in the reason, which is the task that brings `MockEngine` in
-//! line; the documented rule is what they assert, so they are the specification
-//! of that task rather than a concession. Each is ignored on its own, so the
-//! ten the mock already satisfies stay live. `assert_all` runs all fifteen and
-//! is ignored for the same reason until `n7tzv` lands.
+//! **Every scenario runs.** Nothing here is `#[ignore]`d: the mock answers the
+//! whole list, including the three idempotences (`start` of a running
+//! container, `stop` of an exited one, `remove` of a missing one), signal
+//! delivery and the failed write after an exit. Each scenario is also a test of
+//! its own, so a regression names the rule it broke instead of only failing
+//! `the_whole_contract`.
 
 #![cfg(feature = "integration-tests")]
 
@@ -83,18 +83,15 @@ async fn a_name_in_use_is_a_conflict() {
 }
 
 /// `ARCHITECTURE.md`: a start of a container that is already running is `Ok`,
-/// because both engines answer 304 and the adapter reads it as success. The mock
-/// answers `Conflict`.
+/// because both engines answer 304 and the adapter reads it as success.
 #[tokio::test]
-#[ignore = "MockEngine refuses a second start; Bears n7tzv brings it in line"]
 async fn start_of_a_running_container_is_ok() {
     contract().start_of_a_running_container_is_ok().await;
 }
 
-/// `ARCHITECTURE.md`: stopping a container that has already exited is `Ok`. The
-/// mock answers `Conflict`.
+/// `ARCHITECTURE.md`: stopping a container that is not running is `Ok`, whether
+/// it has already exited or was never started.
 #[tokio::test]
-#[ignore = "MockEngine refuses a stop of an exited container; Bears n7tzv brings it in line"]
 async fn stop_of_an_exited_container_is_ok() {
     contract().stop_of_an_exited_container_is_ok().await;
 }
@@ -105,9 +102,8 @@ async fn kill_of_an_exited_container_is_a_conflict() {
 }
 
 /// `ARCHITECTURE.md`: removing a container that is not there is `Ok`, because a
-/// container that is not there is already removed. The mock answers `NotFound`.
+/// container that is not there is already removed.
 #[tokio::test]
-#[ignore = "MockEngine reports NotFound for a removed container; Bears n7tzv brings it in line"]
 async fn remove_of_a_missing_container_is_ok() {
     contract().remove_of_a_missing_container_is_ok().await;
 }
@@ -132,11 +128,10 @@ async fn list_by_label_reports_running_and_exited_containers() {
 }
 
 /// `ARCHITECTURE.md`: a named signal reaches the container's main process. The
-/// mock records the signal and leaves the container running, which is the shape
-/// the stop-sequence tests need, so what it has to grow is a way to answer this
-/// without losing that.
+/// mock records every signal and delivers it to the command, which exits on its
+/// own `trap`; a command that traps nothing — every session's — is left running
+/// for the test to end, which is the shape the stop-sequence tests need.
 #[tokio::test]
-#[ignore = "MockEngine records a signal without delivering it; Bears n7tzv brings it in line"]
 async fn a_signal_reaches_the_containers_main_process() {
     contract()
         .a_signal_reaches_the_containers_main_process()
@@ -144,10 +139,8 @@ async fn a_signal_reaches_the_containers_main_process() {
 }
 
 /// `ARCHITECTURE.md`: a stdin write after the container exited returns an error,
-/// never a silent success. The mock accepts writes until the container is
-/// removed from its table.
+/// never a silent success.
 #[tokio::test]
-#[ignore = "MockEngine accepts a write to an exited container; Bears n7tzv brings it in line"]
 async fn a_stdin_write_after_the_container_exited_fails() {
     contract()
         .a_stdin_write_after_the_container_exited_fails()
@@ -163,12 +156,7 @@ async fn exec_pty_on_a_container_that_is_not_running_is_a_conflict() {
 
 /// The whole suite in one call, which is how `tests/engine.rs` runs it: the
 /// entry point any future adapter is held to.
-///
-/// Ignored until `n7tzv` lands, because it includes the five scenarios above;
-/// the ten live scenario tests above are what keeps the mock honest in the
-/// meantime.
 #[tokio::test]
-#[ignore = "the five scenarios above fail on MockEngine; Bears n7tzv brings it in line"]
 async fn the_whole_contract() {
     let engine: Arc<dyn ContainerEngine> = Arc::new(MockEngine::new(EngineKind::Podman));
 

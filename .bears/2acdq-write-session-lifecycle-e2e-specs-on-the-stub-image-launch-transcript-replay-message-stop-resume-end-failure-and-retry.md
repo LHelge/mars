@@ -66,3 +66,7 @@ Cover the "Sessions" feature paragraph on real containers running the stub image
 ## Correction: `running` on stdin attach, not on `init` (ADR 0032, task 3z8xu)
 The pinned CLI writes nothing, `init` included, until its first stdin line (`ARCHITECTURE.md`, "Launch sequence"; `docs/decisions/0032-run-state-on-stdin-attach.md`). Where the text above disagrees, this section wins.
 - `creating -> running` happens on stdin attach and queued inputs are flushed there. The header shows no `cli_session_id` until the first turn has produced `init`; the spec asserts that explicitly.
+
+## Correction: no `prompt` event and no `answer` input (ADR 0033, task r6yek)
+The live probe showed the pinned CLI never asks the host a question under `--permission-mode bypassPermissions --permission-prompts none`, so `SessionInput` has the single kind `message`, `user_message` has no `reply_to`, and `AgentEvent` has no `prompt` (`docs/decisions/0033-no-interactive-prompts-in-v1.md`; `SPEC.md`, "AgentEvent" and "WebSocket: session stream"). Where the text above disagrees, this section wins.
+- No spec exercises answer mode or `pendingPrompt`.

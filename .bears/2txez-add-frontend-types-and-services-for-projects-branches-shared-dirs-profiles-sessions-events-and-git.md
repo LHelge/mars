@@ -63,3 +63,7 @@ Add the TypeScript mirrors of every API shape the project and session views cons
 ## Assumes from other epics
 - Frontend foundation epic: `services/apiClient.ts` with `apiGet/apiPost/apiPut/apiPatch/apiDelete`, an error class carrying the HTTP `status` and parsed body; `types/` for `User`, `Task`, `SecretMeta`; possibly `services/tasks.ts` (dashboard) and `services/sessions.ts#listSessions` (dashboard). Extend rather than duplicate whatever exists.
 - Repository scaffolding epic: `frontend/` with the directory barrels.
+
+## Correction: no `prompt` event and no `answer` input (ADR 0033, task r6yek)
+The live probe showed the pinned CLI never asks the host a question under `--permission-mode bypassPermissions --permission-prompts none`, so `SessionInput` has the single kind `message`, `user_message` has no `reply_to`, and `AgentEvent` has no `prompt` (`docs/decisions/0033-no-interactive-prompts-in-v1.md`; `SPEC.md`, "AgentEvent" and "WebSocket: session stream"). Where the text above disagrees, this section wins.
+- The frontend `AgentEvent` and `SessionInput` type mirrors have no `prompt` kind, no `answer` input and no `reply_to`; `result` has the optional `terminal_reason`.

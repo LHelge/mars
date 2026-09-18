@@ -58,3 +58,7 @@ Complete `SessionOwner` in `orchestrator/src/session/owner.rs` with its write an
 - "Git operations": `fetch_back(session) -> (ref, commit)` under the project git lock.
 - "Claude Code agent backend": `AgentBackend::encode_input`.
 - "Task tracker": `release_leases_for_session(session_id, reason)` behind the `on_session_ended` hook.
+
+## Correction: no `prompt` event and no `answer` input (ADR 0033, task r6yek)
+The live probe showed the pinned CLI never asks the host a question under `--permission-mode bypassPermissions --permission-prompts none`, so `SessionInput` has the single kind `message`, `user_message` has no `reply_to`, and `AgentEvent` has no `prompt` (`docs/decisions/0033-no-interactive-prompts-in-v1.md`; `SPEC.md`, "AgentEvent" and "WebSocket: session stream"). Where the text above disagrees, this section wins.
+- `user_message` is `{ text, user_id, client_id? }`; there is no `reply_to`.

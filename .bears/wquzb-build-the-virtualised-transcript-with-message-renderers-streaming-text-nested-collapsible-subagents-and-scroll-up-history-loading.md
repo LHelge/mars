@@ -57,3 +57,7 @@ Build the `Transcript` component: a `@tanstack/react-virtual` list over `store.o
 
 ## Assumes from other epics
 - Frontend foundation epic: `LoadingState`, `EmptyState` for the empty transcript, and the operator-console base tokens in `index.css`.
+
+## Correction: no `prompt` event and no `answer` input (ADR 0033, task r6yek)
+The live probe showed the pinned CLI never asks the host a question under `--permission-mode bypassPermissions --permission-prompts none`, so `SessionInput` has the single kind `message`, `user_message` has no `reply_to`, and `AgentEvent` has no `prompt` (`docs/decisions/0033-no-interactive-prompts-in-v1.md`; `SPEC.md`, "AgentEvent" and "WebSocket: session stream"). Where the text above disagrees, this section wins.
+- No user message carries `reply_to`, so nothing is labelled `Answer`.

@@ -2,10 +2,10 @@
 id: "8vnwy"
 title: Claude Code agent backend and event translation
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:13:04.044156603Z"
-updated: "2026-09-16T20:15:24.302143530Z"
+updated: "2026-09-18T19:12:29.652006024Z"
 tags:
   - orchestrator
   - agent

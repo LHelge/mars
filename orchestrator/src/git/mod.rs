@@ -49,7 +49,9 @@ pub use credentials::{
 };
 pub use diff::{MAX_PATCH_BYTES, session_branches};
 pub use error::GitError;
-pub use integrate::{MergeOutcome, merge, requested_by_trailer};
+pub use integrate::{
+    MergeOutcome, RebaseOutcome, WorkTreeOutcome, merge, rebase, requested_by_trailer,
+};
 pub use lock::{ProjectGitGuard, ProjectGitLocks};
 pub use mirror::{
     FetchOutcome, InitOutcome, fetch_project, fetch_upstream, init_project_repo, list_branches,

@@ -170,6 +170,25 @@ impl GitCommand {
         self
     }
 
+    /// Record `identity` as the *committer* of anything this command commits,
+    /// and leave authorship to git.
+    ///
+    /// The rebase half of [`GitCommand::identity`]: replaying a commit must
+    /// keep the author who wrote it and record Mars as the party that
+    /// re-committed it (`ARCHITECTURE.md`, "Git model", Commit identity), and
+    /// `GIT_AUTHOR_*` would overwrite exactly what has to survive. Only the
+    /// two committer variables are set, so an author git reads from the
+    /// original commit reaches the new one untouched.
+    pub fn committer(mut self, identity: &CommitIdentity) -> Self {
+        for (key, value) in [
+            ("GIT_COMMITTER_NAME", &identity.name),
+            ("GIT_COMMITTER_EMAIL", &identity.email),
+        ] {
+            self.env.push((key.into(), value.into()));
+        }
+        self
+    }
+
     /// Kill the command after `timeout` instead of after ten minutes.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
@@ -434,6 +453,48 @@ mod tests {
         // Nothing but the allow-list: `PATH` and `HOME` are the only two taken
         // from the parent, and both may be absent there.
         assert!(names.len() <= 10, "unexpected environment: {names:?}");
+    }
+
+    #[tokio::test]
+    async fn the_committer_builder_sets_the_committer_and_never_the_author() {
+        let command = GitCommand::new().committer(&CommitIdentity {
+            name: "Mars Test Bot".to_string(),
+            email: "bot@example.test".to_string(),
+        });
+
+        let env: Vec<(String, String)> = command
+            .environment()
+            .into_iter()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+
+        assert!(
+            env.contains(&(
+                "GIT_COMMITTER_NAME".to_string(),
+                "Mars Test Bot".to_string()
+            )),
+            "{env:?}"
+        );
+        assert!(
+            env.contains(&(
+                "GIT_COMMITTER_EMAIL".to_string(),
+                "bot@example.test".to_string()
+            )),
+            "{env:?}"
+        );
+
+        // The whole point: a replayed commit keeps the author it had.
+        for forbidden in ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"] {
+            assert!(
+                !env.iter().any(|(key, _)| key == forbidden),
+                "{forbidden} would overwrite the preserved author"
+            );
+        }
     }
 
     #[tokio::test]

@@ -517,9 +517,20 @@ pub async fn list(
 /// API calls a branch (`SPEC.md`, "Projects").
 ///
 /// Tags and hand-off refs are the `None` cases: a tag is not a branch, and
-/// hand-off refs are internal and exposed by hand-off id instead.
+/// hand-off refs are internal and exposed by hand-off id instead. A name the
+/// ref grammar does not accept at all — a `refs/sessions/<x>` whose suffix is
+/// not a UUID, which orphan cleanup has not reached yet — is skipped with a
+/// `warn!` rather than failing the listing it is part of.
+///
+/// A session ref is named in full, `refs/sessions/<id>`, where a head is
+/// `main` and an upstream-tracking ref is `origin/main` (`SPEC.md`,
+/// "Projects"). [`GitRef::parse`] takes all three spellings back, so a client
+/// can hand any listed name to an endpoint unchanged.
 pub fn to_branch(entry: &RefEntry) -> Option<Branch> {
-    let git_ref = GitRef::parse(&entry.full_name).ok()?;
+    let Ok(git_ref) = GitRef::parse(&entry.full_name) else {
+        warn!(git.refname = %entry.full_name, "skipping a ref this API cannot name");
+        return None;
+    };
 
     let kind = match git_ref {
         GitRef::Head(_) => BranchKind::Head,
@@ -532,7 +543,10 @@ pub fn to_branch(entry: &RefEntry) -> Option<Branch> {
     };
 
     Some(Branch {
-        name: git_ref.api_name(),
+        name: match &git_ref {
+            GitRef::Session(id) => session_ref(*id),
+            other => other.api_name(),
+        },
         kind,
         commit: entry.commit.clone(),
         session_id: match git_ref {
@@ -1159,7 +1173,9 @@ mod tests {
             .iter()
             .find(|branch| branch.kind == BranchKind::Session)
             .expect("the session ref is listed");
-        assert_eq!(session_branch.name, session.to_string());
+        // Named in full, unlike the two short spellings above (`SPEC.md`,
+        // "Projects").
+        assert_eq!(session_branch.name, session_ref(session));
         assert_eq!(session_branch.session_id, Some(session));
 
         // The tag and the hand-off ref were listed but are not branches.
@@ -1174,6 +1190,20 @@ mod tests {
                 .iter()
                 .any(|entry| entry.full_name == handoff_ref(handoff))
         );
+    }
+
+    /// A session ref whose suffix is not a UUID is a leftover orphan cleanup
+    /// has not reached; it is skipped rather than failing the listing it is
+    /// part of (`SPEC.md`, "Projects").
+    #[test]
+    fn a_session_ref_without_a_uuid_is_not_a_branch() {
+        let entry = RefEntry {
+            full_name: "refs/sessions/not-a-uuid".to_string(),
+            commit: "a".repeat(40),
+            committer_date: Utc::now(),
+        };
+
+        assert_eq!(to_branch(&entry), None);
     }
 
     #[tokio::test]

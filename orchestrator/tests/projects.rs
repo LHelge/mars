@@ -1,8 +1,9 @@
 //! `/api/projects` through the real router (`SPEC.md`, "Projects
 //! (`/api/projects`)").
 //!
-//! The five endpoints of the projects table itself: the list, the create, the
-//! read, the edit and the clone retry. What the creation transaction writes is
+//! The endpoints of the projects table itself: the list, the create, the read,
+//! the edit, the clone retry, the on-demand mirror fetch and the branch
+//! listing. What the creation transaction writes is
 //! asserted in `tests/projects_create.rs` and what the background job does in
 //! `tests/projects_clone_job.rs`; what is asserted here is the adapter — the
 //! paths, the JWT requirement and the password-change gate on each of them, the
@@ -24,16 +25,17 @@
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::http::StatusCode;
 use axum_test::TestResponse;
+use chrono::{DateTime, FixedOffset};
 use common::{AuthenticatedUser, TestApp};
-use mars_orchestrator::git::DataPaths;
 use mars_orchestrator::git::testutil::{TestUpstream, run_git};
+use mars_orchestrator::git::{DataPaths, GitActor};
 use mars_orchestrator::models::{Project, ProjectStatus};
-use mars_orchestrator::projects::clone_job;
+use mars_orchestrator::projects::{NewProjectRequest, clone_job, create_project};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -779,4 +781,338 @@ async fn retrying_an_unknown_project_is_404() {
 
     response.assert_status(StatusCode::NOT_FOUND);
     response.assert_json(&json!({ "status": 404, "error": "not found" }));
+}
+
+// --- POST /projects/{id}/fetch and GET /projects/{id}/branches
+
+/// `/api/projects/{id}/fetch`.
+fn fetch_path(id: Uuid) -> String {
+    format!("/api/projects/{id}/fetch")
+}
+
+/// `/api/projects/{id}/branches`.
+fn branches_path(id: Uuid) -> String {
+    format!("/api/projects/{id}/branches")
+}
+
+/// A project that stays `cloning`, because no job was ever started for it.
+///
+/// `POST /api/projects` spawns the clone immediately and the row leaves
+/// `cloning` within milliseconds, which is no basis for asserting what the two
+/// endpoints answer *while* a project is cloning. The creation transaction on
+/// its own leaves exactly that row and no repository on disk.
+async fn cloning_project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> Uuid {
+    create_project(
+        &app.state,
+        NewProjectRequest {
+            name: name.to_string(),
+            remote_url: TEST_REMOTE.to_string(),
+            default_branch: None,
+            credential: None,
+        },
+        user.user.id,
+    )
+    .await
+    .expect("the project is created")
+    .id
+}
+
+/// The project's bare repository on disk.
+fn repo_of(app: &TestApp, id: Uuid) -> PathBuf {
+    DataPaths::from_config(&app.state.config).project_repo(id)
+}
+
+/// Write `full_name` in the project repository at `commit`.
+///
+/// How a session ref, a tag or a hand-off ref gets into a mirror here: the
+/// epics that create them for real are not in this router yet, and what these
+/// tests assert is which namespaces the listing reports.
+async fn write_ref(app: &TestApp, id: Uuid, full_name: &str, commit: &str) {
+    run_git(
+        &repo_of(app, id),
+        &["update-ref", "--end-of-options", full_name, commit],
+    )
+    .await;
+}
+
+/// The object id `rev` names in the project repository.
+///
+/// No `--end-of-options`: `rev-parse` echoes options it does not understand,
+/// and every `rev` here is a fully qualified name this test wrote itself.
+async fn commit_of(app: &TestApp, id: Uuid, rev: &str) -> String {
+    run_git(&repo_of(app, id), &["rev-parse", rev])
+        .await
+        .trim()
+        .to_string()
+}
+
+/// A project's `last_fetched_at`, which every project in these tests has.
+fn fetched_at(project: &Value) -> DateTime<FixedOffset> {
+    let raw = project["last_fetched_at"]
+        .as_str()
+        .expect("a fetched project carries a timestamp");
+
+    DateTime::parse_from_rfc3339(raw).expect("the timestamp is RFC 3339")
+}
+
+/// The listing as `(name, kind)` pairs, in the order it came back in.
+fn listed(branches: &Value) -> Vec<(String, String)> {
+    branches
+        .as_array()
+        .expect("the listing is an array")
+        .iter()
+        .map(|branch| {
+            (
+                branch["name"].as_str().expect("a branch has a name").into(),
+                branch["kind"].as_str().expect("a branch has a kind").into(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_fetch_and_the_branch_listing_require_a_token() {
+    let app = TestApp::spawn().await;
+    let id = Uuid::new_v4();
+
+    let responses = [
+        app.server.post(&fetch_path(id)).await,
+        app.server.get(&branches_path(id)).await,
+    ];
+
+    for response in responses {
+        response.assert_status(StatusCode::UNAUTHORIZED);
+        response.assert_json(&unauthorized());
+    }
+}
+
+#[tokio::test]
+async fn the_fetch_and_the_branch_listing_are_refused_while_a_password_change_is_pending() {
+    let app = TestApp::spawn().await;
+    let gated = app.create_gated_user("gated", "gated@example.test").await;
+    let id = Uuid::new_v4();
+
+    let responses = [
+        app.post_as(&gated, &fetch_path(id)).await,
+        app.get_as(&gated, &branches_path(id)).await,
+    ];
+
+    for response in responses {
+        response.assert_status(StatusCode::FORBIDDEN);
+        response.assert_json(&password_change_required());
+    }
+}
+
+#[tokio::test]
+async fn fetching_a_ready_project_advances_its_fetch_time_as_the_requesting_user() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let upstream = upstream_with(&[]).await;
+    let (id, cloned) = cloned_project(&app, &user, "mars", &upstream).await;
+
+    let before = cloned
+        .last_fetched_at
+        .expect("the clone that just finished is a fetch");
+
+    let response = app.post_as(&user, &fetch_path(id)).await;
+
+    response.assert_status_ok();
+    let project = response.json::<Value>();
+    assert_eq!(project["id"], json!(id));
+    assert_eq!(project["status"], json!("ready"));
+    assert!(
+        fetched_at(&project) > before,
+        "an explicit fetch must record itself: {before} -> {project}"
+    );
+
+    // The credential was asked for on behalf of the user who asked for the
+    // fetch, which is what `secret_uses` records (`docs/data-model.md`:
+    // `purpose = 'git'`, `user_id` for REST, no session). Asserted through the
+    // provider the router holds, which is the mock; the row itself is
+    // `tests/projects_clone_job.rs`'s, which swaps the real provider in.
+    assert_eq!(
+        app.mock_git().requested().last(),
+        Some(&(id, GitActor::User(user.user.id))),
+        "the fetch asked as somebody else"
+    );
+}
+
+#[tokio::test]
+async fn a_fetch_moves_the_upstream_refs_and_leaves_the_integration_heads_alone() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let upstream = upstream_with(&[]).await;
+    let (id, _) = cloned_project(&app, &user, "mars", &upstream).await;
+
+    let head_before = commit_of(&app, id, "refs/heads/main").await;
+
+    // Upstream advances `main` and grows a branch with a slash in its name,
+    // which only a prefix ref pattern reaches.
+    let moved = upstream
+        .commit_file("main", "next.txt", "next\n", "feat: move main on")
+        .await;
+    upstream
+        .commit_file("feature/x", "x.txt", "x\n", "feat: start x")
+        .await;
+
+    app.post_as(&user, &fetch_path(id)).await.assert_status_ok();
+
+    let response = app.get_as(&user, &branches_path(id)).await;
+    response.assert_status_ok();
+    let branches = response.json::<Value>();
+
+    // The fetch moved the tracking ref and left Mars's head where it was
+    // (`ARCHITECTURE.md`, "Git model", Ref ownership).
+    assert_eq!(commit_of(&app, id, "refs/heads/main").await, head_before);
+    assert_eq!(
+        commit_of(&app, id, "refs/remotes/origin/main").await,
+        moved,
+        "the upstream-tracking ref did not move"
+    );
+
+    assert_eq!(
+        listed(&branches),
+        vec![
+            ("main".to_string(), "head".to_string()),
+            ("origin/feature/x".to_string(), "upstream".to_string()),
+            ("origin/main".to_string(), "upstream".to_string()),
+        ],
+        "a branch upstream grew after the clone is tracked, not seeded as a head"
+    );
+}
+
+#[tokio::test]
+async fn the_branch_listing_is_the_three_kinds_and_leaves_the_other_refs_out() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let upstream = upstream_with(&["feature/x"]).await;
+    let (id, _) = cloned_project(&app, &user, "mars", &upstream).await;
+
+    // A session ref, as a fetch-back would leave it, and the two kinds of ref
+    // that live in the repository without being branches.
+    let session_id = Uuid::new_v4();
+    let tip = commit_of(&app, id, "refs/heads/main").await;
+    write_ref(&app, id, &format!("refs/sessions/{session_id}"), &tip).await;
+    write_ref(&app, id, "refs/tags/v1", &tip).await;
+    write_ref(&app, id, &format!("refs/handoffs/{}", Uuid::new_v4()), &tip).await;
+
+    let response = app.get_as(&user, &branches_path(id)).await;
+
+    response.assert_status_ok();
+    let branches = response.json::<Value>();
+    let session_ref = format!("refs/sessions/{session_id}");
+
+    assert_eq!(
+        listed(&branches),
+        vec![
+            ("feature/x".to_string(), "head".to_string()),
+            ("main".to_string(), "head".to_string()),
+            ("origin/feature/x".to_string(), "upstream".to_string()),
+            ("origin/main".to_string(), "upstream".to_string()),
+            (session_ref, "session".to_string()),
+        ],
+        "heads, then upstream, then sessions, each by name; no tag and no hand-off"
+    );
+
+    let entries = branches.as_array().expect("the listing is an array");
+    let session = entries.last().expect("the session ref is listed");
+    assert_eq!(session["session_id"], json!(session_id));
+    assert_eq!(session["commit"], json!(tip));
+
+    // `session_id` is omitted rather than null for everything else, and every
+    // entry carries a full object id.
+    for entry in &entries[..entries.len() - 1] {
+        assert!(
+            entry.get("session_id").is_none(),
+            "a head or upstream ref carried a session id: {entry}"
+        );
+    }
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["commit"].as_str().is_some_and(|id| id.len() == 40)),
+        "{branches}"
+    );
+}
+
+#[tokio::test]
+async fn fetching_a_project_that_is_still_cloning_is_a_conflict() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let id = cloning_project(&app, &user, "mars").await;
+
+    let response = app.post_as(&user, &fetch_path(id)).await;
+
+    response.assert_status(StatusCode::CONFLICT);
+    response.assert_json(&json!({ "status": 409, "error": "project is not ready" }));
+}
+
+#[tokio::test]
+async fn listing_the_branches_of_a_project_that_is_still_cloning_is_a_conflict() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let id = cloning_project(&app, &user, "mars").await;
+
+    let response = app.get_as(&user, &branches_path(id)).await;
+
+    response.assert_status(StatusCode::CONFLICT);
+    response.assert_json(&json!({ "status": 409, "error": "project is not ready" }));
+}
+
+#[tokio::test]
+async fn listing_the_branches_of_a_failed_project_is_a_conflict() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let id = failed_project(&app, &user, "mars").await;
+
+    let response = app.get_as(&user, &branches_path(id)).await;
+
+    response.assert_status(StatusCode::CONFLICT);
+    response.assert_json(&json!({ "status": 409, "error": "project is not ready" }));
+}
+
+#[tokio::test]
+async fn a_fetch_whose_remote_is_gone_answers_the_git_status_and_changes_nothing() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let upstream = upstream_with(&[]).await;
+    let (id, cloned) = cloned_project(&app, &user, "mars", &upstream).await;
+
+    // The remote directory disappears under the mirror, which git reports as a
+    // failed command: an internal error rather than a state the caller named
+    // (`GitError::status`).
+    std::fs::remove_dir_all(&upstream.path).expect("the upstream is removed");
+
+    let response = app.post_as(&user, &fetch_path(id)).await;
+
+    response.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+
+    // Nothing was recorded: the project is still `ready`, still has no status
+    // message, and was last fetched by the clone.
+    let read = app.get_as(&user, &project_path(id)).await;
+    read.assert_status_ok();
+    let project = read.json::<Value>();
+    assert_eq!(project["status"], json!("ready"));
+    assert_eq!(project["status_message"], Value::Null);
+    assert_eq!(
+        fetched_at(&project),
+        cloned.last_fetched_at.expect("the clone recorded a fetch")
+    );
+}
+
+#[tokio::test]
+async fn fetching_and_listing_an_unknown_project_is_404() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let id = Uuid::new_v4();
+
+    let responses = [
+        app.post_as(&user, &fetch_path(id)).await,
+        app.get_as(&user, &branches_path(id)).await,
+    ];
+
+    for response in responses {
+        response.assert_status(StatusCode::NOT_FOUND);
+        response.assert_json(&json!({ "status": 404, "error": "not found" }));
+    }
 }

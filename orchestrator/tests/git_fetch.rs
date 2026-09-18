@@ -300,7 +300,9 @@ async fn the_branch_listing_is_the_three_kinds_in_the_documented_order() {
         .iter()
         .map(|branch| (branch.name.as_str(), branch.kind))
         .collect();
-    let expected_session = session_id.to_string();
+    // A session ref is listed under its full name, where a head and an
+    // upstream-tracking ref carry their short one (`SPEC.md`, "Projects").
+    let expected_session = format!("refs/sessions/{session_id}");
     assert_eq!(
         listed,
         vec![

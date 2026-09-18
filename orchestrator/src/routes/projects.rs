@@ -1,8 +1,9 @@
 //! `/api/projects` (`SPEC.md`, "Projects (`/api/projects`)").
 //!
-//! The project's own five endpoints: the list, the create, the read, the edit
-//! and the clone retry. The git sub-resource lives in [`crate::routes::git`]
-//! and is merged onto the same `/projects` prefix (`routes::mod`).
+//! The project's own endpoints: the list, the create, the read, the edit, the
+//! clone retry, the on-demand mirror fetch and the branch listing. The git
+//! sub-resource lives in [`crate::routes::git`] and is merged onto the same
+//! `/projects` prefix (`routes::mod`).
 //!
 //! Almost nothing is decided here. Creating a project is one transaction in
 //! [`create_project`], which validates every field, seeds the task states and
@@ -25,7 +26,10 @@
 //!   value is stored unchecked, because there may be no repository yet and the
 //!   clone job validates it against the fetched heads;
 //! - `mark_cloning_from_error` answering `None` is 404 or 409, told apart by a
-//!   follow-up read: the row is either gone or in another status.
+//!   follow-up read: the row is either gone or in another status;
+//! - `GET .../branches` refuses a project that is not `ready` with the same
+//!   409 the fetch routine gives, and holds the project git lock across the
+//!   one listing command so a half-seeded clone is never reported.
 //!
 //! **The credential never comes back out.** It reaches [`NewProjectRequest`]
 //! and is sealed into the project-scoped `GIT_CREDENTIAL` secret; the response
@@ -41,8 +45,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::git::{DataPaths, GitError, set_default_branch};
-use crate::models::{BranchName, MaxAttempts, Project, ProjectName, ProjectStatus, ProjectUpdate};
+use crate::git::{DataPaths, GitActor, GitError, fetch_project, list_branches, set_default_branch};
+use crate::models::{
+    Branch, BranchName, MaxAttempts, Project, ProjectName, ProjectStatus, ProjectUpdate,
+};
 use crate::prelude::*;
 use crate::projects::{NewProjectRequest, clone_job, create_project};
 use crate::repositories::ProjectRepository;
@@ -50,6 +56,14 @@ use crate::routes::{CurrentUser, Path};
 
 /// What a `retry-clone` on a project that is not in `error` is told (409).
 const NOT_IN_ERROR: &str = "project is not in error state";
+
+/// What a request needing a repository on disk is told while there may be none
+/// (409).
+///
+/// The same words [`fetch_project`] answers a `cloning` or `error` project
+/// with, so `POST .../fetch` and `GET .../branches` cannot drift apart in how
+/// they say the same thing.
+const NOT_READY: &str = "project is not ready";
 
 /// The router nested under `/api/projects`.
 ///
@@ -61,6 +75,8 @@ pub fn routes() -> Router<AppState> {
         .route("/", get(list).post(create))
         .route("/{id}", get(fetch).put(update))
         .route("/{id}/retry-clone", post(retry_clone))
+        .route("/{id}/fetch", post(fetch_now))
+        .route("/{id}/branches", get(branches))
 }
 
 /// `Project = { id, name, remote_url, default_branch, status, status_message,
@@ -328,6 +344,78 @@ async fn retry_clone(
     info!(project_id = %id, "project clone retried");
 
     Ok(Json(project.into()))
+}
+
+// ---- fetch and branches ----
+
+/// `POST /projects/{id}/fetch` → the project with a fresh `last_fetched_at`
+/// (404 unknown, 409 not `ready`, and the git layer's own status when the
+/// fetch itself failed).
+///
+/// One call into [`fetch_project`], which is the routine the cron mirror-fetch
+/// job and a fresh session launch run too (`ARCHITECTURE.md`, "Git model",
+/// Project clone): the readiness check before the lock, the git lock held for
+/// exactly the `git fetch --prune origin`, the credential lookup recorded
+/// against this user in `secret_uses`, and the `last_fetched_at` write in a
+/// short transaction after the lock was released (ADR 0021).
+///
+/// `max_age` is `None`, deliberately. It is what the launcher passes a budget
+/// for; an explicit `POST .../fetch` is a user asking for upstream *now* and
+/// must never be answered by a fetch somebody else ran a moment ago.
+///
+/// The row is re-read rather than returned by the fetch, which answers a
+/// timestamp and not a project. A project deleted between the two is the
+/// documented 404, which is also what a client racing a deletion should see.
+async fn fetch_now(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ProjectDto>> {
+    fetch_project(&state, id, &GitActor::User(user.id), None).await?;
+
+    let project = ProjectRepository::new(&state.pool)
+        .find(id)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    Ok(Json(project.into()))
+}
+
+/// `GET /projects/{id}/branches` → every ref the API calls a branch (404
+/// unknown, 409 not `ready`).
+///
+/// [`list_branches`] is the whole answer: the integration heads, the
+/// upstream-tracking refs and the session refs, in that order and by name
+/// within each, with tags, hand-off refs and `origin/HEAD` left out
+/// (`SPEC.md`, "Projects").
+///
+/// The status check comes first and is the same 409 a fetch gives, because a
+/// project that is still `cloning` or in `error` may have no repository to
+/// read at all. The project git lock is then held across the one
+/// `for-each-ref`, so the listing cannot catch the clone job part-way through
+/// seeding the integration heads (`ARCHITECTURE.md`, "Git model",
+/// Serialization). No transaction is open while that lock is waited for: the
+/// row was read and dropped before it (ADR 0021).
+async fn branches(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<Branch>>> {
+    let project = ProjectRepository::new(&state.pool)
+        .find(id)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    if project.status != ProjectStatus::Ready {
+        return Err(Error::Conflict(NOT_READY.to_string()));
+    }
+
+    let paths = DataPaths::from_config(&state.config);
+    let guard = state.git_locks.lock(id).await;
+    let listed = list_branches(&paths, id).await;
+    drop(guard);
+
+    Ok(Json(listed?))
 }
 
 #[cfg(test)]

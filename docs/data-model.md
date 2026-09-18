@@ -144,7 +144,7 @@ A project is one git repository, stored as a bare project repository under `/dat
 | `status` | `project_status` | NOT NULL DEFAULT `'cloning'` | |
 | `status_message` | `TEXT` | NULL | Human-readable reason when `status = 'error'`. |
 | `created_by` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |
-| `last_fetched_at` | `TIMESTAMPTZ` | NULL | Updated by the periodic mirror fetch. |
+| `last_fetched_at` | `TIMESTAMPTZ` | NULL | Updated by the periodic mirror fetch, by the clone that finished it and by `POST /projects/{id}/fetch`; unchanged when the fetch failed. |
 | `max_attempts` | `SMALLINT` | NOT NULL DEFAULT 3, CHECK 1–20 | How many claims a task may go through in one state before a release sends it to the project's human state instead. See `tasks`. |
 | `next_task_number` | `INTEGER` | NOT NULL DEFAULT 1 | Counter for `tasks.number`, taken with `UPDATE ... RETURNING` inside the task insert transaction, which serialises concurrent inserts on the project row. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |

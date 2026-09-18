@@ -42,19 +42,21 @@ pub enum BranchKind {
     /// target (ADR 0017).
     Upstream,
     /// A session's synced work, `refs/sessions/<session id>`, named by that
-    /// id.
+    /// full ref.
     Session,
 }
 
 /// One ref the API is willing to name (`SPEC.md`, "Projects").
 ///
-/// `name` is the API spelling, which is what every endpoint taking a `source`,
-/// `head`, `onto`, `base`, `branch`, `ref` or `target` accepts back: `main`
-/// for a head, `origin/main` for upstream tracking, the session id for a
-/// session ref.
+/// `name` is a spelling every endpoint taking a `source`, `head`, `onto`,
+/// `base`, `branch`, `ref` or `target` accepts back: `main` for a head,
+/// `origin/main` for upstream tracking, and the full `refs/sessions/<id>` for
+/// a session ref, which says what was selected where a bare id would not
+/// (`SPEC.md`, "Projects").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Branch {
-    /// The API name, not the fully qualified ref.
+    /// The API name: short for a head or an upstream-tracking ref, fully
+    /// qualified for a session ref.
     pub name: String,
     /// Which namespace the ref lives in.
     pub kind: BranchKind,
@@ -338,7 +340,7 @@ mod tests {
     fn a_session_branch_carries_its_id_and_the_snake_case_kind() {
         let id = Uuid::new_v4();
         let json = serde_json::to_value(Branch {
-            name: id.to_string(),
+            name: format!("refs/sessions/{id}"),
             kind: BranchKind::Session,
             commit: "1".repeat(40),
             session_id: Some(id),
@@ -346,6 +348,7 @@ mod tests {
         .expect("a branch serialises");
 
         assert_eq!(json["kind"], "session");
+        assert_eq!(json["name"], format!("refs/sessions/{id}"));
         assert_eq!(json["session_id"], id.to_string());
     }
 

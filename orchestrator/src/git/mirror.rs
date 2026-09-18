@@ -430,9 +430,12 @@ pub(super) async fn fetch_project_with(
 /// `refs/remotes/origin/HEAD` are not branches and are dropped by
 /// [`refs::to_branch`].
 ///
-/// Read-only, so it takes no guard: `for-each-ref` reports whatever the
-/// repository says at the moment it runs, and a concurrent fetch can only move
-/// upstream-tracking refs it has not read yet.
+/// One `for-each-ref`, so the answer is a single point in time rather than a
+/// composed one. The caller holds the project git lock across it — the handler
+/// of `GET /projects/{id}/branches` does — so the listing never catches a
+/// clone part-way through seeding integration heads (`ARCHITECTURE.md`, "Git
+/// model", Serialization). No guard is taken or required here: nothing is
+/// written, and a caller that already holds the lock must not reacquire it.
 pub async fn list_branches(
     paths: &DataPaths,
     project_id: Uuid,

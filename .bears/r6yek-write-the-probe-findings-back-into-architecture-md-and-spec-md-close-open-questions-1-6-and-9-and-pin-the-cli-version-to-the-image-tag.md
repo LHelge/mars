@@ -4,7 +4,7 @@ title: Write the probe findings back into ARCHITECTURE.md and SPEC.md, close ope
 status: open
 priority: P1
 created: "2026-09-16T20:30:57.001248535Z"
-updated: "2026-09-16T20:31:02.096232577Z"
+updated: "2026-09-18T08:02:24.324595252Z"
 tags:
   - orchestrator
   - agent
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - u3eta
   - "5wg2m"
+  - gukce
 parent: "8vnwy"
 ---
 

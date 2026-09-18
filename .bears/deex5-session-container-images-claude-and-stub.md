@@ -2,10 +2,10 @@
 id: deex5
 title: "Session container images: claude and stub"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:12:25.829216888Z"
-updated: "2026-09-16T20:15:17.258514024Z"
+updated: "2026-09-18T08:02:36.756903842Z"
 tags:
   - images
 depends_on:

@@ -27,6 +27,7 @@ pub mod error;
 pub mod lock;
 pub mod mirror;
 pub mod paths;
+pub mod push;
 pub mod refs;
 pub mod session;
 
@@ -42,6 +43,7 @@ pub use mirror::{
     remove_project_repo,
 };
 pub use paths::DataPaths;
+pub use push::{ComparePage, PushOutcome, github_compare_url, push};
 pub use refs::{GitRef, RefEntry, ResolvedRef};
 pub use session::{create_work_clone, fetch_back, remove_work_clone, resolve_base, session_branch};
 

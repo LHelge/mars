@@ -25,6 +25,7 @@
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
+use crate::events::{AgentEvent, AgentEventBody, SessionEvent, StopSignal};
 use crate::models::{
     EventRow, NewEvent, NewSession, ProfileKind, Session, SessionError, SessionState, SessionTitle,
     StateChange,
@@ -35,6 +36,99 @@ use crate::repositories::unique_violation;
 /// The largest page `GET /sessions/{id}/events` will return (`SPEC.md`,
 /// "Sessions": `?before=<seq>&limit=<n≤500>`).
 pub const MAX_EVENT_PAGE: u32 = 500;
+
+/// What a state change asks for, beyond the session it applies to.
+///
+/// A struct rather than seven positional arguments: the target state, the
+/// reason and the signal all end up in one `state_change` event, and `from` is
+/// the state the caller believes the session is in — checked under the row
+/// lock, so two concurrent stops cannot both pass (ADR 0021).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transition<'a> {
+    /// The state the caller read before it decided to transition.
+    pub from: SessionState,
+    /// The state to move to.
+    pub to: SessionState,
+    /// Why, as the `state_change` event will record it (`SPEC.md`,
+    /// "AgentEvent").
+    pub reason: &'a str,
+    /// The signal that ended the run, when a stop caused this transition
+    /// (`ARCHITECTURE.md`, "Stop semantics").
+    pub signal: Option<StopSignal>,
+    /// What to store in `sessions.error`. Only read when [`Transition::to`] is
+    /// [`SessionState::Failed`], where [`Transition::reason`] stands in if it is
+    /// `None` (`docs/data-model.md`, `sessions.error`).
+    pub error: Option<&'a str>,
+}
+
+impl<'a> Transition<'a> {
+    /// A transition that carries no signal and no separate error message.
+    pub fn new(from: SessionState, to: SessionState, reason: &'a str) -> Self {
+        Self {
+            from,
+            to,
+            reason,
+            signal: None,
+            error: None,
+        }
+    }
+
+    /// The same transition, caused by `signal`.
+    pub fn with_signal(mut self, signal: StopSignal) -> Self {
+        self.signal = Some(signal);
+        self
+    }
+
+    /// The same transition, storing `error` in `sessions.error`.
+    pub fn with_error(mut self, error: &'a str) -> Self {
+        self.error = Some(error);
+        self
+    }
+
+    /// What `sessions.error` becomes: the explicit error, else the reason, and
+    /// only when the target state is [`SessionState::Failed`].
+    fn stored_error(&self) -> Option<&str> {
+        (self.to == SessionState::Failed).then(|| self.error.unwrap_or(self.reason))
+    }
+}
+
+/// What one turn added to a session's counters (`ARCHITECTURE.md`, "Cost
+/// accounting").
+///
+/// A delta, not a total: `total_cost_usd` is cumulative for the CLI process
+/// while `usage` is per turn, so the owner works out what one `result` added —
+/// the increase over the previous `result` for the cost, the turn's own counters
+/// for the tokens — and this type carries only that difference
+/// (`ARCHITECTURE.md`, "Cost accounting", the increase-over-previous rule).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CostDelta {
+    pub cost_usd: f64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+impl CostDelta {
+    /// Reject anything that would walk a counter backwards, before any row is
+    /// written.
+    fn validate(&self) -> Result<()> {
+        if !self.cost_usd.is_finite()
+            || self.cost_usd < 0.0
+            || self.input_tokens < 0
+            || self.output_tokens < 0
+        {
+            return Err(SessionError::InvalidUsage.into());
+        }
+
+        Ok(())
+    }
+}
+
+/// The sequences one append occupied, inclusive at both ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppendedRange {
+    pub first_seq: i64,
+    pub last_seq: i64,
+}
 
 /// All SQL against `sessions` and `events` (`ARCHITECTURE.md`, "Orchestrator
 /// internals").
@@ -122,6 +216,24 @@ impl<'a> SessionRepository<'a> {
         Ok(session)
     }
 
+    /// The session with this id, or [`Error::NotFound`].
+    ///
+    /// The form every caller that has no other answer for a missing session
+    /// wants; [`SessionRepository::find`] is the one for a caller that does.
+    pub async fn get(&self, id: Uuid) -> Result<Session> {
+        self.find(id).await?.ok_or(Error::NotFound)
+    }
+
+    /// The session with this id *within* this project, or [`Error::NotFound`].
+    ///
+    /// The scoped form of [`SessionRepository::get`]; the argument order is
+    /// [`SessionRepository::find_in_project`]'s, project first.
+    pub async fn get_in_project(&self, project_id: Uuid, id: Uuid) -> Result<Session> {
+        self.find_in_project(project_id, id)
+            .await?
+            .ok_or(Error::NotFound)
+    }
+
     /// The session with this id *within* this project, or `None`.
     ///
     /// The scope is in the `WHERE` clause rather than checked afterwards
@@ -201,6 +313,14 @@ impl<'a> SessionRepository<'a> {
         .await?;
 
         Ok(sessions)
+    }
+
+    /// Every session in one state, across all projects, newest first.
+    ///
+    /// What the reaper and the startup sweep ask for; the filtering form of
+    /// [`SessionRepository::list_all`], which is the same query.
+    pub async fn list_by_state(&self, state: SessionState) -> Result<Vec<Session>> {
+        self.list_all(Some(state)).await
     }
 
     /// How many sessions of this project are `running` or `creating`.
@@ -456,12 +576,91 @@ impl<'a> SessionRepository<'a> {
             return Err(SessionError::InvalidTransition { from, to }.into());
         }
 
-        // Which timestamps the transition sets follows from the target state
-        // alone, so it is decided here and bound as plain booleans rather than
-        // re-derived from an enum comparison in SQL.
+        self.write_state(&mut *tx, id, from, to, change.error.as_deref())
+            .await
+    }
+
+    /// Move a session `from → to`, write the `state_change` event and announce
+    /// the new state, all in the caller's transaction.
+    ///
+    /// The whole documented state change in one call (`ARCHITECTURE.md`,
+    /// "Session owner task"), and the one the lifecycle code uses:
+    ///
+    /// 1. the session row is locked and its state read under the lock,
+    /// 2. [`Error::Conflict`] with `session is <current state>` when that state
+    ///    is not [`Transition::from`], so a caller acting on a stale read loses
+    ///    the race instead of overwriting the winner,
+    /// 3. [`SessionError::InvalidTransition`] when the lifecycle diagram has no
+    ///    such edge,
+    /// 4. the row is updated — `parked_at` entering `parked`, `ended_at`
+    ///    entering `done` or `failed`, `error` entering `failed`, and both
+    ///    `error` and `ended_at` cleared on the `failed → parked` retry
+    ///    (`docs/data-model.md`, `sessions`),
+    /// 5. one `state_change` event is appended through
+    ///    [`SessionRepository::append_event`], which also announces it on
+    ///    `session_events`,
+    /// 6. and `session_state` carries `<session_id>:<state>`.
+    ///
+    /// One row lock, one transaction, both notifications issued inside it and so
+    /// delivered only on commit (ADR 0021, 0028).
+    pub async fn transition(
+        &self,
+        tx: &mut PgConnection,
+        id: Uuid,
+        change: &Transition<'_>,
+    ) -> Result<Session> {
+        let current = self.lock_session(&mut *tx, id).await?;
+
+        if current.state != change.from {
+            return Err(Error::Conflict(format!("session is {}", current.state)));
+        }
+
+        if !change.from.can_transition_to(change.to) {
+            return Err(SessionError::InvalidTransition {
+                from: change.from,
+                to: change.to,
+            }
+            .into());
+        }
+
+        let mut updated = self
+            .write_state(&mut *tx, id, change.from, change.to, change.stored_error())
+            .await?;
+
+        let event = AgentEvent::new(AgentEventBody::StateChange {
+            from: change.from,
+            to: change.to,
+            reason: change.reason.to_string(),
+            signal: change.signal,
+        });
+        // The `UPDATE` above returned the row as it was before the event took a
+        // sequence, so the cache the append just wrote is carried over rather
+        // than read back with a third statement.
+        updated.last_seq = self.append_event(&mut *tx, id, &event).await?;
+
+        Ok(updated)
+    }
+
+    /// The `UPDATE` and the `session_state` notification both state changes
+    /// share, with the transition already validated.
+    ///
+    /// Which timestamps a transition touches follows from the two states alone,
+    /// so they are decided here and bound as plain booleans rather than
+    /// re-derived from enum comparisons in SQL.
+    async fn write_state(
+        &self,
+        tx: &mut PgConnection,
+        id: Uuid,
+        from: SessionState,
+        to: SessionState,
+        error: Option<&str>,
+    ) -> Result<Session> {
         let entering_parked = to == SessionState::Parked;
         let entering_ended = matches!(to, SessionState::Done | SessionState::Failed);
         let entering_failed = to == SessionState::Failed;
+        // The retry edge: a session that failed and is being relaunched has no
+        // error any more and has not ended (`docs/data-model.md`, `sessions`).
+        let retrying = from == SessionState::Failed && to == SessionState::Parked;
 
         let updated = sqlx::query_as!(
             Session,
@@ -469,8 +668,8 @@ impl<'a> SessionRepository<'a> {
             UPDATE sessions
             SET state = $2,
                 parked_at = CASE WHEN $3 THEN NOW() ELSE parked_at END,
-                ended_at = CASE WHEN $4 THEN NOW() ELSE ended_at END,
-                error = CASE WHEN $5 THEN $6 ELSE error END
+                ended_at = CASE WHEN $4 THEN NOW() WHEN $7 THEN NULL ELSE ended_at END,
+                error = CASE WHEN $5 THEN $6 WHEN $7 THEN NULL ELSE error END
             WHERE id = $1
             RETURNING id, project_id, profile_id, kind AS "kind: ProfileKind", created_by,
                       title, task_id, handoff_id, state AS "state: SessionState", base_ref,
@@ -483,7 +682,8 @@ impl<'a> SessionRepository<'a> {
             entering_parked,
             entering_ended,
             entering_failed,
-            change.error.as_deref(),
+            error,
+            retrying,
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -500,6 +700,56 @@ impl<'a> SessionRepository<'a> {
         );
 
         Ok(updated)
+    }
+
+    /// Transition every `creating` session to `failed`, one transaction each.
+    ///
+    /// Startup recovery: a session left `creating` by a restart has no container
+    /// coming and no owner to attach, so it is failed with `reason` in
+    /// `sessions.error` (`ARCHITECTURE.md`, "Durability and recovery"). Each row
+    /// gets its own transaction through [`SessionRepository::transition`], so one
+    /// row that cannot be failed — it changed state in between, or its
+    /// notification could not be issued — does not hold back the others; the
+    /// failure is logged and the sweep continues.
+    ///
+    /// Returns the rows it did fail, oldest first.
+    pub async fn fail_all_creating(&self, reason: &str) -> Result<Vec<Session>> {
+        let ids = sqlx::query_scalar!(
+            r#"
+            SELECT id FROM sessions
+            WHERE state = 'creating'::session_state
+            ORDER BY created_at, id
+            "#,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        let change = Transition::new(SessionState::Creating, SessionState::Failed, reason);
+        let mut failed = Vec::with_capacity(ids.len());
+
+        for id in ids {
+            let mut tx = self.pool.begin().await?;
+            match self.transition(&mut tx, id, &change).await {
+                Ok(session) => {
+                    tx.commit().await?;
+                    failed.push(session);
+                }
+                Err(err) => {
+                    // Best effort: the rollback's own failure says nothing more
+                    // than the transition's already did.
+                    let _ = tx.rollback().await;
+                    warn!(
+                        session_id = %id,
+                        error = %err,
+                        "a creating session could not be failed",
+                    );
+                }
+            }
+        }
+
+        debug!(count = failed.len(), "creating sessions failed");
+
+        Ok(failed)
     }
 
     /// Append a batch of events to a session and announce the batch on
@@ -598,6 +848,149 @@ impl<'a> SessionRepository<'a> {
         );
 
         Ok(sequences)
+    }
+
+    /// Append one [`AgentEvent`] and return the sequence it got.
+    ///
+    /// The single-event form of [`SessionRepository::append_events`] — same lock,
+    /// same `MAX(seq) + 1`, same one notification — and the primitive the git
+    /// handlers, the launcher, recovery and the reaper use, because none of them
+    /// translates a transcript line and so none of them has an offset to record.
+    /// `ts` is the moment of the call, which for these writers is the moment the
+    /// orchestrator did the thing the event reports.
+    pub async fn append_event(
+        &self,
+        tx: &mut PgConnection,
+        session_id: Uuid,
+        event: &AgentEvent,
+    ) -> Result<i64> {
+        let (kind, payload) = event.into_row_parts(None);
+        let sequences = self
+            .append_events(&mut *tx, session_id, &[NewEvent::now(kind, payload)])
+            .await?;
+
+        sequences.first().copied().ok_or_else(|| {
+            error!(session_id = %session_id, "an event append returned no sequence");
+            Error::Internal("event append returned no sequence".into())
+        })
+    }
+
+    /// Commit one native transcript line: its translated events, the offset it
+    /// ended at, the session counters and one notification, together.
+    ///
+    /// The session owner's write path (`ARCHITECTURE.md`, "Session owner task":
+    /// "A complete native line's translated events, transcript offset and
+    /// session counters commit together"). In the caller's transaction it locks
+    /// the session row, rechecks the transcript offset under that lock, appends
+    /// the line's events in order and adds `cost` to the counters. Either the
+    /// whole line is visible with its offset advanced, or none of it is.
+    ///
+    /// `line_end_offset` is the byte offset just past this line in
+    /// `log/stream.jsonl`, and only the *last* event of the line carries it, so
+    /// the offset advances exactly once per line and a restart that resumes from
+    /// [`SessionRepository::max_offset`] re-reads nothing it already stored
+    /// (`ARCHITECTURE.md`, "Durability and recovery"). Any `_offset` a caller
+    /// already put on an earlier event of the line is dropped.
+    ///
+    /// `expected_prev_offset` is the offset the owner believes is stored, `0`
+    /// before the first line; [`Error::Conflict`] with `transcript offset moved`
+    /// when the row says otherwise, written before anything else, so a second
+    /// tailer of the same transcript cannot double-append.
+    ///
+    /// An empty `events` slice is a programming error and an
+    /// [`Error::Internal`]: committing an offset with no row behind it would
+    /// skip the line on the next restart.
+    pub async fn append_native_line(
+        &self,
+        tx: &mut PgConnection,
+        session_id: Uuid,
+        events: &[AgentEvent],
+        line_end_offset: u64,
+        expected_prev_offset: u64,
+        cost: Option<CostDelta>,
+    ) -> Result<AppendedRange> {
+        let Some((last, leading)) = events.split_last() else {
+            error!(session_id = %session_id, "a native line produced no events");
+            return Err(Error::Internal("a native line produced no events".into()));
+        };
+
+        let line_end = offset_to_i64(line_end_offset, session_id)?;
+        let expected = offset_to_i64(expected_prev_offset, session_id)?;
+        // Before the lock and before any insert: a rejected delta must not cost
+        // the caller a rolled-back transaction.
+        if let Some(cost) = cost.as_ref() {
+            cost.validate()?;
+        }
+
+        // The same lock every other writer takes, held until the caller commits
+        // (ADR 0021).
+        self.lock_session(&mut *tx, session_id).await?;
+
+        let stored = sqlx::query_scalar!(
+            r#"
+            SELECT COALESCE(MAX((payload->>'_offset')::bigint), 0) AS "offset!"
+            FROM events
+            WHERE session_id = $1
+            "#,
+            session_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if stored != expected {
+            warn!(
+                session_id = %session_id,
+                stored,
+                expected,
+                "transcript offset moved under the writer",
+            );
+            return Err(Error::Conflict("transcript offset moved".into()));
+        }
+
+        let mut rows: Vec<NewEvent> = leading
+            .iter()
+            .map(|event| new_event(event, None))
+            .collect::<Vec<_>>();
+        rows.push(new_event(last, Some(line_end_offset)));
+
+        // The insert loop, the `last_seq` cache and the single notification are
+        // `append_events`, which is the only event-insert path in the crate.
+        let sequences = self.append_events(&mut *tx, session_id, &rows).await?;
+
+        if let Some(cost) = cost {
+            self.add_usage(
+                &mut *tx,
+                session_id,
+                cost.cost_usd,
+                cost.input_tokens,
+                cost.output_tokens,
+            )
+            .await?;
+        }
+
+        // Both hold: the slice was non-empty, so `append_events` returned one
+        // sequence per event.
+        let range = match (sequences.first(), sequences.last()) {
+            (Some(&first_seq), Some(&last_seq)) => AppendedRange {
+                first_seq,
+                last_seq,
+            },
+            _ => {
+                error!(session_id = %session_id, "a native line append returned no sequences");
+                return Err(Error::Internal("event append returned no sequence".into()));
+            }
+        };
+
+        debug!(
+            session_id = %session_id,
+            count = rows.len(),
+            first_seq = range.first_seq,
+            last_seq = range.last_seq,
+            line_end,
+            "native line appended",
+        );
+
+        Ok(range)
     }
 
     /// Add one `result` event's cost and tokens to the session's counters
@@ -707,6 +1100,35 @@ impl<'a> SessionRepository<'a> {
         Ok(rows)
     }
 
+    /// One page of a session's events as clients receive them, oldest last
+    /// (`GET /sessions/{id}/events?before=&limit=`).
+    ///
+    /// [`SessionRepository::list_events`] with every row turned into a
+    /// [`SessionEvent`], which is where the internal `_`-prefixed payload fields
+    /// are dropped (`SPEC.md`, "AgentEvent"), so `_offset` cannot reach a client
+    /// through this path. A row that does not parse as its own `kind` is an
+    /// [`Error::Internal`]: this code wrote it.
+    pub async fn events_page(
+        &self,
+        session_id: Uuid,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<(Vec<SessionEvent>, bool)> {
+        let (rows, has_more) = self.list_events(session_id, before, limit).await?;
+
+        Ok((into_session_events(rows)?, has_more))
+    }
+
+    /// Every event after `after`, oldest first, as clients receive them.
+    ///
+    /// The typed form of [`SessionRepository::list_events_after`], for the
+    /// WebSocket's replay from a client's cursor (`ARCHITECTURE.md`, "Event
+    /// delivery"); internal fields are stripped as in
+    /// [`SessionRepository::events_page`].
+    pub async fn events_after(&self, session_id: Uuid, after: i64) -> Result<Vec<SessionEvent>> {
+        into_session_events(self.list_events_after(session_id, after).await?)
+    }
+
     /// The highest committed sequence of a session, or `0` when it has no
     /// events yet.
     ///
@@ -749,6 +1171,33 @@ impl<'a> SessionRepository<'a> {
 
         Ok(max)
     }
+}
+
+/// An [`AgentEvent`] as a row about to be appended, observed now and carrying
+/// `offset` when it is the last event of a native line.
+fn new_event(event: &AgentEvent, offset: Option<u64>) -> NewEvent {
+    let (kind, payload) = event.into_row_parts(offset);
+
+    NewEvent::now(kind, payload)
+}
+
+/// Rows as clients receive them, internal payload fields stripped.
+fn into_session_events(rows: Vec<EventRow>) -> Result<Vec<SessionEvent>> {
+    rows.into_iter()
+        .map(|row| SessionEvent::from_row(row.seq, row.ts, &row.kind, row.payload))
+        .collect()
+}
+
+/// A transcript byte offset as the `bigint` column holds it.
+///
+/// A file offset is a `u64` and the column is signed, so the conversion is
+/// fallible in principle; an 8-exabyte transcript is not something to return a
+/// caller-facing error about.
+fn offset_to_i64(offset: u64, session_id: Uuid) -> Result<i64> {
+    i64::try_from(offset).map_err(|_| {
+        error!(session_id = %session_id, "transcript offset does not fit in bigint");
+        Error::Internal("transcript offset out of range".into())
+    })
 }
 
 /// Announce a committed event batch on `session_events`, payload

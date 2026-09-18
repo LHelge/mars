@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE sessions\n            SET state = $2,\n                parked_at = CASE WHEN $3 THEN NOW() ELSE parked_at END,\n                ended_at = CASE WHEN $4 THEN NOW() ELSE ended_at END,\n                error = CASE WHEN $5 THEN $6 ELSE error END\n            WHERE id = $1\n            RETURNING id, project_id, profile_id, kind AS \"kind: ProfileKind\", created_by,\n                      title, task_id, handoff_id, state AS \"state: SessionState\", base_ref,\n                      branch, container_id, cli_session_id, mcp_token_hash, last_seq,\n                      last_activity_at, cost_usd, input_tokens, output_tokens, error,\n                      created_at, parked_at, ended_at\n            ",
+  "query": "\n            UPDATE sessions\n            SET state = $2,\n                parked_at = CASE WHEN $3 THEN NOW() ELSE parked_at END,\n                ended_at = CASE WHEN $4 THEN NOW() WHEN $7 THEN NULL ELSE ended_at END,\n                error = CASE WHEN $5 THEN $6 WHEN $7 THEN NULL ELSE error END\n            WHERE id = $1\n            RETURNING id, project_id, profile_id, kind AS \"kind: ProfileKind\", created_by,\n                      title, task_id, handoff_id, state AS \"state: SessionState\", base_ref,\n                      branch, container_id, cli_session_id, mcp_token_hash, last_seq,\n                      last_activity_at, cost_usd, input_tokens, output_tokens, error,\n                      created_at, parked_at, ended_at\n            ",
   "describe": {
     "columns": [
       {
@@ -300,7 +300,8 @@
         "Bool",
         "Bool",
         "Bool",
-        "Text"
+        "Text",
+        "Bool"
       ]
     },
     "nullable": [
@@ -329,5 +330,5 @@
       true
     ]
   },
-  "hash": "3316721224122b2e4e522f8728f90ca4442ddbc1455106fb0ae55a9b27e3f531"
+  "hash": "897946f7405829ea8de02b69b78295877a87f846eeb725ce2b4362274c6cc3ed"
 }

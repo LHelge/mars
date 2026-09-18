@@ -22,12 +22,13 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use mars_orchestrator::events::{AgentEvent, AgentEventBody, StopSignal};
 use mars_orchestrator::models::{
     EventRow, NewEvent, NewSession, ProfileKind, SessionError, SessionState, SessionTitle,
     StateChange, session_branch,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::SessionRepository;
+use mars_orchestrator::repositories::{AppendedRange, CostDelta, SessionRepository, Transition};
 use serde_json::json;
 use sqlx::postgres::PgListener;
 use uuid::Uuid;
@@ -141,6 +142,31 @@ async fn append(pool: &PgPool, session_id: Uuid, events: &[NewEvent]) -> Vec<i64
 
 fn text_event(text: &str) -> NewEvent {
     NewEvent::now("text", json!({ "text": text }))
+}
+
+/// One translated `text` event, the shape the owner appends per native line.
+fn agent_event(text: &str) -> AgentEvent {
+    AgentEvent::new(AgentEventBody::Text {
+        text: text.to_string(),
+    })
+}
+
+/// The next `count` notifications as `(channel, payload)` pairs, in the order
+/// PostgreSQL delivers them.
+async fn notifications(listener: &mut PgListener, count: usize) -> Vec<(String, String)> {
+    let mut received = Vec::with_capacity(count);
+    for _ in 0..count {
+        let notification = tokio::time::timeout(UNBLOCKED_WITHIN, listener.recv())
+            .await
+            .expect("a committed write notifies")
+            .unwrap();
+        received.push((
+            notification.channel().to_string(),
+            notification.payload().to_string(),
+        ));
+    }
+
+    received
 }
 
 fn text_events(count: usize) -> Vec<NewEvent> {
@@ -994,4 +1020,522 @@ async fn usage_accumulates_and_refuses_to_go_backwards() {
     let unchanged = repository.find(id).await.unwrap().unwrap();
     assert_eq!(unchanged.input_tokens, 1_500);
     assert_eq!(unchanged.output_tokens, 300);
+}
+
+#[tokio::test]
+async fn the_scoped_reads_answer_not_found_and_filter_by_state() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let fixture = seed(&pool).await;
+    let repository = SessionRepository::new(&pool);
+
+    let id = insert(&pool, &new_session(&fixture)).await;
+
+    assert_eq!(repository.get(id).await.unwrap().id, id);
+    assert_eq!(
+        repository
+            .get_in_project(fixture.project_id, id)
+            .await
+            .unwrap()
+            .id,
+        id,
+    );
+
+    // A missing session, and another project's session, are both 404.
+    for error in [
+        repository
+            .get(Uuid::new_v4())
+            .await
+            .expect_err("no session"),
+        repository
+            .get_in_project(Uuid::new_v4(), id)
+            .await
+            .expect_err("not this project's session"),
+    ] {
+        assert_eq!(error.status(), StatusCode::NOT_FOUND);
+    }
+
+    assert_eq!(
+        repository
+            .list_by_state(SessionState::Creating)
+            .await
+            .unwrap()
+            .iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>(),
+        [id],
+    );
+    assert!(
+        repository
+            .list_by_state(SessionState::Running)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_transition_writes_its_event_and_notifies_both_channels() {
+    let (_postgres, pool) = common::db::test_pool_with(6).await;
+    let fixture = seed(&pool).await;
+    let repository = SessionRepository::new(&pool);
+
+    let id = insert(&pool, &new_session(&fixture)).await;
+
+    let mut listener = PgListener::connect_with(&pool).await.unwrap();
+    listener
+        .listen_all(["session_state", "session_events"])
+        .await
+        .unwrap();
+
+    // creating -> running: the event, the row and both notifications in one
+    // transaction.
+    let mut tx = pool.begin().await.unwrap();
+    let running = repository
+        .transition(
+            &mut tx,
+            id,
+            &Transition::new(
+                SessionState::Creating,
+                SessionState::Running,
+                "container started",
+            ),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(running.state, SessionState::Running);
+    assert_eq!(running.last_seq, 1);
+    assert!(running.parked_at.is_none());
+    assert!(running.ended_at.is_none());
+
+    let (events, has_more) = repository.list_events(id, None, 10).await.unwrap();
+    assert!(!has_more);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "state_change");
+    assert_eq!(
+        events[0].payload,
+        json!({ "from": "creating", "to": "running", "reason": "container started" }),
+    );
+
+    let notified = notifications(&mut listener, 2).await;
+    assert_eq!(
+        notified,
+        [
+            ("session_state".to_string(), format!("{id}:running")),
+            ("session_events".to_string(), format!("{id}:1")),
+        ],
+    );
+
+    // running -> parked with the signal that stopped it.
+    let mut tx = pool.begin().await.unwrap();
+    let parked = repository
+        .transition(
+            &mut tx,
+            id,
+            &Transition::new(SessionState::Running, SessionState::Parked, "stopped")
+                .with_signal(StopSignal::Sigint),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert!(parked.parked_at.is_some(), "parked_at was not set");
+    assert!(parked.ended_at.is_none());
+    let (events, _) = repository.list_events(id, Some(3), 10).await.unwrap();
+    assert_eq!(
+        events[1].payload,
+        json!({
+            "from": "running", "to": "parked", "reason": "stopped", "signal": "SIGINT",
+        }),
+    );
+    let _ = notifications(&mut listener, 2).await;
+
+    // parked -> failed with no explicit error: the reason is the error.
+    let mut tx = pool.begin().await.unwrap();
+    let failed = repository
+        .transition(
+            &mut tx,
+            id,
+            &Transition::new(
+                SessionState::Parked,
+                SessionState::Failed,
+                "relaunch failed",
+            ),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(failed.error.as_deref(), Some("relaunch failed"));
+    assert!(failed.ended_at.is_some(), "ended_at was not set");
+    assert_eq!(failed.parked_at, parked.parked_at);
+    let _ = notifications(&mut listener, 2).await;
+
+    // failed -> parked is the retry: it clears both the error and the end.
+    let mut tx = pool.begin().await.unwrap();
+    let retried = repository
+        .transition(
+            &mut tx,
+            id,
+            &Transition::new(SessionState::Failed, SessionState::Parked, "user retried"),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(retried.state, SessionState::Parked);
+    assert!(retried.error.is_none(), "the retry kept the error");
+    assert!(retried.ended_at.is_none(), "the retry kept ended_at");
+    assert!(retried.parked_at.is_some());
+    let _ = notifications(&mut listener, 2).await;
+
+    // A rolled-back transition publishes neither the row, the event nor either
+    // notification (ADR 0028).
+    let mut tx = pool.begin().await.unwrap();
+    repository
+        .transition(
+            &mut tx,
+            id,
+            &Transition::new(SessionState::Parked, SessionState::Done, "user ended it"),
+        )
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+
+    assert!(
+        tokio::time::timeout(BLOCKED_FOR, listener.recv())
+            .await
+            .is_err(),
+        "a rolled-back transition notified anyway",
+    );
+    let stored = repository.get(id).await.unwrap();
+    assert_eq!(stored.state, SessionState::Parked);
+    assert_eq!(repository.max_seq(id).await.unwrap(), 4);
+    assert_eq!(stored.last_seq, 4);
+}
+
+#[tokio::test]
+async fn a_transition_from_a_state_the_session_left_is_a_conflict() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let fixture = seed(&pool).await;
+    let repository = SessionRepository::new(&pool);
+
+    let id = insert(&pool, &new_session(&fixture)).await;
+
+    // The caller read `running` from a stale snapshot; the row says `creating`.
+    let mut tx = pool.begin().await.unwrap();
+    let error = repository
+        .transition(
+            &mut tx,
+            id,
+            &Transition::new(SessionState::Running, SessionState::Parked, "stopped"),
+        )
+        .await
+        .expect_err("the session is not running");
+    tx.rollback().await.unwrap();
+
+    assert_eq!(error.status(), StatusCode::CONFLICT);
+    assert_eq!(error.to_string(), "session is creating");
+
+    // `from` right, edge missing: the model's own refusal.
+    let mut tx = pool.begin().await.unwrap();
+    let error = repository
+        .transition(
+            &mut tx,
+            id,
+            &Transition::new(SessionState::Creating, SessionState::Done, "ended"),
+        )
+        .await
+        .expect_err("creating -> done is not an edge");
+    tx.rollback().await.unwrap();
+
+    assert_eq!(error.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        error.to_string(),
+        SessionError::InvalidTransition {
+            from: SessionState::Creating,
+            to: SessionState::Done,
+        }
+        .to_string(),
+    );
+
+    // Neither attempt changed the row or wrote an event.
+    let stored = repository.get(id).await.unwrap();
+    assert_eq!(stored.state, SessionState::Creating);
+    assert_eq!(stored.last_seq, 0);
+    assert_eq!(repository.max_seq(id).await.unwrap(), 0);
+
+    let mut tx = pool.begin().await.unwrap();
+    let error = repository
+        .transition(
+            &mut tx,
+            Uuid::new_v4(),
+            &Transition::new(SessionState::Creating, SessionState::Running, "started"),
+        )
+        .await
+        .expect_err("there is no such session");
+    tx.rollback().await.unwrap();
+    assert_eq!(error.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_native_line_commits_its_events_offset_and_counters_together() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let fixture = seed(&pool).await;
+    let repository = SessionRepository::new(&pool);
+
+    let id = insert(&pool, &new_session(&fixture)).await;
+    let before = repository.get(id).await.unwrap().last_activity_at;
+
+    let line = [
+        agent_event("first"),
+        agent_event("second"),
+        agent_event("third"),
+    ];
+
+    let mut tx = pool.begin().await.unwrap();
+    let range = repository
+        .append_native_line(
+            &mut tx,
+            id,
+            &line,
+            512,
+            0,
+            Some(CostDelta {
+                cost_usd: 0.25,
+                input_tokens: 1_000,
+                output_tokens: 200,
+            }),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        range,
+        AppendedRange {
+            first_seq: 1,
+            last_seq: 3,
+        },
+    );
+
+    let (events, _) = repository.list_events(id, None, 10).await.unwrap();
+    assert_eq!(
+        events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        [1, 2, 3],
+    );
+    // Only the last event of the line carries the offset, so the offset advances
+    // exactly once per line (`ARCHITECTURE.md`, "Durability and recovery").
+    assert_eq!(events[0].payload, json!({ "text": "first" }));
+    assert_eq!(events[1].payload, json!({ "text": "second" }));
+    assert_eq!(
+        events[2].payload,
+        json!({ "text": "third", "_offset": 512 })
+    );
+
+    let stored = repository.get(id).await.unwrap();
+    assert_eq!(stored.last_seq, 3);
+    assert!(stored.last_activity_at > before);
+    assert!(
+        (stored.cost_usd - 0.25).abs() < f64::EPSILON,
+        "{}",
+        stored.cost_usd
+    );
+    assert_eq!(stored.input_tokens, 1_000);
+    assert_eq!(stored.output_tokens, 200);
+    assert_eq!(repository.max_offset(id).await.unwrap(), Some(512));
+
+    // A second line picks up from the offset the first committed, and a line
+    // without a `result` leaves the counters alone.
+    let mut tx = pool.begin().await.unwrap();
+    let range = repository
+        .append_native_line(&mut tx, id, &[agent_event("fourth")], 900, 512, None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        range,
+        AppendedRange {
+            first_seq: 4,
+            last_seq: 4,
+        },
+    );
+    assert_eq!(repository.max_offset(id).await.unwrap(), Some(900));
+    assert_eq!(repository.get(id).await.unwrap().input_tokens, 1_000);
+
+    // An offset that moved under the writer: no rows, no counters, a conflict.
+    let mut tx = pool.begin().await.unwrap();
+    let error = repository
+        .append_native_line(&mut tx, id, &[agent_event("fifth")], 1_200, 512, None)
+        .await
+        .expect_err("the offset moved");
+    tx.rollback().await.unwrap();
+
+    assert_eq!(error.status(), StatusCode::CONFLICT);
+    assert_eq!(error.to_string(), "transcript offset moved");
+    assert_eq!(repository.max_seq(id).await.unwrap(), 4);
+    assert_eq!(repository.max_offset(id).await.unwrap(), Some(900));
+
+    // A line that translated to nothing is a programming error, not a committed
+    // offset with no row behind it.
+    let mut tx = pool.begin().await.unwrap();
+    let error = repository
+        .append_native_line(&mut tx, id, &[], 1_200, 900, None)
+        .await
+        .expect_err("an empty line is a bug");
+    tx.rollback().await.unwrap();
+    assert_eq!(error.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(repository.max_seq(id).await.unwrap(), 4);
+
+    // A negative delta is refused before the lock is taken.
+    let mut tx = pool.begin().await.unwrap();
+    let error = repository
+        .append_native_line(
+            &mut tx,
+            id,
+            &[agent_event("sixth")],
+            1_200,
+            900,
+            Some(CostDelta {
+                cost_usd: -1.0,
+                input_tokens: 0,
+                output_tokens: 0,
+            }),
+        )
+        .await
+        .expect_err("a counter may not move backwards");
+    tx.rollback().await.unwrap();
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(repository.max_seq(id).await.unwrap(), 4);
+
+    // And the offset never leaves the orchestrator (`SPEC.md`, "AgentEvent").
+    let (page, has_more) = repository.events_page(id, None, 2).await.unwrap();
+    assert!(has_more);
+    assert_eq!(
+        page.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        [3, 4]
+    );
+    for event in &page {
+        let encoded = serde_json::to_value(event).unwrap();
+        assert!(encoded.get("_offset").is_none(), "leaked: {encoded}");
+    }
+
+    let replayed = repository.events_after(id, 3).await.unwrap();
+    assert_eq!(
+        replayed.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        [4]
+    );
+
+    let (page, has_more) = repository.events_page(id, Some(1), 10).await.unwrap();
+    assert!(page.is_empty());
+    assert!(!has_more);
+}
+
+#[tokio::test]
+async fn an_appended_event_is_the_single_event_form_of_the_batch() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let fixture = seed(&pool).await;
+    let repository = SessionRepository::new(&pool);
+
+    let id = insert(&pool, &new_session(&fixture)).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let first = repository
+        .append_event(&mut tx, id, &agent_event("one"))
+        .await
+        .unwrap();
+    let second = repository
+        .append_event(&mut tx, id, &agent_event("two"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!((first, second), (1, 2));
+    let (events, _) = repository.list_events(id, None, 10).await.unwrap();
+    // No offset: these writers do not translate a transcript line.
+    assert_eq!(events[0].payload, json!({ "text": "one" }));
+    assert_eq!(repository.max_offset(id).await.unwrap(), None);
+    assert_eq!(repository.get(id).await.unwrap().last_seq, 2);
+}
+
+#[tokio::test]
+async fn failing_every_creating_session_leaves_the_others_alone() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let fixture = seed(&pool).await;
+    let repository = SessionRepository::new(&pool);
+
+    let creating = insert(&pool, &new_session(&fixture)).await;
+    let running = insert(&pool, &new_session(&fixture)).await;
+    let done = insert(&pool, &new_session(&fixture)).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    repository
+        .transition(
+            &mut tx,
+            running,
+            &Transition::new(SessionState::Creating, SessionState::Running, "started"),
+        )
+        .await
+        .unwrap();
+    repository
+        .transition(
+            &mut tx,
+            done,
+            &Transition::new(SessionState::Creating, SessionState::Running, "started"),
+        )
+        .await
+        .unwrap();
+    repository
+        .transition(
+            &mut tx,
+            done,
+            &Transition::new(SessionState::Running, SessionState::Done, "ended"),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let failed = repository
+        .fail_all_creating("orchestrator restarted")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        failed.iter().map(|session| session.id).collect::<Vec<_>>(),
+        [creating],
+    );
+    assert_eq!(failed[0].state, SessionState::Failed);
+    assert_eq!(failed[0].error.as_deref(), Some("orchestrator restarted"));
+    assert!(failed[0].ended_at.is_some());
+
+    // Each row got its `state_change` event, in its own committed transaction.
+    let (events, _) = repository.list_events(creating, None, 10).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "state_change");
+    assert_eq!(
+        events[0].payload,
+        json!({
+            "from": "creating", "to": "failed", "reason": "orchestrator restarted",
+        }),
+    );
+
+    assert_eq!(
+        repository.get(running).await.unwrap().state,
+        SessionState::Running,
+    );
+    assert_eq!(
+        repository.get(done).await.unwrap().state,
+        SessionState::Done
+    );
+
+    // Nothing is left to fail the second time.
+    assert!(
+        repository
+            .fail_all_creating("orchestrator restarted")
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

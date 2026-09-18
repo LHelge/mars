@@ -9,14 +9,32 @@
 //! can assert the orchestrator's side of an interaction with no socket
 //! anywhere.
 //!
-//! **What the test drives.** The mock never ends a container by itself: a
-//! container runs until the test calls [`MockEngine::exit`] with the code the
-//! CLI would have exited on, or [`MockEngine::vanish`] to make it disappear
-//! the way one reaped behind the orchestrator's back does (`ARCHITECTURE.md`,
-//! "Restart procedure": a session whose container is gone is parked).
-//! [`ContainerEngine::kill`] therefore records the signal and changes nothing
-//! else, which is the shape the stop sequence needs: `SIGINT`, then `SIGTERM`
-//! after the grace period (`ARCHITECTURE.md`, "Stop semantics").
+//! **The normalised semantics are the interface.** What every operation
+//! answers for a container that is missing, one that has exited and one that is
+//! already running is `ARCHITECTURE.md`, "Engine adapter", Normalised
+//! semantics, and this mock answers exactly that: a second `start` is `Ok`, a
+//! `stop` of a container that is not running is `Ok`, a `remove` of a container
+//! that is not there is `Ok`, a `kill` of one that is not running is
+//! `Conflict`, an unforced `remove` of a running one is `Conflict`, and a write
+//! to an attached stdin after the container exited fails instead of being
+//! silently lost. `tests/engine_mock.rs` runs the conformance suite against
+//! this type on every run of the test suite, so a normalisation that drifts
+//! from the list is a failing test rather than a mock with an opinion of its
+//! own. Nothing here normalises anything the list does not name.
+//!
+//! **What the test drives.** The mock never ends a container on its own
+//! schedule: a container runs until the test calls [`MockEngine::exit`] with
+//! the code the CLI would have exited on, or [`MockEngine::vanish`] to make it
+//! disappear the way one reaped behind the orchestrator's back does
+//! (`ARCHITECTURE.md`, "Restart procedure": a session whose container is gone
+//! is parked). [`ContainerEngine::kill`] therefore records the signal and
+//! leaves the container running, which is the shape the stop sequence needs:
+//! `SIGINT`, then `SIGTERM` after the grace period (`ARCHITECTURE.md`, "Stop
+//! semantics") — unless the container's command traps the signal, in which case
+//! the mock exits it on the trap's code, because the contract's own
+//! signal-delivery scenario is a command that traps `INT` and exits on a code
+//! only a delivered signal could have produced. A session's command
+//! (`claude`) traps nothing, so nothing a session test drives changes.
 //!
 //! **Locking.** One `Mutex` guards the whole table and is never held across an
 //! await: every operation takes what it needs, drops the guard, and only then
@@ -60,6 +78,15 @@ use crate::prelude::*;
 /// test that stops a container sees what production would record.
 pub const STOP_EXIT_CODE: i64 = 143;
 
+/// The exit code [`MockExecSession::close`] reports.
+///
+/// The mock runs no process, so an exec always ends the way the terminal view's
+/// shell ends when the client closes the socket: cleanly. It travels the same
+/// path `BollardExec::close` puts the engine's own code on, which is what
+/// `terminal_closed`'s `exit_code` carries (`SPEC.md`, "WebSocket: session
+/// stream").
+pub const EXEC_EXIT_CODE: i64 = 0;
+
 /// One recorded [`ContainerEngine::exec_pty`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecRequest {
@@ -95,8 +122,119 @@ struct MockContainer {
     /// The networks [`ContainerEngine::connect_network`] attached, beyond the
     /// one the container was created on.
     connections: Vec<String>,
+    /// The exit codes the container's command traps, by signal name, read off
+    /// the spec's `cmd` by [`trap_exit_codes`]. Empty for a command that traps
+    /// nothing, which is every session's.
+    traps: BTreeMap<String, i64>,
     /// Everyone parked in [`ContainerEngine::wait`].
     exit_waiters: Vec<oneshot::Sender<Result<ExitStatus, EngineError>>>,
+}
+
+impl MockContainer {
+    /// End this container on `code` and hand back everyone who was parked on
+    /// it, to be woken once the lock is gone.
+    fn end(&mut self, code: i64) -> Vec<oneshot::Sender<Result<ExitStatus, EngineError>>> {
+        self.state = ContainerState::Exited { code };
+        std::mem::take(&mut self.exit_waiters)
+    }
+}
+
+/// Resolve everyone who was parked in [`ContainerEngine::wait`] on a container
+/// that has now exited.
+///
+/// Always called with the mock's lock already dropped: a `oneshot` send is
+/// cheap, but the rule is that the mutex is never held while anything else
+/// runs.
+fn wake(waiters: Vec<oneshot::Sender<Result<ExitStatus, EngineError>>>, code: i64) {
+    for waiter in waiters {
+        let _ = waiter.send(Ok(ExitStatus {
+            code,
+            oom_killed: false,
+        }));
+    }
+}
+
+/// Whether writes to an attached stdin still reach the container.
+///
+/// A created or running container takes bytes; a container that has ended is
+/// one whose attachment the engine has closed, and a write to it fails
+/// (`ARCHITECTURE.md`, "Engine adapter", the attach row).
+fn takes_stdin(state: &ContainerState) -> bool {
+    matches!(state, ContainerState::Created | ContainerState::Running)
+}
+
+/// The exit codes a command traps, by signal name, as a shell `trap "exit
+/// <code>" <SIGNAL>` in its own argument list declares them.
+///
+/// The mock runs nothing, so the command line is the only thing it knows about
+/// the process, and a `trap` in it is the command saying what a delivered
+/// signal does to it. That is what lets the conformance suite assert signal
+/// delivery through an exit code the engine could not have produced by tearing
+/// the container down, without the suite reaching for anything but
+/// `ContainerEngine`.
+///
+/// Anything it does not recognise — a handler that is not an `exit`, a signal
+/// name that is not one of [`Signal`]'s, `KILL`, which no shell can trap — is
+/// left out, and a signal with no entry is one the mock records and nothing
+/// more.
+fn trap_exit_codes(cmd: &[String]) -> BTreeMap<String, i64> {
+    let mut traps = BTreeMap::new();
+
+    for statement in cmd
+        .iter()
+        .flat_map(|part| part.split([';', '\n']))
+        .map(str::trim)
+    {
+        let Some(rest) = statement.strip_prefix("trap ") else {
+            continue;
+        };
+        let Some((handler, signals)) = quoted(rest.trim_start()) else {
+            continue;
+        };
+        let Some(code) = handler
+            .trim()
+            .strip_prefix("exit ")
+            .and_then(|code| code.trim().parse::<i64>().ok())
+        else {
+            continue;
+        };
+
+        for name in signals.split_whitespace() {
+            if let Some(signal) = trappable_signal(name) {
+                traps.insert(signal.to_string(), code);
+            }
+        }
+    }
+
+    traps
+}
+
+/// The contents of a leading single- or double-quoted word and whatever
+/// follows it, or `None` if the text does not start with a closed quote.
+fn quoted(text: &str) -> Option<(&str, &str)> {
+    let mut chars = text.chars();
+    let quote = chars.next()?;
+
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+
+    let body = chars.as_str();
+    let end = body.find(quote)?;
+    Some((&body[..end], &body[end + quote.len_utf8()..]))
+}
+
+/// The signal one `trap` operand names, with or without its `SIG` prefix and in
+/// any case, or `None` for a name no [`Signal`] covers or one a shell cannot
+/// trap.
+fn trappable_signal(name: &str) -> Option<Signal> {
+    let upper = name.to_ascii_uppercase();
+
+    match upper.strip_prefix("SIG").unwrap_or(&upper) {
+        "INT" => Some(Signal::Sigint),
+        "TERM" => Some(Signal::Sigterm),
+        _ => None,
+    }
 }
 
 /// Everything the mock remembers, behind one lock.
@@ -310,18 +448,10 @@ impl MockEngine {
                 return false;
             };
 
-            container.state = ContainerState::Exited { code };
-            std::mem::take(&mut container.exit_waiters)
+            container.end(code)
         };
 
-        // Outside the lock: a `oneshot` send is cheap, but the rule is that
-        // the mutex is never held while anything else runs.
-        for waiter in waiters {
-            let _ = waiter.send(Ok(ExitStatus {
-                code,
-                oom_killed: false,
-            }));
-        }
+        wake(waiters, code);
         true
     }
 
@@ -482,6 +612,7 @@ impl ContainerEngine for MockEngine {
                 stop_grace: Vec::new(),
                 stdin: Vec::new(),
                 connections: Vec::new(),
+                traps: trap_exit_codes(&spec.cmd),
                 exit_waiters: Vec::new(),
             },
         );
@@ -497,24 +628,62 @@ impl ContainerEngine for MockEngine {
         Ok(())
     }
 
+    /// A container that is already running is `Ok` and is left alone: both
+    /// engines answer 304 and the adapter reads it as success, so a start that
+    /// races another start cannot fail on it.
     async fn start(&self, id: &ContainerId) -> Result<(), EngineError> {
         let mut state = self.lock();
         let container = container(&mut state, id)?;
 
         if container.state.is_running() {
-            return Err(EngineError::Conflict(format!(
-                "container {id} is already running"
-            )));
+            return Ok(());
         }
 
         container.state = ContainerState::Running;
         Ok(())
     }
 
-    /// Records the grace period and ends the container on [`STOP_EXIT_CODE`],
-    /// the way the engine's own stop does.
+    /// Records the grace period and ends the container on the code its command's
+    /// `TERM` trap names, or [`STOP_EXIT_CODE`] when it traps nothing, the way
+    /// the engine's own stop does.
+    ///
+    /// A container that is not running is `Ok` and is left exactly as it ended:
+    /// being stopped is what the caller asked for and it already is, which is
+    /// the 304 both engines answer.
     async fn stop(&self, id: &ContainerId, grace_secs: u32) -> Result<(), EngineError> {
-        let waiters = {
+        let (code, waiters) = {
+            let mut state = self.lock();
+            let container = container(&mut state, id)?;
+
+            // Recorded whether or not there was anything to stop: `stop_grace`
+            // is the log of what the mock was asked, not of what it did.
+            container.stop_grace.push(grace_secs);
+
+            if !container.state.is_running() {
+                return Ok(());
+            }
+
+            let code = container
+                .traps
+                .get(&Signal::Sigterm.to_string())
+                .copied()
+                .unwrap_or(STOP_EXIT_CODE);
+            (code, container.end(code))
+        };
+
+        wake(waiters, code);
+        Ok(())
+    }
+
+    /// Records the signal and delivers it to the command: a command that traps
+    /// it exits on the trap's code, and one that traps nothing — every
+    /// session's `claude` — is left running for the test to end with
+    /// [`MockEngine::exit`].
+    ///
+    /// A container that is not running is [`EngineError::Conflict`], which the
+    /// session owner reads as "it is already gone".
+    async fn kill(&self, id: &ContainerId, signal: Signal) -> Result<(), EngineError> {
+        let ended = {
             let mut state = self.lock();
             let container = container(&mut state, id)?;
 
@@ -524,42 +693,30 @@ impl ContainerEngine for MockEngine {
                 )));
             }
 
-            container.stop_grace.push(grace_secs);
-            container.state = ContainerState::Exited {
-                code: STOP_EXIT_CODE,
-            };
-            std::mem::take(&mut container.exit_waiters)
+            container.signals.push(signal);
+
+            container
+                .traps
+                .get(&signal.to_string())
+                .copied()
+                .map(|code| (code, container.end(code)))
         };
 
-        for waiter in waiters {
-            let _ = waiter.send(Ok(ExitStatus {
-                code: STOP_EXIT_CODE,
-                oom_killed: false,
-            }));
+        if let Some((code, waiters)) = ended {
+            wake(waiters, code);
         }
         Ok(())
     }
 
-    /// Records the signal and nothing else: what the process does with it is
-    /// the test's to decide, with [`MockEngine::exit`].
-    async fn kill(&self, id: &ContainerId, signal: Signal) -> Result<(), EngineError> {
-        let mut state = self.lock();
-        let container = container(&mut state, id)?;
-
-        if !container.state.is_running() {
-            return Err(EngineError::Conflict(format!(
-                "container {id} is not running"
-            )));
-        }
-
-        container.signals.push(signal);
-        Ok(())
-    }
-
+    /// A container that is not there is `Ok`, because a container that is not
+    /// there is already removed; a running one is [`EngineError::Conflict`]
+    /// without `force` and `Ok` with it.
     async fn remove(&self, id: &ContainerId, force: bool) -> Result<(), EngineError> {
         {
-            let mut state = self.lock();
-            let container = container(&mut state, id)?;
+            let state = self.lock();
+            let Some(container) = state.containers.get(&id.0) else {
+                return Ok(());
+            };
 
             if container.state.is_running() && !force {
                 return Err(EngineError::Conflict(format!(
@@ -691,6 +848,13 @@ impl ContainerEngine for MockEngine {
 ///
 /// Every attach on one container writes into the same buffer, because recovery
 /// reattaches to a container the previous owner already wrote to.
+///
+/// A write after the container ended fails with the [`io::ErrorKind::BrokenPipe`]
+/// `BollardStdin` answers with, never a silent success: a lost input the session
+/// owner was told had gone through is the failure the rule exists for
+/// (`ARCHITECTURE.md`, "Engine adapter", the attach row). Bytes written before
+/// the exit stay in the buffer, so [`MockEngine::stdin_bytes`] still reports
+/// them.
 #[derive(Debug)]
 struct MockStdin {
     /// The mock's table, shared with the engine that handed this out.
@@ -709,16 +873,23 @@ impl AsyncWrite for MockStdin {
         let mut state = this.state.lock().expect("the mock engine lock is healthy");
 
         match state.containers.get_mut(&this.id.0) {
-            Some(container) => {
+            Some(container) if takes_stdin(&container.state) => {
                 container.stdin.extend_from_slice(buf);
                 Poll::Ready(Ok(buf.len()))
             }
+            // The container ended under the writer: the engine closes the
+            // attachment and the next write is a broken pipe, which is what
+            // the session owner records as a failed input.
+            Some(_) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("the attach stream of container {} has closed", this.id),
+            ))),
             // The container vanished under the writer, which is what a session
             // owner writing to a reaped container sees.
-            None => Poll::Ready(Err(io::Error::other(format!(
-                "the mock engine has no container {}",
-                this.id
-            )))),
+            None => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("the mock engine has no container {}", this.id),
+            ))),
         }
     }
 
@@ -790,7 +961,7 @@ impl ExecSession for MockExecSession {
             .expect("the mock engine lock is healthy")
             .exec_closed
             .insert(self.id.0.clone());
-        Ok(0)
+        Ok(EXEC_EXIT_CODE)
     }
 }
 
@@ -982,23 +1153,70 @@ mod tests {
                 code: STOP_EXIT_CODE
             })
         );
+
+        // A container that has already exited is `Ok` to stop and is left
+        // exactly as it ended; the ask is still recorded.
+        engine
+            .stop(&id, 5)
+            .await
+            .expect("stopping an exited container is not a failure");
+        assert_eq!(engine.stop_grace(&id), vec![20, 5]);
+        assert_eq!(
+            engine.state_of(&id),
+            Some(ContainerState::Exited {
+                code: STOP_EXIT_CODE
+            }),
+            "the second stop changed how the container had ended"
+        );
+    }
+
+    /// The normalisations of `ARCHITECTURE.md`, "Engine adapter": what the mock
+    /// answers where a caller cannot avoid asking twice.
+    ///
+    /// The conformance suite (`tests/engine_mock.rs`) is the definition; this
+    /// is the same rules at the unit level, where a regression names the
+    /// operation directly.
+    #[tokio::test]
+    async fn the_repeatable_operations_are_idempotent_as_the_contract_says() {
+        let engine = MockEngine::default();
+        let missing = ContainerId("mock-404".to_string());
+
+        // A container that is not there is already removed, with force or
+        // without.
+        engine
+            .remove(&missing, true)
+            .await
+            .expect("a container that is not there is already removed");
+        engine
+            .remove(&missing, false)
+            .await
+            .expect("force makes no difference to a container that is not there");
+
+        let id = running(&engine, SESSION_ID).await;
+
+        engine
+            .start(&id)
+            .await
+            .expect("starting a running container is idempotent");
+        assert_eq!(
+            engine.state_of(&id),
+            Some(ContainerState::Running),
+            "the second start disturbed the container"
+        );
     }
 
     #[tokio::test]
-    async fn the_state_machine_refuses_what_the_engine_would() {
+    async fn the_refusals_are_the_ones_the_contract_names() {
         let engine = MockEngine::default();
         let missing = ContainerId("mock-404".to_string());
 
         for error in [
             engine.start(&missing).await.expect_err("nothing to start"),
+            engine.stop(&missing, 5).await.expect_err("nothing to stop"),
             engine
                 .kill(&missing, Signal::Sigint)
                 .await
                 .expect_err("nothing to signal"),
-            engine
-                .remove(&missing, true)
-                .await
-                .expect_err("nothing to remove"),
             engine
                 .inspect(&missing)
                 .await
@@ -1007,6 +1225,15 @@ mod tests {
                 .wait(&missing)
                 .await
                 .expect_err("nothing to wait for"),
+            engine
+                .connect_network(&missing, "mars-egress")
+                .await
+                .expect_err("nothing to connect"),
+            engine
+                .attach_stdin(&missing)
+                .await
+                .err()
+                .expect("nothing to attach to"),
         ] {
             assert!(
                 matches!(error, EngineError::NotFound(_)),
@@ -1029,13 +1256,13 @@ mod tests {
             Err(error) => error,
         };
 
-        // Created, not running.
+        // Created, not running: a signal is a conflict on both engines, and so
+        // is an exec.
         for error in [
             engine
                 .kill(&id, Signal::Sigint)
                 .await
                 .expect_err("not running"),
-            engine.stop(&id, 5).await.expect_err("not running"),
             refused_exec,
         ] {
             assert!(
@@ -1055,6 +1282,80 @@ mod tests {
         );
         engine.remove(&id, true).await.expect("force removes it");
         assert_eq!(engine.state_of(&id), None);
+    }
+
+    /// A signal reaches the command: one that traps it exits on the trap's
+    /// code, and one that traps nothing keeps running until the test ends it.
+    #[tokio::test]
+    async fn a_trapped_signal_ends_the_container_and_an_untrapped_one_does_not() {
+        let engine = MockEngine::default();
+
+        // The session's own command traps nothing, which is the shape the stop
+        // sequence needs: SIGINT, then SIGTERM after the grace period.
+        let session = running(&engine, SESSION_ID).await;
+        engine
+            .kill(&session, Signal::Sigint)
+            .await
+            .expect("the mock signals");
+        engine
+            .kill(&session, Signal::Sigterm)
+            .await
+            .expect("the mock signals");
+        assert_eq!(
+            engine.signals(&session),
+            vec![Signal::Sigint, Signal::Sigterm]
+        );
+        assert_eq!(
+            engine.state_of(&session),
+            Some(ContainerState::Running),
+            "a signal a command does not trap must not end the container"
+        );
+
+        // A command that traps both, as the conformance suite's does.
+        let mut spec = session_spec("00000000-0000-4000-8000-00000000f00d");
+        spec.cmd = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            r#"trap "exit 143" TERM; trap 'exit 42' SIGINT; while true; do sleep 1; done"#
+                .to_string(),
+        ];
+        let trapping = engine.create(&spec).await.expect("the mock creates");
+        engine.start(&trapping).await.expect("the mock starts");
+
+        engine
+            .kill(&trapping, Signal::Sigint)
+            .await
+            .expect("the mock signals");
+        assert_eq!(
+            engine.state_of(&trapping),
+            Some(ContainerState::Exited { code: 42 }),
+            "the INT trap did not run"
+        );
+        assert_eq!(
+            engine
+                .wait(&trapping)
+                .await
+                .expect("the container has exited"),
+            ExitStatus {
+                code: 42,
+                oom_killed: false
+            }
+        );
+
+        // And a stop is the TERM the same command traps.
+        let trapping = {
+            let mut spec = spec.clone();
+            spec.name = "mars-session-trapping-2".to_string();
+            let id = engine.create(&spec).await.expect("the mock creates");
+            engine.start(&id).await.expect("the mock starts");
+            id
+        };
+        engine.stop(&trapping, 5).await.expect("the mock stops");
+        assert_eq!(
+            engine.state_of(&trapping),
+            Some(ContainerState::Exited { code: 143 }),
+            "a stop is the command's own TERM"
+        );
     }
 
     #[tokio::test]
@@ -1121,6 +1422,50 @@ mod tests {
             matches!(error, EngineError::NotFound(_)),
             "unexpected: {error:?}"
         );
+    }
+
+    /// A write after the container exited fails rather than being silently
+    /// lost, and the bytes written before it are still there to read back.
+    #[tokio::test]
+    async fn a_write_after_the_container_exited_is_a_broken_pipe() {
+        let engine = MockEngine::default();
+        let id = running(&engine, SESSION_ID).await;
+
+        let mut stdin = engine.attach_stdin(&id).await.expect("the mock attaches");
+        stdin
+            .write_all(b"{\"type\":\"user\"}\n")
+            .await
+            .expect("a running container takes the bytes");
+
+        assert!(engine.exit(&id, 0));
+
+        let error = stdin
+            .write_all(b"{\"type\":\"interrupt\"}\n")
+            .await
+            .expect_err("a write after the container exited fails");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(
+            engine.stdin_lines(&id),
+            vec!["{\"type\":\"user\"}".to_string()],
+            "the bytes written before the exit were lost, or the failed write was recorded"
+        );
+    }
+
+    /// The same for a container that vanished under the writer, which is what a
+    /// session owner writing to a reaped container sees.
+    #[tokio::test]
+    async fn a_write_to_a_vanished_container_is_a_broken_pipe() {
+        let engine = MockEngine::default();
+        let id = running(&engine, SESSION_ID).await;
+
+        let mut stdin = engine.attach_stdin(&id).await.expect("the mock attaches");
+        assert!(engine.vanish(&id));
+
+        let error = stdin
+            .write_all(b"{\"type\":\"user\"}\n")
+            .await
+            .expect_err("a write to a container that is gone fails");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
 
     #[tokio::test]
@@ -1323,7 +1668,11 @@ mod tests {
         assert_eq!(engine.exec_resizes(&id), vec![(100, 30), (80, 24)]);
 
         assert!(!engine.exec_closed(&id));
-        assert_eq!(exec.close().await.expect("the mock closes"), 0);
+        assert_eq!(
+            exec.close().await.expect("the mock closes"),
+            EXEC_EXIT_CODE,
+            "the exit code travels the path `terminal_closed` reads"
+        );
         assert!(
             engine.exec_closed(&id),
             "the close is recorded for the handler's cleanup"

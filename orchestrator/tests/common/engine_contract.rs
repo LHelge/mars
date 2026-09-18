@@ -15,7 +15,9 @@
 //! suite against `BollardEngine` when `DOCKER_HOST` is set and
 //! `tests/engine_mock.rs` against `MockEngine` on every run of the test suite
 //! (`cargo test --features integration-tests`, the mock's own feature), where
-//! the scenarios the mock does not yet satisfy are ignored one by one.
+//! every scenario runs: the mock is held to the whole list, because a mock that
+//! answers something else makes every test built on it agree with the wrong
+//! thing.
 //!
 //! **What is not here.** Two lines of the list need a state the trait cannot
 //! arrange: an image the engine does not have, which `tests/engine.rs`
@@ -339,8 +341,9 @@ impl EngineContract {
         );
     }
 
-    /// A container that has already exited is `Ok` to stop: being stopped is
-    /// what the caller asked for and it already is.
+    /// A container that is not running is `Ok` to stop, whether it has already
+    /// exited or was never started: being stopped is what the caller asked for
+    /// and it already is, which is the 304 both engines answer.
     pub async fn stop_of_an_exited_container_is_ok(&self) {
         let (_spec, id) = self.exited("contract-stop-exited").await;
 
@@ -356,6 +359,20 @@ impl EngineContract {
                 code: TERM_EXIT_CODE
             },
             "the second stop changed how the container had ended"
+        );
+
+        let (_spec, created) = self.created("contract-stop-created").await;
+
+        self.engine
+            .stop(&created, STOP_GRACE_SECS)
+            .await
+            .expect("stopping a container that was never started is not a failure");
+
+        let info = self.engine.inspect(&created).await.expect("the container");
+        assert_eq!(
+            info.state,
+            ContainerState::Created,
+            "the stop started or ended a container that had never run"
         );
     }
 

@@ -220,7 +220,7 @@ One agent instance. The row outlives the container: a session may be relaunched 
 | `base_ref` | `TEXT` | NOT NULL | Branch, tag or commit the session clone started from. |
 | `branch` | `TEXT` | NOT NULL | Always `session/<id>`; stored so it is queryable. |
 | `container_id` | `TEXT` | NULL | Engine container id of the current or last container. NULL once removed. |
-| `cli_session_id` | `TEXT` | NULL | The CLI's own session id from its init event. Needed for resume. |
+| `cli_session_id` | `TEXT` | NULL | The CLI's own session id from its init event. Needed for resume. Null until that event arrives, which for a conversational session is after its first message, so a `running` session can legitimately have none (`ARCHITECTURE.md`, "Launch sequence"; ADR 0032). |
 | `mcp_token_hash` | `TEXT` | NOT NULL, UNIQUE | SHA-256 of a fresh random MCP bearer token for each process launch, including resume/retry. Initial hash is stored at session creation; replacement hash commits before the new process starts. Unchanged when adopting an already-running process after an orchestrator restart. The raw token is written to `mcp.json`, never recovered from this hash (ADR 0029). |
 | `last_seq` | `BIGINT` | NOT NULL DEFAULT 0 | Cache of the highest committed `events.seq`; the truth is `MAX(events.seq)`. |
 | `last_activity_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | Advanced on every event; the idle reaper reads it. |

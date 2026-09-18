@@ -37,3 +37,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0029](0029-mcp-token-per-process-launch.md) | Generate a fresh MCP token for each session process launch | accepted |
 | [0030](0030-record-tracker-changes-not-reads.md) | Record tracker changes, not read-only tool calls | accepted |
 | [0031](0031-local-task-board-search.md) | Filter the task board locally by title or number | accepted |
+| [0032](0032-run-state-on-stdin-attach.md) | A session is `running` when stdin is attached, not when `init` arrives | accepted |

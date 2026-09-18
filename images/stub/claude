@@ -2,18 +2,22 @@
 """Stub Claude Code CLI for Mars end-to-end tests.
 
 Accepts the argv the orchestrator's Claude backend builds (ARCHITECTURE.md,
-"Claude Code invocation"), emits a system/init line, then replays a stream-json
-fixture: one turn per stdin line in interactive mode (--input-format
-stream-json), or the whole fixture back to back in one-shot mode. No model
+"Claude Code invocation") and replays a stream-json fixture, each turn opened
+by a system/init line: one turn per stdin line in interactive mode
+(--input-format stream-json), or the whole fixture back to back in one-shot
+mode (-p), where the first turn starts at once. No model
 credentials are needed, so the session-owner tests and Playwright can run
 against real containers.
 
 Like the real CLI on the pinned version (images/claude/VERIFY.md, "Observed on
 2.1.274") it writes one system/init line per turn, all carrying the process's
-single session_id; the first one goes out before any input is read, so the
-session owner learns the session id before it flushes queued input
-(ARCHITECTURE.md, "Session lifecycle"). The fixture's own init lines are
-dropped. SIGINT mid-turn ends the turn the way the real CLI does: a user line
+single session_id, and the fixture's own init lines are dropped. Under
+--input-format stream-json nothing at all is written, that first init included,
+until a line has been read from stdin: the real CLI behaves this way, so the
+session owner must go `running` on stdin attach rather than wait for init
+(ARCHITECTURE.md, "Launch sequence"; ADR 0032). Under -p the init opens the
+replay with nothing on stdin.
+SIGINT mid-turn ends the turn the way the real CLI does: a user line
 `[Request interrupted by user]`, then a result with subtype
 "error_during_execution", is_error true and terminal_reason
 "aborted_streaming", then exit 0.
@@ -392,11 +396,9 @@ def run(argv):
     turns = load_turns(fixture, "--include-partial-messages" in opts["flags"])
     STATE["mcp_servers"] = load_mcp_servers(opts["values"].get("--mcp-config"))
 
-    # The first init goes out before any input is read, so the session owner
-    # has the session id before it flushes queued input; every later turn
-    # opens with one of its own (ARCHITECTURE.md, "Session image").
-    emit_init()
-
+    # Under --input-format stream-json nothing is written until the first
+    # stdin line, init included, as the pinned CLI does; every turn then opens
+    # with one of its own (ARCHITECTURE.md, "Session image"; ADR 0032).
     if opts["values"].get("--input-format") == "stream-json":
         return run_interactive(turns)
     if opts["positional"]:

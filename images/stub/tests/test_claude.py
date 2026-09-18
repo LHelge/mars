@@ -11,6 +11,7 @@ the suite.
 
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -134,7 +135,9 @@ class ArgumentTests(StubTestCase):
             stdin="",
         )
         self.assertEqual(completed.returncode, 0)
-        self.assertEqual(len(self.lines(completed)), 1)
+        # Interactive and stdin closed at once: nothing is written, not even
+        # init (ADR 0032).
+        self.assertEqual(self.lines(completed), [])
         self.assertNotIn("unknown flag", completed.stderr)
 
     def test_unknown_flag_warns_once_and_is_ignored(self):
@@ -185,7 +188,7 @@ class InitTests(StubTestCase):
         self.assertEqual(len(inits), 2)
         self.assertEqual(len({line["session_id"] for line in lines}), 1)
 
-    def test_interactive_writes_an_init_before_every_turn(self):
+    def test_interactive_opens_every_turn_with_an_init(self):
         fixture = self.write_fixture([assistant("recorded"), result()])
         completed = self.run_stub(
             ["--print", "--input-format", "stream-json"],
@@ -197,10 +200,41 @@ class InitTests(StubTestCase):
             [line["type"] for line in lines],
             ["system", "assistant", "result", "system", "assistant", "result"],
         )
-        # The first init precedes any input, so the owner has the session id
-        # before it flushes queued messages.
+        # Each init opens the turn its stdin line started; none precedes input.
         self.assertEqual(lines[0]["subtype"], "init")
         self.assertEqual(lines[3]["subtype"], "init")
+
+    def test_interactive_writes_nothing_before_the_first_stdin_line(self):
+        """The pinned CLI is silent until it has read a line (ADR 0032).
+
+        An owner that waited for init before writing would deadlock against
+        it, so the stub must not be friendlier than the real thing
+        (images/claude/VERIFY.md, "Observed on 2.1.274").
+        """
+        fixture = self.write_fixture([assistant("recorded"), result()])
+        proc = subprocess.Popen(
+            [sys.executable, str(STUB), "--print", "--input-format", "stream-json"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self.env(fixture),
+        )
+        self.addCleanup(proc.kill)
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            self.addCleanup(stream.close)
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                proc.wait(timeout=1)
+            ready, _, _ = select.select([proc.stdout], [], [], 0)
+            self.assertEqual(ready, [], "the stub wrote before reading stdin")
+            proc.stdin.write(user_line("first") + "\n")
+            proc.stdin.flush()
+            first = json.loads(proc.stdout.readline())
+            self.assertEqual(first["subtype"], "init")
+        finally:
+            proc.stdin.close()
+            self.assertEqual(proc.wait(timeout=TIMEOUT), 0)
 
     def test_no_init_is_written_when_no_turn_follows(self):
         fixture = self.write_fixture([assistant("recorded"), result()])
@@ -358,7 +392,9 @@ class InteractiveTests(StubTestCase):
             stdin="",
         )
         self.assertEqual(completed.returncode, 0)
-        self.assertEqual(len(self.lines(completed)), 1)
+        # The positional prompt is not replayed as a turn, and interactive mode
+        # writes nothing before a stdin line, so the run is silent.
+        self.assertEqual(self.lines(completed), [])
 
     def test_blank_and_malformed_stdin_lines_consume_a_turn(self):
         fixture = self.write_fixture([])
@@ -584,7 +620,8 @@ class SignalTests(StubTestCase):
             MARS_STUB_LINE_DELAY_MS=200,
         )
         collected, thread = self.start_reader(proc)
-        self.wait_for_lines(collected, 1)
+        # Nothing is written before the first stdin line (ADR 0032); the turn
+        # then opens with its init and the paced assistant lines follow.
         proc.stdin.write(user_line("go") + "\n")
         proc.stdin.flush()
         self.wait_for_lines(collected, 2)
@@ -611,10 +648,22 @@ class SignalTests(StubTestCase):
         self.assertEqual(closing["usage"], {"input_tokens": 10, "output_tokens": 5})
         self.assertIn("duration_ms", closing)
 
+    def finish_a_turn(self, proc):
+        """Drive one whole turn so the stub is back to waiting on stdin.
+
+        Nothing is written before the first stdin line (ADR 0032), so a signal
+        test that wants a process blocked in readline feeds it a turn first.
+        """
+        proc.stdin.write(user_line("go") + "\n")
+        proc.stdin.flush()
+        self.assertIn('"subtype":"init"', proc.stdout.readline())
+        self.assertIn('"type":"assistant"', proc.stdout.readline())
+        self.assertIn('"type":"result"', proc.stdout.readline())
+
     def test_sigint_while_waiting_for_stdin_exits_zero(self):
         fixture = self.write_fixture([assistant("a"), result()])
         proc = self.spawn(["--print", "--input-format", "stream-json"], fixture)
-        self.assertIn("\"subtype\":\"init\"", proc.stdout.readline())
+        self.finish_a_turn(proc)
         proc.send_signal(signal.SIGINT)
         self.assertEqual(proc.wait(timeout=TIMEOUT), 0)
         self.assertEqual(proc.stdout.read().strip(), "")
@@ -622,7 +671,7 @@ class SignalTests(StubTestCase):
     def test_sigterm_exits_143_without_a_result(self):
         fixture = self.write_fixture([assistant("a"), result()])
         proc = self.spawn(["--print", "--input-format", "stream-json"], fixture)
-        self.assertIn("\"subtype\":\"init\"", proc.stdout.readline())
+        self.finish_a_turn(proc)
         proc.terminate()
         self.assertEqual(proc.wait(timeout=TIMEOUT), 143)
         self.assertEqual(proc.stdout.read().strip(), "")

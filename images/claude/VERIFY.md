@@ -44,7 +44,8 @@ python3 -m unittest discover -s images/stub/tests && ENGINE=podman images/smoke-
 ## Observed on 2.1.274
 
 - [x] Every flag accepted, including `--permission-prompts none`; no usage error in either mode.
-- [x] `system`/`init` has `session_id`, `mcp_servers`, and also `model`, `tools`, `claude_code_version`, `permissionMode`, `apiKeySource`, `agents`, `skills`, `slash_commands`, `plugins`, `capabilities`, `memory_paths`, `output_style`. The CLI writes a new `init` line at the start of every turn, not once per process; the stub follows it, writing the first before it reads any input so the session owner still learns the session id up front (`ARCHITECTURE.md`, "Session image").
+- [x] `system`/`init` has `session_id`, `mcp_servers`, and also `model`, `tools`, `claude_code_version`, `permissionMode`, `apiKeySource`, `agents`, `skills`, `slash_commands`, `plugins`, `capabilities`, `memory_paths`, `output_style`. The CLI writes a new `init` line at the start of every turn, not once per process; the stub follows it (`ARCHITECTURE.md`, "Session image").
+- [x] Under `--input-format stream-json` nothing is written until the first stdin line, `init` included: a probe that waited for `init` before writing saw no output for 120 s, while writing first produced `init` within a second (`orchestrator/tests/fixtures/claude/2.1.274/NOTES.md`, `stdin_shape`). The session therefore goes `running` on stdin attach and `cli_session_id` is stored when `init` arrives (ADR 0032); the stub writes nothing before its first stdin line either.
 - [x] The unreachable MCP server is listed as `{"name":"mars-orchestrator","status":"failed","source":"dynamic"}` and the turn still runs.
 - [x] The bare stdin line shape works; `session_id` and `parent_tool_use_id` are not needed on it.
 - [x] All three turns produced `result` lines; closing stdin exits 0; `stderr.log` stayed empty.

@@ -1,10 +1,10 @@
 ---
 id: r6yek
 title: Write the probe findings back into ARCHITECTURE.md and SPEC.md, close open questions 1-6 and 9, and pin the CLI version to the image tag
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:30:57.001248535Z"
-updated: "2026-09-18T18:08:39.214975798Z"
+updated: "2026-09-18T19:12:22.370837043Z"
 tags:
   - orchestrator
   - agent
@@ -15,6 +15,7 @@ depends_on:
   - gukce
   - "3z8xu"
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

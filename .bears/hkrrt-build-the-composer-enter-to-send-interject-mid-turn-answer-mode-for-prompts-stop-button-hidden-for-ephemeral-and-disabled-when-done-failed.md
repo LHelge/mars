@@ -56,3 +56,7 @@ Build the session `Composer`: a text area that sends a `message` input on Enter 
 
 ## Assumes from other epics
 - Frontend foundation epic: `Alert`, `SubmitButton`.
+
+## Correction: no `prompt` event and no `answer` input (ADR 0033, task r6yek)
+The live probe showed the pinned CLI never asks the host a question under `--permission-mode bypassPermissions --permission-prompts none`, so `SessionInput` has the single kind `message`, `user_message` has no `reply_to`, and `AgentEvent` has no `prompt` (`docs/decisions/0033-no-interactive-prompts-in-v1.md`; `SPEC.md`, "AgentEvent" and "WebSocket: session stream"). Where the text above disagrees, this section wins.
+- The composer has no answer mode and the store has no `pendingPrompt`: it only ever sends `{kind:"message"}`. Rescope the task to the plain composer; a question the model writes is ordinary assistant text.

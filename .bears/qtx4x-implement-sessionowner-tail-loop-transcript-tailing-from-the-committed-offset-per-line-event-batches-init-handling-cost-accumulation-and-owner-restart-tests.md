@@ -70,3 +70,7 @@ Implement the read side of `SessionOwner` in `orchestrator/src/session/owner.rs`
 The pinned CLI writes nothing, `init` included, until its first stdin line (`ARCHITECTURE.md`, "Launch sequence"; `docs/decisions/0032-run-state-on-stdin-attach.md`). Where the text above disagrees, this section wins.
 - Handling `system`/`init` means `set_cli_session_id` and the `launch_warning` rule only. No `creating`/`parked` to `running` transition, no `registry.mark_running` and no queue drain happen on `init`; those belong to the launcher at stdin attach. An `init` for a session that is not `running` is logged at `warn!` and still stores the id.
 - Tests: drop the `creating -> running` transition and its `state_change` from the `init` fixture assertion; add one that a session already `running` with `cli_session_id` null gets it set by the first `init`, and that a later `init` of the same process changes nothing.
+
+## Correction: no `prompt` event and no `answer` input (ADR 0033, task r6yek)
+The live probe showed the pinned CLI never asks the host a question under `--permission-mode bypassPermissions --permission-prompts none`, so `SessionInput` has the single kind `message`, `user_message` has no `reply_to`, and `AgentEvent` has no `prompt` (`docs/decisions/0033-no-interactive-prompts-in-v1.md`; `SPEC.md`, "AgentEvent" and "WebSocket: session stream"). Where the text above disagrees, this section wins.
+- There is no `prompt` event: drop the `registry.set_prompt(...)` step on commit and the `prompt` fixture test.

@@ -55,3 +55,7 @@ Fill in the WebSocket's write side: `input` messages go through `SessionService:
 ## Assumes from other epics
 - "Session lifecycle": `SessionService::{send_input, stop}` with the documented `Conflict` strings, `SessionRegistry` with `register`/`mark_running`/`OwnerCommand`, and `SessionRepository::max_seq`.
 - "Authentication": `auth_version` and `must_change_password` mutations to trigger revocation in tests.
+
+## Correction: no `prompt` event and no `answer` input (ADR 0033, task r6yek)
+The live probe showed the pinned CLI never asks the host a question under `--permission-mode bypassPermissions --permission-prompts none`, so `SessionInput` has the single kind `message`, `user_message` has no `reply_to`, and `AgentEvent` has no `prompt` (`docs/decisions/0033-no-interactive-prompts-in-v1.md`; `SPEC.md`, "AgentEvent" and "WebSocket: session stream"). Where the text above disagrees, this section wins.
+- Replace the edge case "`answer` with a stale `reply_to` -> `input_rejected`" with an undeliverable-input case (input to an ephemeral session, or in a state that takes none).

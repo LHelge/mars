@@ -51,3 +51,7 @@ Add the five action endpoints of the Sessions table to `orchestrator/src/routes/
 ## Assumes from other epics
 - "Authentication, users, invites and email": JWT extractor.
 - "Real-time delivery": the WebSocket handler will call the same `SessionService::send_input`/`stop`; nothing here is WS-specific.
+
+## Correction: no `prompt` event and no `answer` input (ADR 0033, task r6yek)
+The live probe showed the pinned CLI never asks the host a question under `--permission-mode bypassPermissions --permission-prompts none`, so `SessionInput` has the single kind `message`, `user_message` has no `reply_to`, and `AgentEvent` has no `prompt` (`docs/decisions/0033-no-interactive-prompts-in-v1.md`; `SPEC.md`, "AgentEvent" and "WebSocket: session stream"). Where the text above disagrees, this section wins.
+- `POST /api/sessions/{id}/input` takes `{kind:"message", text}` only; an `answer` body is a 400 like any unknown kind. Drop the `reply_to` / `prompt already consumed` 409 edge case.

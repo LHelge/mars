@@ -271,6 +271,25 @@ impl SessionRegistry {
         }
     }
 
+    /// Forget every session, the way a restart does.
+    ///
+    /// A new process starts with an empty registry, which is why the queues are
+    /// not durable and why the inputs that were waiting in them are gone
+    /// (ADR 0020; `ARCHITECTURE.md`, "Input delivery across restarts"). Nothing
+    /// in a serving orchestrator calls this: it is what lets a test simulate a
+    /// restart against the same database and data directory before it calls
+    /// [`crate::session::recover`] again.
+    pub fn clear(&self) {
+        let forgotten = std::mem::take(&mut self.state().sessions);
+
+        if !forgotten.is_empty() {
+            debug!(
+                sessions = forgotten.len(),
+                "the session registry was cleared",
+            );
+        }
+    }
+
     /// Offer one input to a session.
     ///
     /// The caller has already checked that the session may take input at all

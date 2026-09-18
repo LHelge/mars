@@ -1,17 +1,24 @@
-//! The session owner's read side (`ARCHITECTURE.md`, "Session owner task",
-//! "Durability and recovery"; `CLAUDE.md`, "Testing expectations").
+//! The session owner (`ARCHITECTURE.md`, "Session owner task", "Session
+//! lifecycle", "Stop semantics", "Durability and recovery"; `CLAUDE.md`,
+//! "Testing expectations").
 //!
 //! Every test here drives a real owner task over a real transcript file with
 //! the real Claude adapter and the recorded fixtures, because the contract
 //! under test is a contract between three things that all have to agree: what
 //! the translator makes of a line, what one transaction commits, and what the
 //! next owner reads back. A mock of any of them would prove nothing about the
-//! interesting failure, which is a restart in the middle of the file.
+//! interesting failure, which is a restart in the middle of the file. The
+//! container is the one thing that *is* mocked, through `MockEngine`'s scripted
+//! exits and capturing stdin, because an exit code and a signal are the whole
+//! of what the exit and stop rules read.
 //!
 //! The assertions that matter are the durability ones: `events.seq` is
 //! contiguous with no duplicates, every `_offset` is distinct and increasing,
 //! and the kinds a restarted owner ends up with are exactly the kinds one
-//! uninterrupted pass would have produced.
+//! uninterrupted pass would have produced. On the exit side they are the
+//! lifecycle ones: which state an exit code leads to, what the `state_change`
+//! says, and that a session which left `running` has no container, no
+//! `container_id` and the right registry entry left behind.
 //!
 //! Needs a container engine; see `tests/common/db.rs`.
 
@@ -19,20 +26,28 @@
 
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use futures_util::FutureExt;
 use mars_orchestrator::agent::{AgentBackend, CLAUDE_CLI_VERSION, ClaudeBackend, TranslateConfig};
+use mars_orchestrator::engine::{
+    ContainerEngine, ContainerId, ContainerSpec, LABEL_PROJECT_ID, LABEL_SESSION_ID, Signal,
+};
 use mars_orchestrator::events::SessionInput;
-use mars_orchestrator::models::{NewSession, ProfileKind, SessionState};
+use mars_orchestrator::git::testutil::{TestUpstream, test_identity};
+use mars_orchestrator::git::{DataPaths, create_work_clone, init_project_repo, resolve_base};
+use mars_orchestrator::models::{NewSession, ProfileKind, RemoteUrl, SessionState};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{SessionRepository, Transition};
 use mars_orchestrator::session::{
     OwnerCommand, OwnerContext, Phase, QueuedInput, SessionDirs, SessionOwner,
 };
-use tokio::io::AsyncWriteExt;
+use serde_json::Value;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -54,6 +69,7 @@ const QUIET_FOR: Duration = Duration::from_millis(600);
 /// One session, ready to be owned.
 struct Fixture {
     session_id: Uuid,
+    project_id: Uuid,
     dirs: SessionDirs,
     user_id: Uuid,
 }
@@ -65,6 +81,15 @@ struct Running {
 }
 
 impl Running {
+    /// Wait for a loop that ends by itself — a container exit, an ephemeral
+    /// end-of-run — to return.
+    async fn ended(self) {
+        tokio::time::timeout(COMMIT_WITHIN, self.handle)
+            .await
+            .expect("the owner leaves its loop")
+            .expect("the owner task did not panic");
+    }
+
     /// Ask the owner to stand down and wait for its loop to return.
     async fn shutdown(self) {
         self.commands
@@ -90,6 +115,11 @@ impl Running {
 /// Seeded with unchecked statements for the foreign keys only, as the other
 /// repository suites do.
 async fn fixture(app: &TestApp) -> Fixture {
+    fixture_of_kind(app, ProfileKind::Conversational).await
+}
+
+/// The same seed for a session of either kind.
+async fn fixture_of_kind(app: &TestApp, kind: ProfileKind) -> Fixture {
     let user_id = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, $4)")
         .bind(user_id)
@@ -124,7 +154,7 @@ async fn fixture(app: &TestApp) -> Fixture {
     let mut new = NewSession::new(
         project_id,
         profile_id,
-        ProfileKind::Conversational,
+        kind,
         "main",
         format!("fake-mcp-token-hash-{}", Uuid::new_v4()),
     );
@@ -145,6 +175,7 @@ async fn fixture(app: &TestApp) -> Fixture {
 
     Fixture {
         session_id: session.id,
+        project_id,
         dirs,
         user_id,
     }
@@ -172,22 +203,196 @@ async fn mark_running(app: &TestApp, session_id: Uuid) {
 
 /// Spawn an owner over `fixture`'s transcript with the real Claude adapter.
 fn spawn_owner(app: &TestApp, fixture: &Fixture, start_offset: u64, adopted: bool) -> Running {
-    let (commands, rx) = mpsc::channel(64);
-    let handle = SessionOwner::spawn(OwnerContext {
-        session_id: fixture.session_id,
-        kind: ProfileKind::Conversational,
-        dirs: fixture.dirs.clone(),
-        backend: Arc::new(ClaudeBackend::new()) as Arc<dyn AgentBackend>,
-        start_offset,
-        translate: TranslateConfig::default(),
-        adopted,
-        stdin: None,
-        container_id: None,
-        commands: rx,
-        state: app.state.clone(),
-    });
+    Owner::new(app, fixture)
+        .start_offset(start_offset)
+        .adopted(adopted)
+        .spawn()
+}
 
-    Running { handle, commands }
+/// One owner to spawn, with everything the launcher would decide for it.
+///
+/// A builder rather than a widening argument list: most tests want the plain
+/// tailing owner and only the exit and stop scenarios want a container, an
+/// attached stdin, a registry entry or a hook.
+struct Owner<'a> {
+    app: &'a TestApp,
+    fixture: &'a Fixture,
+    kind: ProfileKind,
+    start_offset: u64,
+    adopted: bool,
+    container_id: Option<ContainerId>,
+    stdin: Option<Box<dyn AsyncWrite + Send + Unpin>>,
+    register: bool,
+    state: Option<AppState>,
+}
+
+impl<'a> Owner<'a> {
+    fn new(app: &'a TestApp, fixture: &'a Fixture) -> Self {
+        Self {
+            app,
+            fixture,
+            kind: ProfileKind::Conversational,
+            start_offset: 0,
+            adopted: false,
+            container_id: None,
+            stdin: None,
+            register: false,
+            state: None,
+        }
+    }
+
+    fn kind(mut self, kind: ProfileKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    fn start_offset(mut self, start_offset: u64) -> Self {
+        self.start_offset = start_offset;
+        self
+    }
+
+    fn adopted(mut self, adopted: bool) -> Self {
+        self.adopted = adopted;
+        self
+    }
+
+    fn container(mut self, container_id: &ContainerId) -> Self {
+        self.container_id = Some(container_id.clone());
+        self
+    }
+
+    /// Attach the container's real stdin, so what the owner writes lands where
+    /// [`MockEngine::stdin_lines`] reads it back.
+    async fn attached(mut self, container_id: &ContainerId) -> Self {
+        let writer = self
+            .app
+            .engine()
+            .attach_stdin(container_id)
+            .await
+            .expect("the mock engine attaches");
+        self.stdin = Some(Box::new(writer) as Box<dyn AsyncWrite + Send + Unpin>);
+        self
+    }
+
+    /// Give the session a registry entry, so a test can assert what the owner
+    /// left of it. The owner still takes its commands from this builder's own
+    /// channel, which is what keeps `mark_parked` — which drops the registry's
+    /// sender — from ending the loop under the assertion.
+    fn registered(mut self) -> Self {
+        self.register = true;
+        self
+    }
+
+    /// Run the owner over `state` instead of the test app's own, which is how a
+    /// test installs the end-of-session hook.
+    fn state(mut self, state: AppState) -> Self {
+        self.state = Some(state);
+        self
+    }
+
+    fn spawn(self) -> Running {
+        if self.register {
+            self.app.session_registry().register(
+                self.fixture.session_id,
+                self.kind,
+                Phase::Running,
+            );
+        }
+
+        let (commands, rx) = mpsc::channel(64);
+        let handle = SessionOwner::spawn(OwnerContext {
+            session_id: self.fixture.session_id,
+            kind: self.kind,
+            dirs: self.fixture.dirs.clone(),
+            backend: Arc::new(ClaudeBackend::new()) as Arc<dyn AgentBackend>,
+            start_offset: self.start_offset,
+            translate: TranslateConfig::default(),
+            adopted: self.adopted,
+            stdin: self.stdin,
+            container_id: self.container_id,
+            commands: rx,
+            state: self.state.unwrap_or_else(|| self.app.state.clone()),
+        });
+
+        Running { handle, commands }
+    }
+}
+
+/// Create and start a mock container for this session, the way the launcher
+/// does.
+///
+/// `cmd` is the session's own `claude`, which traps nothing: a `kill` is
+/// recorded and delivered, and only [`MockEngine::exit`] ends the container, so
+/// a stop test asserts the signals and decides the exit itself
+/// (`ARCHITECTURE.md`, "Engine adapter", Normalised semantics).
+async fn start_container(app: &TestApp, fixture: &Fixture) -> ContainerId {
+    let spec = ContainerSpec {
+        image: "mars-session-stub:test".to_string(),
+        name: format!("mars-session-{}", fixture.session_id),
+        labels: BTreeMap::from([
+            (LABEL_SESSION_ID.to_string(), fixture.session_id.to_string()),
+            (LABEL_PROJECT_ID.to_string(), fixture.project_id.to_string()),
+        ]),
+        user: "1000:1000".to_string(),
+        working_dir: "/session/work".to_string(),
+        cmd: vec!["claude".to_string()],
+        env: Vec::new(),
+        binds: Vec::new(),
+        network: "mars-sessions".to_string(),
+        extra_hosts: Vec::new(),
+        runtime: None,
+        open_stdin: true,
+    };
+
+    let engine = app.engine();
+    let container_id = engine
+        .create(&spec)
+        .await
+        .expect("the container is created");
+    engine
+        .start(&container_id)
+        .await
+        .expect("the container starts");
+
+    let repository = SessionRepository::new(&app.pool);
+    let mut tx = app.pool.begin().await.expect("a transaction begins");
+    repository
+        .set_container_id(&mut tx, fixture.session_id, Some(&container_id.0))
+        .await
+        .expect("the container id is recorded");
+    tx.commit().await.expect("the transaction commits");
+
+    container_id
+}
+
+/// A project repository and a session work clone under the test app's own
+/// `DATA_DIR`, so the end-of-run fetch-back has something real to publish
+/// (`CLAUDE.md`, "Testing expectations": git is never mocked).
+///
+/// The upstream is returned because it owns its temporary directory.
+async fn prepare_git(app: &TestApp, fixture: &Fixture) -> TestUpstream {
+    let upstream = TestUpstream::create().await;
+    let paths = DataPaths::from_config(&app.state.config);
+    let guard = app.state.git_locks.lock(fixture.project_id).await;
+
+    init_project_repo(
+        &guard,
+        &paths,
+        &RemoteUrl::local_for_tests(&upstream.path),
+        None,
+        None,
+    )
+    .await
+    .expect("the project repository is initialised");
+
+    let base = resolve_base(&guard, &paths, None, "main")
+        .await
+        .expect("main resolves");
+    create_work_clone(&guard, &paths, fixture.session_id, &base, &test_identity())
+        .await
+        .expect("the session work clone is created");
+
+    upstream
 }
 
 /// The fixture directory for the pinned CLI version.
@@ -610,8 +815,8 @@ async fn the_registry_path_records_an_input_and_the_owner_deregisters_itself() {
         ["state_change", "init", "launch_warning", "user_message"],
     );
 
-    // Stop semantics are the next task's; taking the command must not end the
-    // loop in the meantime.
+    // This owner has no container, so the stop is ignored rather than acted on
+    // (the route answers 409 first); either way it must not end the loop.
     app.session_registry()
         .stop(fixture.session_id)
         .expect("the owner takes a stop");
@@ -971,6 +1176,580 @@ async fn a_truncated_transcript_is_not_rewound() {
         snapshot(&app.pool, fixture.session_id).await,
         before,
         "the owner re-read the transcript from its start",
+    );
+
+    owner.shutdown().await;
+}
+
+/// The session row's whole lifecycle picture in one read.
+async fn lifecycle(
+    pool: &PgPool,
+    session_id: Uuid,
+) -> (
+    String,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+    Option<String>,
+) {
+    sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<DateTime<Utc>>,
+            Option<DateTime<Utc>>,
+            Option<String>,
+        ),
+    >(
+        "SELECT state::text, container_id, parked_at, ended_at, error
+         FROM sessions WHERE id = $1",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .expect("the session is readable")
+}
+
+/// The payload of the session's last event of one kind.
+async fn last_event(pool: &PgPool, session_id: Uuid, kind: &str) -> Value {
+    sqlx::query_as::<_, (Value,)>(
+        "SELECT payload FROM events
+         WHERE session_id = $1 AND kind = $2 ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(session_id)
+    .bind(kind)
+    .fetch_one(pool)
+    .await
+    .unwrap_or_else(|err| panic!("a {kind} event is stored: {err}"))
+    .0
+}
+
+/// Wait until the container has been signalled with `signal`, or fail.
+async fn wait_for_signal(app: &TestApp, container_id: &ContainerId, signal: Signal) {
+    let deadline = tokio::time::Instant::now() + COMMIT_WITHIN;
+    loop {
+        let signals = app.engine().signals(container_id);
+        if signals.contains(&signal) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the container was sent {signals:?}, never {signal}",
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// One accepted message, as the registry would hand it over.
+fn message(fixture: &Fixture, text: &str, client_id: Option<&str>) -> QueuedInput {
+    QueuedInput {
+        input: SessionInput::Message {
+            text: text.to_string(),
+        },
+        user_id: Some(fixture.user_id),
+        client_id: client_id.map(str::to_string),
+        accepted_at: Utc::now(),
+    }
+}
+
+/// An input is a `user_message` event first and a line on the CLI's stdin
+/// second, so the conversation shows it even if the write never lands
+/// (`ARCHITECTURE.md`, "Session owner task", step 2).
+#[tokio::test]
+async fn an_input_is_recorded_before_the_cli_sees_it() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+    let (_, _, _, before) = counters(&app.pool, fixture.session_id).await;
+
+    let owner = Owner::new(&app, &fixture)
+        .container(&container)
+        .attached(&container)
+        .await
+        .spawn();
+
+    owner
+        .commands
+        .send(OwnerCommand::Input(message(
+            &fixture,
+            "the first turn",
+            Some("client-7"),
+        )))
+        .await
+        .expect("the owner is listening");
+
+    // The event is committed before the write is attempted, so the moment the
+    // container's stdin has the line the `user_message` must already be there.
+    let deadline = tokio::time::Instant::now() + COMMIT_WITHIN;
+    let written = loop {
+        let lines = app.engine().stdin_lines(&container);
+        if let Some(line) = lines.first() {
+            assert_eq!(
+                kinds(&app.pool, fixture.session_id).await,
+                ["state_change", "user_message"],
+                "the input reached the CLI before it was recorded",
+            );
+            assert_eq!(lines.len(), 1, "the input was written more than once");
+            break line.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "nothing was written to the CLI's stdin",
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+
+    let native: Value = serde_json::from_str(&written).expect("the encoded input is one JSON line");
+    assert_eq!(native["type"], "user");
+    assert_eq!(native["message"]["content"][0]["text"], "the first turn");
+
+    let event = last_event(&app.pool, fixture.session_id, "user_message").await;
+    assert_eq!(event["text"], "the first turn");
+    assert_eq!(event["user_id"], fixture.user_id.to_string());
+    assert_eq!(event["client_id"], "client-7");
+
+    // Every appended event advances the timestamp the idle reaper measures from,
+    // `user_message` included (`ARCHITECTURE.md`, "Session owner task", step 4).
+    let (_, _, _, after) = counters(&app.pool, fixture.session_id).await;
+    assert!(after > before, "last_activity_at did not advance");
+
+    owner.shutdown().await;
+}
+
+/// A write that cannot land is a non-fatal `error` event and nothing else: v1
+/// does not retry an input (ADR 0020).
+///
+/// The owner deliberately has no container to watch, so the exit that breaks the
+/// attach stream does not also end the session; what is under test is the write.
+#[tokio::test]
+async fn a_failed_write_records_a_non_fatal_error_and_does_not_retry() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture)
+        .attached(&container)
+        .await
+        .spawn();
+    assert!(
+        app.engine().exit(&container, 0),
+        "the mock container is there to end",
+    );
+
+    owner
+        .commands
+        .send(OwnerCommand::Input(message(
+            &fixture,
+            "into a broken pipe",
+            None,
+        )))
+        .await
+        .expect("the owner is listening");
+
+    wait_for_events(&app.pool, fixture.session_id, 3).await;
+    assert_eq!(
+        kinds(&app.pool, fixture.session_id).await,
+        ["state_change", "user_message", "error"],
+    );
+
+    let event = last_event(&app.pool, fixture.session_id, "error").await;
+    assert_eq!(event["fatal"], false);
+    let reported = event["message"].as_str().expect("the error has a message");
+    assert!(
+        reported.starts_with("failed to write input to CLI: "),
+        "{reported}",
+    );
+    assert!(
+        app.engine().stdin_bytes(&container).is_empty(),
+        "bytes reached a container that had exited",
+    );
+
+    // Nothing is retried: the transcript stays as it was.
+    tokio::time::sleep(QUIET_FOR).await;
+    let (count, _, _) = snapshot(&app.pool, fixture.session_id).await;
+    assert_eq!(count, 3, "the failed write was retried");
+
+    owner.shutdown().await;
+}
+
+/// Exit 0 with no stop is the CLI finishing: `parked`, container removed,
+/// `container_id` cleared, and the registry entry kept so a later message
+/// resumes it (`ARCHITECTURE.md`, "Session lifecycle").
+#[tokio::test]
+async fn a_clean_exit_parks_the_session_and_removes_its_container() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture)
+        .container(&container)
+        .attached(&container)
+        .await
+        .registered()
+        .spawn();
+
+    assert!(app.engine().exit(&container, 0));
+    owner.ended().await;
+
+    let (state, container_column, parked_at, ended_at, error) =
+        lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "parked");
+    assert_eq!(container_column, None, "the container id was not cleared");
+    assert!(parked_at.is_some(), "parked_at was not set");
+    assert_eq!(ended_at, None, "a parked session ended");
+    assert_eq!(error, None);
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["from"], "running");
+    assert_eq!(change["to"], "parked");
+    assert_eq!(change["reason"], "CLI exited");
+    assert!(change.get("signal").is_none(), "{change}");
+
+    assert_eq!(
+        app.engine().state_of(&container),
+        None,
+        "the container was not removed",
+    );
+    // The entry stays, without a channel: that is where the next message queues
+    // until a resume drains it.
+    assert_eq!(
+        app.session_registry().phase(fixture.session_id),
+        Some(Phase::Parked),
+    );
+}
+
+/// A non-zero exit outside a stop is a failure, and `sessions.error` says what
+/// the code was.
+#[tokio::test]
+async fn a_non_zero_exit_fails_the_session_with_its_status() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture)
+        .container(&container)
+        .registered()
+        .spawn();
+
+    assert!(app.engine().exit(&container, 137));
+    owner.ended().await;
+
+    let (state, container_column, _, ended_at, error) =
+        lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "failed");
+    assert_eq!(container_column, None);
+    assert!(ended_at.is_some(), "ended_at was not set");
+    assert_eq!(error.as_deref(), Some("CLI exited with status 137"));
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["to"], "failed");
+    assert_eq!(change["reason"], "CLI exited with status 137");
+
+    // A failed session has nothing more to say to, so its entry goes.
+    assert_eq!(app.session_registry().phase(fixture.session_id), None);
+}
+
+/// A container the engine no longer has is `parked`, not `failed`: there is no
+/// exit code to read and nothing for a user to retry
+/// (`ARCHITECTURE.md`, "Restart procedure").
+#[tokio::test]
+async fn a_container_that_disappeared_parks_the_session() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture).container(&container).spawn();
+    assert!(app.engine().vanish(&container));
+    owner.ended().await;
+
+    let (state, _, parked_at, _, _) = lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "parked");
+    assert!(parked_at.is_some());
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["reason"], "container disappeared");
+}
+
+/// A stop is `SIGINT`, then `SIGTERM` when the grace period runs out, and the
+/// `state_change` names the last signal sent so the UI can say killed rather
+/// than stopped (`ARCHITECTURE.md`, "Stop semantics").
+#[tokio::test]
+async fn a_stop_escalates_to_sigterm_and_parks_the_session_as_killed() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture).container(&container).spawn();
+    owner
+        .commands
+        .send(OwnerCommand::Stop)
+        .await
+        .expect("the owner is listening");
+
+    wait_for_signal(&app, &container, Signal::Sigint).await;
+    // A second request while one is pending changes nothing.
+    owner
+        .commands
+        .send(OwnerCommand::Stop)
+        .await
+        .expect("the owner is listening");
+    // `STOP_GRACE_SECS` is 1 in tests; the CLI here traps nothing and keeps
+    // running, which is exactly the case SIGTERM exists for.
+    wait_for_signal(&app, &container, Signal::Sigterm).await;
+    assert_eq!(
+        app.engine().signals(&container),
+        vec![Signal::Sigint, Signal::Sigterm],
+        "the stop sequence was not SIGINT then SIGTERM exactly once each",
+    );
+
+    assert!(app.engine().exit(&container, 143));
+    owner.ended().await;
+
+    let (state, _, parked_at, _, error) = lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "parked", "a stopped session failed");
+    assert!(parked_at.is_some());
+    assert_eq!(error, None);
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["to"], "parked");
+    assert_eq!(change["reason"], "stopped by user");
+    assert_eq!(change["signal"], "SIGTERM");
+}
+
+/// A CLI that exits inside the grace period is never sent `SIGTERM`, and the
+/// `state_change` says `SIGINT`: stopped, not killed.
+#[tokio::test]
+async fn a_stop_the_cli_answers_within_the_grace_period_records_sigint() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture).container(&container).spawn();
+    owner
+        .commands
+        .send(OwnerCommand::Stop)
+        .await
+        .expect("the owner is listening");
+
+    wait_for_signal(&app, &container, Signal::Sigint).await;
+    assert_eq!(
+        app.engine().signals(&container),
+        vec![Signal::Sigint],
+        "the stop sent more than the SIGINT it starts with",
+    );
+
+    // The recorded behaviour of a SIGINT-ed CLI: it ends its turn and exits 0
+    // (`ARCHITECTURE.md`, "Stop semantics").
+    assert!(app.engine().exit(&container, 0));
+    owner.ended().await;
+
+    let (state, _, _, _, _) = lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "parked");
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["reason"], "stopped by user");
+    // The last signal *sent*, so a SIGTERM after the exit would show here; the
+    // container itself is gone by now, removed with the session's clean-up.
+    assert_eq!(change["signal"], "SIGINT");
+}
+
+/// A stop for a session that has no container yet is logged and ignored; the
+/// route answers 409 long before it gets here.
+#[tokio::test]
+async fn a_stop_without_a_container_is_ignored() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+
+    let owner = Owner::new(&app, &fixture).spawn();
+    owner
+        .commands
+        .send(OwnerCommand::Stop)
+        .await
+        .expect("the owner is listening");
+    tokio::time::sleep(QUIET_FOR).await;
+
+    let (state, _, _, _, _) = lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "running", "an ignored stop changed the session");
+    assert_eq!(
+        kinds(&app.pool, fixture.session_id).await,
+        ["state_change"],
+        "an ignored stop wrote an event",
+    );
+
+    owner.shutdown().await;
+}
+
+/// The ephemeral end-of-run: the `result` publishes the branch, stops the
+/// container and marks the session `done`, and the end-of-session hook runs
+/// (`ARCHITECTURE.md`, "Claude Code invocation").
+#[tokio::test]
+async fn an_ephemeral_result_syncs_the_branch_and_ends_the_session() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture_of_kind(&app, ProfileKind::Ephemeral).await;
+    mark_running(&app, fixture.session_id).await;
+    let _upstream = prepare_git(&app, &fixture).await;
+    let container = start_container(&app, &fixture).await;
+
+    let ended = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&ended);
+    let state = app
+        .state
+        .clone()
+        .with_session_ended_hook(Arc::new(move |_| {
+            let counter = Arc::clone(&counter);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+            .boxed()
+        }));
+
+    let owner = Owner::new(&app, &fixture)
+        .kind(ProfileKind::Ephemeral)
+        .container(&container)
+        .registered()
+        .state(state)
+        .spawn();
+
+    // The recorded run's first turn: `init`, its text and the `result` that ends
+    // an ephemeral session.
+    for line in &native_lines("multi_turn")[..4] {
+        append_line(&fixture.dirs, line).await;
+    }
+
+    owner.ended().await;
+
+    let (state, container_column, parked_at, ended_at, error) =
+        lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "done", "an ephemeral result did not end the session");
+    assert_eq!(container_column, None);
+    assert_eq!(parked_at, None, "an ephemeral session was parked");
+    assert!(ended_at.is_some(), "ended_at was not set");
+    assert_eq!(error, None);
+
+    let sync = last_event(&app.pool, fixture.session_id, "git").await;
+    assert_eq!(sync["op"], "sync");
+    assert_eq!(sync["ok"], true, "{sync}");
+    assert_eq!(
+        sync["detail"]["ref"],
+        format!("refs/sessions/{}", fixture.session_id),
+    );
+    assert_eq!(
+        sync["detail"]["commit"]
+            .as_str()
+            .expect("the sync names a commit")
+            .len(),
+        40,
+    );
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["to"], "done");
+    assert_eq!(change["reason"], "result received");
+
+    assert_eq!(
+        app.engine().state_of(&container),
+        None,
+        "the container was not removed",
+    );
+    assert_eq!(app.session_registry().phase(fixture.session_id), None);
+    assert_eq!(
+        ended.load(Ordering::SeqCst),
+        1,
+        "the end-of-session hook did not run exactly once",
+    );
+}
+
+/// An ephemeral session whose CLI exits before any `result` produced nothing, so
+/// it is `failed` rather than parked: it is never retried.
+#[tokio::test]
+async fn an_ephemeral_exit_before_its_result_fails_the_session() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture_of_kind(&app, ProfileKind::Ephemeral).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture)
+        .kind(ProfileKind::Ephemeral)
+        .container(&container)
+        .spawn();
+
+    assert!(app.engine().exit(&container, 1));
+    owner.ended().await;
+
+    let (state, _, parked_at, ended_at, error) = lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "failed");
+    assert_eq!(parked_at, None);
+    assert!(ended_at.is_some());
+    assert_eq!(
+        error.as_deref(),
+        Some("CLI exited with status 1 before result"),
+    );
+}
+
+/// A container that exits while the session is still `creating` never got as far
+/// as its CLI, so the launch failed (`ARCHITECTURE.md`, "Session lifecycle").
+#[tokio::test]
+async fn an_exit_while_still_creating_fails_before_init() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    // Deliberately left in `creating`: no stdin was ever attached (ADR 0032).
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture).container(&container).spawn();
+    assert!(app.engine().exit(&container, 2));
+    owner.ended().await;
+
+    let (state, container_column, _, ended_at, error) =
+        lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "failed");
+    assert_eq!(container_column, None);
+    assert!(ended_at.is_some());
+    assert_eq!(
+        error.as_deref(),
+        Some("CLI exited with status 2 before init"),
+    );
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["from"], "creating");
+    assert_eq!(change["to"], "failed");
+}
+
+/// An input for an ephemeral session is dropped: its prompt is in argv and its
+/// stdin is never written to (ADR 0003).
+#[tokio::test]
+async fn an_input_to_an_ephemeral_session_is_dropped() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture_of_kind(&app, ProfileKind::Ephemeral).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture)
+        .kind(ProfileKind::Ephemeral)
+        .attached(&container)
+        .await
+        .spawn();
+
+    owner
+        .commands
+        .send(OwnerCommand::Input(message(&fixture, "not for you", None)))
+        .await
+        .expect("the owner is listening");
+    tokio::time::sleep(QUIET_FOR).await;
+
+    assert_eq!(
+        kinds(&app.pool, fixture.session_id).await,
+        ["state_change"],
+        "an ephemeral session recorded an input",
+    );
+    assert!(
+        app.engine().stdin_bytes(&container).is_empty(),
+        "an ephemeral session's stdin was written to",
     );
 
     owner.shutdown().await;

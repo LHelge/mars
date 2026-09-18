@@ -556,6 +556,10 @@ fn test_config(database_url: &str, data_dir: &Path, keyring: &SecretsKeyring) ->
         // `run`). `MCP_PORT` keeps its default because `Config` rejects two
         // equal ports, so the two cannot both be 0.
         ("API_PORT", "0".to_string()),
+        // One second, so a stop test can wait out the grace period between
+        // `SIGINT` and `SIGTERM` without waiting out the production default of
+        // 20 (`ARCHITECTURE.md`, "Stop semantics").
+        ("STOP_GRACE_SECS", "1".to_string()),
         // No `RESEND_API_KEY`: mail goes to the mock, and setting a key would
         // only make `MAIL_FROM` required as well (ADR 0026).
     ]

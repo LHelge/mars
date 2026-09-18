@@ -314,6 +314,21 @@ impl Config {
     pub fn public_url_is_https(&self) -> bool {
         self.public_url.starts_with("https://")
     }
+
+    /// Where `project_id` keeps its repository, its CLI state and its shared
+    /// directories, in both views of the data volume
+    /// ([`ProjectLayout`](crate::projects::ProjectLayout);
+    /// `ARCHITECTURE.md`, "Storage").
+    ///
+    /// The one place production code builds a layout: this is the only type
+    /// that holds both `DATA_DIR` and `DATA_DIR_HOST`.
+    pub fn project_layout(&self, project_id: uuid::Uuid) -> crate::projects::ProjectLayout {
+        crate::projects::ProjectLayout::new_with_host(
+            &self.data_dir,
+            &self.data_dir_host,
+            project_id,
+        )
+    }
 }
 
 impl fmt::Debug for Config {

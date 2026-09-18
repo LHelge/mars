@@ -1,16 +1,17 @@
 ---
 id: xnacj
 title: Translate Claude assistant messages and stream events into text, thinking, tool_call, subagent_start and text_delta
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:28:28.543946403Z"
-updated: "2026-09-16T20:28:28.543946403Z"
+updated: "2026-09-18T16:45:12.122650613Z"
 tags:
   - orchestrator
   - agent
 depends_on:
   - "4c387"
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

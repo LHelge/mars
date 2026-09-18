@@ -1,10 +1,10 @@
 ---
 id: xfu5s
 title: "Add end-to-end project lifecycle integration tests: create to ready, error and retry, fetch, branches, profiles, shared dirs and delete cleaning disk"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:33:51.965205095Z"
-updated: "2026-09-18T11:50:17.705556139Z"
+updated: "2026-09-18T12:22:23.282696388Z"
 tags:
   - orchestrator
   - projects

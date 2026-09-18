@@ -2,10 +2,10 @@
 id: pkaee
 title: Projects, agent profiles and shared directories
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:12:51.364909831Z"
-updated: "2026-09-16T20:15:20.823123491Z"
+updated: "2026-09-18T12:22:27.905130673Z"
 tags:
   - orchestrator
   - projects

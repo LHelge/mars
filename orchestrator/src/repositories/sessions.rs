@@ -489,6 +489,44 @@ impl<'a> SessionRepository<'a> {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Store the replacement hash only if the session is one an actual process
+    /// launch may start from: `parked` (resume), `creating` (a launch already
+    /// marked as starting) or `failed` (conversational retry).
+    ///
+    /// The state is in the `WHERE` clause rather than checked first, so a
+    /// session that went `running` between the read and this statement is not
+    /// rotated out from under its live process: that process holds credentials
+    /// matching the stored hash, and adoption after an orchestrator restart
+    /// depends on them still matching (ADR 0029).
+    ///
+    /// `Ok(false)` when no row matched — no session with this id, or one in
+    /// another state — which [`crate::session::rotate_token`] turns into
+    /// [`Error::Conflict`]. Rolling the transaction back then leaves the stored
+    /// hash exactly as it was.
+    pub async fn set_mcp_token_hash_if_relaunchable(
+        &self,
+        tx: &mut PgConnection,
+        id: Uuid,
+        hash: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query!(
+            "UPDATE sessions SET mcp_token_hash = $2
+             WHERE id = $1
+               AND state IN ('parked'::session_state, 'creating'::session_state,
+                             'failed'::session_state)",
+            id,
+            hash,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| map_token_collision(err, id))?;
+
+        let replaced = result.rows_affected() > 0;
+        debug!(session_id = %id, replaced, "mcp token hash rotation attempted");
+
+        Ok(replaced)
+    }
+
     /// Delete a session, reporting whether a row matched.
     ///
     /// `Ok(false)` rather than an error when nothing matched: the route turns

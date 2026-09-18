@@ -1,4 +1,5 @@
-//! Creating, configuring and removing a project's bare repository.
+//! Creating, configuring, fetching, listing and removing a project's bare
+//! repository.
 //!
 //! `ARCHITECTURE.md`, "Git model" (Project clone) is the contract, step for
 //! step: `git init --bare`, `origin` with the two documented fetch refspecs,
@@ -24,8 +25,31 @@
 //! ADR 0017 separates the namespaces for — so a re-run after upstream advanced
 //! updates `refs/remotes/origin/*` and leaves Mars's branches alone.
 //!
+//! **The recurring fetch.** [`fetch_upstream`] is the one `git fetch --prune
+//! origin` the cron mirror-fetch job, `POST /projects/{id}/fetch` and a fresh
+//! session launch all run (`ARCHITECTURE.md`, "Git model", Project clone) —
+//! literally the same function the first fetch of [`init_project_repo`] goes
+//! through. It touches only what the two configured refspecs cover:
+//! `refs/remotes/origin/*` and `refs/tags/*`. `refs/heads/*`,
+//! `refs/sessions/*` and `refs/handoffs/*` are Mars's and are never arguments
+//! to it, which is what makes "a fetch must preserve an unpushed merge on an
+//! integration branch, even if upstream moves or deletes that branch"
+//! (`ARCHITECTURE.md`, "Git model", Ref ownership; ADR 0017) a property of the
+//! command rather than of a check afterwards. `--prune` therefore deletes only
+//! upstream-owned refs: the tracking ref of a branch upstream dropped, and —
+//! because of the tag refspec — a tag upstream dropped.
+//!
+//! [`fetch_project`] is that fetch with the orchestrator's context around it:
+//! the readiness check, the project git lock, the credential and the
+//! `projects.last_fetched_at` write. [`list_branches`] is the read side,
+//! `GET /projects/{id}/branches` (`SPEC.md`, "Projects").
+//!
 //! **Locking.** The caller holds the project git lock and passes the guard;
 //! nothing here acquires one (`ARCHITECTURE.md`, "Git model", Serialization).
+//! [`fetch_project`] is the one exception, and it is a composite operation
+//! rather than a helper: it takes the lock itself, holds it for exactly the
+//! git command and releases it before the short database transaction, so no
+//! transaction is ever open while git runs (ADR 0021).
 //!
 //! **Credentials.** Only the two commands that talk to the remote — the
 //! symref probe and the fetch — get one, through a temporary mode-0600 config
@@ -36,13 +60,18 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 use super::{
-    CredentialConfig, DataPaths, GitCommand, GitCredential, GitError, GitOutput, ProjectGitGuard,
-    refs,
+    CredentialConfig, DataPaths, GitActor, GitCommand, GitCredential, GitError, GitOutput,
+    ProjectGitGuard, refs,
 };
-use crate::models::RemoteUrl;
+use crate::models::{Branch, BranchKind, Project, ProjectStatus, RemoteUrl};
 use crate::prelude::*;
+use crate::repositories::ProjectRepository;
 
 /// The integration-head namespace Mars owns (ADR 0017).
 const HEADS: &str = "refs/heads/";
@@ -60,6 +89,30 @@ const HEADS_PATTERN: &str = "refs/heads/";
 /// dropped by [`refs::list`]; the loop below skips it a second time, because
 /// an upstream `HEAD` that is not a symref would arrive as an ordinary entry.
 const UPSTREAM_PATTERN: &str = "refs/remotes/origin/";
+/// The same for every session ref, the third namespace a [`Branch`] can come
+/// from. Hand-off refs have no pattern here at all: they are not branches
+/// (`SPEC.md`, "Projects").
+const SESSIONS_PATTERN: &str = "refs/sessions/";
+
+/// The three namespaces `GET /projects/{id}/branches` reports, in the order
+/// [`list_branches`] sorts them into.
+const BRANCH_PATTERNS: [&str; 3] = [HEADS_PATTERN, UPSTREAM_PATTERN, SESSIONS_PATTERN];
+
+/// The argv of the one fetch every caller shares.
+///
+/// No refspec: the pair configured on `origin` is the contract
+/// ([`FETCH_HEADS`], [`FETCH_TAGS`]), so a fetch cannot reach a namespace Mars
+/// owns even by mistake.
+const FETCH_ARGS: [&str; 5] = ["fetch", "--prune", "--quiet", "--end-of-options", "origin"];
+
+/// How much life a credential must have left to be worth starting a fetch
+/// with.
+///
+/// A PAT has no expiry the orchestrator can see, so this only matters to a
+/// future minting provider (ADR 0002); five minutes is comfortably longer than
+/// a fetch of a large repository and short enough that a token is not
+/// re-minted for every one.
+const CREDENTIAL_TTL: Duration = Duration::from_secs(300);
 
 /// The upstream branch refspec: forced, because upstream tracking records what
 /// upstream has, including a rewritten branch.
@@ -137,14 +190,7 @@ pub async fn init_project_repo(
         None => discover_default_branch(&repo, paths, credential).await?,
     };
 
-    run_with_credential(
-        GitCommand::new()
-            .args(["fetch", "--prune", "--quiet", "--end-of-options", "origin"])
-            .cwd(&repo),
-        credential,
-        paths,
-    )
-    .await?;
+    fetch_origin(&repo, paths, credential).await?;
 
     let seeded = seed_integration_heads(&repo, &default_branch).await?;
 
@@ -166,6 +212,195 @@ pub async fn init_project_repo(
         default_branch,
         seeded,
     })
+}
+
+/// Refresh the upstream-tracking refs and tags of one project repository.
+///
+/// `git fetch --prune origin`, with the credential attached through a
+/// temporary mode-0600 config when there is one. The refspecs come from the
+/// repository's own `origin` configuration, so this updates
+/// `refs/remotes/origin/*` and `refs/tags/*`, prunes the ones upstream no
+/// longer has, and cannot touch `refs/heads/*`, `refs/sessions/*` or
+/// `refs/handoffs/*` (`ARCHITECTURE.md`, "Git model", Ref ownership; ADR
+/// 0017).
+///
+/// The caller holds the project git lock and passes the guard; the repository
+/// is the one that guard covers. [`fetch_project`] is the composite operation
+/// that takes the lock, finds the credential and records the fetch.
+///
+/// # Errors
+///
+/// [`GitError::Command`] for anything git refused — an unreachable upstream
+/// and a rejected credential among them. Nothing was written in that case, so
+/// the caller leaves `last_fetched_at` alone and retries: the cron job at its
+/// next interval, the launcher after recording a `launch_warning`
+/// (`ARCHITECTURE.md`, "Launch sequence").
+pub async fn fetch_upstream(
+    guard: &ProjectGitGuard,
+    paths: &DataPaths,
+    credential: Option<&GitCredential>,
+) -> std::result::Result<(), GitError> {
+    let project_id = guard.project_id();
+
+    fetch_origin(&paths.project_repo(project_id), paths, credential).await?;
+
+    debug!(project_id = %project_id, "project repository fetched");
+
+    Ok(())
+}
+
+/// What [`fetch_project`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FetchOutcome {
+    /// Whether a `git fetch` actually ran. `false` only when `max_age` was
+    /// given and the recorded fetch was newer than that.
+    pub fetched: bool,
+    /// When the repository was last fetched: the timestamp this call wrote, or
+    /// the one it found fresh enough to skip.
+    pub at: DateTime<Utc>,
+}
+
+/// Fetch one project's upstream, under its git lock, and record it.
+///
+/// The one routine behind all three callers (`ARCHITECTURE.md`, "Git model",
+/// Project clone): the cron mirror-fetch job passes [`GitActor::System`] and
+/// no `max_age`, `POST /projects/{id}/fetch` passes the requesting user and no
+/// `max_age`, and a fresh session launch passes the launching user and
+/// `max_age = 30s`, which is what makes two launches in a row cost one fetch
+/// (`ARCHITECTURE.md`, "Launch sequence").
+///
+/// The order is the documented one and the reason for it is ADR 0021: the
+/// project row is read first, the git lock is taken next, the credential and
+/// the fetch happen under it, and the lock is released before the short
+/// transaction that writes `last_fetched_at`. No database transaction is ever
+/// open while git runs, so a fetch of a large repository cannot hold a row
+/// lock somebody else is waiting for.
+///
+/// Two concurrent fetches of one project serialise on the git lock. The second
+/// re-runs the fetch rather than re-reading the row the first just wrote,
+/// which is harmless: a fetch is idempotent, and the alternative — a second
+/// read under the lock — would silently turn an explicit `POST .../fetch` into
+/// a no-op whenever the cron job had just run.
+///
+/// # Errors
+///
+/// - [`Error::NotFound`] — no such project.
+/// - [`Error::Conflict`] `project is not ready` — the project is still
+///   `cloning` or in `error`, so there may be no repository to fetch and the
+///   clone job owns it. Checked before the lock is taken, because a project
+///   that is being cloned is holding it.
+/// - [`Error::Git`] — the fetch failed; `last_fetched_at` is unchanged.
+/// - [`Error::Database`], [`Error::Secrets`] — the row read, the credential
+///   lookup or the recording failed.
+pub async fn fetch_project(
+    state: &AppState,
+    project_id: Uuid,
+    actor: &GitActor,
+    max_age: Option<Duration>,
+) -> Result<FetchOutcome> {
+    let projects = ProjectRepository::new(&state.pool);
+    let project = projects.find(project_id).await?.ok_or(Error::NotFound)?;
+
+    if project.status != ProjectStatus::Ready {
+        // Before the lock: the clone job holds it for the whole of a first
+        // clone, and waiting minutes to answer 409 helps nobody.
+        return Err(Error::Conflict("project is not ready".to_string()));
+    }
+
+    if let Some(at) = fresh_enough(&project, max_age) {
+        debug!(project_id = %project_id, "the project repository was fetched recently enough");
+        return Ok(FetchOutcome { fetched: false, at });
+    }
+
+    let paths = DataPaths::from_config(&state.config);
+
+    {
+        let guard = state.git_locks.lock(project_id).await;
+        let credential = state
+            .git_credentials
+            .credential_for(project_id, actor, CREDENTIAL_TTL)
+            .await?;
+
+        fetch_upstream(&guard, &paths, credential.as_ref()).await?;
+    }
+
+    // Only after the command succeeded, and with the git lock already
+    // released (ADR 0021).
+    let mut tx = state.pool.begin().await?;
+    let updated = projects
+        .set_last_fetched_at(&mut tx, project_id)
+        .await?
+        .ok_or(Error::NotFound)?;
+    tx.commit().await?;
+
+    info!(project_id = %project_id, "project repository fetched from upstream");
+
+    Ok(FetchOutcome {
+        fetched: true,
+        // The column is `NOT NULL` from the moment that statement ran; the
+        // fallback is only so a schema surprise cannot panic here.
+        at: updated.last_fetched_at.unwrap_or_else(Utc::now),
+    })
+}
+
+/// The refs `GET /projects/{id}/branches` reports (`SPEC.md`, "Projects").
+///
+/// Integration heads, upstream-tracking refs and session refs, in that order
+/// and alphabetically by API name within each. Tags, hand-off refs and
+/// `refs/remotes/origin/HEAD` are not branches and are dropped by
+/// [`refs::to_branch`].
+///
+/// Read-only, so it takes no guard: `for-each-ref` reports whatever the
+/// repository says at the moment it runs, and a concurrent fetch can only move
+/// upstream-tracking refs it has not read yet.
+pub async fn list_branches(
+    paths: &DataPaths,
+    project_id: Uuid,
+) -> std::result::Result<Vec<Branch>, GitError> {
+    let repo = paths.project_repo(project_id);
+
+    let mut branches: Vec<Branch> = refs::list(&repo, &BRANCH_PATTERNS)
+        .await?
+        .iter()
+        .filter_map(refs::to_branch)
+        .collect();
+
+    // `for-each-ref` sorts by fully qualified name, which would interleave
+    // nothing but would order `refs/heads/*` before `refs/remotes/*` before
+    // `refs/sessions/*` by accident rather than by contract. Sort explicitly.
+    branches.sort_by(|left, right| {
+        kind_order(left.kind)
+            .cmp(&kind_order(right.kind))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    Ok(branches)
+}
+
+/// The documented order of the three kinds: heads, upstream, sessions.
+fn kind_order(kind: BranchKind) -> u8 {
+    match kind {
+        BranchKind::Head => 0,
+        BranchKind::Upstream => 1,
+        BranchKind::Session => 2,
+    }
+}
+
+/// When `max_age` says the recorded fetch is recent enough to skip, the
+/// timestamp it was recorded at.
+///
+/// A `last_fetched_at` in the future — a clock that moved backwards — counts
+/// as fresh rather than as arbitrarily old: the alternative is fetching on
+/// every launch until the clock catches up.
+fn fresh_enough(project: &Project, max_age: Option<Duration>) -> Option<DateTime<Utc>> {
+    let max_age = max_age?;
+    let at = project.last_fetched_at?;
+
+    match Utc::now().signed_duration_since(at).to_std() {
+        Ok(age) => (age < max_age).then_some(at),
+        // Negative, so the recorded fetch is ahead of this clock.
+        Err(_) => Some(at),
+    }
 }
 
 /// Delete `repo.git` entirely.
@@ -342,6 +577,27 @@ async fn seed_integration_heads(
     }
 
     Ok(seeded)
+}
+
+/// The one `git fetch --prune origin` in the crate.
+///
+/// [`init_project_repo`]'s first fetch and [`fetch_upstream`]'s recurring one
+/// are the same command by construction rather than by two argv lists that
+/// have to be kept equal (`ARCHITECTURE.md`, "Git model", Project clone: "a
+/// fresh session launch and `POST /projects/{id}/fetch` run the same fetch").
+async fn fetch_origin(
+    repo: &Path,
+    paths: &DataPaths,
+    credential: Option<&GitCredential>,
+) -> std::result::Result<(), GitError> {
+    run_with_credential(
+        GitCommand::new().args(FETCH_ARGS).cwd(repo),
+        credential,
+        paths,
+    )
+    .await?;
+
+    Ok(())
 }
 
 /// Run `command`, with `credential` attached through a temporary config when

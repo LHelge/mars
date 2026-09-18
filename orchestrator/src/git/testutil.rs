@@ -185,6 +185,24 @@ impl TestUpstream {
     }
 }
 
+impl TestUpstream {
+    /// Delete `branch` from the upstream.
+    ///
+    /// What a fetch with `--prune` has to notice: the upstream-tracking ref
+    /// goes, Mars's integration head of the same name stays
+    /// (`ARCHITECTURE.md`, "Git model", Ref ownership).
+    pub async fn delete_branch(&self, branch: &str) {
+        let full = format!("refs/heads/{branch}");
+        run_git(&self.path, &["update-ref", "-d", "--end-of-options", &full]).await;
+    }
+
+    /// Delete `tag` from the upstream, for the same reason.
+    pub async fn delete_tag(&self, tag: &str) {
+        let full = format!("refs/tags/{tag}");
+        run_git(&self.path, &["update-ref", "-d", "--end-of-options", &full]).await;
+    }
+}
+
 /// Does `work` have a commit on HEAD yet?
 ///
 /// A non-zero exit is the answer, so this goes through [`GitCommand::run`]

@@ -14,9 +14,12 @@
 //! (`ARCHITECTURE.md`, "Git model", Credentials).
 //!
 //! [`mirror`] is the first operation built on both: creating a project's bare
-//! repository, configuring it and seeding its integration heads
-//! (`ARCHITECTURE.md`, "Git model", Project clone). [`paths`] is where under
-//! `DATA_DIR` any of it lives (`ARCHITECTURE.md`, "Storage").
+//! repository, configuring it and seeding its integration heads, the recurring
+//! `git fetch --prune origin` that the cron job, `POST /projects/{id}/fetch`
+//! and a fresh launch share, and the branch listing behind
+//! `GET /projects/{id}/branches` (`ARCHITECTURE.md`, "Git model", Project
+//! clone; `SPEC.md`, "Projects"). [`paths`] is where under `DATA_DIR` any of
+//! it lives (`ARCHITECTURE.md`, "Storage").
 
 pub mod command;
 pub mod credentials;
@@ -33,7 +36,10 @@ pub use credentials::{
 };
 pub use error::GitError;
 pub use lock::{ProjectGitGuard, ProjectGitLocks};
-pub use mirror::{InitOutcome, init_project_repo, remove_project_repo};
+pub use mirror::{
+    FetchOutcome, InitOutcome, fetch_project, fetch_upstream, init_project_repo, list_branches,
+    remove_project_repo,
+};
 pub use paths::DataPaths;
 pub use refs::{GitRef, RefEntry, ResolvedRef};
 

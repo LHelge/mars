@@ -197,6 +197,7 @@ async fn create_container(app: &TestApp, fixture: &Fixture, label: &str) -> Cont
         working_dir: "/session/work".to_string(),
         cmd: vec!["claude".to_string()],
         env: Vec::new(),
+        secret_env: Vec::new(),
         binds: Vec::new(),
         network: "mars-sessions".to_string(),
         extra_hosts: Vec::new(),

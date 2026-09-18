@@ -506,7 +506,7 @@ fn every_translator_event_kind_is_covered_by_the_pinned_version() {
 fn no_fixture_carries_a_credential() {
     // The one API-key-shaped string the probe is allowed to have recorded, and
     // the one placeholder a header may carry (rule 3).
-    const ALLOWED_KEY: &str = "sk-ant-probe-not-a-real-key";
+    const ALLOWED_KEY: &str = "sk-ant-fake-probe-0000";
     const ALLOWED_BEARER: &str = "Bearer <token>";
 
     let root = fixtures_root();

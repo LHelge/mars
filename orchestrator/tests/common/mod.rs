@@ -6,6 +6,12 @@
 
 #![allow(dead_code)]
 
+/// The live Claude Code probe's plumbing (`tests/claude_probe.rs`): process
+/// spawn, line reader, fixture recorder and the credential-leak scanner. Plain
+/// `tokio::process` and the crate's public agent API, so it needs no mock and
+/// stays ungated like `common::db`.
+pub mod claude_probe;
+
 pub mod db;
 
 /// The live engine suite's helpers: connecting or skipping on `DOCKER_HOST`,

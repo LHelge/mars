@@ -32,7 +32,7 @@ use super::native::{
 /// The tool that starts a subagent, under both names the CLI has used
 /// (`SPEC.md`, "AgentEvent", the `assistant` rule). Matched exactly and
 /// case-sensitively, as the CLI writes them.
-pub(crate) const SUBAGENT_TOOL_NAMES: [&str; 2] = ["Task", "Agent"];
+pub const SUBAGENT_TOOL_NAMES: [&str; 2] = ["Task", "Agent"];
 
 /// The `event.type` of the only stream event with a rule.
 const STREAM_CONTENT_BLOCK_DELTA: &str = "content_block_delta";

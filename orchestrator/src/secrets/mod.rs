@@ -17,8 +17,8 @@ pub mod service;
 
 pub use crypto::{VALUE_NONCE_LEN, aad, aad_for, open, reseal, rewrap, seal};
 pub use git_credential::{
-    GIT_CREDENTIAL_NAME, GitUseContext, has_project_git_credential, project_git_credential,
-    set_project_git_credential,
+    GIT_CREDENTIAL_NAME, GitUseContext, has_project_git_credential, insert_project_git_credential,
+    project_git_credential, set_project_git_credential,
 };
 pub use keyring::{
     DATA_KEY_LEN, MASTER_KEY_LEN, SecretsError, SecretsKeyring, WRAP_NONCE_LEN, WrappedKey,

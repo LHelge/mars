@@ -1,10 +1,10 @@
 ---
 id: "8ak3d"
 title: "Add GitService: lock-scoped composite operations, session fetch-back rules, actor attribution and git outcome events"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:33:07.410019602Z"
-updated: "2026-09-18T01:37:45.504452947Z"
+updated: "2026-09-18T02:18:21.142514791Z"
 tags:
   - orchestrator
   - git

@@ -65,3 +65,8 @@ Implement the read side of `SessionOwner` in `orchestrator/src/session/owner.rs`
 ## Assumes from other epics
 - "Claude Code agent backend and event translation" delivers `AgentBackend::translate`, `TranslateState`, `AgentEvent` (with `init`, `result`, `prompt` payload types) and the fixture transcripts.
 - "Database schema, models, repositories and test harness" delivers `TestApp::spawn()` with a mock engine and a fixed data directory.
+
+## Correction: `running` on stdin attach, not on `init` (ADR 0032, task 3z8xu)
+The pinned CLI writes nothing, `init` included, until its first stdin line (`ARCHITECTURE.md`, "Launch sequence"; `docs/decisions/0032-run-state-on-stdin-attach.md`). Where the text above disagrees, this section wins.
+- Handling `system`/`init` means `set_cli_session_id` and the `launch_warning` rule only. No `creating`/`parked` to `running` transition, no `registry.mark_running` and no queue drain happen on `init`; those belong to the launcher at stdin attach. An `init` for a session that is not `running` is logged at `warn!` and still stores the id.
+- Tests: drop the `creating -> running` transition and its `state_change` from the `init` fixture assertion; add one that a session already `running` with `cli_session_id` null gets it set by the first `init`, and that a later `init` of the same process changes nothing.

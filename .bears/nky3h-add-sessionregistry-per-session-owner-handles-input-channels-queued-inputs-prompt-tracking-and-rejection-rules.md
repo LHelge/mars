@@ -52,3 +52,7 @@ Implement `SessionRegistry` in `orchestrator/src/session/registry.rs`: the in-me
 ## Assumes from other epics
 - "Repository scaffolding, tooling and CI" and "Database schema, models, repositories and test harness" deliver `AppState` and `TestApp`.
 - "Claude Code agent backend and event translation" consumes `SessionInput` in `AgentBackend::encode_input`; agree on the type location (`session/input.rs`, re-exported from the prelude).
+
+## Correction: `running` on stdin attach, not on `init` (ADR 0032, task 3z8xu)
+The pinned CLI writes nothing, `init` included, until its first stdin line (`ARCHITECTURE.md`, "Launch sequence"; `docs/decisions/0032-run-state-on-stdin-attach.md`). Where the text above disagrees, this section wins.
+- Inputs arriving while `creating` or `parked` are queued and delivered when the session goes `running`, which is when stdin is attached, not after the `init` event. The `mark_running` API is unchanged; only its caller and timing differ.

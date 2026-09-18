@@ -40,8 +40,9 @@ pub use secret::{
     validate_secret_value,
 };
 pub use session::{
-    NewSession, Session, SessionError, SessionResult, SessionState, SessionTitle, StateChange,
-    session_branch, state_change_payload,
+    MAX_DERIVED_TITLE_CHARS, MAX_SESSION_TITLE_CHARS, NewSession, Session, SessionError,
+    SessionKind, SessionResult, SessionState, SessionTitle, StateChange, default_title,
+    session_branch, state_change_payload, validate_launch_prompt, validate_title,
 };
 pub use shared_dir::{
     ContainerPath, MAX_CONTAINER_PATH_BYTES, MAX_SHARED_DIR_NAME_CHARS, MCP_CONFIG_PATH,

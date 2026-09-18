@@ -302,13 +302,14 @@ impl SessionRegistry {
                     // The owner exited between the phase check and the send.
                     // Park the entry so the next input queues too, and tell
                     // the caller to relaunch.
-                    Err(mpsc::error::TrySendError::Closed(command)) => {
-                        let input = match command {
-                            OwnerCommand::Input(input) => input,
-                            // `try_send` hands back exactly what it was given.
-                            OwnerCommand::Stop | OwnerCommand::Shutdown => unreachable!(),
-                        };
+                    Err(mpsc::error::TrySendError::Closed(OwnerCommand::Input(input))) => {
                         park_and_queue(session_id, entry, input, relaunching)
+                    }
+                    // `try_send` hands back exactly what it was given, so this
+                    // arm is never taken; it answers rather than panics under
+                    // the registry's lock.
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        SubmitResult::Rejected("session has no owner".to_string())
                     }
                     // The owner is alive but behind. Queueing here would
                     // reorder this input behind the next one that fits, so

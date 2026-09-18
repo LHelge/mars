@@ -1,16 +1,18 @@
 ---
 id: "7ac22"
 title: Add shared-directory name and container-path validation and SharedDirRepository
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:29:32.014791104Z"
-updated: "2026-09-16T20:51:51.896745441Z"
+updated: "2026-09-18T09:43:22.071799333Z"
 tags:
   - orchestrator
   - projects
 depends_on:
   - z4u4e
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

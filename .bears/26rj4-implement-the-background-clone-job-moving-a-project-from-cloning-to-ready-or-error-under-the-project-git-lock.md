@@ -1,10 +1,10 @@
 ---
 id: "26rj4"
 title: Implement the background clone job moving a project from cloning to ready or error under the project git lock
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:30:42.442708759Z"
-updated: "2026-09-16T20:30:42.442708759Z"
+updated: "2026-09-18T09:44:10.101117407Z"
 tags:
   - orchestrator
   - projects
@@ -13,6 +13,8 @@ depends_on:
   - maq3y
   - "8rwjd"
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

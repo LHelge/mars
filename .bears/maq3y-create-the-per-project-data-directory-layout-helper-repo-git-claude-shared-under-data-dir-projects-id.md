@@ -1,10 +1,10 @@
 ---
 id: maq3y
 title: Create the per-project data-directory layout helper (repo.git, claude/, shared/) under DATA_DIR/projects/<id>/
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:27:57.433928689Z"
-updated: "2026-09-16T20:51:51.874873087Z"
+updated: "2026-09-18T09:36:32.947130532Z"
 tags:
   - orchestrator
   - projects
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - z4u4e
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

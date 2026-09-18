@@ -4,12 +4,13 @@ title: Implement rebase in a temporary clone with conflict reporting and session
 status: open
 priority: P1
 created: "2026-09-16T20:31:20.730476390Z"
-updated: "2026-09-16T20:31:20.730476390Z"
+updated: "2026-09-18T00:50:39.712211670Z"
 tags:
   - orchestrator
   - git
 depends_on:
   - vztkg
+  - "7q4qt"
 parent: z4u4e
 ---
 

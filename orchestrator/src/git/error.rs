@@ -83,6 +83,21 @@ pub enum GitError {
     /// be a base, a source or a merge target.
     #[error("not a commit: {0}")]
     NotACommit(String),
+    /// Upstream advertises no branch at all: an empty repository, so there is
+    /// nothing to seed an integration head from
+    /// (`ARCHITECTURE.md`, "Git model", Project clone).
+    #[error("the remote has no branches")]
+    RemoteHasNoBranches,
+    /// Upstream has branches but names none of them as its default: its `HEAD`
+    /// is detached or points at a branch it does not have. Nothing is wrong
+    /// with the remote; the project has to say which branch to use.
+    ///
+    /// Separate from [`GitError::RemoteHasNoBranches`] because the two are
+    /// different things to do about it — push a branch upstream, or set
+    /// `default_branch` — and the clone job reports them as different reasons
+    /// (`SPEC.md`, "Projects": `status_message`).
+    #[error("the remote does not name a default branch")]
+    NoRemoteDefaultBranch,
     /// The work tree has uncommitted changes, so the operation would have
     /// discarded work: post-rebase checkout reconciliation is the case that
     /// reports this (`ARCHITECTURE.md`, "Git model", Merge, rebase, push).
@@ -106,10 +121,13 @@ impl GitError {
             // `conflicts` array comes from; the code is the same either way.
             GitError::Conflict { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             // States the caller changes and retries: fetch and integrate,
-            // commit or discard the work tree, or store a credential.
+            // commit or discard the work tree, store a credential, or give the
+            // remote a branch to clone and run `retry-clone`.
             GitError::NonFastForward { .. }
             | GitError::DirtyWorkTree
-            | GitError::CredentialUnavailable => StatusCode::CONFLICT,
+            | GitError::CredentialUnavailable
+            | GitError::RemoteHasNoBranches
+            | GitError::NoRemoteDefaultBranch => StatusCode::CONFLICT,
             // The caller named something git cannot use; the message names it.
             GitError::InvalidRef(_) | GitError::UnknownRef(_) | GitError::NotACommit(_) => {
                 StatusCode::BAD_REQUEST
@@ -140,6 +158,8 @@ mod tests {
             ),
             (GitError::DirtyWorkTree, StatusCode::CONFLICT),
             (GitError::CredentialUnavailable, StatusCode::CONFLICT),
+            (GitError::RemoteHasNoBranches, StatusCode::CONFLICT),
+            (GitError::NoRemoteDefaultBranch, StatusCode::CONFLICT),
             (
                 GitError::InvalidRef("origin/main".into()),
                 StatusCode::BAD_REQUEST,

@@ -272,13 +272,44 @@ async fn an_upstream_with_no_branches_has_no_default_to_discover() {
         .await
         .expect_err("an empty upstream cannot be cloned into a ready project");
 
-    // Either spelling is the same fact, and which one depends on whether the
-    // empty upstream advertises a symbolic HEAD at all: nothing resolves to an
-    // integration head, so the clone job reports `status: error`.
+    // An empty upstream advertises neither a symbolic HEAD nor a branch, and
+    // the two are told apart because the clone job reports them differently
+    // (`SPEC.md`, "Projects": `status_message`).
     assert!(
-        matches!(error, GitError::UnknownRef(_)),
-        "expected an unknown ref, got {error:?}"
+        matches!(error, GitError::RemoteHasNoBranches),
+        "expected an empty remote, got {error:?}"
     );
+}
+
+#[tokio::test]
+async fn an_upstream_that_names_no_default_is_not_an_empty_one() {
+    let upstream = TestUpstream::create().await;
+    // `HEAD` now points at a branch upstream does not have, which is what a
+    // deleted default branch leaves behind: the symref is not advertised, but
+    // the branches are.
+    run_git(
+        &upstream.path,
+        &["symbolic-ref", "HEAD", "refs/heads/absent"],
+    )
+    .await;
+
+    let data = DataDir::create().await;
+    let remote = RemoteUrl::local_for_tests(&upstream.path);
+
+    let error = init_project_repo(&data.guard, &data.paths, &remote, None, None)
+        .await
+        .expect_err("there is no default branch to discover");
+
+    assert!(
+        matches!(error, GitError::NoRemoteDefaultBranch),
+        "expected a missing remote default, got {error:?}"
+    );
+
+    // Naming the branch explicitly is exactly what that failure asks for.
+    let outcome = init_project_repo(&data.guard, &data.paths, &remote, Some("main"), None)
+        .await
+        .expect("a named default branch needs no discovery");
+    assert_eq!(outcome.default_branch, "main");
 }
 
 #[tokio::test]

@@ -9,7 +9,10 @@
 //! discovery of upstream's symbolic `HEAD` when the caller supplied no
 //! `default_branch`, the first fetch, one Mars integration head seeded per
 //! fetched upstream branch, and `HEAD` pointed at the default integration
-//! branch.
+//! branch. When discovery finds no symbolic `HEAD`, one further
+//! `git ls-remote --heads origin` separates an empty upstream from one that
+//! merely names no default, because [`crate::projects::clone_job`] reports
+//! those as different reasons.
 //!
 //! One addition to that list, and not a contract change:
 //! `core.logAllRefUpdates true`. A bare repository defaults it off, so
@@ -148,8 +151,11 @@ pub struct InitOutcome {
 ///
 /// # Errors
 ///
-/// - [`GitError::UnknownRef`] `HEAD` — upstream has no symbolic `HEAD` to
-///   discover (a detached or empty upstream) and the caller named no branch.
+/// - [`GitError::RemoteHasNoBranches`] — upstream is empty, so there is
+///   neither a symbolic `HEAD` to discover nor anything to seed a head from.
+/// - [`GitError::NoRemoteDefaultBranch`] — upstream has branches but
+///   advertises no symbolic `HEAD` (it is detached, or points at a branch
+///   upstream does not have) and the caller named no branch.
 /// - [`GitError::UnknownRef`] `<branch>` — the default branch, requested or
 ///   discovered, is not among the fetched upstream branches. The repository is
 ///   left on disk, so `retry-clone` reruns this routine unchanged once the
@@ -510,9 +516,17 @@ async fn set_config(
 /// Ask upstream which branch its `HEAD` points at.
 ///
 /// `git ls-remote --symref origin HEAD`, the one network call the clone job
-/// makes before the fetch. An upstream with a detached `HEAD`, or an empty
-/// one, advertises no symbolic ref; there is nothing to discover then and the
-/// caller has to supply `default_branch` itself.
+/// makes before the fetch. An upstream with a detached `HEAD`, an unborn one,
+/// or an empty repository advertises no symbolic ref; there is nothing to
+/// discover then and the caller has to supply `default_branch` itself.
+///
+/// The failure is one of two, and the clone job reports them as different
+/// reasons, so this asks a second question before giving up: does upstream
+/// have any branch at all? A remote with none is empty
+/// ([`GitError::RemoteHasNoBranches`]); one with branches simply names no
+/// default ([`GitError::NoRemoteDefaultBranch`]). The extra round trip happens
+/// only on the path that is about to fail, so a successful clone still makes
+/// the one documented call.
 async fn discover_default_branch(
     repo: &Path,
     paths: &DataPaths,
@@ -533,7 +547,39 @@ async fn discover_default_branch(
     )
     .await?;
 
-    parse_symref_head(&output.stdout).ok_or_else(|| GitError::UnknownRef("HEAD".to_string()))
+    if let Some(branch) = parse_symref_head(&output.stdout) {
+        return Ok(branch);
+    }
+
+    Err(if remote_has_branches(repo, paths, credential).await? {
+        GitError::NoRemoteDefaultBranch
+    } else {
+        GitError::RemoteHasNoBranches
+    })
+}
+
+/// Does upstream advertise any branch at all?
+///
+/// `git ls-remote --heads origin`, which prints one line per `refs/heads/*`
+/// upstream has and nothing at all for an empty repository — it exits 0 either
+/// way, so the output is the answer. Tags are deliberately not counted: a
+/// remote with tags and no branches has nothing an integration head can be
+/// seeded from (`ARCHITECTURE.md`, "Git model", Project clone).
+async fn remote_has_branches(
+    repo: &Path,
+    paths: &DataPaths,
+    credential: Option<&GitCredential>,
+) -> std::result::Result<bool, GitError> {
+    let output = run_with_credential(
+        GitCommand::new()
+            .args(["ls-remote", "--heads", "--end-of-options", "origin"])
+            .cwd(repo),
+        credential,
+        paths,
+    )
+    .await?;
+
+    Ok(!output.stdout.trim().is_empty())
 }
 
 /// The branch named by the `ref: refs/heads/<name>\tHEAD` line of

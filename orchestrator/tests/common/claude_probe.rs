@@ -23,6 +23,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use mars_orchestrator::agent::claude::CLAUDE_CLI_VERSION;
@@ -129,6 +130,17 @@ impl Probe {
     pub fn from_env() -> Self {
         let credential = credential_from_env();
         let home = std::env::var("HOME").expect("HOME must be set");
+
+        // Once per process, before any scenario can record: the scenarios run
+        // concurrently and each creates the version directory when it records,
+        // so a per-scenario check would trip over a sibling's fresh directory.
+        static RECORD_GUARD: OnceLock<Result<(), String>> = OnceLock::new();
+        if let Err(message) = RECORD_GUARD.get_or_init(|| {
+            let recorder = Recorder::from_env();
+            guard_version_dir(&recorder.root, CLAUDE_CLI_VERSION, recorder.enabled)
+        }) {
+            panic!("{message}");
+        }
 
         Self {
             bin: std::env::var(BIN_VAR).unwrap_or_else(|_| DEFAULT_BIN.to_string()),

@@ -14,6 +14,11 @@ pub mod db;
 /// public engine API, so it needs no mock and stays ungated like `common::db`.
 pub mod engine;
 
+/// Bare upstream repositories a lifecycle test can also remove and recreate.
+/// Plain `std::process::Command` and the `git` binary, so it needs no mock and
+/// stays ungated like `common::db`.
+pub mod git;
+
 /// Locks, counts and timings for the concurrency suites. Plain SQL and the
 /// crate's advisory-lock key, so it needs no mock and stays ungated.
 pub mod races;

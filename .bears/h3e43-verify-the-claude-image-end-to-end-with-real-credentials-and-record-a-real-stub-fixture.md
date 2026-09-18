@@ -1,10 +1,10 @@
 ---
 id: h3e43
 title: Verify the claude image end to end with real credentials and record a real stub fixture
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:30:37.335119672Z"
-updated: "2026-09-16T20:30:37.335119672Z"
+updated: "2026-09-18T08:02:36.756589099Z"
 tags:
   - images
   - agent
@@ -13,6 +13,7 @@ depends_on:
   - "64jkc"
   - t2ecg
 parent: deex5
+attempts: 1
 ---
 
 ## Summary

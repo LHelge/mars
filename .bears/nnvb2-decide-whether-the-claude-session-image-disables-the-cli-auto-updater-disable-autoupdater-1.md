@@ -1,10 +1,10 @@
 ---
 id: nnvb2
 title: Decide whether the claude session image disables the CLI auto-updater (DISABLE_AUTOUPDATER=1)
-status: open
+status: done
 priority: P2
 created: "2026-09-17T22:23:21.940740573Z"
-updated: "2026-09-17T22:23:21.940740573Z"
+updated: "2026-09-18T08:02:36.735153977Z"
 tags:
   - images
   - agent

@@ -1,16 +1,18 @@
 ---
 id: "8rwjd"
 title: Add project input validation and ProjectRepository domain queries (status transitions, updates, live-session count, has_credential)
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:28:30.815282444Z"
-updated: "2026-09-16T20:51:51.836811748Z"
+updated: "2026-09-18T09:49:26.921653338Z"
 tags:
   - orchestrator
   - projects
 depends_on:
   - z4u4e
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: "5ywhm"
 title: "Implement the project-creation transaction: insert project, seed default task states, default profile serving ready, and the GIT_CREDENTIAL secret"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:30:05.449645875Z"
-updated: "2026-09-16T20:30:05.449645875Z"
+updated: "2026-09-18T09:49:52.853116818Z"
 tags:
   - orchestrator
   - projects
@@ -14,6 +14,8 @@ depends_on:
   - "8rwjd"
   - z4g29
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

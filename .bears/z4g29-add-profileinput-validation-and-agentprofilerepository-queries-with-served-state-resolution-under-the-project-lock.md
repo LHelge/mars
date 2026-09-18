@@ -1,10 +1,10 @@
 ---
 id: z4g29
 title: Add ProfileInput validation and AgentProfileRepository queries with served-state resolution under the project lock
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:29:07.295569536Z"
-updated: "2026-09-16T20:51:51.854554904Z"
+updated: "2026-09-18T09:56:18.014288036Z"
 tags:
   - orchestrator
   - projects
@@ -12,6 +12,8 @@ tags:
 depends_on:
   - z4u4e
 parent: pkaee
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

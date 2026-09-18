@@ -926,7 +926,8 @@ async fn a_profile_survives_an_insert_find_list_update_delete_round_trip() {
             .is_none()
     );
 
-    // An ephemeral profile defaults the other way, and listing is by name.
+    // An ephemeral profile defaults the other way, and listing is oldest
+    // first.
     // `new` already resolved the value from the conversational default, so
     // changing the kind means asking for the default again.
     let mut ephemeral = new_profile(project.id, "implementer");

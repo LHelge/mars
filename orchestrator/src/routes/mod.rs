@@ -13,6 +13,7 @@ pub mod cookies;
 pub mod extractors;
 pub mod git;
 pub mod health;
+pub mod profiles;
 pub mod projects;
 pub mod secrets;
 pub mod throttle;
@@ -34,7 +35,12 @@ pub fn routes() -> Router<AppState> {
         // One `nest` per prefix — axum panics on two at the same path — so the
         // git routes, which carry their own `{pid}/git/…` paths, are merged
         // into the projects router rather than nested beside it.
-        .nest("/projects", projects::routes().merge(git::routes()))
+        .nest(
+            "/projects",
+            projects::routes()
+                .merge(git::routes())
+                .merge(profiles::routes()),
+        )
         .nest("/secrets", secrets::routes())
         .nest("/users", users::routes());
 

@@ -166,8 +166,7 @@ mod tests {
     #[test]
     fn an_input_is_encoded_as_its_own_json_line() {
         let backend = MockAgentBackend::new();
-        let input = SessionInput::Answer {
-            reply_to: 7,
+        let input = SessionInput::Message {
             text: "yes".to_string(),
         };
 

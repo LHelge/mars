@@ -281,11 +281,10 @@ Client to server:
 
 ```ts
 type SessionInput =
-  | { kind: "message"; text: string }
-  | { kind: "answer"; reply_to: number; text: string };   // reply_to = seq of the prompt event
+  | { kind: "message"; text: string };   // the only kind: the agent never asks the host a question
 ```
 
-`client_id` is a client-generated string echoed back so optimistic UI can reconcile. A `message` is accepted for a conversational session in `creating`, `running` or `parked`; ephemeral sessions reject all additional input, matching the REST contract. An `answer` whose `reply_to` prompt has already been consumed is rejected. The orchestrator sends WebSocket pings every 30 seconds and closes after two missed pongs.
+`message` is the only kind, and an unknown one is refused (400 over REST, `input_rejected` over the socket). The CLI is launched with `--permission-mode bypassPermissions --permission-prompts none` and, as recorded against the pinned version, never waits on stdin for an answer, so there is no `answer` input and no `prompt` event to answer (ADR 0033; `ARCHITECTURE.md`, "Claude Code invocation"). `client_id` is a client-generated string echoed back so optimistic UI can reconcile. A `message` is accepted for a conversational session in `creating`, `running` or `parked`; ephemeral sessions reject all additional input, matching the REST contract, and a refused input is answered with `input_rejected` carrying the reason. The orchestrator sends WebSocket pings every 30 seconds and closes after two missed pongs.
 
 **Known v1 restart limitation (ADR 0020).** `input_accepted` and HTTP 202 from `/sessions/{id}/input` acknowledge acceptance by the orchestrator, not guaranteed delivery to or execution by the CLI. Input queues are in memory; a restart can lose queued messages or leave delivery uncertain even when a `user_message` is in history. `client_id` is not a durable idempotency key. Reconnecting replays output events but does not automatically resend inputs. There is no new delivery-status UI in v1; users may inspect and manually resend, accepting that this can repeat work.
 
@@ -313,14 +312,13 @@ interface AgentEventBase {
 
 type AgentEvent = AgentEventBase & (
   | { kind: "init";               cli_session_id: string; model?: string; tools: string[]; mcp_servers: {name: string; status: string}[]; resumed: boolean }
-  | { kind: "user_message";       text: string; user_id: string | null; client_id?: string; reply_to?: number }
+  | { kind: "user_message";       text: string; user_id: string | null; client_id?: string }
   | { kind: "text_delta";         text: string }                                  // partial messages only
   | { kind: "text";               text: string }                                  // complete assistant text block
   | { kind: "thinking";           text: string; redacted: boolean }
   | { kind: "tool_call";          tool_use_id: string; name: string; input: unknown }
   | { kind: "tool_result";        tool_use_id: string; content: string | unknown; is_error: boolean; truncated: boolean }
   | { kind: "permission_denied";  tool_use_id?: string; name: string; reason: string }
-  | { kind: "prompt";             prompt_id: string; text: string; options?: string[] }   // needs an "answer" input
   | { kind: "subagent_start";     tool_use_id: string; description: string; agent_type?: string }
   | { kind: "subagent_end";       tool_use_id: string; is_error: boolean }
   | { kind: "result";             subtype: string; terminal_reason?: string; is_error: boolean; num_turns: number; duration_ms: number; cost_usd?: number; usage?: unknown; permission_denials: unknown[] }
@@ -352,7 +350,7 @@ Optional fields are omitted rather than null: `commit`, `fast_forward` and `comp
 
 Translation rules for the Claude backend, from `stream-json` lines. Every rule below is measured against the native shapes recorded from the pinned CLI version (`images/claude/VERIFY.md`, "Observed on 2.1.274"; the recording itself is `images/stub/fixtures/default.jsonl`), and a line the translator drops is still in the transcript file on the session volume.
 
-- `system`/`init` → `init`, **once per process**. The CLI writes an `init` line at the start of every turn, all carrying the one `session_id` of the process; under `--input-format stream-json` even the first of them arrives only after the process has read a stdin line, so the event follows the session's first message rather than its launch (`ARCHITECTURE.md`, "Launch sequence"). The first line becomes the event, and each later line that repeats that `session_id` only refreshes the translator's state and produces nothing. A line reporting a different `session_id` is a different conversation and produces a new `init`. `session_id` is stored as `cli_session_id`; `resumed` is true when the launch used `--resume` (no native field reports it). Each `mcp_servers` entry contributes its `name` and its `status` verbatim; the native entry's `source` (where the CLI found the server, `dynamic` for one passed with `--mcp-config`) is not forwarded. An unreachable server is reported with `status: "failed"`, which is one of the statuses the launcher's `launch_warning` covers (`ARCHITECTURE.md`, "MCP design").
+- `system`/`init` → `init`, **once per process**. The CLI writes an `init` line at the start of every turn, all carrying the one `session_id` of the process; under `--input-format stream-json` even the first of them arrives only after the process has read a stdin line, so the event follows the session's first message rather than its launch (`ARCHITECTURE.md`, "Launch sequence"). The first line becomes the event, and each later line that repeats that `session_id` only refreshes the translator's state and produces nothing. A line reporting a different `session_id` is a different conversation and produces a new `init`. `session_id` is stored as `cli_session_id`; `resumed` is true when the launch used `--resume`, which no native field reports — a resumed launch's `init` carries the same field set and repeats the resumed `session_id` (`ARCHITECTURE.md`, "Claude Code invocation"). `model` and `tools` are both present on every recorded `init` of the pinned version; `model` stays optional in the schema so a backend that omits it needs no new kind, `tools` does not. Each `mcp_servers` entry contributes its `name` and its `status` verbatim; the native entry's `source` (where the CLI found the server, `dynamic` for one passed with `--mcp-config`) is not forwarded. An unreachable server is reported with `status: "failed"`, which is one of the statuses the launcher's `launch_warning` covers (`ARCHITECTURE.md`, "MCP design").
 - `system`/`permission_denied` → `permission_denied`, taking `name` from `tool_name`, `tool_use_id` from `tool_use_id` and `reason` from `message`. The line carries no `decision_reason`, and `decision_reason_type` is not forwarded. A `tool_result` with `is_error: true` follows and is translated as any other tool result.
 - `system` subtypes that report the CLI's own progress — `status`, `thinking_tokens`, `api_retry`, `task_started`, `task_progress`, `task_updated`, `task_notification`, `vcs_state_changed` — produce no event: the `task_*` run is what `subagent_start`, the subagent's own events and `subagent_end` already describe, and the rest is per-request telemetry. An `api_retry` line still feeds the authentication rule below. Any other `system` subtype → `raw`.
 - `rate_limit_event` (a top-level type) produces no event: it reports the account's rate-limit windows and utilisation, which belongs to the credential rather than to this session's transcript. Like every native line it is never logged above `debug` and never with its fields.
@@ -511,7 +509,6 @@ interface SessionState {
   messages: Record<string, Message>;       // id -> folded message
   pendingTools: Record<string, string>;    // tool_use_id -> message id awaiting a result
   subagents: Record<string, string[]>;     // parent_tool_use_id -> message ids nested under it
-  pendingPrompt: { seq: number; prompt_id: string } | null;
 }
 
 type Message =
@@ -539,7 +536,7 @@ Apply search locally to the complete project task snapshot already loaded by the
 
 **Hand-off controls.** Task details show the current source session/branch, pinned commit, comment and review status, plus hand-off history. A code hand-off form selects a source session and exact commit, requires a comment, and submits it with the target state. Review actions forward the current hand-off id with `approved` or `changes_requested` and a comment. Neither action silently selects the reviewer's own branch. "Open in session" and "run once" default to the hand-off commit and visibly disclose any base override. The task's merge action sends `task_id` and `handoff_id` and is enabled only for an approved current hand-off. Approval is labelled with the commit it covers; new revisions appear unreviewed. The diff endpoint accepts `handoff_id` instead of `head` to view the retained commit without syncing a live branch.
 
-**Composer.** A text area with submit on Enter (Shift+Enter for newline), disabled when the session is `done`/`failed` and absent for ephemeral sessions. While a turn is in progress the button reads "Interject". A stop button sends `stop`. When a `prompt` event is pending, the composer switches to answer mode and sends an `answer` with `reply_to`.
+**Composer.** A text area with submit on Enter (Shift+Enter for newline), disabled when the session is `done`/`failed` and absent for ephemeral sessions. While a turn is in progress the button reads "Interject". A stop button sends `stop`. There is no answer mode: the agent never asks the host a question (ADR 0033), so the composer only ever sends a `message`, and one sent during a turn is queued by the CLI as the next turn rather than interrupting the current one (`ARCHITECTURE.md`, "Input encoding").
 
 ## Non-goals for v1
 

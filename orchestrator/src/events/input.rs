@@ -15,25 +15,23 @@ use crate::prelude::*;
 /// One input from a client.
 ///
 /// Tagged on `kind`, exactly as the TypeScript union: an unknown `kind` fails
-/// to deserialise and the caller answers 400.
+/// to deserialise and the caller answers 400. `message` is the only kind, and
+/// the enum stays an enum for that reason — a second kind is a variant, not a
+/// change of shape on the wire. There is deliberately no `answer`: the CLI
+/// never asks the host a question under the permission flags Mars launches it
+/// with, as the live probe recorded against the pinned version (ADR 0033).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionInput {
     /// A message for the agent.
     Message { text: String },
-    /// An answer to a `prompt` event.
-    Answer {
-        /// The `seq` of the prompt event being answered.
-        reply_to: i64,
-        text: String,
-    },
 }
 
 impl SessionInput {
     /// The text the user typed, whichever kind this is.
     pub fn text(&self) -> &str {
         match self {
-            Self::Message { text } | Self::Answer { text, .. } => text,
+            Self::Message { text } => text,
         }
     }
 }
@@ -62,27 +60,19 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_round_trips() {
-        let input: SessionInput =
-            serde_json::from_str(r#"{"kind":"answer","reply_to":7,"text":"yes"}"#).unwrap();
-        assert_eq!(
-            input,
-            SessionInput::Answer {
-                reply_to: 7,
-                text: "yes".to_string(),
-            },
-        );
-        assert_eq!(
-            serde_json::to_value(&input).unwrap(),
-            json!({ "kind": "answer", "reply_to": 7, "text": "yes" }),
-        );
-        assert_eq!(input.text(), "yes");
-    }
-
-    #[test]
     fn an_unknown_kind_is_rejected() {
         assert!(serde_json::from_str::<SessionInput>(r#"{"kind":"shout","text":"hi"}"#).is_err());
         assert!(serde_json::from_str::<SessionInput>(r#"{"text":"hi"}"#).is_err());
-        assert!(serde_json::from_str::<SessionInput>(r#"{"kind":"answer","text":"yes"}"#).is_err());
+    }
+
+    /// `answer` was a kind until the probe showed nothing can ask (ADR 0033).
+    /// It must now fail like any other unknown kind rather than being accepted
+    /// and silently treated as a message.
+    #[test]
+    fn an_answer_is_no_longer_a_kind() {
+        assert!(
+            serde_json::from_str::<SessionInput>(r#"{"kind":"answer","reply_to":7,"text":"yes"}"#)
+                .is_err()
+        );
     }
 }

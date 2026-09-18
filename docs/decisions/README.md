@@ -38,3 +38,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0030](0030-record-tracker-changes-not-reads.md) | Record tracker changes, not read-only tool calls | accepted |
 | [0031](0031-local-task-board-search.md) | Filter the task board locally by title or number | accepted |
 | [0032](0032-run-state-on-stdin-attach.md) | A session is `running` when stdin is attached, not when `init` arrives | accepted |
+| [0033](0033-no-interactive-prompts-in-v1.md) | No interactive prompts: the agent never asks the host a question | accepted |

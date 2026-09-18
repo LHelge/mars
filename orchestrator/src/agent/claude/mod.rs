@@ -75,12 +75,32 @@ mod tests {
     use super::super::{LaunchMode, TranslateConfig};
     use super::*;
 
+    /// The pin is one fact in three places: this constant, the Dockerfile's
+    /// `ARG CLAUDE_CODE_VERSION` and the image tag built from it
+    /// (`ARCHITECTURE.md`, "Session image"). This test is what keeps them from
+    /// drifting, so it reads the Dockerfile rather than a copy of it and names
+    /// both versions when they differ.
     #[test]
     fn the_pinned_version_matches_the_image() {
-        let dockerfile = include_str!("../../../../images/claude/Dockerfile");
-        assert!(
-            dockerfile.contains(&format!("ARG CLAUDE_CODE_VERSION={CLAUDE_CLI_VERSION}")),
-            "the adapter's pin and the image's pin have drifted apart",
+        const PIN: &str = "ARG CLAUDE_CODE_VERSION=";
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../images/claude/Dockerfile");
+        let dockerfile = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("{path} could not be read: {error}"));
+
+        let pinned = dockerfile
+            .lines()
+            .find_map(|line| line.strip_prefix(PIN))
+            .unwrap_or_else(|| {
+                panic!("{path} has no `{PIN}<x.y.z>` line; the image's pin must stay greppable")
+            })
+            .trim();
+
+        assert_eq!(
+            pinned, CLAUDE_CLI_VERSION,
+            "the pins have drifted apart: the image pins {pinned}, the adapter pins \
+             {CLAUDE_CLI_VERSION}; bump both, retag the image and add fixtures under \
+             tests/fixtures/claude/{pinned}/",
         );
     }
 

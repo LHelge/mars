@@ -1,0 +1,26 @@
+{
+  "events": [
+    {
+      "kind": "thinking",
+      "message_id": "msg_synthetic_thinking",
+      "redacted": false,
+      "text": "The migration has to run before the backfill."
+    },
+    {
+      "kind": "thinking",
+      "message_id": "msg_synthetic_thinking",
+      "redacted": true,
+      "text": ""
+    },
+    {
+      "kind": "text",
+      "message_id": "msg_synthetic_thinking",
+      "text": "Run the migration first."
+    }
+  ],
+  "state": {
+    "credential": null,
+    "partial_messages": false,
+    "resumed": false
+  }
+}

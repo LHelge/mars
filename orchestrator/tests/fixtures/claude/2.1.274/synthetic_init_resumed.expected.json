@@ -1,0 +1,36 @@
+{
+  "events": [
+    {
+      "cli_session_id": "11111111-1111-4111-8111-111111111111",
+      "kind": "init",
+      "mcp_servers": [
+        {
+          "name": "mars-orchestrator",
+          "status": "connected"
+        }
+      ],
+      "model": "claude-opus-4-6-20260514",
+      "resumed": true,
+      "tools": [
+        "Task",
+        "Bash",
+        "Read"
+      ]
+    },
+    {
+      "cli_session_id": "22222222-2222-4222-8222-222222222222",
+      "kind": "init",
+      "mcp_servers": [],
+      "model": "claude-opus-4-6-20260514",
+      "resumed": true,
+      "tools": [
+        "Task"
+      ]
+    }
+  ],
+  "state": {
+    "credential": null,
+    "partial_messages": false,
+    "resumed": true
+  }
+}

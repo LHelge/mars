@@ -2,17 +2,19 @@
 //! "AgentEvent", Translation rules).
 //!
 //! [`translate_line`] is the whole dispatcher: it parses the line as JSON,
-//! branches on the native `type`, and returns zero or more [`AgentEvent`]s. The
-//! rules that do not need assistant content live here in full — `system`/`init`,
-//! `system`/`permission_denied`, `result` with its cost, usage and denial list,
-//! and the fatal authentication `error`. The `assistant`, `user` and
-//! `stream_event` branches are named but still answer `raw`; their tasks fill
-//! them in.
+//! branches on the native `type`, and returns zero or more [`AgentEvent`]s:
+//! `system`/`init`, `system`/`permission_denied`, `result` with its cost, usage
+//! and denial list, the fatal authentication `error`, the `assistant` message's
+//! content blocks and the `stream_event` text deltas. The `user` branch is named
+//! but still answers `raw`; its task fills it in.
 //!
-//! Two invariants hold for every branch. Nothing is ever dropped: a line with no
-//! rule, a line that is not JSON and a line whose shape does not parse all
-//! become a `raw` event carrying what arrived. And nothing ever panics on
-//! native input — every field is optional, every extraction falls back.
+//! Two invariants hold for every branch. Nothing is dropped except where a rule
+//! says so: a line with no rule, a line that is not JSON and a line whose shape
+//! does not parse all become a `raw` event carrying what arrived, and the one
+//! deliberate exception is the `stream_event` branch, where everything but a
+//! text delta is dropped because the complete block follows in the `assistant`
+//! message. And nothing ever panics on native input — every field is optional,
+//! every extraction falls back.
 
 use serde_json::{Map, Value};
 
@@ -21,7 +23,21 @@ use crate::events::{AgentEvent, AgentEventBody, McpServerStatus};
 use crate::models::AgentBackend as Backend;
 use crate::prelude::*;
 
-use super::native::{NativePermissionDenied, NativeResult, NativeSystemInit};
+use super::native::{
+    NativeAssistant, NativeContent, NativeContentBlock, NativePermissionDenied, NativeResult,
+    NativeStreamEvent, NativeSystemInit,
+};
+
+/// The tool that starts a subagent, under both names the CLI has used
+/// (`SPEC.md`, "AgentEvent", the `assistant` rule). Matched exactly and
+/// case-sensitively, as the CLI writes them.
+pub(crate) const SUBAGENT_TOOL_NAMES: [&str; 2] = ["Task", "Agent"];
+
+/// The `event.type` of the only stream event with a rule.
+const STREAM_CONTENT_BLOCK_DELTA: &str = "content_block_delta";
+
+/// The `event.delta.type` of the only delta with a rule.
+const STREAM_TEXT_DELTA: &str = "text_delta";
 
 /// The tool name a denial falls back to when the native line names none.
 const UNKNOWN_TOOL: &str = "unknown";
@@ -102,9 +118,11 @@ pub(crate) fn translate_line(line: &str, state: &mut TranslateState) -> Vec<Agen
     let events = match object.get("type").and_then(Value::as_str) {
         Some("system") => translate_system(&native, object, state),
         Some("result") => translate_result(&native, state),
-        // Filled in by the assistant, user and partial-message tasks. Until
-        // then the lines are kept rather than dropped.
-        Some("assistant") | Some("user") | Some("stream_event") => vec![raw(native.clone())],
+        Some("assistant") => translate_assistant(&native, state),
+        Some("stream_event") => translate_stream_event(&native),
+        // Filled in by the user task. Until then the lines are kept rather
+        // than dropped.
+        Some("user") => vec![raw(native.clone())],
         _ => vec![raw(native.clone())],
     };
 
@@ -236,6 +254,147 @@ fn translate_result(native: &Value, state: &mut TranslateState) -> Vec<AgentEven
         events.extend(authentication_error(native, state));
     }
     events
+}
+
+/// `assistant`: one event per content block, in block order (`SPEC.md`,
+/// "AgentEvent", the `assistant` rule).
+///
+/// Every event carries the native `message.id` as `message_id`; the top-level
+/// `parent_tool_use_id` is copied on by the dispatcher, so a message produced
+/// inside a subagent is translated exactly like one at the top level.
+fn translate_assistant(native: &Value, state: &mut TranslateState) -> Vec<AgentEvent> {
+    let Ok(assistant) = serde_json::from_value::<NativeAssistant>(native.clone()) else {
+        warn!(kind = "assistant", "an assistant line did not parse");
+        return vec![raw(native.clone())];
+    };
+
+    let Some(message) = assistant.message else {
+        warn!(kind = "assistant", "an assistant line carried no message");
+        return vec![raw(native.clone())];
+    };
+
+    // Absent, `null` and `[]` all mean the message said nothing, and a message
+    // that said nothing produces nothing.
+    let events = match message.content {
+        None => Vec::new(),
+        Some(NativeContent::Text(text)) => vec![AgentEventBody::Text { text }.into()],
+        Some(NativeContent::Blocks(blocks)) => blocks
+            .into_iter()
+            .flat_map(|block| translate_content_block(block, state))
+            .collect(),
+    };
+
+    match message.id {
+        Some(id) => events
+            .into_iter()
+            .map(|event| event.with_message_id(id.clone()))
+            .collect(),
+        None => events,
+    }
+}
+
+/// One content block into the one or two events it produces.
+fn translate_content_block(
+    block: NativeContentBlock,
+    state: &mut TranslateState,
+) -> Vec<AgentEvent> {
+    match block {
+        // Empty text is still an event: what to render is the frontend's call.
+        NativeContentBlock::Text(text) => vec![AgentEventBody::Text { text: text.text }.into()],
+        NativeContentBlock::Thinking(thinking) => vec![
+            AgentEventBody::Thinking {
+                text: thinking.thinking,
+                redacted: false,
+            }
+            .into(),
+        ],
+        NativeContentBlock::RedactedThinking => vec![
+            AgentEventBody::Thinking {
+                text: String::new(),
+                redacted: true,
+            }
+            .into(),
+        ],
+        NativeContentBlock::ToolUse(tool_use) => {
+            let subagent = SUBAGENT_TOOL_NAMES.contains(&tool_use.name.as_str());
+            let mut events = vec![
+                AgentEventBody::ToolCall {
+                    tool_use_id: tool_use.id.clone(),
+                    name: tool_use.name,
+                    // Untouched, with no redaction (ADR 0027).
+                    input: tool_use.input.clone(),
+                }
+                .into(),
+            ];
+
+            if subagent {
+                state.open_subagents.insert(tool_use.id.clone(), ());
+                events.push(
+                    AgentEventBody::SubagentStart {
+                        tool_use_id: tool_use.id,
+                        description: tool_use
+                            .input
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        agent_type: tool_use
+                            .input
+                            .get("subagent_type")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    }
+                    .into(),
+                );
+            }
+
+            events
+        }
+        // A block kind with no rule, or a `tool_use` without the id the
+        // frontend needs to pair it with its result: kept, never dropped.
+        NativeContentBlock::Other(value) => {
+            if NativeContentBlock::is_malformed_tool_use(&value) {
+                warn!(block_type = "tool_use", "a tool_use block carried no id");
+            }
+            vec![raw(value)]
+        }
+    }
+}
+
+/// `stream_event`: text deltas only (`SPEC.md`, "AgentEvent", the
+/// `stream_event` rule).
+///
+/// The one branch that drops a line on purpose. `message_start`,
+/// `content_block_start`, `thinking_delta`, `signature_delta`,
+/// `input_json_delta`, `message_delta`, `message_stop` and anything a later CLI
+/// adds produce nothing, because the complete block follows in the `assistant`
+/// message and a `raw` per token would double the rows for no reader.
+fn translate_stream_event(native: &Value) -> Vec<AgentEvent> {
+    let Ok(stream) = serde_json::from_value::<NativeStreamEvent>(native.clone()) else {
+        warn!(kind = "stream_event", "a stream_event line did not parse");
+        return vec![raw(native.clone())];
+    };
+
+    let Some(event) = stream.event else {
+        return Vec::new();
+    };
+    if event.kind.as_deref() != Some(STREAM_CONTENT_BLOCK_DELTA) {
+        return Vec::new();
+    }
+
+    let Some(delta) = event
+        .delta
+        .filter(|d| d.kind.as_deref() == Some(STREAM_TEXT_DELTA))
+    else {
+        return Vec::new();
+    };
+
+    vec![
+        AgentEventBody::TextDelta {
+            text: delta.text.unwrap_or_default(),
+        }
+        .into(),
+    ]
 }
 
 /// One `permission_denied` event, recording its `tool_use_id` as seen.
@@ -786,6 +945,347 @@ mod tests {
                 Some("toolu_01FIXTURE0001"),
             );
         }
+    }
+
+    #[test]
+    fn an_assistant_message_yields_one_event_per_block_in_order() {
+        let mut state = state();
+        let line = json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg_01FIXTURE0001",
+                "role": "assistant",
+                "content": [
+                    { "type": "thinking", "thinking": "weighing it", "signature": "fixture-sig" },
+                    { "type": "text", "text": "" },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01FIXTURE0001",
+                        "name": "Read",
+                        "input": { "file_path": "/session/work/README.md" },
+                    },
+                ],
+            },
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(
+            events.iter().map(AgentEvent::kind).collect::<Vec<_>>(),
+            vec!["thinking", "text", "tool_call"],
+        );
+        assert_eq!(
+            body(&events[0]),
+            &AgentEventBody::Thinking {
+                text: "weighing it".to_string(),
+                redacted: false,
+            },
+        );
+        assert_eq!(
+            body(&events[1]),
+            &AgentEventBody::Text {
+                text: String::new(),
+            },
+        );
+        assert_eq!(
+            body(&events[2]),
+            &AgentEventBody::ToolCall {
+                tool_use_id: "toolu_01FIXTURE0001".to_string(),
+                name: "Read".to_string(),
+                input: json!({ "file_path": "/session/work/README.md" }),
+            },
+        );
+        for event in &events {
+            assert_eq!(event.message_id.as_deref(), Some("msg_01FIXTURE0001"));
+        }
+        assert!(state.open_subagents.is_empty());
+    }
+
+    #[test]
+    fn a_redacted_thinking_block_is_an_empty_redacted_thinking() {
+        let mut state = state();
+        let line = json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "redacted_thinking", "data": "opaque" }] },
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(
+            events,
+            vec![
+                AgentEventBody::Thinking {
+                    text: String::new(),
+                    redacted: true,
+                }
+                .into()
+            ],
+        );
+        assert_eq!(events[0].message_id, None);
+    }
+
+    #[test]
+    fn both_subagent_tool_names_also_yield_a_subagent_start() {
+        for name in SUBAGENT_TOOL_NAMES {
+            let mut state = state();
+            let line = json!({
+                "type": "assistant",
+                "message": {
+                    "id": "msg_01FIXTUREAGENT00000000001",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_01FIXTUREagent0000000001",
+                        "name": name,
+                        "input": {
+                            "description": "Count modules",
+                            "prompt": "Count the Rust modules and report the number.",
+                            "subagent_type": "general-purpose",
+                        },
+                    }],
+                },
+            });
+
+            let events = translate_line(&line.to_string(), &mut state);
+            assert_eq!(events.len(), 2, "{name}");
+            assert_eq!(events[0].kind(), "tool_call", "{name}");
+            assert_eq!(
+                body(&events[1]),
+                &AgentEventBody::SubagentStart {
+                    tool_use_id: "toolu_01FIXTUREagent0000000001".to_string(),
+                    description: "Count modules".to_string(),
+                    agent_type: Some("general-purpose".to_string()),
+                },
+                "{name}",
+            );
+            assert_eq!(
+                events[1].message_id.as_deref(),
+                Some("msg_01FIXTUREAGENT00000000001"),
+                "{name}",
+            );
+            assert!(
+                state
+                    .open_subagents
+                    .contains_key("toolu_01FIXTUREagent0000000001"),
+                "{name}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_subagent_call_without_a_description_or_type_falls_back() {
+        let mut state = state();
+        let line = json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_01FIXTUREagent0000000002",
+                    "name": "Task",
+                    "input": { "prompt": "go" },
+                }],
+            },
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(
+            body(&events[1]),
+            &AgentEventBody::SubagentStart {
+                tool_use_id: "toolu_01FIXTUREagent0000000002".to_string(),
+                description: String::new(),
+                agent_type: None,
+            },
+        );
+    }
+
+    #[test]
+    fn an_ordinary_tool_call_does_not_open_a_subagent() {
+        let mut state = state();
+        for name in ["task", "AgentTool", "Bash"] {
+            let line = json!({
+                "type": "assistant",
+                "message": {
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_01FIXTURE0002",
+                        "name": name,
+                        "input": {},
+                    }],
+                },
+            });
+
+            let events = translate_line(&line.to_string(), &mut state);
+            assert_eq!(events.len(), 1, "{name}");
+            assert_eq!(events[0].kind(), "tool_call", "{name}");
+        }
+        assert!(state.open_subagents.is_empty());
+    }
+
+    #[test]
+    fn a_parent_tool_use_id_reaches_every_event_of_an_assistant_message() {
+        let mut state = state();
+        let line = json!({
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_01FIXTUREagent0000000001",
+            "message": {
+                "id": "msg_01FIXTURE0002",
+                "content": [
+                    { "type": "text", "text": "inside" },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01FIXTURE0003",
+                        "name": "Task",
+                        "input": { "description": "nested" },
+                    },
+                ],
+            },
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(events.len(), 3);
+        for event in &events {
+            assert_eq!(
+                event.parent_tool_use_id.as_deref(),
+                Some("toolu_01FIXTUREagent0000000001"),
+            );
+            assert_eq!(event.message_id.as_deref(), Some("msg_01FIXTURE0002"));
+        }
+    }
+
+    #[test]
+    fn an_assistant_content_string_is_one_text() {
+        let mut state = state();
+        let line = json!({
+            "type": "assistant",
+            "message": { "id": "msg_01FIXTURE0004", "content": "just words" },
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::from(AgentEventBody::Text {
+                    text: "just words".to_string(),
+                })
+                .with_message_id("msg_01FIXTURE0004")
+            ],
+        );
+    }
+
+    #[test]
+    fn an_assistant_message_that_says_nothing_yields_nothing() {
+        let mut state = state();
+        for content in [json!([]), json!(null)] {
+            let line = json!({ "type": "assistant", "message": { "content": content } });
+            assert!(translate_line(&line.to_string(), &mut state).is_empty());
+        }
+
+        let line = json!({ "type": "assistant", "message": { "id": "msg_01FIXTURE0005" } });
+        assert!(translate_line(&line.to_string(), &mut state).is_empty());
+    }
+
+    #[test]
+    fn an_assistant_line_without_a_message_is_raw() {
+        let mut state = state();
+        let line = json!({ "type": "assistant", "session_id": "fake-cli-session" });
+        assert_eq!(
+            translate_line(&line.to_string(), &mut state),
+            vec![raw(line)],
+        );
+    }
+
+    #[test]
+    fn an_unknown_block_type_is_raw_and_the_other_blocks_are_not_lost() {
+        let mut state = state();
+        let unknown = json!({ "type": "server_tool_use", "id": "srvtoolu_1" });
+        let line = json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg_01FIXTURE0006",
+                "content": [unknown.clone(), { "type": "text", "text": "after" }],
+            },
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(events.len(), 2);
+        assert_eq!(body(&events[0]), &raw(unknown).body);
+        assert_eq!(events[0].message_id.as_deref(), Some("msg_01FIXTURE0006"));
+        assert_eq!(events[1].kind(), "text");
+    }
+
+    #[test]
+    fn a_tool_use_block_without_an_id_is_raw() {
+        let mut state = state();
+        let block = json!({ "type": "tool_use", "name": "Read", "input": {} });
+        let line = json!({ "type": "assistant", "message": { "content": [block.clone()] } });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(events, vec![raw(block)]);
+    }
+
+    #[test]
+    fn a_text_delta_stream_event_is_a_text_delta() {
+        let mut state = state();
+        let line = json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "text_delta", "text": "This" },
+            },
+            "session_id": "00000000-0000-4000-8000-000000000001",
+            "parent_tool_use_id": "toolu_01FIXTUREagent0000000001",
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(
+            events,
+            vec![
+                AgentEvent::from(AgentEventBody::TextDelta {
+                    text: "This".to_string(),
+                })
+                .in_subagent("toolu_01FIXTUREagent0000000001")
+            ],
+        );
+    }
+
+    #[test]
+    fn every_other_stream_event_is_dropped() {
+        let mut state = state();
+        let events = [
+            json!({ "type": "message_start", "message": { "id": "msg_01FIXTURE0001" } }),
+            json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": { "type": "thinking", "thinking": "", "signature": "fixture-sig" },
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "thinking_delta", "thinking": "" },
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "signature_delta", "signature": "fixture-sig" },
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": { "type": "input_json_delta", "partial_json": "" },
+            }),
+            json!({ "type": "content_block_stop", "index": 0 }),
+            json!({ "type": "message_delta", "delta": { "stop_reason": "tool_use" } }),
+            json!({ "type": "message_stop" }),
+        ];
+
+        for event in events {
+            let line = json!({ "type": "stream_event", "event": event.clone() });
+            assert!(
+                translate_line(&line.to_string(), &mut state).is_empty(),
+                "{event}",
+            );
+        }
+
+        let line = json!({ "type": "stream_event", "session_id": "fake-cli-session" });
+        assert!(translate_line(&line.to_string(), &mut state).is_empty());
     }
 
     #[test]

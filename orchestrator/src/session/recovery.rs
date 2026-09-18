@@ -464,11 +464,15 @@ async fn park(state: &AppState, session: &Session, reason: &str) -> Result<Outco
         .await?;
     tx.commit().await?;
 
-    Ok(if to == SessionState::Failed {
-        Outcome::Failed
-    } else {
-        Outcome::Parked
-    })
+    if to == SessionState::Failed {
+        // A failed session holds nothing any more; release what it claimed
+        // rather than leave it to the stuck-task reaper (`ARCHITECTURE.md`,
+        // "Task tracker").
+        state.session_ended(session.id).await;
+        return Ok(Outcome::Failed);
+    }
+
+    Ok(Outcome::Parked)
 }
 
 /// Remove containers recovery has decided are not a session's any more.

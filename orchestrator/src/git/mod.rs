@@ -36,7 +36,9 @@
 //! obtains the credential and the commit identity for the [`GitActor`] that
 //! asked, runs the primitive and records the outcome as a `git` event on the
 //! sessions that took part (ADR 0007; `ARCHITECTURE.md`, "Git model";
-//! `SPEC.md`, "AgentEvent").
+//! `SPEC.md`, "AgentEvent"). [`HandoffVerifier`] is the one thing it does not
+//! decide for itself: whether a task's hand-off is current and approved, which
+//! "Code hand-offs and review" answers under the lock the task merge holds.
 
 pub mod command;
 pub mod credentials;
@@ -70,7 +72,7 @@ pub use mirror::{
 pub use paths::DataPaths;
 pub use push::{ComparePage, PushOutcome, github_compare_url, push};
 pub use refs::{GitRef, RefEntry, ResolvedRef};
-pub use service::{DiffSelector, GitService};
+pub use service::{ApprovedHandoff, DiffSelector, GitService, HandoffVerifier, NoHandoffs};
 pub use session::{create_work_clone, fetch_back, remove_work_clone, resolve_base, session_branch};
 pub use tempclone::TempClone;
 

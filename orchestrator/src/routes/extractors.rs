@@ -27,6 +27,13 @@
 //! Nothing here takes the user-row mutation lock: "Ordinary request
 //! authorization reads current user state without taking this mutation lock"
 //! (`docs/data-model.md`, "Users and authentication").
+//!
+//! [`Path`] and [`Query`] are here for a different reason: they are axum's own
+//! extractors with [`Error`] as their rejection, so a path segment that is not
+//! a UUID or a query parameter that does not deserialise answers the
+//! documented `{ status, error }` body instead of axum's plain text
+//! (`SPEC.md`, "REST API"). They are shared because otherwise every route
+//! module writes the same wrapper again.
 
 use axum::extract::FromRequestParts;
 use axum::http::HeaderMap;
@@ -145,6 +152,52 @@ impl FromRequestParts<AppState> for AdminUser {
         }
 
         Ok(Self(user))
+    }
+}
+
+/// `axum::extract::Path` with [`Error`] as its rejection, so
+/// `/secrets/not-a-uuid` is a 400 in the documented shape rather than a
+/// plain-text one.
+///
+/// The same wrapper `prelude::error` provides for `Json`; the `From`
+/// conversions both rely on are already there.
+#[derive(Debug, Clone, Copy)]
+pub struct Path<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for Path<T>
+where
+    T: serde::de::DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = Error;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
+        let axum::extract::Path(value) =
+            axum::extract::Path::<T>::from_request_parts(parts, state).await?;
+
+        Ok(Self(value))
+    }
+}
+
+/// `axum::extract::Query` with [`Error`] as its rejection, so a `scope` that
+/// is not one of the three or a `limit` that is not a number answers in the
+/// documented `{ status, error }` shape instead of axum's plain text
+/// (`SPEC.md`, "REST API").
+#[derive(Debug, Clone, Copy)]
+pub struct Query<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for Query<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = Error;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
+        let axum::extract::Query(value) =
+            axum::extract::Query::<T>::from_request_parts(parts, state).await?;
+
+        Ok(Self(value))
     }
 }
 

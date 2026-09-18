@@ -24,9 +24,8 @@
 //! effect on the demoted administrator's next request (ADR 0025).
 
 use axum::Router;
-use axum::extract::{FromRequestParts, State};
+use axum::extract::State;
 use axum::http::StatusCode;
-use axum::http::request::Parts;
 use axum::routing::{get, put};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -35,7 +34,7 @@ use zeroize::Zeroizing;
 
 use crate::models::{SecretMeta, SecretScope, SecretUse as SecretUseRow, SecretUsePurpose, User};
 use crate::prelude::*;
-use crate::routes::CurrentUser;
+use crate::routes::{CurrentUser, Path, Query};
 use crate::secrets::service::{Actor, CreateSecret, PatchSecret, SecretsService};
 
 /// The router nested under `/api/secrets`.
@@ -280,51 +279,6 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(Zeroizing::new(String::deserialize(deserializer)?))
-}
-
-/// `axum::extract::Query` with [`Error`] as its rejection, so a `scope` that
-/// is not one of the three or a `limit` that is not a number answers in the
-/// documented `{ status, error }` shape instead of axum's plain text
-/// (`SPEC.md`, "REST API").
-///
-/// The same wrapper `prelude::error` provides for `Json`, for the two
-/// extractors this module needs; the `From` conversions it relies on are
-/// already there.
-struct Query<T>(T);
-
-impl<T, S> FromRequestParts<S> for Query<T>
-where
-    T: serde::de::DeserializeOwned,
-    S: Send + Sync,
-{
-    type Rejection = Error;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
-        let axum::extract::Query(value) =
-            axum::extract::Query::<T>::from_request_parts(parts, state).await?;
-
-        Ok(Self(value))
-    }
-}
-
-/// `axum::extract::Path` with [`Error`] as its rejection, so
-/// `/secrets/not-a-uuid` is a 400 in the documented shape rather than a
-/// plain-text one.
-struct Path<T>(T);
-
-impl<T, S> FromRequestParts<S> for Path<T>
-where
-    T: serde::de::DeserializeOwned + Send,
-    S: Send + Sync,
-{
-    type Rejection = Error;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
-        let axum::extract::Path(value) =
-            axum::extract::Path::<T>::from_request_parts(parts, state).await?;
-
-        Ok(Self(value))
-    }
 }
 
 #[cfg(test)]

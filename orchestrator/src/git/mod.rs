@@ -67,7 +67,7 @@ pub use integrate::{
 pub use lock::{ProjectGitGuard, ProjectGitLocks};
 pub use mirror::{
     FetchOutcome, InitOutcome, fetch_project, fetch_upstream, init_project_repo, list_branches,
-    remove_project_repo,
+    remove_project_repo, set_default_branch,
 };
 pub use paths::DataPaths;
 pub use push::{ComparePage, PushOutcome, github_compare_url, push};

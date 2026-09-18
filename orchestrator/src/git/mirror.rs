@@ -47,6 +47,11 @@
 //! `projects.last_fetched_at` write. [`list_branches`] is the read side,
 //! `GET /projects/{id}/branches` (`SPEC.md`, "Projects").
 //!
+//! [`set_default_branch`] is the one other write a `ready` project's repository
+//! takes: `PUT /projects/{id}` changing `default_branch` checks that the name
+//! is an integration head and moves the symbolic `HEAD` to it, which is the
+//! same `git symbolic-ref` the initialisation ends with.
+//!
 //! **Locking.** The caller holds the project git lock and passes the guard;
 //! nothing here acquires one (`ARCHITECTURE.md`, "Git model", Serialization).
 //! [`fetch_project`] is the one exception, and it is a composite operation
@@ -201,12 +206,7 @@ pub async fn init_project_repo(
 
     let seeded = seed_integration_heads(&repo, &default_branch).await?;
 
-    GitCommand::new()
-        .args(["symbolic-ref", "--end-of-options", "HEAD"])
-        .arg(format!("{HEADS}{default_branch}"))
-        .cwd(&repo)
-        .run_ok()
-        .await?;
+    point_head_at(&repo, &default_branch).await?;
 
     info!(
         project_id = %project_id,
@@ -219,6 +219,63 @@ pub async fn init_project_repo(
         default_branch,
         seeded,
     })
+}
+
+/// Point the project repository's `HEAD` at the integration head `branch`.
+///
+/// What `PUT /projects/{id}` runs when the caller changes `default_branch` on
+/// a project that is already `ready` (`SPEC.md`, "Projects"): the branch has to
+/// be one of Mars's own integration heads, and the bare repository's symbolic
+/// `HEAD` has to name it, because "`HEAD` points at the default integration
+/// branch" is what [`init_project_repo`] established and what a session clone
+/// reads (`ARCHITECTURE.md`, "Git model", Project clone).
+///
+/// The existence check is deliberately *not* [`refs::resolve`], which falls
+/// back to a tag of the same name for a bare head: a tag is not an integration
+/// head, and `default_branch` may only name one. `for-each-ref` is asked for
+/// the prefix rather than for a `refs/heads/*` glob — the glob form stops at a
+/// `/` and would silently miss `release/2.0` — and the answer is compared for
+/// equality, so a branch whose name merely starts with `branch` does not count
+/// ([`HEADS_PATTERN`]).
+///
+/// The caller holds the project git lock and passes the guard; the repository
+/// is the one that guard covers (`ARCHITECTURE.md`, "Git model",
+/// Serialization). Nothing else about the project is changed: the row is the
+/// caller's to write, after this returns and after the lock is released
+/// (ADR 0021).
+///
+/// # Errors
+///
+/// - [`GitError::UnknownRef`] `<branch>` — no such integration head. The route
+///   turns this into its own 400.
+/// - [`GitError::InvalidRef`] — `branch` is not a name a ref could have.
+/// - [`GitError::Command`] — git refused to move `HEAD`.
+pub async fn set_default_branch(
+    guard: &ProjectGitGuard,
+    paths: &DataPaths,
+    branch: &str,
+) -> std::result::Result<(), GitError> {
+    let project_id = guard.project_id();
+    let repo = paths.project_repo(project_id);
+
+    // Through the ref parser first, so a name that could not be a branch is
+    // refused before it reaches `for-each-ref` or `symbolic-ref`, exactly as
+    // `init_project_repo` refuses a requested default.
+    refs::GitRef::parse(&format!("{HEADS}{branch}"))?;
+
+    if !has_integration_head(&repo, branch).await? {
+        return Err(GitError::UnknownRef(branch.to_string()));
+    }
+
+    point_head_at(&repo, branch).await?;
+
+    info!(
+        project_id = %project_id,
+        git.default_branch = %branch,
+        "project HEAD moved to another integration head"
+    );
+
+    Ok(())
 }
 
 /// Refresh the upstream-tracking refs and tags of one project repository.
@@ -640,6 +697,37 @@ async fn seed_integration_heads(
     }
 
     Ok(seeded)
+}
+
+/// Is `refs/heads/<branch>` one of this repository's integration heads?
+///
+/// The pattern is the fully qualified name rather than a glob, and the answer
+/// is an equality test on what came back: `for-each-ref refs/heads/feature`
+/// also reports `refs/heads/feature/x`, because a pattern without a wildcard
+/// matches literally *or* up to a slash, and "there is a branch below this
+/// name" is not the question.
+async fn has_integration_head(repo: &Path, branch: &str) -> std::result::Result<bool, GitError> {
+    let full_name = format!("{HEADS}{branch}");
+    let entries = refs::list(repo, &[full_name.as_str()]).await?;
+
+    Ok(entries.iter().any(|entry| entry.full_name == full_name))
+}
+
+/// Point `HEAD` at `refs/heads/<branch>`.
+///
+/// The one `git symbolic-ref HEAD` in the crate: the first clone's and a later
+/// `default_branch` change's are the same invocation rather than two argv lists
+/// that have to be kept equal. The branch is not verified here — the two
+/// callers do that, each in the way its own step already requires.
+async fn point_head_at(repo: &Path, branch: &str) -> std::result::Result<(), GitError> {
+    GitCommand::new()
+        .args(["symbolic-ref", "--end-of-options", "HEAD"])
+        .arg(format!("{HEADS}{branch}"))
+        .cwd(repo)
+        .run_ok()
+        .await?;
+
+    Ok(())
 }
 
 /// The one `git fetch --prune origin` in the crate.

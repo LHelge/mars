@@ -91,7 +91,7 @@ At least one administrator must remain. Both deleting an administrator and chang
 
 | Method | Path | Auth | Body → Response |
 | --- | --- | --- | --- |
-| GET | `/projects` | JWT | → `Project[]` |
+| GET | `/projects` | JWT | → `Project[]` ordered by `created_at` |
 | POST | `/projects` | JWT | `{name, remote_url, default_branch?, credential?}` → `Project` (201, `status: cloning`) |
 | GET | `/projects/{id}` | JWT | → `Project` |
 | PUT | `/projects/{id}` | JWT | `{name?, default_branch?, max_attempts?}` → `Project` |
@@ -100,7 +100,7 @@ At least one administrator must remain. Both deleting an administrator and chang
 | POST | `/projects/{id}/fetch` | JWT | → `Project` (runs a mirror fetch now) |
 | GET | `/projects/{id}/branches` | JWT | → `Branch[]` (integration heads, upstream-tracking refs and session refs) |
 
-`Project = { id, name, remote_url, default_branch, status, status_message, last_fetched_at, max_attempts, created_at, has_credential }`. `default_branch` is null while discovery is pending if the caller omitted it; it must resolve to an integration head before the project becomes `ready`. `max_attempts` (1–20, default 3) is how many times a task may be claimed in one state before a release escalates it; see "Tasks". `credential` on create is stored as the project-scoped orchestrator-only secret `GIT_CREDENTIAL` and is never returned. `Branch = { name, kind: "head" | "upstream" | "session", commit, session_id? }`. Integration heads use names such as `main`; upstream-tracking refs use `origin/main`. Fetching refreshes upstream-tracking refs without moving integration heads or session refs. Without a task hand-off, the default session base is the integration head named by `default_branch`; callers may explicitly choose an upstream-tracking ref, tag, session ref or commit id instead.
+`Project = { id, name, remote_url, default_branch, status, status_message, last_fetched_at, max_attempts, created_at, has_credential }`. `default_branch` is null while discovery is pending if the caller omitted it; it must resolve to an integration head before the project becomes `ready`. Changing it with `PUT` on a `ready` project checks the name against the project repository and moves that repository's `HEAD` to it in the same request; a name that is not an integration head of the project is 400. On a `cloning` or `error` project the value is stored as given and the clone job validates it. `max_attempts` (1–20, default 3) is how many times a task may be claimed in one state before a release escalates it; see "Tasks". `credential` on create is stored as the project-scoped orchestrator-only secret `GIT_CREDENTIAL` and is never returned. `Branch = { name, kind: "head" | "upstream" | "session", commit, session_id? }`. Integration heads use names such as `main`; upstream-tracking refs use `origin/main`. Fetching refreshes upstream-tracking refs without moving integration heads or session refs. Without a task hand-off, the default session base is the integration head named by `default_branch`; callers may explicitly choose an upstream-tracking ref, tag, session ref or commit id instead.
 
 ### Shared directories (`/api/projects/{pid}/shared-dirs`)
 

@@ -1,16 +1,17 @@
 ---
 id: eeswv
 title: Translate CLI user messages into tool_result with truncation, subagent_end and echo suppression, and implement encode_input
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:29:00.019662055Z"
-updated: "2026-09-16T20:29:00.019662055Z"
+updated: "2026-09-18T17:19:45.327599926Z"
 tags:
   - orchestrator
   - agent
 depends_on:
   - xnacj
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

@@ -144,6 +144,7 @@ orchestrator/
 │   ├── mcp/                   rmcp server, tool handlers, bearer auth
 │   ├── engine/                ContainerEngine trait + bollard implementation + mock
 │   ├── agent/                 AgentBackend trait, claude/ adapter, event translation
+│   ├── projects/              project layout on /data, clone job, deletion
 │   ├── session/               SessionOwner task, launcher (incl. launch-for-task), idle reaper, recovery
 │   ├── git/                   git binary wrapper, mirror + session clone ops, GitCredentialProvider
 │   ├── secrets/               envelope crypto, resolution, injection

@@ -329,11 +329,11 @@ where
     // Scenarios run in parallel. They used to take a mutex here, because
     // Podman cannot resolve `keep-id` for two containers at once, but that is
     // now the adapter's own guarantee: `BollardEngine::create` holds a
-    // per-connection lock across the create call (`ARCHITECTURE.md`, "Engine
-    // adapter", the `UsernsMode` row; Bears u6zkz). Every scenario in this
-    // suite goes through one `BollardEngine` per test process, so the adapter
-    // covers them; `concurrent_session_creates_all_start` is the scenario that
-    // asserts it.
+    // per-engine-host lock across the create call (`ARCHITECTURE.md`, "Engine
+    // adapter", the `UsernsMode` row; Bears u6zkz). Each scenario connects its
+    // own `BollardEngine`, but the lock is shared per `DOCKER_HOST` within the
+    // process, so the adapter covers them all;
+    // `concurrent_session_creates_all_start` is the scenario that asserts it.
     let cleanup = Arc::new(Cleanup::default());
     let outcome = AssertUnwindSafe(body(Arc::clone(&cleanup)))
         .catch_unwind()

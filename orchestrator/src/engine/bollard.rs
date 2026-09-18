@@ -19,7 +19,7 @@
 //! `ARCHITECTURE.md`, "Engine adapter", and nothing outside it is called.
 //!
 //! Every method here is one engine call plus a mapping, with one exception:
-//! `create` takes a per-connection mutex first, because Podman cannot resolve
+//! `create` takes a per-engine-host mutex first, because Podman cannot resolve
 //! `keep-id` for two containers at once (`ARCHITECTURE.md`, "Engine adapter",
 //! the `UsernsMode` row). Retries, the grace
 //! period between `SIGINT` and `SIGTERM` and the decision of what an exit code
@@ -112,7 +112,7 @@ pub struct BollardEngine {
     /// The engine's own version string, for the startup log and diagnostics.
     version: String,
     /// Held across [`ContainerEngine::create`] and released before anything
-    /// else, so at most one container is being created on this connection at a
+    /// else, so at most one container is being created on this engine host at a
     /// time (`ARCHITECTURE.md`, "Engine adapter", the `UsernsMode` row).
     ///
     /// Podman resolves `keep-id` by calling the non-thread-safe
@@ -654,7 +654,7 @@ impl ContainerEngine for BollardEngine {
         // specification").
         let body = to_bollard(spec, self.kind);
 
-        // One create at a time on this connection, whatever the engine: Podman
+        // One create at a time on this engine host, whatever the engine: Podman
         // cannot resolve `keep-id` for two containers at once (see
         // [`Self::create_lock`]). The guard covers the create call and nothing
         // else — it is dropped when this `match` ends, before the caller's

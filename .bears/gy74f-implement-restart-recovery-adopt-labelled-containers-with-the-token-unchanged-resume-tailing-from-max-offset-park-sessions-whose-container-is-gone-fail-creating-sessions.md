@@ -1,10 +1,10 @@
 ---
 id: gy74f
 title: "Implement restart recovery: adopt labelled containers with the token unchanged, resume tailing from MAX(_offset), park sessions whose container is gone, fail creating sessions"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:33:19.244397462Z"
-updated: "2026-09-18T23:04:44.848098649Z"
+updated: "2026-09-18T23:46:54.095362256Z"
 tags:
   - orchestrator
   - sessions

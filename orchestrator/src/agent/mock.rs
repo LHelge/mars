@@ -82,6 +82,14 @@ impl AgentBackend for MockAgentBackend {
     }
 
     fn encode_input(&self, input: &SessionInput) -> Result<String> {
+        // The trait's contract, so a test driving the mock sees the same
+        // rejection a real adapter gives.
+        if input.text().trim().is_empty() {
+            return Err(Error::BadRequest(
+                "input text must not be empty".to_string(),
+            ));
+        }
+
         let line = serde_json::to_string(input).map_err(|err| {
             error!(error = %err, "the mock backend failed to encode an input");
             Error::Internal("failed to encode the session input".to_string())
@@ -169,6 +177,14 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<SessionInput>(encoded.trim_end()).unwrap(),
             input,
+        );
+
+        assert!(
+            backend
+                .encode_input(&SessionInput::Message {
+                    text: " \n".to_string(),
+                })
+                .is_err(),
         );
     }
 

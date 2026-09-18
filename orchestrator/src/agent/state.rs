@@ -149,6 +149,18 @@ impl TranslateState {
     pub fn was_sent_input(&self, text: &str) -> bool {
         self.sent_input_hashes.contains(&input_hash(text))
     }
+
+    /// Consume the record of `text` having been sent, answering whether there
+    /// was one.
+    ///
+    /// What a translator calls when it suppresses the CLI's echo: the echo of
+    /// one write is dropped once, so a later `user` line carrying the same
+    /// text — the agent quoting it back, or a second identical message the
+    /// owner recorded its own `user_message` for — is kept as `raw` rather than
+    /// vanishing.
+    pub(crate) fn take_sent_input(&mut self, text: &str) -> bool {
+        self.sent_input_hashes.remove(&input_hash(text))
+    }
 }
 
 /// The hash stored per sent input.
@@ -216,6 +228,17 @@ mod tests {
         state.record_sent_input("again");
         state.record_sent_input("again");
         assert_eq!(state.sent_input_hashes.len(), 1);
+    }
+
+    #[test]
+    fn take_sent_input_consumes_the_hash_once() {
+        let mut state = TranslateState::new(TranslateConfig::default());
+        state.record_sent_input("ping");
+
+        assert!(state.take_sent_input("ping"));
+        assert!(!state.take_sent_input("ping"));
+        assert!(!state.was_sent_input("ping"));
+        assert!(!state.take_sent_input("never sent"));
     }
 
     #[test]

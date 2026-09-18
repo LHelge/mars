@@ -5,8 +5,8 @@
 //! branches on the native `type`, and returns zero or more [`AgentEvent`]s:
 //! `system`/`init`, `system`/`permission_denied`, `result` with its cost, usage
 //! and denial list, the fatal authentication `error`, the `assistant` message's
-//! content blocks and the `stream_event` text deltas. The `user` branch is named
-//! but still answers `raw`; its task fills it in.
+//! content blocks, the `user` message's tool results and the `stream_event`
+//! text deltas.
 //!
 //! Two invariants hold for every branch. Nothing is dropped except where a rule
 //! says so: a line with no rule, a line that is not JSON and a line whose shape
@@ -19,13 +19,14 @@
 use serde_json::{Map, Value};
 
 use super::super::TranslateState;
-use crate::events::{AgentEvent, AgentEventBody, McpServerStatus};
+use crate::events::{AgentEvent, AgentEventBody, McpServerStatus, TOOL_RESULT_MAX_BYTES};
 use crate::models::AgentBackend as Backend;
 use crate::prelude::*;
 
 use super::native::{
     NativeAssistant, NativeContent, NativeContentBlock, NativePermissionDenied, NativeResult,
-    NativeStreamEvent, NativeSystemInit,
+    NativeStreamEvent, NativeSystemInit, NativeToolResultBlock, NativeUser, NativeUserBlock,
+    NativeUserContent,
 };
 
 /// The tool that starts a subagent, under both names the CLI has used
@@ -120,9 +121,7 @@ pub(crate) fn translate_line(line: &str, state: &mut TranslateState) -> Vec<Agen
         Some("result") => translate_result(&native, state),
         Some("assistant") => translate_assistant(&native, state),
         Some("stream_event") => translate_stream_event(&native),
-        // Filled in by the user task. Until then the lines are kept rather
-        // than dropped.
-        Some("user") => vec![raw(native.clone())],
+        Some("user") => translate_user(&native, state),
         _ => vec![raw(native.clone())],
     };
 
@@ -359,6 +358,167 @@ fn translate_content_block(
             vec![raw(value)]
         }
     }
+}
+
+/// `user`: the CLI's tool results, and its echo of what Mars wrote
+/// (`SPEC.md`, "AgentEvent", the `user` rule).
+///
+/// The CLI writes one `user` line per batch of tool results and one per plain
+/// message, and the content tells them apart. A line with `tool_result` blocks
+/// produces one `tool_result` event each, plus a `subagent_end` for a result
+/// that closes an open subagent. A line whose content is only text is a
+/// message: the orchestrator's own, echoed back and therefore already stored as
+/// `user_message` at write time, which the content hash recognises and drops;
+/// or someone else's — a subagent's prompt, the CLI's
+/// `[Request interrupted by user]` — which is kept as `raw`.
+fn translate_user(native: &Value, state: &mut TranslateState) -> Vec<AgentEvent> {
+    let Ok(user) = serde_json::from_value::<NativeUser>(native.clone()) else {
+        warn!(kind = "user", "a user line did not parse");
+        return vec![raw(native.clone())];
+    };
+
+    let Some(message) = user.message else {
+        warn!(kind = "user", "a user line carried no message");
+        return vec![raw(native.clone())];
+    };
+
+    let blocks = match message.content {
+        // Nothing was said, and a bare string is always a message.
+        None => return Vec::new(),
+        Some(NativeUserContent::Text(text)) => return message_events(native, &text, state),
+        Some(NativeUserContent::Blocks(blocks)) if blocks.is_empty() => return Vec::new(),
+        Some(NativeUserContent::Blocks(blocks)) => blocks,
+    };
+
+    // Text-only content is a message; mixed content is tool results, and its
+    // text blocks are the model's own framing of them, which the frontend
+    // renders from the results themselves.
+    if let Some(text) = message_text(&blocks) {
+        return message_events(native, &text, state);
+    }
+
+    blocks
+        .into_iter()
+        .flat_map(|block| translate_user_block(block, state))
+        .collect()
+}
+
+/// The concatenated text of a content array that is nothing but text, which is
+/// what the echo hash is taken over.
+///
+/// `None` as soon as one block is not text: that content carries tool results
+/// and is not a message at all. An empty array is text-only by this rule and
+/// hashes to the empty string, which the owner never sends.
+fn message_text(blocks: &[NativeUserBlock]) -> Option<String> {
+    let mut text = String::new();
+    for block in blocks {
+        match block {
+            NativeUserBlock::Text(block) => text.push_str(&block.text),
+            _ => return None,
+        }
+    }
+    Some(text)
+}
+
+/// A message the CLI reported: dropped when it is the echo of one Mars wrote,
+/// kept as `raw` otherwise.
+fn message_events(native: &Value, text: &str, state: &mut TranslateState) -> Vec<AgentEvent> {
+    if state.take_sent_input(text) {
+        debug!("suppressed the cli echo of a message mars wrote");
+        return Vec::new();
+    }
+
+    vec![raw(native.clone())]
+}
+
+/// One block of a tool-result `user` message.
+fn translate_user_block(block: NativeUserBlock, state: &mut TranslateState) -> Vec<AgentEvent> {
+    match block {
+        // The model's framing of the results it is being handed; the results
+        // themselves are the events.
+        NativeUserBlock::Text(_) => Vec::new(),
+        NativeUserBlock::ToolResult(result) => tool_result_events(result, state),
+        // A block kind with no rule, and a `tool_result` without the
+        // `tool_use_id` the frontend needs to pair it with its call: kept,
+        // never dropped.
+        NativeUserBlock::Other(value) => vec![raw(value)],
+    }
+}
+
+/// One `tool_result` block into the one or two events it produces.
+fn tool_result_events(
+    result: NativeToolResultBlock,
+    state: &mut TranslateState,
+) -> Vec<AgentEvent> {
+    // Absent content is an empty string, not a JSON `null`: the frontend
+    // renders a result that said nothing, and `null` would read as a value.
+    let (content, truncated) = truncate_content(result.content.unwrap_or_else(|| Value::from("")));
+    let is_error = result.is_error.unwrap_or(false);
+
+    let mut events = vec![
+        AgentEventBody::ToolResult {
+            tool_use_id: result.tool_use_id.clone(),
+            // Untouched apart from the size limit, with no redaction
+            // (ADR 0027).
+            content,
+            is_error,
+            truncated,
+        }
+        .into(),
+    ];
+
+    // A subagent ends when its own tool call is answered, and only then: a
+    // result for an id no `subagent_start` opened closes nothing.
+    if state.open_subagents.remove(&result.tool_use_id).is_some() {
+        events.push(
+            AgentEventBody::SubagentEnd {
+                tool_use_id: result.tool_use_id,
+                is_error,
+            }
+            .into(),
+        );
+    }
+
+    events
+}
+
+/// A tool result's content, cut to [`TOOL_RESULT_MAX_BYTES`]
+/// (`docs/data-model.md`, `events`).
+///
+/// A string stays a string and any other value stays the value it is, until it
+/// is too big: then what is stored is the first 256 KiB of its text — the
+/// string itself, or the value's serialised JSON — cut at a UTF-8 char
+/// boundary, as a string, with `truncated` true. The full text is always in the
+/// transcript file on the session volume, so nothing is lost by cutting here.
+pub(crate) fn truncate_content(content: Value) -> (Value, bool) {
+    match &content {
+        Value::String(text) => match truncated_text(text) {
+            Some(cut) => (Value::String(cut), true),
+            None => (content, false),
+        },
+        _ => {
+            let text = content.to_string();
+            match truncated_text(&text) {
+                Some(cut) => (Value::String(cut), true),
+                None => (content, false),
+            }
+        }
+    }
+}
+
+/// The first [`TOOL_RESULT_MAX_BYTES`] bytes of `text` when it is longer than
+/// that, cut at a char boundary so multi-byte text never panics and never
+/// produces invalid UTF-8; `None` when it fits.
+fn truncated_text(text: &str) -> Option<String> {
+    if text.len() <= TOOL_RESULT_MAX_BYTES {
+        return None;
+    }
+
+    let mut end = TOOL_RESULT_MAX_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(text[..end].to_string())
 }
 
 /// `stream_event`: text deltas only (`SPEC.md`, "AgentEvent", the
@@ -1218,6 +1378,435 @@ mod tests {
 
         let events = translate_line(&line.to_string(), &mut state);
         assert_eq!(events, vec![raw(block)]);
+    }
+
+    /// A `user` line carrying one `tool_result` block.
+    fn tool_result_line(block: Value) -> Value {
+        json!({ "type": "user", "message": { "role": "user", "content": [block] } })
+    }
+
+    #[test]
+    fn a_tool_result_block_is_one_tool_result_event() {
+        let mut state = state();
+        let line = tool_result_line(json!({
+            "type": "tool_result",
+            "tool_use_id": "toolu_01FIXTURE0001",
+            "content": "1\t# Greeter\n",
+        }));
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(
+            events,
+            vec![
+                AgentEventBody::ToolResult {
+                    tool_use_id: "toolu_01FIXTURE0001".to_string(),
+                    content: json!("1\t# Greeter\n"),
+                    is_error: false,
+                    truncated: false,
+                }
+                .into()
+            ],
+        );
+    }
+
+    #[test]
+    fn every_tool_result_block_is_translated_in_order_with_its_parent() {
+        let mut state = state();
+        let line = json!({
+            "type": "user",
+            "parent_tool_use_id": "toolu_01FIXTUREagent0000000001",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01FIXTURE0001",
+                        "content": "first",
+                        "is_error": true,
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01FIXTURE0002",
+                        "content": [{ "type": "text", "text": "rows" }],
+                    },
+                ],
+            },
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            body(&events[0]),
+            &AgentEventBody::ToolResult {
+                tool_use_id: "toolu_01FIXTURE0001".to_string(),
+                content: json!("first"),
+                is_error: true,
+                truncated: false,
+            },
+        );
+        assert_eq!(
+            body(&events[1]),
+            &AgentEventBody::ToolResult {
+                tool_use_id: "toolu_01FIXTURE0002".to_string(),
+                content: json!([{ "type": "text", "text": "rows" }]),
+                is_error: false,
+                truncated: false,
+            },
+        );
+        for event in &events {
+            assert_eq!(
+                event.parent_tool_use_id.as_deref(),
+                Some("toolu_01FIXTUREagent0000000001"),
+            );
+        }
+    }
+
+    #[test]
+    fn a_tool_result_without_content_is_an_empty_string() {
+        let mut state = state();
+        for block in [
+            json!({ "type": "tool_result", "tool_use_id": "toolu_01FIXTURE0003" }),
+            json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_01FIXTURE0003",
+                "content": null,
+            }),
+        ] {
+            let events = translate_line(&tool_result_line(block).to_string(), &mut state);
+            assert_eq!(
+                events,
+                vec![
+                    AgentEventBody::ToolResult {
+                        tool_use_id: "toolu_01FIXTURE0003".to_string(),
+                        content: json!(""),
+                        is_error: false,
+                        truncated: false,
+                    }
+                    .into()
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn a_tool_result_without_a_tool_use_id_is_raw() {
+        let mut state = state();
+        let block = json!({ "type": "tool_result", "content": "orphaned" });
+
+        let events = translate_line(&tool_result_line(block.clone()).to_string(), &mut state);
+        assert_eq!(events, vec![raw(block)]);
+    }
+
+    #[test]
+    fn an_oversized_string_result_is_cut_at_the_limit() {
+        let mut state = state();
+        let content = "x".repeat(300 * 1024);
+        let events = translate_line(
+            &tool_result_line(json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_01FIXTURE0004",
+                "content": content,
+            }))
+            .to_string(),
+            &mut state,
+        );
+
+        let AgentEventBody::ToolResult {
+            content, truncated, ..
+        } = body(&events[0])
+        else {
+            panic!("expected a tool_result");
+        };
+        assert!(truncated);
+        let text = content.as_str().expect("the cut content is a string");
+        assert_eq!(text.len(), 262_144);
+        assert_eq!(text, "x".repeat(262_144));
+    }
+
+    #[test]
+    fn an_oversized_array_result_is_cut_from_its_serialised_text() {
+        let mut state = state();
+        let block = json!([{ "type": "text", "text": "y".repeat(300 * 1024) }]);
+        let serialised = block.to_string();
+        let events = translate_line(
+            &tool_result_line(json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_01FIXTURE0005",
+                "content": block,
+            }))
+            .to_string(),
+            &mut state,
+        );
+
+        let AgentEventBody::ToolResult {
+            content, truncated, ..
+        } = body(&events[0])
+        else {
+            panic!("expected a tool_result");
+        };
+        assert!(truncated);
+        let text = content.as_str().expect("the cut content is a string");
+        assert_eq!(text.len(), 262_144);
+        assert_eq!(text, &serialised[..262_144]);
+    }
+
+    #[test]
+    fn truncation_cuts_at_a_char_boundary() {
+        // One byte over the limit, ending in a three-byte character that
+        // straddles it: the cut lands before the character, never inside it.
+        let text = format!("{}✓✓", "z".repeat(TOOL_RESULT_MAX_BYTES - 4));
+        let (content, truncated) = truncate_content(Value::from(text.clone()));
+        assert!(truncated);
+        let cut = content.as_str().unwrap();
+        assert_eq!(cut.len(), TOOL_RESULT_MAX_BYTES - 1);
+        assert!(text.starts_with(cut));
+    }
+
+    #[test]
+    fn content_at_or_below_the_limit_is_untouched() {
+        for content in [
+            json!(""),
+            json!("small"),
+            json!("w".repeat(TOOL_RESULT_MAX_BYTES)),
+            json!({ "rows": 3 }),
+            json!(null),
+        ] {
+            assert_eq!(
+                truncate_content(content.clone()),
+                (content.clone(), false),
+                "{content}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_result_for_an_open_subagent_also_ends_it() {
+        let mut state = state();
+        let start = json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_01FIXTUREagent0000000001",
+                    "name": "Task",
+                    "input": { "description": "Count modules" },
+                }],
+            },
+        });
+        assert_eq!(translate_line(&start.to_string(), &mut state).len(), 2);
+
+        let events = translate_line(
+            &tool_result_line(json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_01FIXTUREagent0000000001",
+                "content": [{ "type": "text", "text": "12 modules" }],
+                "is_error": true,
+            }))
+            .to_string(),
+            &mut state,
+        );
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind(), "tool_result");
+        assert_eq!(
+            body(&events[1]),
+            &AgentEventBody::SubagentEnd {
+                tool_use_id: "toolu_01FIXTUREagent0000000001".to_string(),
+                is_error: true,
+            },
+        );
+        assert!(state.open_subagents.is_empty());
+
+        // A second result for the same id closes nothing a second time.
+        let events = translate_line(
+            &tool_result_line(json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_01FIXTUREagent0000000001",
+                "content": "again",
+            }))
+            .to_string(),
+            &mut state,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "tool_result");
+    }
+
+    #[test]
+    fn a_result_for_an_unknown_id_ends_no_subagent() {
+        let mut state = state();
+        let events = translate_line(
+            &tool_result_line(json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_01FIXTURE0006",
+                "content": "done",
+            }))
+            .to_string(),
+            &mut state,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "tool_result");
+    }
+
+    #[test]
+    fn the_echo_of_a_message_mars_wrote_is_dropped_once() {
+        let mut state = state();
+        state.record_sent_input("Summarise the README.");
+        let line = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "Summarise the README." }],
+            },
+        });
+
+        assert!(translate_line(&line.to_string(), &mut state).is_empty());
+        assert!(!state.was_sent_input("Summarise the README."));
+
+        // The same text again is nobody's echo any more.
+        assert_eq!(
+            translate_line(&line.to_string(), &mut state),
+            vec![raw(line)],
+        );
+    }
+
+    #[test]
+    fn an_echo_hashes_the_concatenated_text_of_every_block() {
+        let mut state = state();
+        state.record_sent_input("one two");
+        let line = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "one " },
+                    { "type": "text", "text": "two" },
+                ],
+            },
+        });
+
+        assert!(translate_line(&line.to_string(), &mut state).is_empty());
+    }
+
+    #[test]
+    fn a_string_content_is_matched_as_a_message_too() {
+        let mut state = state();
+        state.record_sent_input("plain");
+        let line = json!({ "type": "user", "message": { "content": "plain" } });
+        assert!(translate_line(&line.to_string(), &mut state).is_empty());
+
+        let line = json!({ "type": "user", "message": { "content": "unrecognised" } });
+        assert_eq!(
+            translate_line(&line.to_string(), &mut state),
+            vec![raw(line)],
+        );
+    }
+
+    #[test]
+    fn the_messages_mars_did_not_write_are_raw() {
+        let mut state = state();
+        // The CLI's own interruption line, and a subagent's prompt.
+        let interrupted = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "[Request interrupted by user]" }],
+            },
+        });
+        assert_eq!(
+            translate_line(&interrupted.to_string(), &mut state),
+            vec![raw(interrupted)],
+        );
+
+        let prompt = json!({
+            "type": "user",
+            "parent_tool_use_id": "toolu_01FIXTUREagent0000000001",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "Count the Rust modules." }],
+            },
+        });
+        let events = translate_line(&prompt.to_string(), &mut state);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "raw");
+        assert_eq!(
+            events[0].parent_tool_use_id.as_deref(),
+            Some("toolu_01FIXTUREagent0000000001"),
+        );
+    }
+
+    #[test]
+    fn mixed_content_translates_the_results_and_ignores_the_text() {
+        let mut state = state();
+        let unknown = json!({ "type": "image", "source": { "type": "base64" } });
+        let line = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "Here are the results:" },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01FIXTURE0007",
+                        "content": "rows",
+                    },
+                    unknown.clone(),
+                ],
+            },
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            body(&events[0]),
+            &AgentEventBody::ToolResult {
+                tool_use_id: "toolu_01FIXTURE0007".to_string(),
+                content: json!("rows"),
+                is_error: false,
+                truncated: false,
+            },
+        );
+        assert_eq!(events[1], raw(unknown));
+    }
+
+    #[test]
+    fn a_user_line_that_says_nothing_yields_nothing() {
+        let mut state = state();
+        for content in [json!([]), json!(null)] {
+            let line = json!({ "type": "user", "message": { "content": content } });
+            assert!(translate_line(&line.to_string(), &mut state).is_empty(),);
+        }
+    }
+
+    #[test]
+    fn a_user_line_without_a_message_is_raw() {
+        let mut state = state();
+        let line = json!({ "type": "user", "session_id": "fake-cli-session" });
+        assert_eq!(
+            translate_line(&line.to_string(), &mut state),
+            vec![raw(line)],
+        );
+    }
+
+    #[test]
+    fn the_repeated_tool_use_result_field_is_ignored() {
+        let mut state = state();
+        let line = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_01FIXTURE0008",
+                    "content": "rows",
+                }],
+            },
+            "tool_use_result": { "stdout": "rows", "stderr": "" },
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "tool_result");
     }
 
     #[test]

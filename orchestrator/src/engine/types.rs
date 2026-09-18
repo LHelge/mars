@@ -23,6 +23,7 @@ use std::result::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use super::EngineError;
 // The crate convention (`CLAUDE.md`, "Backend conventions"). These are plain
@@ -112,9 +113,10 @@ pub struct Bind {
 /// adapter's to set.
 ///
 /// [`Debug`] is implemented by hand: it prints the *keys* of [`env`](Self::env)
-/// and never the values, so a spec that has had a project's secrets resolved
-/// into it cannot leak them through a `{:?}` in a log line or an error
-/// (CLAUDE.md rule 3).
+/// and [`secret_env`](Self::secret_env) and never the values, so a spec that
+/// has had a project's secrets resolved into it cannot leak them through a
+/// `{:?}` in a log line or an error (CLAUDE.md rule 3). A derived [`Debug`]
+/// would not do: [`Zeroizing`]'s own [`Debug`] is that of the value it wraps.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ContainerSpec {
     /// The image reference to run, pulled at launch if absent.
@@ -130,14 +132,27 @@ pub struct ContainerSpec {
     pub working_dir: String,
     /// The command; empty leaves the image's own.
     pub cmd: Vec<String>,
-    /// The environment, in order.
+    /// The fixed environment, in order: the variables the specification table
+    /// names, none of which is a secret value.
     ///
     /// An ordered `Vec` and not a map, because the order is part of the
-    /// contract: the fixed variables first, the resolved secrets after, so a
-    /// project secret cannot shadow `MARS_SESSION_ID` or `HOME`. Duplicates
-    /// are therefore possible and the last one wins, which is exactly what
-    /// that ordering relies on.
+    /// contract, and separate from [`secret_env`](Self::secret_env) because the
+    /// documented order — the fixed variables first, the resolved secrets after
+    /// — is then structural rather than a rule a caller has to remember. The
+    /// engine takes the last value for a repeated name, which is what that
+    /// ordering relies on.
     pub env: Vec<(String, String)>,
+    /// The resolved project secrets, in resolution order, appended after
+    /// [`env`](Self::env) when the adapter builds the engine's environment.
+    ///
+    /// The values stay in [`Zeroizing`] buffers the whole way from
+    /// [`crate::secrets::resolve_for_launch`] through
+    /// [`build_session_spec`](super::spec::build_session_spec) to here, so no
+    /// orchestrator-side copy of a credential outlives the launch call. The one
+    /// place the bytes are copied into a plain `String` is
+    /// [`to_bollard`](super::spec::to_bollard), which is where the guarantee
+    /// ends (`ARCHITECTURE.md`, "Secrets", Resolution at launch).
+    pub secret_env: Vec<(String, Zeroizing<String>)>,
     /// The bind mounts, parents before children.
     pub binds: Vec<Bind>,
     /// The network the container is created on — the `NetworkMode`, so it is
@@ -161,6 +176,11 @@ impl fmt::Debug for ContainerSpec {
     /// resolved secrets (rule 3).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let env_keys: Vec<&str> = self.env.iter().map(|(key, _)| key.as_str()).collect();
+        let secret_env_keys: Vec<&str> = self
+            .secret_env
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect();
 
         f.debug_struct("ContainerSpec")
             .field("image", &self.image)
@@ -170,6 +190,7 @@ impl fmt::Debug for ContainerSpec {
             .field("working_dir", &self.working_dir)
             .field("cmd", &self.cmd)
             .field("env_keys", &env_keys)
+            .field("secret_env_keys", &secret_env_keys)
             .field("binds", &self.binds)
             .field("network", &self.network)
             .field("extra_hosts", &self.extra_hosts)
@@ -356,13 +377,11 @@ mod tests {
             user: "1000:1000".to_string(),
             working_dir: "/session/work".to_string(),
             cmd: vec!["claude".to_string()],
-            env: vec![
-                ("HOME".to_string(), "/session/home".to_string()),
-                (
-                    "ANTHROPIC_API_KEY".to_string(),
-                    "not-a-real-api-key".to_string(),
-                ),
-            ],
+            env: vec![("HOME".to_string(), "/session/home".to_string())],
+            secret_env: vec![(
+                "ANTHROPIC_API_KEY".to_string(),
+                Zeroizing::new("not-a-real-api-key".to_string()),
+            )],
             binds: vec![Bind {
                 host_source: PathBuf::from("/srv/mars/data/sessions/s/work"),
                 container_target: "/session/work".to_string(),
@@ -377,6 +396,8 @@ mod tests {
 
     #[test]
     fn a_spec_debugs_its_env_keys_and_never_its_env_values() {
+        // A derived `Debug` would print the `Zeroizing` value verbatim, so the
+        // hand-written one is the whole guarantee.
         let debug = format!("{:?}", spec_with_a_secret());
 
         assert!(debug.contains("HOME"), "missing env key: {debug}");
@@ -407,6 +428,15 @@ mod tests {
             .env
             .push(("MARS_TASK_ID".to_string(), "t1".to_string()));
         assert_ne!(spec_with_a_secret(), other);
+
+        // The zeroizing half compares by value too, so a test can assert what
+        // a launch injected.
+        let mut different_secret = spec_with_a_secret();
+        different_secret.secret_env = vec![(
+            "ANTHROPIC_API_KEY".to_string(),
+            Zeroizing::new("not-the-same-fake-key".to_string()),
+        )];
+        assert_ne!(spec_with_a_secret(), different_secret);
     }
 
     #[test]

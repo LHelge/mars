@@ -17,9 +17,12 @@
 //! usable.
 //!
 //! **Secrets.** A session's resolved secrets reach the engine in
-//! [`ContainerSpec::env`] and nowhere else. A spec is never `Debug`-printed
-//! into an error or logged at `info` or above; its own [`Debug`] prints env
-//! keys only, so even a careless `{:?}` cannot leak one (CLAUDE.md rule 3).
+//! [`ContainerSpec::secret_env`] and nowhere else, still in the `Zeroizing`
+//! buffers the resolver decrypted them into;
+//! [`spec::to_bollard`] is the one place they are copied into plain bytes and
+//! is where that guarantee ends. A spec is never `Debug`-printed into an error
+//! or logged at `info` or above; its own [`Debug`] prints env keys only, so
+//! even a careless `{:?}` cannot leak one (CLAUDE.md rule 3).
 
 use std::any::Any;
 // Shadows the prelude's one-parameter `Result<T>` alias: every engine

@@ -41,10 +41,13 @@
 //! resolves the `oneshot`s a [`ContainerEngine::wait`] is parked on.
 //!
 //! **Secrets.** A recorded [`ContainerSpec`] carries a session's resolved
-//! secrets in its environment, and is kept here only so a test can read it
-//! back. Nothing in this module logs, and `ContainerSpec`'s own redacting
-//! [`Debug`] keeps a failing assertion's output free of values (CLAUDE.md
-//! rule 3).
+//! secrets in `ContainerSpec::secret_env`, still in their `Zeroizing` buffers,
+//! and is kept here only so a test can read it back — which is why
+//! [`MockEngine::specs`] and [`MockEngine::spec_of`] hand the whole spec over
+//! with the values readable: this module exists only behind the
+//! `integration-tests` feature and is never compiled into the shipped binary.
+//! Nothing in this module logs, and `ContainerSpec`'s own redacting [`Debug`]
+//! keeps a failing assertion's output free of values (CLAUDE.md rule 3).
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -310,11 +313,16 @@ impl MockEngine {
     ///
     /// A creation log rather than a view of the table: a spec stays here after
     /// its container is removed, so a test can assert what a relaunch built.
+    ///
+    /// The clone carries `ContainerSpec::secret_env` with its values readable,
+    /// so a test can assert what a launch injected; that is sound only because
+    /// this whole module is behind the `integration-tests` feature.
     pub fn specs(&self) -> Vec<ContainerSpec> {
         self.lock().created.clone()
     }
 
-    /// The spec one live container was created from.
+    /// The spec one live container was created from, secret values included for
+    /// the same reason [`MockEngine::specs`] includes them.
     pub fn spec_of(&self, id: &ContainerId) -> Option<ContainerSpec> {
         self.lock()
             .containers
@@ -994,9 +1002,10 @@ mod tests {
             user: "1000:1000".to_string(),
             working_dir: "/session/work".to_string(),
             cmd: vec!["claude".to_string()],
-            env: vec![(
+            env: Vec::new(),
+            secret_env: vec![(
                 "ANTHROPIC_API_KEY".to_string(),
-                "not-a-real-api-key".to_string(),
+                zeroize::Zeroizing::new("not-a-real-api-key".to_string()),
             )],
             binds: vec![Bind {
                 host_source: PathBuf::from("/srv/mars/data/sessions/s/work"),

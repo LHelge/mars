@@ -58,7 +58,9 @@ pub const RESUME_FLAG: &str = "--resume";
 ///
 /// `--bare` and `--strict-mcp-config` are never emitted
 /// (`ARCHITECTURE.md`, "Claude Code invocation").
-pub(crate) fn build_argv(ctx: &LaunchContext) -> Vec<String> {
+/// Public because the live probe (`tests/claude_probe.rs`) launches the real
+/// CLI with this exact argv rather than a copy of it.
+pub fn build_argv(ctx: &LaunchContext) -> Vec<String> {
     let mut argv = vec![BINARY.to_string()];
 
     match &ctx.mode {

@@ -16,6 +16,13 @@ pub mod launch;
 mod native;
 mod translate;
 
+/// The argv builder, re-exported so the live probe can launch the real CLI
+/// with the adapter's own command line (`tests/claude_probe.rs`).
+pub use launch::build_argv;
+/// The subagent tool names, re-exported for the same reason: the probe asserts
+/// the tool the CLI actually used is one of them.
+pub use translate::SUBAGENT_TOOL_NAMES;
+
 /// The Claude Code version this adapter is written against.
 ///
 /// The same version `images/claude/Dockerfile` pins with

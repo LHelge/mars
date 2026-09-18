@@ -1,21 +1,22 @@
 //! The Claude Code adapter (`ARCHITECTURE.md`, "Claude Code invocation").
 //!
-//! Partly a stub still: the native-output translator arrives with its own
-//! task, verified against the pinned CLI version by the adapter probe. Until
-//! then `translate` keeps every line verbatim as a `raw` event. The launch
-//! command is built in [`launch`] and `encode_input` writes the SDK
-//! user-message shape (`ARCHITECTURE.md`, "Input encoding").
+//! The launch command is built in [`launch`], `translate` dispatches to
+//! [`translate::translate_line`] — whose `assistant`, `user` and
+//! `stream_event` branches still answer `raw` until their tasks land — and
+//! `encode_input` writes the SDK user-message shape (`ARCHITECTURE.md`,
+//! "Input encoding").
 
 use std::any::Any;
 
 use serde_json::json;
 
 use super::{AgentBackend, Command, LaunchContext, TranslateState};
-use crate::events::{AgentEvent, AgentEventBody, SessionInput};
-use crate::models::AgentBackend as Backend;
+use crate::events::{AgentEvent, SessionInput};
 use crate::prelude::*;
 
 pub mod launch;
+mod native;
+mod translate;
 
 /// The Claude Code version this adapter is written against.
 ///
@@ -46,19 +47,9 @@ impl AgentBackend for ClaudeBackend {
         launch::launch_command(ctx)
     }
 
-    /// Every line verbatim, until the translator tasks replace this.
-    ///
-    /// A line that is not JSON at all is still kept, as a JSON string, so
-    /// nothing the CLI wrote is lost between here and the real translator.
-    fn translate(&self, line: &str, _state: &mut TranslateState) -> Vec<AgentEvent> {
-        let native = serde_json::from_str(line).unwrap_or_else(|_| json!(line));
-        vec![
-            AgentEventBody::Raw {
-                backend: Backend::Claude,
-                native,
-            }
-            .into(),
-        ]
+    /// The `stream-json` translation rules (`SPEC.md`, "AgentEvent").
+    fn translate(&self, line: &str, state: &mut TranslateState) -> Vec<AgentEvent> {
+        translate::translate_line(line, state)
     }
 
     fn encode_input(&self, input: &SessionInput) -> Result<String> {
@@ -104,16 +95,26 @@ mod tests {
         );
     }
 
+    /// The rules themselves are tested in `translate.rs`; this is the wiring.
     #[test]
-    fn every_line_is_raw_for_now() {
+    fn translate_dispatches_to_the_translator() {
+        use crate::events::AgentEventBody;
+        use crate::models::AgentBackend as Backend;
+
         let mut state = TranslateState::new(TranslateConfig::default());
-        let events = ClaudeBackend::new().translate(r#"{"type":"system"}"#, &mut state);
+        let events = ClaudeBackend::new().translate(
+            r#"{"type":"system","subtype":"init","session_id":"fake-cli-session"}"#,
+            &mut state,
+        );
         assert_eq!(
             events,
             vec![
-                AgentEventBody::Raw {
-                    backend: Backend::Claude,
-                    native: json!({ "type": "system" }),
+                AgentEventBody::Init {
+                    cli_session_id: "fake-cli-session".to_string(),
+                    model: None,
+                    tools: vec![],
+                    mcp_servers: vec![],
+                    resumed: false,
                 }
                 .into()
             ],

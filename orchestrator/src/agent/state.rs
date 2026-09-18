@@ -101,8 +101,13 @@ pub struct TranslateState {
     /// Tool calls already reported as denied, so the `permission_denied`
     /// system message and the same denial in `result.permission_denials` do
     /// not produce two events (`ARCHITECTURE.md`, "Claude Code invocation").
-    #[allow(dead_code)]
     pub(crate) denied_tool_use_ids: HashSet<String>,
+    /// Whether the fatal authentication `error` was already emitted.
+    ///
+    /// The CLI reports one failed credential many times — a run of `api_retry`
+    /// lines and then the `result` that ends the turn — and the user has one
+    /// secret to replace, so the event is emitted once per process.
+    pub(crate) authentication_failed: bool,
 }
 
 impl TranslateState {
@@ -115,6 +120,7 @@ impl TranslateState {
             sent_input_hashes: HashSet::new(),
             open_subagents: HashMap::new(),
             denied_tool_use_ids: HashSet::new(),
+            authentication_failed: false,
         }
     }
 
@@ -181,6 +187,7 @@ mod tests {
         assert!(state.sent_input_hashes.is_empty());
         assert!(state.open_subagents.is_empty());
         assert!(state.denied_tool_use_ids.is_empty());
+        assert!(!state.authentication_failed);
     }
 
     #[test]

@@ -1208,7 +1208,31 @@ impl SessionOwner {
     /// - exit 0 is the CLI finishing, which for a conversational session is
     ///   `parked`;
     /// - anything else failed, and `sessions.error` says what the code was.
+    ///
+    /// An ephemeral session is never parked (ADR 0003), so wherever these rules
+    /// say `parked` for one — a stop, which the idle reaper sends a stalled run,
+    /// or a container that disappeared — it is `failed` with the same reason,
+    /// the stop's signal still recorded.
     fn exit_plan(&self, from: SessionState, observed: ContainerExit) -> Option<ExitPlan> {
+        let plan = self.kind_agnostic_exit_plan(from, observed)?;
+
+        if self.kind == SessionKind::Ephemeral && plan.to == SessionState::Parked {
+            return Some(ExitPlan {
+                to: SessionState::Failed,
+                error: Some(plan.reason.clone()),
+                ..plan
+            });
+        }
+
+        Some(plan)
+    }
+
+    /// [`SessionOwner::exit_plan`] before the ephemeral never-parked rule.
+    fn kind_agnostic_exit_plan(
+        &self,
+        from: SessionState,
+        observed: ContainerExit,
+    ) -> Option<ExitPlan> {
         let parked = |reason: &str, signal: Option<StopSignal>| ExitPlan {
             to: SessionState::Parked,
             reason: reason.to_string(),

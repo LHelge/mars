@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                   status_message, created_by, last_fetched_at, max_attempts,\n                   next_task_number, created_at, updated_at\n            FROM projects\n            WHERE id = $1\n            ",
+  "query": "\n            UPDATE projects\n            SET name = COALESCE($2, name),\n                default_branch = COALESCE($3, default_branch),\n                max_attempts = COALESCE($4, max_attempts),\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $5\n                      ) AS \"has_credential!\"\n            ",
   "describe": {
     "columns": [
       {
@@ -145,11 +145,21 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 12,
+        "name": "has_credential!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Text",
+        "Text",
+        "Int2",
+        "Text"
       ]
     },
     "nullable": [
@@ -164,8 +174,9 @@
       false,
       false,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "9e322957d021762c5e9cc1906b901a45b5fabad2aa9d2ef115e87c768eea0c50"
+  "hash": "fcb91f6662a5f7f2ac94963f51dbfc095ce31d7f41bd9f72bc9e7794373a5053"
 }

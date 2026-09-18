@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO projects (id, name, remote_url, default_branch, created_by, max_attempts)\n            VALUES ($1, $2, $3, $4, $5, $6)\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, created_at, updated_at\n            ",
+  "query": "\n            SELECT p.id, p.name, p.remote_url, p.default_branch,\n                   p.status as \"status: ProjectStatus\", p.status_message, p.created_by,\n                   p.last_fetched_at, p.max_attempts, p.next_task_number, p.created_at,\n                   p.updated_at,\n                   EXISTS (\n                       SELECT 1 FROM secrets s\n                       WHERE s.scope = 'project' AND s.scope_id = p.id AND s.name = $2\n                   ) AS \"has_credential!\"\n            FROM projects p\n            WHERE p.id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -145,16 +145,18 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 12,
+        "name": "has_credential!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Text",
-        "Text",
-        "Text",
-        "Uuid",
-        "Int2"
+        "Text"
       ]
     },
     "nullable": [
@@ -169,8 +171,9 @@
       false,
       false,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "827d9d10441f6f5f6fae07986ef2ec7ee1696f3b4e154f492939f1158f66100b"
+  "hash": "beaed42656b6609a5d6d3ca2f67521d0e304f358f77e9ed6e9a5280174413186"
 }

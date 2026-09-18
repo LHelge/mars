@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE projects\n            SET status = 'error'::project_status,\n                status_message = $2,\n                updated_at = NOW()\n            WHERE id = $1 AND status = 'cloning'::project_status\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f05fabc11ab5468692c33135f94f954dc73ad3c55945f24fd1f42f0413d6dc0e"
+}

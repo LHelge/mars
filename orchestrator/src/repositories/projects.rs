@@ -21,11 +21,12 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::models::{
-    AgentBackend, AgentProfile, NewAgentProfile, NewProject, NewSharedDir, ProfileKind,
+    AgentBackend, AgentProfile, BranchName, NewAgentProfile, NewProject, NewSharedDir, ProfileKind,
     ProfileUpdate, Project, ProjectStatus, ProjectUpdate, SharedDir,
 };
 use crate::prelude::*;
 use crate::repositories::{check_violation, foreign_key_violation, unique_violation};
+use crate::secrets::GIT_CREDENTIAL_NAME;
 
 /// All SQL against a project and the two tables that configure it
 /// (`ARCHITECTURE.md`, "Orchestrator internals").
@@ -34,6 +35,11 @@ use crate::repositories::{check_violation, foreign_key_violation, unique_violati
 /// mutates or locks takes the caller's `&mut PgConnection`, so one transaction
 /// can hold a whole tracker mutation — the project lock, a task number, the
 /// mutation itself and its events — together.
+///
+/// Every statement that returns a [`Project`] computes `has_credential` with
+/// the same `EXISTS` subquery over `secrets`, because the field is part of the
+/// row everywhere it is read (`SPEC.md`, "Projects"): a second round trip per
+/// project would turn `GET /projects` into a query per row for a boolean.
 pub struct ProjectRepository<'a> {
     pool: &'a PgPool,
 }
@@ -51,6 +57,11 @@ impl<'a> ProjectRepository<'a> {
     /// moves it on. A duplicate name is the caller's mistake, so
     /// `projects_name_key` maps to [`Error::Conflict`] (`SPEC.md`,
     /// "Projects").
+    ///
+    /// `has_credential` is computed rather than assumed false: creating a
+    /// project and storing its `GIT_CREDENTIAL` are one request, and a caller
+    /// that writes the secret first in the same transaction gets a row that
+    /// says so.
     pub async fn insert(&self, tx: &mut PgConnection, project: &NewProject) -> Result<Project> {
         let inserted = sqlx::query_as!(
             Project,
@@ -59,7 +70,11 @@ impl<'a> ProjectRepository<'a> {
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, created_at, updated_at
+                      next_task_number, created_at, updated_at,
+                      EXISTS (
+                          SELECT 1 FROM secrets s
+                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $7
+                      ) AS "has_credential!"
             "#,
             project.id,
             project.name.as_str(),
@@ -70,6 +85,7 @@ impl<'a> ProjectRepository<'a> {
                 .map(|branch| branch.as_str()),
             project.created_by,
             project.max_attempts.get(),
+            GIT_CREDENTIAL_NAME,
         )
         .fetch_one(&mut *tx)
         .await
@@ -85,13 +101,19 @@ impl<'a> ProjectRepository<'a> {
         let project = sqlx::query_as!(
             Project,
             r#"
-            SELECT id, name, remote_url, default_branch, status as "status: ProjectStatus",
-                   status_message, created_by, last_fetched_at, max_attempts,
-                   next_task_number, created_at, updated_at
-            FROM projects
-            WHERE id = $1
+            SELECT p.id, p.name, p.remote_url, p.default_branch,
+                   p.status as "status: ProjectStatus", p.status_message, p.created_by,
+                   p.last_fetched_at, p.max_attempts, p.next_task_number, p.created_at,
+                   p.updated_at,
+                   EXISTS (
+                       SELECT 1 FROM secrets s
+                       WHERE s.scope = 'project' AND s.scope_id = p.id AND s.name = $2
+                   ) AS "has_credential!"
+            FROM projects p
+            WHERE p.id = $1
             "#,
             id,
+            GIT_CREDENTIAL_NAME,
         )
         .fetch_optional(self.pool)
         .await?;
@@ -107,12 +129,18 @@ impl<'a> ProjectRepository<'a> {
         let projects = sqlx::query_as!(
             Project,
             r#"
-            SELECT id, name, remote_url, default_branch, status as "status: ProjectStatus",
-                   status_message, created_by, last_fetched_at, max_attempts,
-                   next_task_number, created_at, updated_at
-            FROM projects
-            ORDER BY name, id
+            SELECT p.id, p.name, p.remote_url, p.default_branch,
+                   p.status as "status: ProjectStatus", p.status_message, p.created_by,
+                   p.last_fetched_at, p.max_attempts, p.next_task_number, p.created_at,
+                   p.updated_at,
+                   EXISTS (
+                       SELECT 1 FROM secrets s
+                       WHERE s.scope = 'project' AND s.scope_id = p.id AND s.name = $1
+                   ) AS "has_credential!"
+            FROM projects p
+            ORDER BY p.name, p.id
             "#,
+            GIT_CREDENTIAL_NAME,
         )
         .fetch_all(self.pool)
         .await?;
@@ -147,12 +175,17 @@ impl<'a> ProjectRepository<'a> {
             WHERE id = $1
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, created_at, updated_at
+                      next_task_number, created_at, updated_at,
+                      EXISTS (
+                          SELECT 1 FROM secrets s
+                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $5
+                      ) AS "has_credential!"
             "#,
             id,
             update.name.as_ref().map(|name| name.as_str()),
             update.default_branch.as_ref().map(|branch| branch.as_str()),
             update.max_attempts.map(|attempts| attempts.get()),
+            GIT_CREDENTIAL_NAME,
         )
         .fetch_optional(&mut *tx)
         .await
@@ -191,17 +224,130 @@ impl<'a> ProjectRepository<'a> {
             WHERE id = $1
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, created_at, updated_at
+                      next_task_number, created_at, updated_at,
+                      EXISTS (
+                          SELECT 1 FROM secrets s
+                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $4
+                      ) AS "has_credential!"
             "#,
             id,
             status as ProjectStatus,
             status_message,
+            GIT_CREDENTIAL_NAME,
         )
         .fetch_optional(&mut *tx)
         .await
         .map_err(map_project_error)?;
 
         debug!(project_id = %id, status = ?status, updated = updated.is_some(), "project status set");
+
+        Ok(updated)
+    }
+
+    /// Finish a clone: `cloning` → `ready` with the branch it discovered.
+    ///
+    /// The guard is in the `WHERE` clause (`CLAUDE.md`, "Backend
+    /// conventions"), so the transition is decided by the database rather than
+    /// by a status the caller read earlier: a project deleted, retried or
+    /// already finished while the clone ran matches nothing and the count is
+    /// 0. **That is not an error.** The clone job has nothing left to do and
+    /// stops; treating it as a failure would overwrite a state someone else
+    /// deliberately moved to (`SPEC.md`, "Projects").
+    ///
+    /// `default_branch` is never null here, which is what satisfies the table
+    /// `CHECK` that a `ready` project has one, and `last_fetched_at` is set
+    /// because the clone that just finished *is* a fetch.
+    pub async fn mark_ready(
+        &self,
+        tx: &mut PgConnection,
+        id: Uuid,
+        default_branch: &BranchName,
+    ) -> Result<u64> {
+        let result = sqlx::query!(
+            r#"
+            UPDATE projects
+            SET status = 'ready'::project_status,
+                default_branch = $2,
+                status_message = NULL,
+                last_fetched_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1 AND status = 'cloning'::project_status
+            "#,
+            id,
+            default_branch.as_str(),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(map_project_error)?;
+
+        let rows = result.rows_affected();
+        debug!(project_id = %id, rows, "project marked ready");
+
+        Ok(rows)
+    }
+
+    /// Fail a clone: `cloning` → `error` with the reason.
+    ///
+    /// The same guard and the same reading of a 0 count as
+    /// [`ProjectRepository::mark_ready`]. `message` is what the user is shown,
+    /// so it is the caller's already-sanitised text and never a raw git
+    /// invocation (`CLAUDE.md`, rule 3).
+    pub async fn mark_error(&self, tx: &mut PgConnection, id: Uuid, message: &str) -> Result<u64> {
+        let result = sqlx::query!(
+            r#"
+            UPDATE projects
+            SET status = 'error'::project_status,
+                status_message = $2,
+                updated_at = NOW()
+            WHERE id = $1 AND status = 'cloning'::project_status
+            "#,
+            id,
+            message,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let rows = result.rows_affected();
+        debug!(project_id = %id, rows, "project marked failed");
+
+        Ok(rows)
+    }
+
+    /// Retry a failed clone: `error` → `cloning`, clearing the stale reason.
+    ///
+    /// `POST /projects/{id}/retry-clone`, which is documented as being
+    /// available "only from `error`" (`SPEC.md`, "Projects"). The status is in
+    /// the `WHERE` clause, so `None` covers both "no such project" and "not in
+    /// `error`" and the route decides which answer that is — under the project
+    /// lock it cannot be anything else by the time it answers.
+    pub async fn mark_cloning_from_error(
+        &self,
+        tx: &mut PgConnection,
+        id: Uuid,
+    ) -> Result<Option<Project>> {
+        let updated = sqlx::query_as!(
+            Project,
+            r#"
+            UPDATE projects
+            SET status = 'cloning'::project_status,
+                status_message = NULL,
+                updated_at = NOW()
+            WHERE id = $1 AND status = 'error'::project_status
+            RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
+                      status_message, created_by, last_fetched_at, max_attempts,
+                      next_task_number, created_at, updated_at,
+                      EXISTS (
+                          SELECT 1 FROM secrets s
+                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $2
+                      ) AS "has_credential!"
+            "#,
+            id,
+            GIT_CREDENTIAL_NAME,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        debug!(project_id = %id, retried = updated.is_some(), "project clone retried");
 
         Ok(updated)
     }
@@ -225,9 +371,14 @@ impl<'a> ProjectRepository<'a> {
             WHERE id = $1
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, created_at, updated_at
+                      next_task_number, created_at, updated_at,
+                      EXISTS (
+                          SELECT 1 FROM secrets s
+                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $2
+                      ) AS "has_credential!"
             "#,
             id,
+            GIT_CREDENTIAL_NAME,
         )
         .fetch_optional(&mut *tx)
         .await?;

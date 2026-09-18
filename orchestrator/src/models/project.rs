@@ -33,6 +33,18 @@ pub const MAX_PROJECT_NAME_CHARS: usize = 100;
 /// The only accepted remote scheme in v1 (`SPEC.md`, "Projects").
 pub const REMOTE_URL_SCHEME: &str = "https://";
 
+/// The extra remote scheme integration tests may use; see
+/// [`RemoteUrl::parse`].
+#[cfg(feature = "integration-tests")]
+pub const LOCAL_REMOTE_SCHEME: &str = "file://";
+
+/// Longest accepted branch name, in characters.
+///
+/// Git itself bounds a ref by the filesystem rather than by a number; 255 is
+/// the longest single path component every supported filesystem stores, so a
+/// name longer than this could not become `refs/heads/<name>` on disk anyway.
+pub const MAX_BRANCH_NAME_CHARS: usize = 255;
+
 /// Fewest claims a task may go through in one state (`docs/data-model.md`,
 /// `projects`).
 pub const MIN_MAX_ATTEMPTS: i16 = 1;
@@ -71,11 +83,20 @@ pub enum ProjectError {
     /// The name was not 1–100 characters after trimming.
     #[error("project name must be 1-100 characters")]
     InvalidName,
-    /// The remote was not an `https://` URL without credentials.
+    /// The remote was not a well-formed `https://` URL.
     #[error("remote URL must be an https:// URL without embedded credentials")]
     InvalidRemoteUrl,
-    /// The branch name was empty or contained whitespace.
-    #[error("default branch must not be empty or contain whitespace")]
+    /// The remote carried userinfo — a credential in a column that is read
+    /// back by `GET /projects` (`CLAUDE.md`, rule 3).
+    ///
+    /// A separate variant from [`ProjectError::InvalidRemoteUrl`] because the
+    /// caller has to do something different about it: move the value into the
+    /// `credential` field, which is stored as the project-scoped
+    /// `GIT_CREDENTIAL` secret.
+    #[error("remote_url must not contain credentials")]
+    RemoteUrlHasCredentials,
+    /// The branch name was empty, too long, or not a name git would accept.
+    #[error("default branch must be a valid git branch name")]
     InvalidDefaultBranch,
     /// `max_attempts` was outside 1–20.
     #[error("max attempts must be between 1 and 20")]
@@ -152,24 +173,45 @@ pub struct RemoteUrl(String);
 
 impl RemoteUrl {
     /// Trim `raw`, then accept it when it is an `https://` URL with a
-    /// non-empty authority that contains no `@` and no whitespace anywhere.
+    /// non-empty authority that carries no userinfo, no fragment and no
+    /// whitespace or control character anywhere.
+    ///
+    /// **Test-only exception.** Under the `integration-tests` feature an
+    /// absolute `file://` URL is accepted as well, so that the integration
+    /// suite can point a project at a real bare repository in a `tempfile`
+    /// directory and clone it for real — git is never mocked (`CLAUDE.md`,
+    /// "Testing expectations"). The release build has no such branch and keeps
+    /// `https://` only, which is the documented contract (`SPEC.md`,
+    /// "Projects"; `docs/data-model.md`, `projects`). This is deliberately not
+    /// in `SPEC.md`: the behaviour a released Mars has is unchanged.
     pub fn parse(raw: &str) -> ProjectResult<Self> {
         let trimmed = raw.trim();
 
-        let Some(rest) = trimmed.strip_prefix(REMOTE_URL_SCHEME) else {
-            return Err(ProjectError::InvalidRemoteUrl);
-        };
         // Interior whitespace survives the trim and would reach `git` as part
-        // of the argument.
-        if trimmed.chars().any(char::is_whitespace) {
+        // of the argument; a control character would reach a log line. A
+        // fragment is never part of a git remote, and `#` in a URL that is
+        // also written into `.git/config` is asking for trouble.
+        if trimmed
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+            || trimmed.contains('#')
+        {
             return Err(ProjectError::InvalidRemoteUrl);
         }
 
-        // The authority is everything up to the first `/` after the scheme; a
-        // `@` there is userinfo. A `@` later in the path is an ordinary
-        // character (GitLab subgroups and Gitea mirrors both produce some).
-        let authority = rest.split('/').next().unwrap_or(rest);
-        if authority.is_empty() || authority.contains('@') {
+        if let Some(rest) = trimmed.strip_prefix(REMOTE_URL_SCHEME) {
+            // The authority is everything up to the first `/` or `?` after the
+            // scheme; a `@` there is userinfo. A `@` later in the path is an
+            // ordinary character (GitLab subgroups and Gitea mirrors both
+            // produce some).
+            let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+            if authority.contains('@') {
+                return Err(ProjectError::RemoteUrlHasCredentials);
+            }
+            if authority.is_empty() {
+                return Err(ProjectError::InvalidRemoteUrl);
+            }
+        } else if !is_local_test_remote(trimmed) {
             return Err(ProjectError::InvalidRemoteUrl);
         }
 
@@ -186,14 +228,36 @@ impl RemoteUrl {
     /// Git treats a path as a remote over the `file` transport, which is what
     /// lets the git tests point `origin` at a bare repository in a `tempfile`
     /// directory instead of at a network host (`CLAUDE.md`, "Testing
-    /// expectations": git is never mocked). [`RemoteUrl::parse`] rejects it,
-    /// as it must — a project's stored URL is `https://` only — so this
-    /// bypass is compiled only under `cfg(test)` and behind the
-    /// `integration-tests` feature and can never be reached by a request.
+    /// expectations": git is never mocked). A bare path has no scheme, so
+    /// [`RemoteUrl::parse`] rejects it however it is built — the test-only
+    /// form a *request* can carry is the `file://` URL that parse accepts
+    /// under the same feature — and this bypass is compiled only under
+    /// `cfg(test)` or the `integration-tests` feature, so no request reaches
+    /// it at all.
     #[cfg(any(test, feature = "integration-tests"))]
     pub fn local_for_tests(path: &std::path::Path) -> Self {
         Self(path.display().to_string())
     }
+}
+
+/// Is `trimmed` the test-only local remote form, `file://` plus an absolute
+/// path?
+///
+/// Compiled under the `integration-tests` feature only; the counterpart below
+/// is what a release build gets, and it accepts nothing (see
+/// [`RemoteUrl::parse`]).
+#[cfg(feature = "integration-tests")]
+fn is_local_test_remote(trimmed: &str) -> bool {
+    matches!(
+        trimmed.strip_prefix(LOCAL_REMOTE_SCHEME),
+        Some(path) if path.starts_with('/')
+    )
+}
+
+/// A release build accepts no scheme but `https://`.
+#[cfg(not(feature = "integration-tests"))]
+fn is_local_test_remote(_trimmed: &str) -> bool {
+    false
 }
 
 impl From<RemoteUrl> for String {
@@ -208,16 +272,47 @@ impl std::fmt::Display for RemoteUrl {
     }
 }
 
+/// The characters git's own `check-ref-format` never allows in a ref
+/// component, minus the ones spelled out separately below.
+const BRANCH_NAME_FORBIDDEN: [char; 7] = ['~', '^', ':', '?', '*', '[', '\\'];
+
 /// Does `raw` look like a branch name Mars will accept?
 ///
-/// Non-empty and free of whitespace, which is all the model can decide on its
-/// own: whether the branch exists is a question for the mirror, and the clone
-/// job answers it before the project becomes `ready`.
+/// A conservative subset of `git check-ref-format`: 1–255 characters, no
+/// whitespace and no control characters, none of `~ ^ : ? * [ \`, no `..` and
+/// no `@{`, not starting with `-`, `/` or `refs/` and not ending with `/`, `.`
+/// or `.lock`. Everything on that list either cannot become a ref at all, or
+/// would be read as an option or a revision expression by the `git` binary the
+/// name is passed to (ADR 0011).
+///
+/// It is deliberately a *syntactic* check. Whether the branch exists is a
+/// question for the mirror, and the clone job answers it before the project
+/// becomes `ready`.
 pub fn is_branch_name(raw: &str) -> bool {
-    !raw.is_empty() && !raw.chars().any(char::is_whitespace)
+    let length = raw.chars().count();
+    if length == 0 || length > MAX_BRANCH_NAME_CHARS {
+        return false;
+    }
+    if raw
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch.is_control() || BRANCH_NAME_FORBIDDEN.contains(&ch))
+    {
+        return false;
+    }
+    if raw.contains("..") || raw.contains("@{") {
+        return false;
+    }
+    if raw.starts_with('-') || raw.starts_with('/') || raw.starts_with("refs/") {
+        return false;
+    }
+    if raw.ends_with('/') || raw.ends_with('.') || raw.ends_with(".lock") {
+        return false;
+    }
+
+    true
 }
 
-/// A validated branch name: non-empty, no whitespace.
+/// A validated branch name: see [`is_branch_name`] for the rule set.
 ///
 /// Optional on a project — `default_branch` is null while discovery from the
 /// remote `HEAD` is pending or has failed — but never a bare `String` when it
@@ -227,7 +322,7 @@ pub fn is_branch_name(raw: &str) -> bool {
 pub struct BranchName(String);
 
 impl BranchName {
-    /// Accept `raw` when it is non-empty and contains no whitespace.
+    /// Accept `raw` when [`is_branch_name`] does.
     pub fn parse(raw: &str) -> ProjectResult<Self> {
         if is_branch_name(raw) {
             Ok(Self(raw.to_string()))
@@ -295,11 +390,16 @@ impl std::fmt::Display for MaxAttempts {
 
 /// A `projects` row, column for column (`docs/data-model.md`, `projects`).
 ///
-/// The API-facing `Project` — the same fields plus `has_credential` and
-/// without `next_task_number` and `updated_at` (`SPEC.md`, "Projects") — is
-/// assembled by the routes from this row. `has_credential` is deliberately not
-/// a field here: it is derived from the presence of the project-scoped
-/// `GIT_CREDENTIAL` secret, which is a different table.
+/// The API-facing `Project` — the same fields without `created_by`,
+/// `next_task_number` and `updated_at` (`SPEC.md`, "Projects") — is assembled
+/// by the routes from this row.
+///
+/// `has_credential` is not a column: it is whether the project has the
+/// project-scoped `GIT_CREDENTIAL` secret, which lives in `secrets`. Every
+/// read in [`crate::repositories::ProjectRepository`] computes it with an
+/// `EXISTS` subquery in the same statement, so a project is rendered from one
+/// round trip and no ciphertext is moved to answer a boolean
+/// (`docs/data-model.md`, `projects`, `secrets`).
 ///
 /// There is no `Deserialize`: a `Project` only ever comes out of the database.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
@@ -316,6 +416,9 @@ pub struct Project {
     pub next_task_number: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Derived, not stored; see the type documentation. Last, because
+    /// `query_as!` maps columns to fields by position.
+    pub has_credential: bool,
 }
 
 /// The caller-supplied half of a new project.
@@ -361,6 +464,9 @@ impl NewProject {
 /// Every field is optional and `None` means "leave it alone", so one statement
 /// serves the whole endpoint. `status`, `status_message` and `last_fetched_at`
 /// are deliberately absent: they are the clone and fetch jobs' to set, through
+/// [`crate::repositories::ProjectRepository::mark_ready`],
+/// [`crate::repositories::ProjectRepository::mark_error`],
+/// [`crate::repositories::ProjectRepository::mark_cloning_from_error`],
 /// [`crate::repositories::ProjectRepository::set_status`] and
 /// [`crate::repositories::ProjectRepository::set_last_fetched_at`], never
 /// through a user-supplied body.
@@ -387,6 +493,7 @@ mod tests {
         for error in [
             ProjectError::InvalidName,
             ProjectError::InvalidRemoteUrl,
+            ProjectError::RemoteUrlHasCredentials,
             ProjectError::InvalidDefaultBranch,
             ProjectError::InvalidMaxAttempts,
         ] {
@@ -479,7 +586,6 @@ mod tests {
             "http://example.invalid/org/repo.git",
             "git@example.invalid:org/repo.git",
             "ssh://example.invalid/org/repo.git",
-            "file:///srv/repo.git",
             "example.invalid/org/repo.git",
             "HTTPS://example.invalid/org/repo.git",
             "",
@@ -492,6 +598,35 @@ mod tests {
         }
     }
 
+    /// The test-only `file://` exception, and the release behaviour it must
+    /// not change; see [`RemoteUrl::parse`].
+    #[test]
+    #[cfg(feature = "integration-tests")]
+    fn a_local_remote_is_accepted_only_under_the_test_feature() {
+        assert_eq!(
+            RemoteUrl::parse("file:///srv/repo.git").unwrap().as_str(),
+            "file:///srv/repo.git"
+        );
+        // Still a URL, and still absolute: a relative or host-bearing one is
+        // not what the test harness produces.
+        for raw in ["file://srv/repo.git", "file://", "file:/srv/repo.git"] {
+            assert_eq!(
+                RemoteUrl::parse(raw),
+                Err(ProjectError::InvalidRemoteUrl),
+                "accepted {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "integration-tests"))]
+    fn a_local_remote_is_rejected_by_a_release_build() {
+        assert_eq!(
+            RemoteUrl::parse("file:///srv/repo.git"),
+            Err(ProjectError::InvalidRemoteUrl)
+        );
+    }
+
     #[test]
     fn a_remote_url_rejects_embedded_credentials() {
         for raw in [
@@ -501,10 +636,24 @@ mod tests {
         ] {
             assert_eq!(
                 RemoteUrl::parse(raw),
-                Err(ProjectError::InvalidRemoteUrl),
+                Err(ProjectError::RemoteUrlHasCredentials),
                 "accepted {raw:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_remote_url_rejects_a_fragment() {
+        assert_eq!(
+            RemoteUrl::parse("https://example.invalid/org/repo.git#main"),
+            Err(ProjectError::InvalidRemoteUrl)
+        );
+    }
+
+    #[test]
+    fn a_remote_url_keeps_a_query_string() {
+        // Not userinfo, and some self-hosted forges really do serve one.
+        assert!(RemoteUrl::parse("https://example.invalid/r?p=org/repo.git").is_ok());
     }
 
     #[test]
@@ -547,8 +696,24 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_name_is_non_empty_and_has_no_whitespace() {
-        assert_eq!(BranchName::parse("main").unwrap().as_str(), "main");
+    fn a_branch_name_accepts_the_shapes_git_uses() {
+        for raw in [
+            "main",
+            "release/1.2",
+            "release/v1.0",
+            "feat_x-1",
+            "user/feat/x",
+            "v1.0.0",
+            &"b".repeat(MAX_BRANCH_NAME_CHARS),
+        ] {
+            assert_eq!(
+                BranchName::parse(raw).expect("a branch name").as_str(),
+                raw,
+                "rejected {raw:?}"
+            );
+            assert!(is_branch_name(raw), "rejected {raw:?}");
+        }
+
         assert_eq!(
             BranchName::parse("release/v1.0").unwrap().to_string(),
             "release/v1.0"
@@ -557,8 +722,37 @@ mod tests {
             String::from(BranchName::parse("main").unwrap()),
             "main".to_string()
         );
+    }
 
-        for raw in ["", " ", "my branch", "main\n", "\tmain"] {
+    #[test]
+    fn a_branch_name_rejects_what_git_would_not_store_or_would_misread() {
+        for raw in [
+            // Empty, too long, whitespace, control characters.
+            "",
+            " ",
+            "my branch",
+            "main\n",
+            "\tmain",
+            "ma\u{7}in",
+            &"b".repeat(MAX_BRANCH_NAME_CHARS + 1),
+            // Revision-expression and glob characters.
+            "a..b",
+            "main~1",
+            "main^",
+            "origin:main",
+            "what?",
+            "feat/*",
+            "feat[1]",
+            "feat\\x",
+            "main@{upstream}",
+            // Leading and trailing forms.
+            "-x",
+            "/main",
+            "refs/heads/x",
+            "a/",
+            "a.",
+            "a.lock",
+        ] {
             assert_eq!(
                 BranchName::parse(raw),
                 Err(ProjectError::InvalidDefaultBranch),

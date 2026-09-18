@@ -203,9 +203,15 @@ pub async fn set_project_git_credential(
 
 /// Whether this project has a remote credential at all.
 ///
-/// The `has_credential` field of `Project` (`SPEC.md`, "Projects
-/// (`/api/projects`)"): a boolean from an `EXISTS`, so no ciphertext is moved
-/// and nothing is decrypted to render a project.
+/// A boolean from an `EXISTS`, so no ciphertext is moved and nothing is
+/// decrypted to answer it.
+///
+/// Rendering a project does not come through here: `Project.has_credential`
+/// is computed by the same `EXISTS` inside every statement of
+/// [`crate::repositories::ProjectRepository`], which keeps a listing to one
+/// round trip (`SPEC.md`, "Projects (`/api/projects`)"). This is the standalone
+/// question — "does this project have one at all?" — for callers that hold no
+/// project row, such as the credential provider deciding whether to prompt.
 pub async fn has_project_git_credential(pool: &PgPool, project_id: Uuid) -> Result<bool> {
     SecretRepository::new(pool)
         .exists_by_name(&ScopeRef::project(project_id), &credential_name())

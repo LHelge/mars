@@ -1,16 +1,17 @@
 ---
 id: "3z8xu"
 title: "The launch sequence must not wait for init: Claude Code 2.1.274 writes nothing until its first stdin line"
-status: open
+status: done
 priority: P1
 created: "2026-09-18T18:08:12.814321683Z"
-updated: "2026-09-18T18:08:12.814321683Z"
+updated: "2026-09-18T18:37:03.293736590Z"
 tags:
   - orchestrator
   - agent
   - images
   - docs
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

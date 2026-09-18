@@ -56,3 +56,7 @@ Add `orchestrator/tests/session_e2e.rs`, a test binary that runs only when `DOCK
 - "Session container images: claude and stub": the stub image, its fixture transcript and expected-event file.
 - "Container engine adapter": the bollard engine, the startup probe and the engine test harness pattern in `tests/engine.rs`.
 - "Repository scaffolding, tooling and CI": the orchestrator CI workflow with the Podman and Docker engine matrix.
+
+## Correction: `running` on stdin attach, not on `init` (ADR 0032, task 3z8xu)
+The pinned CLI writes nothing, `init` included, until its first stdin line (`ARCHITECTURE.md`, "Launch sequence"; `docs/decisions/0032-run-state-on-stdin-attach.md`). Where the text above disagrees, this section wins.
+- A conversational session launched with no message is `running` with `cli_session_id` null. Assert the id is set only after `POST .../input` has produced the first `init`.

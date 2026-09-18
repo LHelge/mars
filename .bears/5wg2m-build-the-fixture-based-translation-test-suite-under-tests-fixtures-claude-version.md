@@ -1,10 +1,10 @@
 ---
 id: "5wg2m"
 title: Build the fixture-based translation test suite under tests/fixtures/claude/<version>/
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:30:24.273141218Z"
-updated: "2026-09-16T20:30:24.273141218Z"
+updated: "2026-09-18T18:37:01.341312335Z"
 tags:
   - orchestrator
   - agent
@@ -13,6 +13,7 @@ depends_on:
   - eeswv
   - u3eta
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

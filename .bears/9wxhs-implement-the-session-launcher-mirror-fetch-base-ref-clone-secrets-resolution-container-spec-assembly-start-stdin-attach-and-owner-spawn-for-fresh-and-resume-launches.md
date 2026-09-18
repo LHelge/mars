@@ -66,3 +66,8 @@ Implement `Launcher` in `orchestrator/src/session/launcher.rs`: the asynchronous
 - "Secrets manager": `resolve_for_launch(...) -> (env map, missing names)` writing `secret_uses` rows.
 - "Claude Code agent backend": `LaunchContext`, `AgentBackend::launch_command`.
 - "Projects, agent profiles and shared directories": `Profile`, `SharedDir` repository, project data-dir layout.
+
+## Correction: `running` on stdin attach, not on `init` (ADR 0032, task 3z8xu)
+The pinned CLI writes nothing, `init` included, until its first stdin line (`ARCHITECTURE.md`, "Launch sequence"; `docs/decisions/0032-run-state-on-stdin-attach.md`). Where the text above disagrees, this section wins.
+- After stdin is attached the launcher transitions `creating`/`parked` to `running` (`state_change`, `session_state` notify) and calls `registry.mark_running(sid)`, handing the drained `QueuedInput`s to the owner. Nothing waits for `init`; the registry entry does not stay `Creating` until `init`.
+- Resume: a missing `cli_session_id` is not an error. The session never spoke, so run the fresh launch without `--resume` in the existing checkout (with the existing fallback when the work directory is missing too).

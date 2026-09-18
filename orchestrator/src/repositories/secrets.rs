@@ -582,6 +582,42 @@ impl<'a> SecretRepository<'a> {
         Ok(deleted)
     }
 
+    /// Delete every secret of one project, reporting how many rows went.
+    ///
+    /// `secrets.scope_id` carries no foreign key — the scope decides which
+    /// table it points at (`docs/data-model.md`, `secrets`) — so deleting a
+    /// project takes nothing with it, and its secrets would become exactly the
+    /// orphans [`SecretRepository::list_orphans`] exists to find. Project
+    /// deletion therefore removes them itself, in the same transaction as the
+    /// row ([`crate::projects::delete_project`]). The `secret_uses` audit rows
+    /// cascade with each secret, as they do for a single
+    /// [`SecretRepository::delete`].
+    ///
+    /// The scope is built from [`ScopeRef`] rather than written as a literal,
+    /// so the pair in the `WHERE` clause is the one the model considers valid;
+    /// `IS NOT DISTINCT FROM` is the comparison the rest of this file uses for
+    /// a `scope_id` that may be NULL, although a project's never is.
+    pub async fn delete_all_for_project(
+        &self,
+        tx: &mut PgConnection,
+        project_id: Uuid,
+    ) -> Result<u64> {
+        let scope = ScopeRef::project(project_id);
+
+        let result = sqlx::query!(
+            "DELETE FROM secrets WHERE scope = $1 AND scope_id IS NOT DISTINCT FROM $2",
+            scope.scope() as SecretScope,
+            scope.scope_id(),
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let deleted = result.rows_affected();
+        debug!(project_id = %project_id, deleted, "project secrets deleted");
+
+        Ok(deleted)
+    }
+
     /// One rotation batch: up to `limit` rows still wrapped by a master key
     /// older than `below_version`.
     ///

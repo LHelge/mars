@@ -237,6 +237,34 @@ impl<'a> SessionRepository<'a> {
         Ok(count)
     }
 
+    /// The ids of every session of this project, whatever its state.
+    ///
+    /// Project deletion's list of directories to remove
+    /// ([`crate::projects::delete_project`]): the rows go with the project by
+    /// cascade, but `DATA_DIR/sessions/<id>/` does not, so the ids are read
+    /// while they still exist. It takes the caller's connection because they
+    /// have to be the ids the *deleting* transaction removes — read on the
+    /// pool beforehand, a session created in between would leave its directory
+    /// behind.
+    ///
+    /// Ordered by id, so a log line or a test reads the same list twice.
+    pub async fn ids_for_project(
+        &self,
+        tx: &mut PgConnection,
+        project_id: Uuid,
+    ) -> Result<Vec<Uuid>> {
+        let ids = sqlx::query_scalar!(
+            "SELECT id FROM sessions WHERE project_id = $1 ORDER BY id",
+            project_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        debug!(project_id = %project_id, count = ids.len(), "project sessions listed");
+
+        Ok(ids)
+    }
+
     /// Retitle a session and return the stored row, or `None` when no session
     /// has this id (`PUT /sessions/{id}`).
     ///

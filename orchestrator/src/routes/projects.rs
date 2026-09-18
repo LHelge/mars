@@ -1,9 +1,9 @@
 //! `/api/projects` (`SPEC.md`, "Projects (`/api/projects`)").
 //!
 //! The project's own endpoints: the list, the create, the read, the edit, the
-//! clone retry, the on-demand mirror fetch and the branch listing. The git
-//! sub-resource lives in [`crate::routes::git`] and is merged onto the same
-//! `/projects` prefix (`routes::mod`).
+//! delete, the clone retry, the on-demand mirror fetch and the branch listing.
+//! The git sub-resource lives in [`crate::routes::git`] and is merged onto the
+//! same `/projects` prefix (`routes::mod`).
 //!
 //! Almost nothing is decided here. Creating a project is one transaction in
 //! [`create_project`], which validates every field, seeds the task states and
@@ -13,7 +13,9 @@
 //! the models, which are what turn a bad name, branch or attempt budget into
 //! the documented 400, and `retry-clone` is [`ProjectRepository::mark_cloning_from_error`],
 //! whose `status = 'error'` guard is in the `WHERE` clause so two concurrent
-//! retries cannot both start a job.
+//! retries cannot both start a job. `DELETE` is [`delete_project`], which takes
+//! the project git lock, refuses with 409 while a session of the project is
+//! live, and removes the rows and the directories under that lock.
 //!
 //! What this module does decide:
 //!
@@ -50,7 +52,7 @@ use crate::models::{
     Branch, BranchName, MaxAttempts, Project, ProjectName, ProjectStatus, ProjectUpdate,
 };
 use crate::prelude::*;
-use crate::projects::{NewProjectRequest, clone_job, create_project};
+use crate::projects::{NewProjectRequest, clone_job, create_project, delete_project};
 use crate::repositories::ProjectRepository;
 use crate::routes::{CurrentUser, Path};
 
@@ -73,7 +75,7 @@ const NOT_READY: &str = "project is not ready";
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
-        .route("/{id}", get(fetch).put(update))
+        .route("/{id}", get(fetch).put(update).delete(remove))
         .route("/{id}/retry-clone", post(retry_clone))
         .route("/{id}/fetch", post(fetch_now))
         .route("/{id}/branches", get(branches))
@@ -416,6 +418,25 @@ async fn branches(
     drop(guard);
 
     Ok(Json(listed?))
+}
+
+// ---- delete ----
+
+/// `DELETE /projects/{id}` → 204 (404 unknown, 409 while any session of the
+/// project is `running` or `creating`).
+///
+/// Named `remove` because `delete` is the routing method this handler is
+/// registered with. Everything it does is [`delete_project`]: the git lock,
+/// the one transaction that refuses or deletes, and the directories afterwards
+/// (`SPEC.md`, "Projects"; `ARCHITECTURE.md`, "Storage").
+async fn remove(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    delete_project(&state, id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]

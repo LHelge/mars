@@ -257,7 +257,11 @@ async fn create_dir_all(path: &Path) -> Result<()> {
 }
 
 /// `rm -rf`, with a missing path counting as done.
-async fn remove_dir_all(path: &Path) -> Result<()> {
+///
+/// `pub(crate)` for [`crate::projects::delete`], which removes one directory
+/// per former session of the project and must log and tolerate exactly what
+/// the methods above do rather than repeat this three-line `match`.
+pub(crate) async fn remove_dir_all(path: &Path) -> Result<()> {
     match tokio::fs::remove_dir_all(path).await {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),

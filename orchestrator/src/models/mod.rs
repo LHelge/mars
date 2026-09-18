@@ -43,8 +43,9 @@ pub use session::{
     session_branch, state_change_payload,
 };
 pub use shared_dir::{
-    ContainerPath, MAX_SHARED_DIR_NAME_CHARS, NewSharedDir, RESERVED_PATHS, SharedDir,
-    SharedDirError, SharedDirName, SharedDirResult, is_shared_dir_name,
+    ContainerPath, MAX_CONTAINER_PATH_BYTES, MAX_SHARED_DIR_NAME_CHARS, MCP_CONFIG_PATH,
+    NewSharedDir, RESERVED_PATHS, SharedDir, SharedDirError, SharedDirName, SharedDirResult,
+    is_shared_dir_name,
 };
 pub use task::{
     Label, MAX_TITLE_CHARS, NewTask, Priority, Task, TaskError, TaskRef, TaskResult, TaskTitle,

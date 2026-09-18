@@ -113,7 +113,7 @@ Directories under `/data/projects/{pid}/shared/<name>` that are bind-mounted rea
 | POST | `/projects/{pid}/shared-dirs/{name}/clear` | JWT | → 204 (empties the directory; 409 while any session of the project is `running` or `creating`) |
 | DELETE | `/projects/{pid}/shared-dirs/{name}` | JWT | → 204 (removes the directory and its contents; 409 while any session of the project is `running` or `creating`) |
 
-`SharedDir = { name, container_path, created_at }`. `name` is 1–64 characters matching `[a-z0-9][a-z0-9_-]*` and is the directory name on disk. `container_path` is an absolute, normalised path (no `.`, `..`, repeated or trailing slashes) that is not `/data` or below it and is neither equal to nor an ancestor of `/session/work`, `/session/home`, `/session/log` or `/session/mcp.json`; it may lie inside `/session/work`. The recommended entries per ecosystem are in `README.md`, "Operating notes".
+`SharedDir = { name, container_path, created_at }`. `name` is 1–64 characters matching `[a-z0-9][a-z0-9_-]*` and is the directory name on disk. `container_path` is an absolute, normalised path of at most 4096 bytes (no `.`, `..`, repeated or trailing slashes, no whitespace or control characters) that is not `/data` or below it and is neither equal to nor an ancestor of `/session/work`, `/session/home`, `/session/log` or `/session/mcp.json`, and is not below `/session/mcp.json`, which is a file; it may lie inside `/session/work`. Both fields are trimmed of surrounding whitespace before they are validated and stored. The recommended entries per ecosystem are in `README.md`, "Operating notes".
 
 ### Agent profiles (`/api/projects/{pid}/profiles`)
 

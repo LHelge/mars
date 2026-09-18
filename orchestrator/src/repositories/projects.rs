@@ -579,17 +579,29 @@ impl<'a> ProjectRepository<'a> {
 
     /// Insert an agent profile and return the stored row.
     ///
+    /// **Call only while holding [`ProjectRepository::lock_project`] in the
+    /// same transaction** (`docs/data-model.md`, "Tracker mutation
+    /// transactions"): a profile that arrives as the new default first clears
+    /// the flag from the current one, and that pair of statements is only
+    /// atomic under the project lock.
+    ///
     /// `partial_messages` has no column default, so the value bound here is
     /// [`NewAgentProfile::partial_messages`], which resolves an unset one from
-    /// the profile's kind. A duplicate name and a second default profile are
-    /// both the caller's mistake and map to the 409s `SPEC.md`, "Agent
-    /// profiles" documents; the states this profile serves are a separate
-    /// table, written by the tracker's repository in the same transaction.
+    /// the profile's kind. A duplicate name is the caller's mistake and maps to
+    /// the 409 `SPEC.md`, "Agent profiles" documents; the states this profile
+    /// serves are a separate table, written by
+    /// [`crate::repositories::TaskRepository::set_profile_states_by_name`] in
+    /// the same transaction, so the returned row's `serves_states` is empty
+    /// until it is.
     pub async fn insert_profile(
         &self,
         tx: &mut PgConnection,
         profile: &NewAgentProfile,
     ) -> Result<AgentProfile> {
+        if profile.is_default {
+            clear_other_defaults(&mut *tx, profile.project_id, profile.id).await?;
+        }
+
         let inserted = sqlx::query_as!(
             AgentProfile,
             r#"
@@ -601,7 +613,8 @@ impl<'a> ProjectRepository<'a> {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             RETURNING id, project_id, name, kind as "kind: ProfileKind",
                       backend as "backend: AgentBackend", model, system_prompt, permission_mode,
-                      image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,
+                      image, runtime, mcp_tools, secrets,
+                      ARRAY[]::text[] as "serves_states!", partial_messages, idle_timeout_secs,
                       is_default, created_at, updated_at
             "#,
             profile.id,
@@ -635,16 +648,28 @@ impl<'a> ProjectRepository<'a> {
     }
 
     /// The profile with this id in this project, or `None`.
+    ///
+    /// The `profile_states` join comes with it: `serves_states` is the state
+    /// *names* in board order, which is what `SPEC.md`, "Agent profiles" puts
+    /// on the wire. `array_remove(array_agg(...), NULL)` turns the `LEFT JOIN`
+    /// of a profile that serves nothing into the empty array rather than a row
+    /// of one `NULL`.
     pub async fn find_profile(&self, project_id: Uuid, id: Uuid) -> Result<Option<AgentProfile>> {
         let profile = sqlx::query_as!(
             AgentProfile,
             r#"
-            SELECT id, project_id, name, kind as "kind: ProfileKind",
-                   backend as "backend: AgentBackend", model, system_prompt, permission_mode,
-                   image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,
-                   is_default, created_at, updated_at
-            FROM agent_profiles
-            WHERE id = $1 AND project_id = $2
+            SELECT p.id, p.project_id, p.name, p.kind as "kind: ProfileKind",
+                   p.backend as "backend: AgentBackend", p.model, p.system_prompt,
+                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,
+                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
+                       as "serves_states!",
+                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.created_at,
+                   p.updated_at
+            FROM agent_profiles AS p
+            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
+            LEFT JOIN task_states AS ts ON ts.id = ps.state_id
+            WHERE p.id = $1 AND p.project_id = $2
+            GROUP BY p.id
             "#,
             id,
             project_id,
@@ -663,12 +688,18 @@ impl<'a> ProjectRepository<'a> {
         let profile = sqlx::query_as!(
             AgentProfile,
             r#"
-            SELECT id, project_id, name, kind as "kind: ProfileKind",
-                   backend as "backend: AgentBackend", model, system_prompt, permission_mode,
-                   image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,
-                   is_default, created_at, updated_at
-            FROM agent_profiles
-            WHERE project_id = $1 AND is_default
+            SELECT p.id, p.project_id, p.name, p.kind as "kind: ProfileKind",
+                   p.backend as "backend: AgentBackend", p.model, p.system_prompt,
+                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,
+                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
+                       as "serves_states!",
+                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.created_at,
+                   p.updated_at
+            FROM agent_profiles AS p
+            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
+            LEFT JOIN task_states AS ts ON ts.id = ps.state_id
+            WHERE p.project_id = $1 AND p.is_default
+            GROUP BY p.id
             "#,
             project_id,
         )
@@ -678,18 +709,24 @@ impl<'a> ProjectRepository<'a> {
         Ok(profile)
     }
 
-    /// The project's profiles, by name.
+    /// The project's profiles, by name, each with the states it serves.
     pub async fn list_profiles(&self, project_id: Uuid) -> Result<Vec<AgentProfile>> {
         let profiles = sqlx::query_as!(
             AgentProfile,
             r#"
-            SELECT id, project_id, name, kind as "kind: ProfileKind",
-                   backend as "backend: AgentBackend", model, system_prompt, permission_mode,
-                   image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,
-                   is_default, created_at, updated_at
-            FROM agent_profiles
-            WHERE project_id = $1
-            ORDER BY name
+            SELECT p.id, p.project_id, p.name, p.kind as "kind: ProfileKind",
+                   p.backend as "backend: AgentBackend", p.model, p.system_prompt,
+                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,
+                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
+                       as "serves_states!",
+                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.created_at,
+                   p.updated_at
+            FROM agent_profiles AS p
+            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
+            LEFT JOIN task_states AS ts ON ts.id = ps.state_id
+            WHERE p.project_id = $1
+            GROUP BY p.id
+            ORDER BY p.name
             "#,
             project_id,
         )
@@ -702,9 +739,23 @@ impl<'a> ProjectRepository<'a> {
     /// Replace a profile's configuration and return the stored row, or `None`
     /// when this project has no such profile.
     ///
+    /// **Call only while holding [`ProjectRepository::lock_project`] in the
+    /// same transaction**: the current row is read to decide the default flag,
+    /// and both the transfer and the refusal below are answers about the
+    /// project's profiles as a whole (`docs/data-model.md`, "Tracker mutation
+    /// transactions").
+    ///
     /// A full replacement, because `PUT /projects/{pid}/profiles/{id}` takes a
     /// whole `ProfileInput`: omitting `model` clears it. `updated_at` moves on
-    /// every call, and the two conflicts are the same ones an insert can hit.
+    /// every call.
+    ///
+    /// `is_default` is the exception to the replacement. `None` leaves the flag
+    /// as it is. `Some(true)` takes it from whichever profile has it, so a
+    /// project always has exactly one default and the caller never has to clear
+    /// the old one first; setting it on the profile that already has it changes
+    /// nothing. `Some(false)` on the current default is [`Error::Conflict`]
+    /// — a project without a default profile has nothing to launch from, so the
+    /// flag is moved, never dropped (`SPEC.md`, "Agent profiles").
     pub async fn update_profile(
         &self,
         tx: &mut PgConnection,
@@ -712,29 +763,63 @@ impl<'a> ProjectRepository<'a> {
         id: Uuid,
         update: &ProfileUpdate,
     ) -> Result<Option<AgentProfile>> {
+        let Some(was_default) = find_profile_is_default(&mut *tx, project_id, id).await? else {
+            return Ok(None);
+        };
+
+        let is_default = match update.is_default {
+            Some(true) => {
+                clear_other_defaults(&mut *tx, project_id, id).await?;
+                true
+            }
+            Some(false) if was_default => {
+                return Err(Error::Conflict(
+                    "project must keep a default profile".into(),
+                ));
+            }
+            Some(false) => false,
+            None => was_default,
+        };
+
         let updated = sqlx::query_as!(
             AgentProfile,
             r#"
-            UPDATE agent_profiles
-            SET name = $3,
-                kind = $4,
-                backend = $5,
-                model = $6,
-                system_prompt = $7,
-                permission_mode = $8,
-                image = $9,
-                runtime = $10,
-                mcp_tools = $11,
-                secrets = $12,
-                partial_messages = $13,
-                idle_timeout_secs = $14,
-                is_default = $15,
-                updated_at = NOW()
-            WHERE id = $1 AND project_id = $2
-            RETURNING id, project_id, name, kind as "kind: ProfileKind",
-                      backend as "backend: AgentBackend", model, system_prompt, permission_mode,
-                      image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,
-                      is_default, created_at, updated_at
+            WITH updated AS (
+                UPDATE agent_profiles
+                SET name = $3,
+                    kind = $4,
+                    backend = $5,
+                    model = $6,
+                    system_prompt = $7,
+                    permission_mode = $8,
+                    image = $9,
+                    runtime = $10,
+                    mcp_tools = $11,
+                    secrets = $12,
+                    partial_messages = $13,
+                    idle_timeout_secs = $14,
+                    is_default = $15,
+                    updated_at = NOW()
+                WHERE id = $1 AND project_id = $2
+                RETURNING id, project_id, name, kind, backend, model, system_prompt,
+                          permission_mode, image, runtime, mcp_tools, secrets, partial_messages,
+                          idle_timeout_secs, is_default, created_at, updated_at
+            )
+            SELECT u.id, u.project_id, u.name, u.kind as "kind: ProfileKind",
+                   u.backend as "backend: AgentBackend", u.model, u.system_prompt,
+                   u.permission_mode, u.image, u.runtime, u.mcp_tools, u.secrets,
+                   COALESCE(
+                       (
+                           SELECT array_agg(ts.name ORDER BY ts.position)
+                           FROM profile_states AS ps
+                           JOIN task_states AS ts ON ts.id = ps.state_id
+                           WHERE ps.profile_id = u.id
+                       ),
+                       '{}'
+                   ) as "serves_states!",
+                   u.partial_messages, u.idle_timeout_secs, u.is_default, u.created_at,
+                   u.updated_at
+            FROM updated AS u
             "#,
             id,
             project_id,
@@ -750,7 +835,7 @@ impl<'a> ProjectRepository<'a> {
             &update.secrets[..],
             update.partial_messages(),
             update.idle_timeout_secs,
-            update.is_default,
+            is_default,
         )
         .fetch_optional(&mut *tx)
         .await
@@ -763,17 +848,39 @@ impl<'a> ProjectRepository<'a> {
 
     /// Delete a profile, reporting whether a row matched.
     ///
-    /// `sessions.profile_id` is `ON DELETE RESTRICT`, so a profile that has
-    /// ever run a session cannot be deleted while those session rows exist:
-    /// they carry the transcript the UI still shows. That is a 409, not a 500
-    /// (`SPEC.md`, "Agent profiles"). Refusing to delete the *default* profile
-    /// is the route's rule, not a database constraint.
+    /// **Call only while holding [`ProjectRepository::lock_project`] in the
+    /// same transaction**: both refusals below are read before the `DELETE`,
+    /// and without the lock a session could be launched on the profile in
+    /// between.
+    ///
+    /// Two profiles cannot be deleted, and each says which it is rather than
+    /// letting the client guess (`SPEC.md`, "Agent profiles": 409 "if default
+    /// or has sessions"). The project's default profile is what every launch
+    /// falls back to, so it is moved with `is_default` on another profile
+    /// before it can go. A profile that has ever run a session is held by
+    /// `sessions.profile_id`, which is `ON DELETE RESTRICT` because those rows
+    /// carry the transcript the UI still shows; the count is read explicitly so
+    /// the answer is the documented conflict rather than a database error, and
+    /// `map_profile_error` stays as the backstop.
     pub async fn delete_profile(
         &self,
         tx: &mut PgConnection,
         project_id: Uuid,
         id: Uuid,
     ) -> Result<bool> {
+        let Some(is_default) = find_profile_is_default(&mut *tx, project_id, id).await? else {
+            return Ok(false);
+        };
+
+        if is_default {
+            return Err(Error::Conflict(
+                "the default profile cannot be deleted".into(),
+            ));
+        }
+        if self.profile_session_count(&mut *tx, id).await? > 0 {
+            return Err(Error::Conflict("profile has sessions".into()));
+        }
+
         let result = sqlx::query!(
             "DELETE FROM agent_profiles WHERE id = $1 AND project_id = $2",
             id,
@@ -788,6 +895,69 @@ impl<'a> ProjectRepository<'a> {
 
         Ok(deleted)
     }
+
+    /// How many sessions were launched from this profile, ever.
+    ///
+    /// The count behind [`ProjectRepository::delete_profile`]'s second refusal,
+    /// exposed because the routes want the same answer before they offer the
+    /// button: every state counts, `done` and `failed` included, since it is
+    /// the row rather than the container that holds the profile
+    /// (`docs/data-model.md`, `sessions`).
+    pub async fn profile_session_count(&self, tx: &mut PgConnection, id: Uuid) -> Result<i64> {
+        let count = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM sessions WHERE profile_id = $1"#,
+            id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        Ok(count)
+    }
+}
+
+/// Whether the project's profile `id` exists, and whether it is the default.
+///
+/// The read both write paths begin with. **Call only under the caller's
+/// project lock**: the answer decides whether the default flag moves, and
+/// outside the lock it could be stale by the time it is acted on.
+async fn find_profile_is_default(
+    tx: &mut PgConnection,
+    project_id: Uuid,
+    id: Uuid,
+) -> Result<Option<bool>> {
+    let is_default = sqlx::query_scalar!(
+        "SELECT is_default FROM agent_profiles WHERE id = $1 AND project_id = $2",
+        id,
+        project_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    Ok(is_default)
+}
+
+/// Take the default flag off every profile of the project but `keep`.
+///
+/// `agent_profiles_one_default_idx` allows one default per project, so a
+/// caller that sets the flag without clearing the old one would be refused by
+/// the index. Clearing first inside the same transaction makes "make this the
+/// default" one operation with no window in which the project has two defaults
+/// or none, and makes setting the flag on the profile that already has it a
+/// no-op (`docs/data-model.md`, `agent_profiles`).
+async fn clear_other_defaults(tx: &mut PgConnection, project_id: Uuid, keep: Uuid) -> Result<()> {
+    sqlx::query!(
+        r#"
+        UPDATE agent_profiles
+        SET is_default = FALSE, updated_at = NOW()
+        WHERE project_id = $1 AND is_default AND id <> $2
+        "#,
+        project_id,
+        keep,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    Ok(())
 }
 
 /// Map the `projects` constraints a caller can break to the documented

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE agent_profiles\n        SET is_default = FALSE, updated_at = NOW()\n        WHERE project_id = $1 AND is_default AND id <> $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0ce560710a1d9f03f65cf5944750eacfd05148c3e72364be85d8f640bb0b2fdf"
+}

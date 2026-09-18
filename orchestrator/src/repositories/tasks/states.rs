@@ -461,6 +461,68 @@ impl TaskRepository<'_> {
         Ok(())
     }
 
+    /// [`TaskRepository::set_profile_states`] addressed by state *name*, which
+    /// is how `ProfileInput.serves_states` arrives.
+    ///
+    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**,
+    /// for the same reason: the names are resolved against the project's
+    /// current states, and a rename or a deletion between the lookup and the
+    /// insert would write a link the caller never asked for
+    /// (`docs/data-model.md`, "Tracker mutation transactions" lists profile
+    /// served states).
+    ///
+    /// A name that is not a state of this project, and a name that is a state
+    /// but not a `queue` one, are the same mistake to the caller and get the
+    /// same [`Error::BadRequest`] — naming the entry and listing the project's
+    /// queue states in board order, because "not a queue state" is only useful
+    /// next to the ones that are (`SPEC.md`, "Agent profiles": 400 when
+    /// `serves_states` entries "must be names of the project's `queue`
+    /// states"). That covers the default `["ready"]` against a project whose
+    /// `ready` state has been renamed or removed: the caller sees which names
+    /// it may use.
+    ///
+    /// Resolution is all this adds. The link rows are written by
+    /// [`TaskRepository::set_profile_states`], so there is one path that
+    /// deletes and inserts `profile_states`, and the profile's own scope check
+    /// happens there.
+    pub async fn set_profile_states_by_name(
+        &self,
+        tx: &mut PgConnection,
+        project_id: Uuid,
+        profile_id: Uuid,
+        names: &[String],
+    ) -> Result<()> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT id, name, kind as "kind: TaskStateKind"
+            FROM task_states
+            WHERE project_id = $1 AND name = ANY($2)
+            "#,
+            project_id,
+            names,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut state_ids = Vec::with_capacity(names.len());
+        for name in names {
+            match rows.iter().find(|row| row.name == *name) {
+                Some(row) if row.kind == TaskStateKind::Queue => state_ids.push(row.id),
+                _ => {
+                    let queues = queue_state_names(&mut *tx, project_id).await?;
+                    return Err(Error::BadRequest(format!(
+                        "serves_states: \"{name}\" is not a queue state of this project; \
+                         queue states are: {}",
+                        queues.join(", "),
+                    )));
+                }
+            }
+        }
+
+        self.set_profile_states(tx, project_id, profile_id, &state_ids)
+            .await
+    }
+
     /// The states a profile serves, in board order.
     pub async fn list_profile_states(&self, profile_id: Uuid) -> Result<Vec<TaskState>> {
         let states = sqlx::query_as!(
@@ -627,6 +689,24 @@ async fn write_positions(tx: &mut PgConnection, project_id: Uuid, ordered: &[Uui
     .await?;
 
     Ok(())
+}
+
+/// The project's `queue` state names in board order: the ones a profile may
+/// serve, for the message that says a name is not one of them.
+async fn queue_state_names(tx: &mut PgConnection, project_id: Uuid) -> Result<Vec<String>> {
+    let names = sqlx::query_scalar!(
+        r#"
+        SELECT name
+        FROM task_states
+        WHERE project_id = $1 AND kind = 'queue'
+        ORDER BY position, name
+        "#,
+        project_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    Ok(names)
 }
 
 /// How many states of this kind the project has.

@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, name, kind as \"kind: TaskStateKind\"\n            FROM task_states\n            WHERE project_id = $1 AND name = ANY($2)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_states",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_states",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "kind: TaskStateKind",
+        "type_info": {
+          "Custom": {
+            "name": "task_state_kind",
+            "kind": {
+              "Enum": [
+                "queue",
+                "human",
+                "terminal"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "task_states",
+            "name": "kind"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "93734ced2c940026f2cb78bac1426f993854bf26e4179cafdb3c9ae2c3822101"
+}

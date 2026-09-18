@@ -24,12 +24,14 @@
 pub mod command;
 pub mod credentials;
 pub mod error;
+pub mod integrate;
 pub mod lock;
 pub mod mirror;
 pub mod paths;
 pub mod push;
 pub mod refs;
 pub mod session;
+pub mod tempclone;
 
 pub use command::{GitCommand, GitOutput};
 pub use credentials::{
@@ -37,6 +39,7 @@ pub use credentials::{
     PatCredentialProvider,
 };
 pub use error::GitError;
+pub use integrate::{MergeOutcome, merge, requested_by_trailer};
 pub use lock::{ProjectGitGuard, ProjectGitLocks};
 pub use mirror::{
     FetchOutcome, InitOutcome, fetch_project, fetch_upstream, init_project_repo, list_branches,
@@ -46,6 +49,7 @@ pub use paths::DataPaths;
 pub use push::{ComparePage, PushOutcome, github_compare_url, push};
 pub use refs::{GitRef, RefEntry, ResolvedRef};
 pub use session::{create_work_clone, fetch_back, remove_work_clone, resolve_base, session_branch};
+pub use tempclone::TempClone;
 
 /// Real repositories for tests: `CLAUDE.md`, "Testing expectations" — git is
 /// never mocked, so both the unit tests here and the integration tests under

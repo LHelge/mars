@@ -1,16 +1,17 @@
 ---
 id: nky3h
 title: "Add SessionRegistry: per-session owner handles, input channels, queued inputs, prompt tracking and rejection rules"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:29:35.110640920Z"
-updated: "2026-09-16T20:29:35.110640920Z"
+updated: "2026-09-18T20:35:54.486981309Z"
 tags:
   - orchestrator
   - sessions
 depends_on:
   - cksdv
 parent: s52qg
+attempts: 1
 ---
 
 ## Summary

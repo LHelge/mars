@@ -197,6 +197,7 @@ fn translate_result(native: &Value, state: &mut TranslateState) -> Vec<AgentEven
     };
 
     let denials = result.permission_denials.clone();
+    let is_error = result.is_error;
 
     let mut events = vec![
         AgentEventBody::Result {
@@ -228,7 +229,12 @@ fn translate_result(native: &Value, state: &mut TranslateState) -> Vec<AgentEven
         events.push(denial_event(&denial, state));
     }
 
-    events.extend(authentication_error(native, state));
+    // Only a failed turn can report a failed credential: the `result` text of a
+    // successful turn is the agent's own prose, and an agent that fixed an
+    // "Invalid API key" message must not park its own session.
+    if is_error {
+        events.extend(authentication_error(native, state));
+    }
     events
 }
 
@@ -744,6 +750,22 @@ mod tests {
         let events = translate_line(&line.to_string(), &mut state);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind(), "result");
+    }
+
+    #[test]
+    fn a_successful_result_that_mentions_an_authentication_failure_is_just_a_result() {
+        let mut state = state();
+        let line = json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "Reworded the \"Invalid API key\" message as asked.",
+        });
+
+        let events = translate_line(&line.to_string(), &mut state);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "result");
+        assert!(!state.authentication_failed);
     }
 
     #[test]

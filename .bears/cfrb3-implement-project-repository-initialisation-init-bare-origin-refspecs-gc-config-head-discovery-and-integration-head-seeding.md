@@ -1,10 +1,10 @@
 ---
 id: cfrb3
 title: "Implement project repository initialisation: init --bare, origin refspecs, gc config, HEAD discovery and integration-head seeding"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:29:16.674237823Z"
-updated: "2026-09-16T20:29:16.674237823Z"
+updated: "2026-09-18T00:25:30.953000028Z"
 tags:
   - orchestrator
   - git
@@ -15,6 +15,8 @@ depends_on:
   - w2uhm
   - "6gvak"
 parent: z4u4e
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

@@ -389,6 +389,28 @@ fn says_not_running(message: &str) -> bool {
         || message.contains("running containers")
 }
 
+/// Whether an engine's refusal of a removal says the container is still
+/// running and would need `force`.
+///
+/// The third message the adapter reads rather than only reports, for the reason
+/// [`says_already`] gives. Docker refuses with 409 — already an
+/// [`EngineError::Conflict`] — but a rootless Podman 6 answers 500 with
+/// `cannot remove container <id> as it is running - running or paused
+/// containers cannot be removed without force: container state improper`, and a
+/// 500 would reach the caller as an internal fault rather than as the state
+/// conflict it is (`ARCHITECTURE.md`, "Engine adapter", Normalised semantics).
+/// The two spellings of `force` are what is matched — Podman's `without force`
+/// and Docker's `force remove` — because that is the part of either refusal
+/// that says which conflict it was, and neither can be read as its opposite the
+/// way a bare `is running` could. Docker's own wording is matched although its
+/// 409 never reaches here, so an engine that answers it with another status is
+/// still normalised.
+fn says_needs_force(message: &str) -> bool {
+    let message = message.to_lowercase();
+
+    message.contains("without force") || message.contains("force remove")
+}
+
 /// The failure a pull stream reported inside an otherwise successful response,
 /// if it reported one.
 fn pull_error_of(info: &CreateImageInfo) -> Option<String> {
@@ -728,6 +750,11 @@ impl ContainerEngine for BollardEngine {
     }
 
     async fn start(&self, id: &ContainerId) -> Result<(), EngineError> {
+        // A container that is already running answers 304 on both engines, and
+        // this version of bollard reads a 304 as success, so `start` is
+        // idempotent without an arm of its own (`ARCHITECTURE.md`, "Engine
+        // adapter", Normalised semantics). A missing container is the 404 the
+        // single conversion turns into `NotFound`.
         self.docker
             .start_container(&id.0, None::<StartContainerOptions>)
             .await?;
@@ -798,6 +825,14 @@ impl ContainerEngine for BollardEngine {
                 EngineError::NotFound(_) => {
                     debug!(container = %id, "the container was already gone");
                     Ok(())
+                }
+                // A running container refused without `force` is a state
+                // conflict, and Podman numbers it 500 where Docker numbers it
+                // 409 (see `says_needs_force`); the caller sees the same
+                // `Conflict` on either engine.
+                EngineError::Api { status, message } if says_needs_force(&message) => {
+                    debug!(container = %id, status, "the container is still running");
+                    Err(EngineError::Conflict(message))
                 }
                 other => Err(other),
             },
@@ -1249,6 +1284,28 @@ mod tests {
 
         assert!(!says_not_running("No such container: mars-session-1"));
         assert!(!says_not_running("permission denied"));
+    }
+
+    /// Both engines refuse to remove a running container without `force`, and
+    /// only one of them uses a status that already says so. The wordings are
+    /// the ones they were seen to answer with.
+    #[test]
+    fn both_engines_refusals_of_a_removal_without_force_are_recognised() {
+        assert!(says_needs_force(
+            "You cannot remove a running container 0123456789ab. Stop the container before \
+             attempting removal or force remove"
+        ));
+        assert!(says_needs_force(
+            "cannot remove container 0123456789ab as it is running - running or paused containers \
+             cannot be removed without force: container state improper"
+        ));
+
+        assert!(!says_needs_force("No such container: mars-session-1"));
+        // The exec refusal shares Podman's `state improper` tail and must not
+        // be read as this one.
+        assert!(!says_needs_force(
+            "can only create exec sessions on running containers: container state improper"
+        ));
     }
 
     #[test]

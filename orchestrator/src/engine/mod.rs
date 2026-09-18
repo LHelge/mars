@@ -67,6 +67,20 @@ pub use types::{
 /// [`Error`], because callers branch on the variant — most of all on
 /// [`EngineError::NotFound`], which is how recovery tells "the container is
 /// gone" from "the engine is unhappy".
+///
+/// **The normalised semantics are part of the interface.** Docker and Podman
+/// number the same refusal differently, and a retry, a recovery or a relaunch
+/// asks for the same operation twice, so what an operation answers for a
+/// container that is missing, one that has exited and one that is already
+/// running is decided here rather than at each call site. Each method's
+/// documentation states its rule in the words of `ARCHITECTURE.md`, "Engine
+/// adapter", Normalised semantics, and
+/// `orchestrator/tests/common/engine_contract.rs` is the executable definition:
+/// `assert_engine_contract` runs one scenario per rule against any
+/// `Arc<dyn ContainerEngine>`, `tests/engine.rs` runs it against
+/// [`BollardEngine`] under `DOCKER_HOST` and `tests/engine_mock.rs` against
+/// `mock::MockEngine` on every run of the test suite. An implementation that
+/// does not pass the suite is not an implementation of this trait.
 #[async_trait]
 pub trait ContainerEngine: Send + Sync {
     /// Which engine is behind the socket, detected once when the adapter
@@ -75,6 +89,9 @@ pub trait ContainerEngine: Send + Sync {
 
     /// Whether the engine answers at all. `GET /api/health` reports the result
     /// as `engine` (`SPEC.md`, "Health").
+    ///
+    /// Reachability and nothing else; every failure is
+    /// [`EngineError::Connection`], whatever the engine said.
     async fn ping(&self) -> Result<(), EngineError>;
 
     /// Create the named network if it does not exist, and succeed if it does.
@@ -82,15 +99,23 @@ pub trait ContainerEngine: Send + Sync {
     /// `internal` is the sessions network, which has no route off the host;
     /// the egress network is created without it (`ARCHITECTURE.md`,
     /// "Networking").
+    ///
+    /// A network that already exists is `Ok` and is left exactly as it is,
+    /// including when its own flags disagree with what was asked for (a warning,
+    /// never a failure) and when a concurrent creation is what made it exist.
     async fn ensure_network(&self, name: &str, internal: bool) -> Result<(), EngineError>;
 
     /// Whether the image is present locally, so the launcher can skip a pull.
+    ///
+    /// An absent image is `Ok(false)`, never an error; every other failure
+    /// propagates instead of being reported as absence.
     async fn image_exists(&self, image: &str) -> Result<bool, EngineError>;
 
     /// Pull the image, waiting for the pull to finish.
     ///
-    /// Fails with [`EngineError::ImagePull`]; the launcher puts that message
-    /// into `sessions.error` and fails the launch.
+    /// Every failure is [`EngineError::ImagePull`], including one the engine
+    /// reports inside an otherwise successful response stream; the launcher
+    /// puts that message into `sessions.error` and fails the launch.
     async fn pull_image(&self, image: &str) -> Result<(), EngineError>;
 
     /// Create a container from the spec, without starting it.
@@ -98,38 +123,71 @@ pub trait ContainerEngine: Send + Sync {
     /// The container is created on [`ContainerSpec::network`]; the egress
     /// network is a second [`connect_network`](Self::connect_network) before
     /// [`start`](Self::start), so the container never runs with the wrong set.
+    ///
+    /// A name already in use is [`EngineError::Conflict`]; an image the engine
+    /// does not have is [`EngineError::NotFound`] naming the image. At most one
+    /// create per engine host is in flight (`ARCHITECTURE.md`, "Engine
+    /// adapter", the `UsernsMode` row).
     async fn create(&self, spec: &ContainerSpec) -> Result<ContainerId, EngineError>;
 
     /// Attach a created container to a second network.
+    ///
+    /// A container already on the network is `Ok`, so connecting is idempotent;
+    /// a missing container or network is [`EngineError::NotFound`].
     async fn connect_network(&self, id: &ContainerId, network: &str) -> Result<(), EngineError>;
 
     /// Start a created container.
+    ///
+    /// A container that is already running is `Ok`: both engines answer 304 and
+    /// the adapter reads it as success, so a start that races another start
+    /// cannot fail on it. A missing container is [`EngineError::NotFound`].
     async fn start(&self, id: &ContainerId) -> Result<(), EngineError>;
 
     /// Stop a container, letting it have `grace_secs` before the engine's own
     /// hard kill. Mars's own stop sequence is [`kill`](Self::kill) with
     /// [`Signal::Sigint`] then [`Signal::Sigterm`] (`ARCHITECTURE.md`, "Stop
     /// semantics"); this is the plain stop used when ending a session.
+    ///
+    /// A container that has already exited is `Ok`, because being stopped is
+    /// what the caller asked for and it already is; a missing container is
+    /// [`EngineError::NotFound`].
     async fn stop(&self, id: &ContainerId, grace_secs: u32) -> Result<(), EngineError>;
 
     /// Send a named signal to the container's main process.
+    ///
+    /// A container that has exited is [`EngineError::Conflict`], which the
+    /// session owner reads as "it is already gone" rather than as a failure; a
+    /// missing container is [`EngineError::NotFound`]. The signal reaches the
+    /// container's main process without `Init: true` (`ARCHITECTURE.md`,
+    /// "Session image").
     async fn kill(&self, id: &ContainerId, signal: Signal) -> Result<(), EngineError>;
 
     /// Remove a container. `force` removes it even while running.
     ///
-    /// A container that is already gone is [`EngineError::NotFound`], which
-    /// callers treat as success.
+    /// A missing container is `Ok`, because a container that is not there is
+    /// already removed; a running container is [`EngineError::Conflict`]
+    /// without `force` and `Ok` with it, although Docker refuses the unforced
+    /// removal with 409 and Podman with 500.
     async fn remove(&self, id: &ContainerId, force: bool) -> Result<(), EngineError>;
 
     /// Everything the engine knows about one container.
+    ///
+    /// A missing container is [`EngineError::NotFound`], which is the answer
+    /// recovery reads as "the container is gone" and parks the session on.
     async fn inspect(&self, id: &ContainerId) -> Result<ContainerInfo, EngineError>;
 
-    /// Wait for the container to exit and report how it ended. Returns
-    /// immediately for a container that has already exited.
+    /// Wait for the container to exit and report how it ended.
+    ///
+    /// A container that has already exited answers immediately with its exit
+    /// code, which is what makes this safe to call on a container a restart
+    /// readopted; a non-zero exit code is not a failure (130 and 143 are
+    /// ordinary stops); a missing container is [`EngineError::NotFound`].
     async fn wait(&self, id: &ContainerId) -> Result<ExitStatus, EngineError>;
 
     /// Every container carrying the label, running or not. Recovery lists
     /// [`LABEL_SESSION_ID`] to find the containers it owns.
+    ///
+    /// A key nothing carries is an empty list, not an error.
     async fn list_by_label(&self, label_key: &str) -> Result<Vec<ContainerSummary>, EngineError>;
 
     /// Attach to the container's stdin, with the TTY off.
@@ -138,12 +196,21 @@ pub trait ContainerEngine: Send + Sync {
     /// output is read from the transcript file, not the socket
     /// (`ARCHITECTURE.md`, "Agent process model"). The session owner is the
     /// only holder of the returned writer.
+    ///
+    /// A missing container is [`EngineError::NotFound`]; a write after the
+    /// container exited returns an error, never a silent success, because a
+    /// rootless Podman accepts and discards such writes (`ARCHITECTURE.md`,
+    /// "Engine adapter", the attach row).
     async fn attach_stdin(&self, id: &ContainerId) -> Result<Box<dyn StdinWriter>, EngineError>;
 
     /// Start an exec with a PTY: the terminal view.
     ///
     /// `SPEC.md`, "WebSocket: session stream": `/bin/bash -l` as `agent`, at
     /// the client's initial `cols` and `rows`.
+    ///
+    /// A container that is not running is [`EngineError::Conflict`] on both
+    /// engines, although Docker answers 409 and Podman 500; a missing container
+    /// is [`EngineError::NotFound`].
     async fn exec_pty(
         &self,
         id: &ContainerId,
@@ -236,6 +303,11 @@ pub async fn bootstrap_engine(config: &Config) -> Result<Arc<dyn ContainerEngine
 /// [`EngineError::Unsupported`], so a caller that reaches for one fails loudly
 /// instead of appearing to work. A test that wants engine behaviour uses the
 /// mock instead.
+///
+/// It is deliberately not a conforming implementation of the normalised
+/// semantics, and the conformance suite is never run against it: an engine that
+/// refuses every operation has no container to be missing, exited or already
+/// running.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlaceholderEngine;
 

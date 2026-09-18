@@ -598,7 +598,7 @@ Nothing in v1 launches a session by itself. Two additions are planned and the mo
 
 | Operation | Docker | Podman compat API | Notes |
 | --- | --- | --- | --- |
-| create / start / stop / kill / remove | yes | yes | `kill` with a named signal is used for SIGINT/SIGTERM. Verified to reach a handler-installing PID 1 without `Init` on both engines (`tests/engine.rs`; see "Session image"). |
+| create / start / stop / kill / remove | yes | yes | `kill` with a named signal is used for SIGINT/SIGTERM. Verified to reach a handler-installing PID 1 without `Init` on both engines (`tests/engine.rs`; see "Session image"). Removing a running container without `force` is refused with 409 by Docker and with 500 by Podman; the adapter reports both as a conflict, as it does for the exec below. |
 | attach (stdin, TTY off) | yes | yes | Used for stdin only. The adapter drains the unused output half and treats its end as the attachment closing, because a rootless Podman accepts and discards writes to a container that has already exited; a write after that fails rather than being silently lost. |
 | exec + resize (TTY on) | yes | yes | Used by the optional terminal view. An exec on a container that is not running is refused with 409 by Docker and with 500 by Podman; the adapter reports both as a conflict, so the terminal answers the same on either engine. |
 | list with label filter | yes | yes | Recovery lists `mars.session_id`. |
@@ -614,7 +614,29 @@ Nothing in v1 launches a session by itself. Two additions are planned and the mo
 | `SecurityOpt`, `CapDrop` | yes | mostly | Only `no-new-privileges` and `CapDrop: ALL` are used. |
 | `ReadonlyRootfs` | yes | yes | Available; not used for sessions in v1, which get a writable root. |
 
-Anything outside this table is not used without being verified on both engines first, and the verification is recorded in this table.
+Anything outside this table is not used without being verified on both engines first, and the verification is recorded in this table. What each operation answers in the states a caller cannot avoid — a container that is missing, one that has exited, one that is already running — is the "Normalised semantics" list below, and the conformance suite is its executable definition.
+
+**Normalised semantics.** Docker and Podman disagree about which status a refusal gets, and the same operation is asked for twice by a retry, a recovery or a relaunch, so the adapter — not its callers — decides what each of these means. Every implementation of `ContainerEngine`, the mock included, answers exactly this:
+
+- `ping` — reachability and nothing else; every failure is `Connection`, whatever the engine said.
+- `ensure_network` — a network that already exists is `Ok` and is left exactly as it is, including when its own `internal` flag or driver disagrees with what was asked for (a warning, never a failure) and when a concurrent creation is what made it exist.
+- `image_exists` — an absent image is `Ok(false)`, never an error; every other failure propagates instead of being reported as absence.
+- `pull_image` — every failure is `ImagePull`, including one the engine reports inside an otherwise successful response stream.
+- `create` — a name already in use is `Conflict`; an image the engine does not have is `NotFound` naming the image. At most one create per engine host is in flight (the `UsernsMode` row).
+- `connect_network` — a container already on the network is `Ok`, so connecting is idempotent; a missing container or network is `NotFound`.
+- `start` — a container that is already running is `Ok`: both engines answer 304 and the adapter reads it as success, so a start that races another start cannot fail on it. A missing container is `NotFound`.
+- `stop` — a container that has already exited is `Ok`, because being stopped is what the caller asked for and it already is; a missing container is `NotFound`.
+- `kill` — a container that has exited is `Conflict`, which the session owner reads as "it is already gone" rather than as a failure; a missing container is `NotFound`. A named signal reaches the container's main process without `Init: true` (see "Session image").
+- `remove` — a missing container is `Ok`, because a container that is not there is already removed; a running container is `Conflict` without `force` and `Ok` with it. Docker refuses the unforced removal with 409 and Podman with 500, exactly as they differ over the exec, and the adapter reports both as a conflict.
+- `inspect` — a missing container is `NotFound`, which is the answer recovery reads as "the container is gone" and parks the session on.
+- `wait` — a container that has already exited answers immediately with its exit code, which is what makes it safe to call on a container a restart readopted; a non-zero exit code is not a failure (130 and 143 are ordinary stops); a missing container is `NotFound`.
+- `list_by_label` — every container carrying the key, running or exited; a key nothing carries is an empty list, not an error.
+- `attach_stdin` — a missing container is `NotFound`; a write after the container exited returns an error, never a silent success (the attach row above).
+- `exec_pty` — a container that is not running is `Conflict` on both engines, although Docker answers 409 and Podman 500 (the exec row above); a missing container is `NotFound`.
+
+A container specification the builder refuses — a resolved secret named like one of the fixed variables of "Session container specification" — is `EngineError::InvalidSpec`, the enum's only 400 and the only message a caller is shown verbatim, because the name that collides is the operator's own and is what they can change. It is deliberately not `EngineError::Unsupported`, which means a capability this engine lacks: a launcher has to tell a misconfiguration no retry will fix from an engine that cannot do what was asked.
+
+**The conformance suite is the definition.** `orchestrator/tests/common/engine_contract.rs` holds one scenario per line of the list above, plus create → connect → start → wait ordering, label listing and signal delivery, as methods on `EngineContract` over an `Arc<dyn ContainerEngine>`; `assert_engine_contract` runs all of them. `tests/engine.rs` runs it against `BollardEngine` when `DOCKER_HOST` is set and keeps only the scenarios that are genuinely engine-specific — the image pull, nested binds, `keep-id`, many creates at once, a real PTY, a real stdin delivery into a bind mount, and the startup probe and `bootstrap_engine` end to end — and `tests/engine_mock.rs` runs it against `MockEngine` on every run of the test suite, with no engine anywhere. An adapter that does not pass it is not an implementation of this trait.
 
 **Startup probe.** Before adopting any session, the orchestrator runs a short-lived probe container from the default session image with the same `HostConfig` a session would get, which writes a file into `/data/tmp/probe-<random>/`. The orchestrator checks that the file is owned by its own uid and is writable, then removes the directory. The probe directory's `work`, `home` and `log` subdirectories are created world-writable so that the check measures ownership rather than permission: the container can always write its file, and a host that maps uids wrongly fails naming both uids instead of reporting a non-zero exit code. On Podman this proves `keep-id` is honoured; on Docker it proves the bind mount and uid layout are sane, and on a Docker host that is not uid 1000 it is the check that refuses, with `probe file is owned by uid 1000, orchestrator runs as uid <n>` (the uid-1001 CI runner, asserted in `tests/engine.rs`). A failed probe is a fatal startup error with the reason in the log, because every session would otherwise fail later in less obvious ways.
 

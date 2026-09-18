@@ -438,17 +438,17 @@ class ShippedFixtureTests(StubTestCase):
         )
         self.assertEqual(completed.returncode, 0)
         lines = self.lines(completed)
-        self.assertEqual(len(lines), 26)
+        self.assertEqual(len(lines), 253)
         self.assertEqual(lines[0]["type"], "system")
         self.assertEqual(lines[0]["subtype"], "init")
         results = [line for line in lines if line["type"] == "result"]
         self.assertEqual(len(results), 3)
         self.assertEqual(
-            [line["total_cost_usd"] for line in results], [0.0123, 0.0456, 0.0089]
+            [line["total_cost_usd"] for line in results], [0.0727456, 0.1447891, 0.1633155]
         )
         self.assertEqual(lines[-1]["type"], "result")
         self.assertEqual(
-            len([line for line in lines if line["type"] == "stream_event"]), 2
+            len([line for line in lines if line["type"] == "stream_event"]), 205
         )
 
     def test_default_fixture_drops_stream_events_without_the_flag(self):
@@ -456,7 +456,7 @@ class ShippedFixtureTests(StubTestCase):
         self.assertEqual(completed.returncode, 0)
         lines = self.lines(completed)
         self.assertEqual([line["type"] for line in lines if line["type"] == "stream_event"], [])
-        self.assertEqual(len(lines), 24)
+        self.assertEqual(len(lines), 48)
         self.assertEqual(len([line for line in lines if line["type"] == "result"]), 3)
 
     def test_agent_tool_fixture_replays_one_turn(self):

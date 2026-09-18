@@ -15,7 +15,9 @@
 #   - the claude image carries the pinned CLI, git and a working login bash;
 #   - the stub replays its fixture under both `-p` and `--input-format
 #     stream-json`, opens every turn with a `system`/`init` line as the real
-#     CLI does, and reports the MCP server from --mcp-config as connected;
+#     CLI does, writes nothing at all before the first stdin line in the
+#     interactive mode (ADR 0032), and reports the MCP server from
+#     --mcp-config as connected;
 #   - the agent CLI is PID 1, SIGINT ends the turn with the real CLI's
 #     interrupt shape (a `user` line `[Request interrupted by user]` and a
 #     `result` with `subtype: "error_during_execution"`, `is_error: true`,
@@ -287,6 +289,17 @@ expect_line() { # <file> <line> <what>
     grep -q -x -F -- "$2" "$1" || fail "$3: no line '$2' in $1"
 }
 
+# expect_silent <file> <secs> <what> — the file is still empty (or absent)
+# after the given wait. Used where the contract is that nothing is written.
+expect_silent() {
+    local file=$1 secs=$2 what=$3 seen=0
+    sleep "$secs"
+    if [ -f "$file" ]; then
+        seen="$(wc -l <"$file")"
+    fi
+    [ "${seen:-0}" -eq 0 ] || fail "$what: expected no lines, got ${seen} in $file"
+}
+
 # check <name> <cmd...> — run one check, time it, report it.
 check() {
     local name=$1
@@ -391,11 +404,14 @@ check_stub_interactive() {
     write_mcp_config "$dir"
     stream="$dir/log/stream.jsonl"
     start_interactive_stub "$dir" 0 "${CONVERSATIONAL_ARGV[@]}"
+    # Nothing is written before the first stdin line, `init` included, as the
+    # real CLI does (ADR 0032; ARCHITECTURE.md, "Launch sequence").
+    expect_silent "$stream" 3 "the stream before the first stdin line" || return 1
+    send_user_line
     wait_for_line "$stream" '"subtype":"init"' 30 || return 1
     head -n 1 "$stream" >"$dir/init.txt"
     expect_contains "$dir/init.txt" '{"name":"mars-orchestrator","status":"connected"}' \
         "the mcp_servers of the init line" || return 1
-    send_user_line
     wait_for_line "$stream" '"type":"result"' 30 1 || return 1
     send_user_line
     wait_for_line "$stream" '"type":"result"' 30 2 || return 1
@@ -413,8 +429,9 @@ start_signal_stub() {
     local dir=$1 stream=$2 cmdline
     write_mcp_config "$dir"
     start_interactive_stub "$dir" 300 "${CONVERSATIONAL_ARGV[@]}"
-    wait_for_line "$stream" '"subtype":"init"' 30 || return 1
+    # The turn, `init` first, starts only once a line has been written (ADR 0032).
     send_user_line
+    wait_for_line "$stream" '"subtype":"init"' 30 || return 1
     wait_for_lines "$stream" 2 30 || return 1
     cmdline="$("$ENGINE" exec "$BG_NAME" cat /proc/1/cmdline | tr '\0' ' ')"
     case "$cmdline" in

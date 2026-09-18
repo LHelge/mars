@@ -1,7 +1,15 @@
 //! The `AgentEvent` and `TaskEvent` types and the notify fan-out.
+//!
+//! `agent_event` is the session transcript's one schema across backends
+//! (`SPEC.md`, "AgentEvent"), `input` is what a client may send back
+//! (`SPEC.md`, "WebSocket: session stream"). `TaskEvent` joins them in
+//! `task_event.rs` with the tracker epic.
 
-// Empty module: the glob import is the crate convention (`CLAUDE.md`, "Backend
-// conventions"). The first real file here removes this `allow`.
-#![allow(unused_imports)]
+pub mod agent_event;
+pub mod input;
 
-use crate::prelude::*;
+pub use agent_event::{
+    AgentEvent, AgentEventBody, GitOp, McpServerStatus, SessionEvent, StopSignal,
+    TOOL_RESULT_MAX_BYTES,
+};
+pub use input::SessionInput;

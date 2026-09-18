@@ -32,6 +32,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::engine::{
@@ -39,6 +40,7 @@ use common::engine::{
     ensure_test_image, probe_lock, remove_image_if_present, run_id, rw_bind, test_spec, uid_of,
     unique_name, with_cleanup, writable_tempdir,
 };
+use futures_util::future::join_all;
 use mars_orchestrator::engine::bollard::BollardEngine;
 use mars_orchestrator::engine::probe::{ProbeInput, run_startup_probe};
 use mars_orchestrator::engine::spec::{LABEL_PROBE, order_binds, to_bollard};
@@ -52,6 +54,13 @@ use tokio::io::AsyncWriteExt;
 /// The uid a session container runs as, and therefore the uid the probe
 /// expects its file to come back owned by on a Docker host.
 const SESSION_UID: u32 = 1000;
+
+/// How many containers `concurrent_session_creates_all_start` launches at once.
+///
+/// Twenty is the number the reproduction used (Bears u6zkz), where about one in
+/// fourteen came out with a broken mapping: enough that an unserialised run
+/// fails nearly every time.
+const CONCURRENT_CREATES: usize = 20;
 
 /// Wait for a container to exit, inside a bound.
 ///
@@ -784,6 +793,69 @@ async fn ensure_network_is_idempotent() {
             .ensure_network(&name, true)
             .await
             .expect("an existing network is not an error");
+    })
+    .await;
+}
+
+/// `ARCHITECTURE.md`, "Engine adapter", the `UsernsMode` row: the adapter
+/// serialises `create` per engine host, so launching many sessions at once
+/// cannot corrupt their uid mappings.
+///
+/// [`CONCURRENT_CREATES`] containers with the session's own `1000:1000` and the
+/// `HostConfig` [`to_bollard`] builds for it are created and started as
+/// concurrently as the runtime will do it, and every one of them has to start
+/// and exit 0. Without the adapter's lock this fails on rootless Podman 6.1.2:
+/// Podman resolves `keep-id` through the non-thread-safe `libsubid`, about one
+/// container in fourteen comes out with a broken mapping and `start` then
+/// refuses it with `write to uid_map: Operation not permitted` (Bears u6zkz).
+/// On Docker there is no user namespace to get wrong and this is simply twenty
+/// containers.
+///
+/// `multi_thread`, because the point is many creates genuinely in flight.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_session_creates_all_start() {
+    let Some(engine) = connect_or_skip().await else {
+        return;
+    };
+    // A reference, so the scenario body below can be an `async move` block
+    // without moving the engine the cleanup still needs.
+    let engine = &engine;
+    ensure_test_image(engine).await;
+
+    with_cleanup(engine, |cleanup| async move {
+        let launches = (0..CONCURRENT_CREATES).map(|index| {
+            let cleanup = Arc::clone(&cleanup);
+            async move {
+                let mut spec = test_spec(
+                    &unique_name(&format!("concurrent-{index}")),
+                    &["sh", "-c", "id -u"],
+                );
+                // The uid contract's own user: the only one `keep-id` is
+                // resolved for, and therefore the only one the race touches.
+                spec.user = "1000:1000".to_string();
+
+                let id = engine
+                    .create(&spec)
+                    .await
+                    .unwrap_or_else(|error| panic!("container {index} was not created: {error}"));
+                cleanup.container(&id);
+
+                engine.start(&id).await.unwrap_or_else(|error| {
+                    panic!(
+                        "container {index} did not start, which is the broken uid mapping this \
+                         scenario is about: {error}"
+                    )
+                });
+
+                assert_eq!(
+                    wait_within(engine, &id, WAIT_TIMEOUT).await.code,
+                    0,
+                    "container {index} started and then failed"
+                );
+            }
+        });
+
+        join_all(launches).await;
     })
     .await;
 }

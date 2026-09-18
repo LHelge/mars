@@ -326,20 +326,14 @@ where
     F: FnOnce(Arc<Cleanup>) -> Fut,
     Fut: Future<Output = ()>,
 {
-    // Scenarios run one at a time, because Podman cannot resolve `keep-id`
-    // for two containers at once: it reads the sub-uid ranges through the
-    // non-thread-safe `libsubid`, so two creates in flight in one API service
-    // corrupt each other's mapping — no sub-uid range at all, or the range
-    // counted twice — and the container then fails at `start` with "doesn't
-    // map UID 0" or "write to `uid_map`: Operation not permitted". It is
-    // Podman's and not the adapter's: twenty concurrent `curl` creates of the
-    // same body reproduce it with no Mars code in the picture (Bears u6zkz;
-    // `ARCHITECTURE.md`, "Engine adapter", the `UsernsMode` row). The suite
-    // verifies the adapter's contract, not Podman's concurrency, so it stays
-    // out of that race.
-    static SERIAL: Mutex<()> = Mutex::const_new(());
-    let _serial = SERIAL.lock().await;
-
+    // Scenarios run in parallel. They used to take a mutex here, because
+    // Podman cannot resolve `keep-id` for two containers at once, but that is
+    // now the adapter's own guarantee: `BollardEngine::create` holds a
+    // per-connection lock across the create call (`ARCHITECTURE.md`, "Engine
+    // adapter", the `UsernsMode` row; Bears u6zkz). Every scenario in this
+    // suite goes through one `BollardEngine` per test process, so the adapter
+    // covers them; `concurrent_session_creates_all_start` is the scenario that
+    // asserts it.
     let cleanup = Arc::new(Cleanup::default());
     let outcome = AssertUnwindSafe(body(Arc::clone(&cleanup)))
         .catch_unwind()

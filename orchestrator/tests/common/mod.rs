@@ -20,6 +20,14 @@ pub mod db;
 /// public engine API, so it needs no mock and stays ungated like `common::db`.
 pub mod engine;
 
+/// The engine conformance suite: the normalised semantics of
+/// `ARCHITECTURE.md`, "Engine adapter", as one scenario per rule over an
+/// `Arc<dyn ContainerEngine>`. `tests/engine.rs` runs it against
+/// `BollardEngine` and `tests/engine_mock.rs` against `MockEngine`. Only the
+/// crate's own public engine API, so it needs no mock and stays ungated like
+/// `common::engine`.
+pub mod engine_contract;
+
 /// Bare upstream repositories a lifecycle test can also remove and recreate.
 /// Plain `std::process::Command` and the `git` binary, so it needs no mock and
 /// stays ungated like `common::db`.

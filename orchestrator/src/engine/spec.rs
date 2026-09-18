@@ -177,8 +177,11 @@ pub struct ProbeSpecInput {
 ///
 /// # Errors
 ///
-/// [`EngineError::Unsupported`] when a resolved secret is named like one of
+/// [`EngineError::InvalidSpec`] when a resolved secret is named like one of
 /// [`RESERVED_ENV_NAMES`]; the launcher puts the message into `sessions.error`.
+/// A collision is a configuration error and not a missing capability, which is
+/// why it is not [`EngineError::Unsupported`] (`ARCHITECTURE.md`, "Engine
+/// adapter", Normalised semantics).
 pub fn build_session_spec(input: &SessionSpecInput) -> Result<ContainerSpec, EngineError> {
     debug_assert!(
         input.data_dir_host.is_absolute(),
@@ -192,7 +195,7 @@ pub fn build_session_spec(input: &SessionSpecInput) -> Result<ContainerSpec, Eng
 
     for (name, _) in &input.secrets {
         if RESERVED_ENV_NAMES.contains(&name.as_str()) {
-            return Err(EngineError::Unsupported(format!(
+            return Err(EngineError::InvalidSpec(format!(
                 "secret name collides with a reserved variable: {name}"
             )));
         }
@@ -668,7 +671,7 @@ mod tests {
 
             let error = build_session_spec(&input).expect_err("the collision is refused");
             assert!(
-                matches!(error, EngineError::Unsupported(_)),
+                matches!(error, EngineError::InvalidSpec(_)),
                 "unexpected: {error:?}"
             );
 

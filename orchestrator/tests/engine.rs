@@ -6,14 +6,22 @@
 //! [`connect_or_skip`], which prints a line and returns when the variable is
 //! unset, so the suite passes — skipped — in a run that has no engine at all.
 //!
-//! One scenario per row of the operation table in `ARCHITECTURE.md`, "Engine
-//! adapter", plus the two behaviours the table records as verified rather than
-//! merely available: `UsernsMode: keep-id:uid=1000,gid=1000` through Podman's
-//! compatibility API and a `SIGINT` reaching PID 1 without `Init: true`. Both
-//! were open questions; their answers are recorded in `ARCHITECTURE.md`,
-//! "Engine adapter" and "Session image". The startup probe and
-//! [`bootstrap_engine`] run end to end at the bottom, which is the same
-//! sequence the binary runs between its migrations and its listeners.
+//! **The contract comes first.** `engine_contract` runs the conformance suite
+//! of `common::engine_contract` against the adapter: every line of the
+//! normalised semantics of `ARCHITECTURE.md`, "Engine adapter", including the
+//! lifecycle ordering, the label listing and a `SIGINT` reaching a
+//! handler-installing PID 1 without `Init: true`. `tests/engine_mock.rs` runs
+//! the same suite against `MockEngine` with no engine at all, so a rule only
+//! one of the two satisfies is a failing test rather than a difference nobody
+//! notices.
+//!
+//! What is left here is what the trait cannot express: the image pull, nested
+//! bind mounts, `UsernsMode: keep-id:uid=1000,gid=1000` through Podman's
+//! compatibility API, many creates at once, a real PTY, a real stdin delivery
+//! into a bind mount, and the startup probe and [`bootstrap_engine`] end to end
+//! at the bottom — the same sequence the binary runs between its migrations and
+//! its listeners. `keep-id` and the `SIGINT` were open questions; their answers
+//! are recorded in `ARCHITECTURE.md`, "Engine adapter" and "Session image".
 //!
 //! **The uid contract, and why most scenarios ignore it.** The session
 //! specification runs containers as `1000:1000` and expects the files they
@@ -36,17 +44,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::engine::{
-    LABEL_TEST, PULL_TEST_IMAGE, TEST_IMAGE, WAIT_TIMEOUT, absolute, connect_or_skip,
-    ensure_test_image, probe_lock, remove_image_if_present, run_id, rw_bind, test_spec, uid_of,
-    unique_name, with_cleanup, writable_tempdir,
+    PULL_TEST_IMAGE, TEST_IMAGE, WAIT_TIMEOUT, absolute, connect_or_skip, ensure_test_image,
+    probe_lock, remove_image_if_present, rw_bind, test_spec, uid_of, unique_name, with_cleanup,
+    writable_tempdir,
 };
+use common::engine_contract::{ContractEnv, assert_engine_contract};
 use futures_util::future::join_all;
 use mars_orchestrator::engine::bollard::BollardEngine;
 use mars_orchestrator::engine::probe::{ProbeInput, run_startup_probe};
+// The three `spec` items each belong to a scenario that cannot be asserted
+// through the trait: `order_binds` is the ordering `nested_bind_mounts_*` puts
+// a deliberately wrong list through, `to_bollard` is where
+// `userns_keep_id_accepted` reads the `HostConfig` field the trait does not
+// expose, and `LABEL_PROBE` is the label the probe scenarios assert no
+// container is left carrying.
 use mars_orchestrator::engine::spec::{LABEL_PROBE, order_binds, to_bollard};
 use mars_orchestrator::engine::{
-    ContainerEngine, ContainerId, ContainerState, EngineError, EngineKind, ExecSession, ExitStatus,
-    LABEL_SESSION_ID, Signal, bootstrap_engine,
+    ContainerEngine, ContainerId, EngineError, EngineKind, ExecSession, ExitStatus,
+    bootstrap_engine,
 };
 use mars_orchestrator::prelude::Config;
 use tokio::io::AsyncWriteExt;
@@ -96,6 +111,66 @@ async fn read_until(exec: &mut Box<dyn ExecSession>, needle: &str) -> String {
     .unwrap_or_else(|_| panic!("{needle:?} did not arrive within {budget:?}"))
 }
 
+/// The conformance suite against [`BollardEngine`]: every line of the
+/// normalised semantics of `ARCHITECTURE.md`, "Engine adapter", in the one
+/// scenario `tests/engine_mock.rs` also runs against `MockEngine`.
+///
+/// Everything the suite asserts goes through `Arc<dyn ContainerEngine>`, so
+/// what remains in this file is what cannot be asserted through the trait at
+/// all: the pull, nested binds, `keep-id`, concurrent creates, a real PTY, a
+/// real stdin delivery and the startup probe.
+///
+/// The two networks are this scenario's own and are registered for cleanup
+/// before they are created; the suite registers every container it creates
+/// through the same cleanup, so a scenario that fails halfway still leaves
+/// nothing behind.
+#[tokio::test]
+async fn engine_contract() {
+    let Some(engine) = connect_or_skip().await else {
+        return;
+    };
+    // A reference, so the scenario body below can be an `async move` block
+    // without moving the engine the cleanup still needs.
+    let engine = &engine;
+    ensure_test_image(engine).await;
+
+    with_cleanup(engine, |cleanup| async move {
+        let internal = unique_name("contract-int");
+        let egress = unique_name("contract-egress");
+        cleanup.network(&internal);
+        cleanup.network(&egress);
+
+        engine
+            .ensure_network(&internal, true)
+            .await
+            .expect("the internal network is created");
+        engine
+            .ensure_network(&egress, false)
+            .await
+            .expect("the egress network is created");
+
+        let env = ContractEnv {
+            network: internal,
+            second_network: egress,
+            container_created: {
+                let cleanup = Arc::clone(&cleanup);
+                Box::new(move |id| cleanup.container(id))
+            },
+            network_created: {
+                let cleanup = Arc::clone(&cleanup);
+                Box::new(move |name| cleanup.network(name))
+            },
+        };
+
+        // The trait object the suite is written against. The adapter is a cheap
+        // handle around a shared transport, so the clone opens no second
+        // connection.
+        let under_test: Arc<dyn ContainerEngine> = Arc::new(engine.clone());
+        assert_engine_contract(under_test, TEST_IMAGE, env).await;
+    })
+    .await;
+}
+
 /// The image is absent, `image_exists` says so, the pull fetches it and it is
 /// there afterwards (`ARCHITECTURE.md`, "Engine adapter", image pull).
 ///
@@ -131,290 +206,6 @@ async fn pull_absent_image() {
             .expect("the engine answers"),
         "the image is absent after a successful pull"
     );
-}
-
-/// create → start → wait, and the exit code survives both the wait and a later
-/// inspect.
-#[tokio::test]
-async fn create_start_wait_exit_code() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-    ensure_test_image(engine).await;
-
-    with_cleanup(engine, |cleanup| async move {
-        let spec = test_spec(&unique_name("exit-code"), &["sh", "-c", "exit 7"]);
-        let id = engine
-            .create(&spec)
-            .await
-            .expect("the container is created");
-        cleanup.container(&id);
-
-        engine.start(&id).await.expect("the container starts");
-        let status = wait_within(engine, &id, WAIT_TIMEOUT).await;
-
-        assert_eq!(status.code, 7, "the exit code the command chose");
-        assert!(!status.oom_killed, "nothing was killed by the OOM killer");
-
-        let info = engine.inspect(&id).await.expect("the container inspects");
-        assert_eq!(info.state, ContainerState::Exited { code: 7 });
-        assert_eq!(info.name, spec.name);
-        assert_eq!(
-            info.labels.get(LABEL_TEST).map(String::as_str),
-            Some(run_id())
-        );
-    })
-    .await;
-}
-
-/// `ARCHITECTURE.md`, "Session image": a `SIGINT` sent with `kill` reaches PID
-/// 1 without `Init: true`, which this scenario is the evidence for.
-///
-/// The container's command *is* PID 1 — nothing sets `Init`, and the scenario
-/// deliberately does not, because observing the default is the point. The
-/// shell installs a handler for `INT` and exits 42 from it, so the exit code
-/// is proof the signal was delivered and handled rather than the container
-/// merely being torn down.
-///
-/// If this ever fails on an engine the answer is not to ignore the test: the
-/// spec gains `Init: true` and `ARCHITECTURE.md`, "Session image" changes with
-/// it, and this scenario then asserts the new contract.
-///
-/// The loop wakes once a second, so the exit can trail the kill by up to that;
-/// ten seconds is a bound on the engine, not on the shell.
-#[tokio::test]
-async fn kill_sigint_reaches_pid1_without_init() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-    ensure_test_image(engine).await;
-
-    with_cleanup(engine, |cleanup| async move {
-        let spec = test_spec(
-            &unique_name("sigint"),
-            &[
-                "sh",
-                "-c",
-                r#"trap "exit 42" INT; while true; do sleep 1; done"#,
-            ],
-        );
-        let id = engine
-            .create(&spec)
-            .await
-            .expect("the container is created");
-        cleanup.container(&id);
-
-        engine.start(&id).await.expect("the container starts");
-        // The trap has to be installed before the signal arrives.
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        engine
-            .kill(&id, Signal::Sigint)
-            .await
-            .expect("the container takes the signal");
-
-        let status = wait_within(engine, &id, Duration::from_secs(10)).await;
-        assert_eq!(
-            status.code, 42,
-            "SIGINT did not reach PID 1: the container exited {} instead of running its INT trap",
-            status.code
-        );
-    })
-    .await;
-}
-
-/// The same for `SIGTERM`, with the exit code the stop sequence's hard stop
-/// produces (`ARCHITECTURE.md`, "Stop semantics").
-///
-/// The trap is not decoration. A process that is PID 1 of a pid namespace
-/// receives a signal from outside that namespace only if it has installed a
-/// handler for it — `SIGKILL` and `SIGSTOP` excepted (`pid_namespaces(7)`) —
-/// so a plain `while true; do sleep 1; done` ignores `SIGTERM` on every engine
-/// and the container never exits, which would say nothing about the engine.
-/// The Claude Code CLI installs its own handlers, which is why the session
-/// command can be PID 1 without `Init: true` at all.
-#[tokio::test]
-async fn kill_sigterm_exit_code() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-    ensure_test_image(engine).await;
-
-    with_cleanup(engine, |cleanup| async move {
-        let spec = test_spec(
-            &unique_name("sigterm"),
-            &[
-                "sh",
-                "-c",
-                r#"trap "exit 143" TERM; while true; do sleep 1; done"#,
-            ],
-        );
-        let id = engine
-            .create(&spec)
-            .await
-            .expect("the container is created");
-        cleanup.container(&id);
-
-        engine.start(&id).await.expect("the container starts");
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        engine
-            .kill(&id, Signal::Sigterm)
-            .await
-            .expect("the container takes the signal");
-
-        let status = wait_within(engine, &id, Duration::from_secs(10)).await;
-        assert_eq!(status.code, 143, "the SIGTERM exit code");
-    })
-    .await;
-}
-
-/// Signalling a container that has already exited is a conflict, which is what
-/// the session owner reads as "it is already gone" rather than as a failure.
-#[tokio::test]
-async fn kill_on_exited_container_is_conflict() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-    ensure_test_image(engine).await;
-
-    with_cleanup(engine, |cleanup| async move {
-        let spec = test_spec(&unique_name("kill-exited"), &["sh", "-c", "exit 0"]);
-        let id = engine
-            .create(&spec)
-            .await
-            .expect("the container is created");
-        cleanup.container(&id);
-
-        engine.start(&id).await.expect("the container starts");
-        assert_eq!(wait_within(engine, &id, WAIT_TIMEOUT).await.code, 0);
-
-        let error = engine
-            .kill(&id, Signal::Sigint)
-            .await
-            .expect_err("a container that has exited cannot be signalled");
-        assert!(
-            matches!(error, EngineError::Conflict(_)),
-            "unexpected: {error:?}"
-        );
-    })
-    .await;
-}
-
-/// Removing a container that is not there is success: orphan cleanup and the
-/// end of a session both want the container gone, and it is.
-#[tokio::test]
-async fn remove_missing_is_ok() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-
-    engine
-        .remove(&ContainerId("does-not-exist".to_string()), true)
-        .await
-        .expect("a container that is already gone is already removed");
-}
-
-/// The label filter recovery runs on: every container carrying the key,
-/// running or not, and nothing else (`ARCHITECTURE.md`, "Engine adapter", list
-/// with label filter).
-#[tokio::test]
-async fn list_by_label_filters() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-    ensure_test_image(engine).await;
-
-    with_cleanup(engine, |cleanup| async move {
-        // The value is this scenario's own, so the two containers it expects
-        // can be picked out of an engine that is also running other sessions.
-        let session_id = uuid::Uuid::new_v4().to_string();
-
-        let mut running = test_spec(&unique_name("labelled-running"), &["sleep", "60"]);
-        running
-            .labels
-            .insert(LABEL_SESSION_ID.to_string(), session_id.clone());
-        let mut exited = test_spec(&unique_name("labelled-exited"), &["sh", "-c", "exit 0"]);
-        exited
-            .labels
-            .insert(LABEL_SESSION_ID.to_string(), session_id.clone());
-        let unlabelled = test_spec(&unique_name("unlabelled"), &["sh", "-c", "exit 0"]);
-
-        let running_id = engine.create(&running).await.expect("created");
-        cleanup.container(&running_id);
-        let exited_id = engine.create(&exited).await.expect("created");
-        cleanup.container(&exited_id);
-        let unlabelled_id = engine.create(&unlabelled).await.expect("created");
-        cleanup.container(&unlabelled_id);
-
-        engine
-            .start(&running_id)
-            .await
-            .expect("the container starts");
-        engine
-            .start(&exited_id)
-            .await
-            .expect("the container starts");
-        assert_eq!(wait_within(engine, &exited_id, WAIT_TIMEOUT).await.code, 0);
-
-        let listed = engine
-            .list_by_label(LABEL_SESSION_ID)
-            .await
-            .expect("the engine lists by label");
-
-        let mine: Vec<_> = listed
-            .iter()
-            .filter(|row| row.labels.get(LABEL_SESSION_ID) == Some(&session_id))
-            .collect();
-        assert_eq!(
-            mine.len(),
-            2,
-            "expected exactly the two labelled containers, got {mine:?}"
-        );
-
-        let running_row = mine
-            .iter()
-            .find(|row| row.name == running.name)
-            .expect("the running container is listed");
-        assert!(
-            running_row.running,
-            "the running container is not reported running"
-        );
-        assert_eq!(running_row.id, running_id);
-
-        let exited_row = mine
-            .iter()
-            .find(|row| row.name == exited.name)
-            .expect("the exited container is listed");
-        assert!(
-            !exited_row.running,
-            "the exited container is reported running"
-        );
-
-        assert!(
-            !listed.iter().any(|row| row.name == unlabelled.name),
-            "a container without the label was listed"
-        );
-    })
-    .await;
 }
 
 /// The attach carries stdin and the container receives it, across two writes
@@ -469,74 +260,6 @@ async fn attach_stdin_delivers_bytes() {
         let written = std::fs::read_to_string(dir.path().join("echo.txt"))
             .expect("the container wrote the file");
         assert_eq!(written, "hello\nworld\n");
-    })
-    .await;
-}
-
-/// A write to a container that has exited fails rather than being silently
-/// lost: the adapter treats the attach output half ending as the attachment
-/// closing, because a rootless Podman accepts and discards writes to a
-/// container that is gone (`ARCHITECTURE.md`, "Engine adapter", attach).
-///
-/// The container exits by itself a few seconds after starting, rather than
-/// immediately: the attachment has to be in place *before* the exit, because
-/// the exit is the event under test, and a command that is a bare `exit 0` is
-/// gone within milliseconds of the start.
-#[tokio::test]
-async fn attach_stdin_write_after_exit_fails() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-    ensure_test_image(engine).await;
-
-    with_cleanup(engine, |cleanup| async move {
-        // The command exits on its own, after long enough for the attach to be
-        // in place: create, start, attach is the order the session owner uses,
-        // and a container whose command is a bare `exit 0` would be gone
-        // before the attach landed, which would test the race and not the
-        // contract.
-        let mut spec = test_spec(
-            &unique_name("attach-exit"),
-            &["sh", "-c", "sleep 5; exit 0"],
-        );
-        spec.open_stdin = true;
-
-        let id = engine
-            .create(&spec)
-            .await
-            .expect("the container is created");
-        cleanup.container(&id);
-
-        engine.start(&id).await.expect("the container starts");
-        let mut stdin = engine.attach_stdin(&id).await.expect("stdin attaches");
-        assert_eq!(wait_within(engine, &id, WAIT_TIMEOUT).await.code, 0);
-
-        // The attachment closes when the engine ends the stream, which trails
-        // the exit by a little; a few seconds of polling is that gap, not a
-        // wait for anything to happen.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let failure = loop {
-            let attempt = match stdin.write_all(b"ignored\n").await {
-                Ok(()) => stdin.flush().await,
-                Err(error) => Err(error),
-            };
-
-            match attempt {
-                Err(error) => break error,
-                Ok(()) if std::time::Instant::now() >= deadline => {
-                    panic!("writes to the attachment still succeed after the container exited")
-                }
-                Ok(()) => tokio::time::sleep(Duration::from_millis(200)).await,
-            }
-        };
-
-        assert!(
-            !failure.to_string().is_empty(),
-            "the failed write says nothing at all"
-        );
     })
     .await;
 }
@@ -608,45 +331,6 @@ async fn exec_pty_echo_and_resize() {
     .await;
 }
 
-/// An exec on a container that is not running is a conflict on both engines,
-/// although they number the refusal differently (`ARCHITECTURE.md`, "Engine
-/// adapter", exec).
-#[tokio::test]
-async fn exec_on_stopped_container_is_conflict() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-    ensure_test_image(engine).await;
-
-    with_cleanup(engine, |cleanup| async move {
-        let spec = test_spec(&unique_name("exec-stopped"), &["sh", "-c", "exit 0"]);
-        let id = engine
-            .create(&spec)
-            .await
-            .expect("the container is created");
-        cleanup.container(&id);
-
-        engine.start(&id).await.expect("the container starts");
-        assert_eq!(wait_within(engine, &id, WAIT_TIMEOUT).await.code, 0);
-
-        let cmd = vec!["sh".to_string()];
-        // The two engines number the refusal differently — Docker 409, Podman
-        // 500 — and the adapter reports both as a conflict, which is what the
-        // terminal answers a `terminal_open` with.
-        let Some(error) = engine.exec_pty(&id, &cmd, "0:0", 80, 24).await.err() else {
-            panic!("an exec on a container that is not running was accepted");
-        };
-        assert!(
-            matches!(error, EngineError::Conflict(_)),
-            "unexpected: {error:?}"
-        );
-    })
-    .await;
-}
-
 /// Nested bind mounts, parents before children: a shared directory mounted
 /// inside the work tree is visible and is not hidden by the clone's own mount
 /// (`ARCHITECTURE.md`, "Storage", Shared directories; "Engine adapter", nested
@@ -708,91 +392,6 @@ async fn nested_bind_mounts_parent_before_child() {
             !parent.path().join("target").join("c.txt").exists(),
             "the child's file landed under the parent: the child mount was hidden"
         );
-    })
-    .await;
-}
-
-/// The launch order for networks: created on the internal one, connected to
-/// the egress one, and only then started, so the container never runs with the
-/// wrong set (`ARCHITECTURE.md`, "Networks").
-#[tokio::test]
-async fn second_network_connected_before_start() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-    ensure_test_image(engine).await;
-
-    with_cleanup(engine, |cleanup| async move {
-        let internal = unique_name("int");
-        let egress = unique_name("egress");
-
-        engine
-            .ensure_network(&internal, true)
-            .await
-            .expect("the internal network is created");
-        cleanup.network(&internal);
-        engine
-            .ensure_network(&egress, false)
-            .await
-            .expect("the egress network is created");
-        cleanup.network(&egress);
-
-        let mut spec = test_spec(&unique_name("two-networks"), &["sleep", "30"]);
-        spec.network = internal.clone();
-
-        let id = engine
-            .create(&spec)
-            .await
-            .expect("the container is created");
-        cleanup.container(&id);
-        engine
-            .connect_network(&id, &egress)
-            .await
-            .expect("the egress network connects");
-        engine.start(&id).await.expect("the container starts");
-
-        let info = engine.inspect(&id).await.expect("the container inspects");
-        assert!(
-            info.networks.contains(&internal),
-            "the internal network is missing: {:?}",
-            info.networks
-        );
-        assert!(
-            info.networks.contains(&egress),
-            "the egress network is missing: {:?}",
-            info.networks
-        );
-    })
-    .await;
-}
-
-/// `ensure_network` is what startup calls on every boot: the second call finds
-/// the network and succeeds without touching it.
-#[tokio::test]
-async fn ensure_network_is_idempotent() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-
-    with_cleanup(engine, |cleanup| async move {
-        let name = unique_name("idempotent");
-
-        engine
-            .ensure_network(&name, true)
-            .await
-            .expect("the network is created");
-        cleanup.network(&name);
-
-        engine
-            .ensure_network(&name, true)
-            .await
-            .expect("an existing network is not an error");
     })
     .await;
 }

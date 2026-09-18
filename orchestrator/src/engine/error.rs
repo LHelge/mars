@@ -78,8 +78,25 @@ pub enum EngineError {
     /// implementation of the trait. The placeholder engine answers every real
     /// operation with it, and the bollard implementation uses it for a
     /// `HostConfig` field the running engine does not honour (ADR 0004).
+    ///
+    /// A missing capability and never a misconfiguration: a specification the
+    /// builder refuses is [`EngineError::InvalidSpec`], so a launcher can tell
+    /// "this engine cannot do that" from "this session is configured wrong".
     #[error("the container engine does not support this operation: {0}")]
     Unsupported(String),
+    /// The container specification could not be built from the inputs it was
+    /// given: a resolved secret named like one of
+    /// [`RESERVED_ENV_NAMES`](super::spec::RESERVED_ENV_NAMES)
+    /// (`ARCHITECTURE.md`, "Session container specification").
+    ///
+    /// The only 400 in this enum, and so the only variant whose message a
+    /// caller is shown verbatim: it names the *name* that collides, which is
+    /// something the operator chose and can change, and never a value
+    /// (CLAUDE.md rule 3). Kept apart from [`EngineError::Unsupported`] so a
+    /// launcher can tell a configuration error, which no retry and no other
+    /// engine will fix, from a capability this engine lacks.
+    #[error("the container specification is invalid: {0}")]
+    InvalidSpec(String),
     /// The startup probe container did not prove what it has to prove: the
     /// file it wrote was not owned by the orchestrator's own uid, or was not
     /// writable (`ARCHITECTURE.md`, "Engine adapter", Startup probe). Fatal at
@@ -93,9 +110,10 @@ impl EngineError {
     /// The HTTP status this failure maps to.
     ///
     /// A state conflict the engine reports is a conflict for the caller too,
-    /// and answers 409. Everything else is an internal fault: 500, logged once
-    /// with its detail by [`Error`]'s `IntoResponse`, answered with the
-    /// generic message.
+    /// and answers 409. A specification the builder refused is the caller's own
+    /// input, and answers 400 with its message. Everything else is an internal
+    /// fault: 500, logged once with its detail by [`Error`]'s `IntoResponse`,
+    /// answered with the generic message.
     ///
     /// [`EngineError::NotFound`] is deliberately not a 404. A missing
     /// container is not a missing REST resource; the route that asked for it
@@ -104,6 +122,7 @@ impl EngineError {
     pub fn status(&self) -> StatusCode {
         match self {
             EngineError::Conflict(_) => StatusCode::CONFLICT,
+            EngineError::InvalidSpec(_) => StatusCode::BAD_REQUEST,
             EngineError::Connection(_)
             | EngineError::NotFound(_)
             | EngineError::ImagePull { .. }
@@ -120,11 +139,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_state_conflict_is_409_and_everything_else_is_500() {
+    fn a_state_conflict_is_409_an_invalid_spec_is_400_and_everything_else_is_500() {
         assert_eq!(
             EngineError::Conflict("name is already in use".into()).status(),
             StatusCode::CONFLICT
         );
+
+        // The caller's own input, so the 400 carries the message itself; the
+        // name of the offending variable is the whole of it (rule 3).
+        let invalid = EngineError::InvalidSpec(
+            "secret name collides with a reserved variable: HOME".to_string(),
+        );
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert!(invalid.to_string().contains("HOME"), "{invalid}");
 
         for error in [
             EngineError::Connection("connection refused".into()),

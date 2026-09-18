@@ -39,7 +39,8 @@ const INTERNAL_MESSAGE: &str = "internal error";
 /// - `ClaimsError` → 401
 /// - `UserError`, `ProjectError`, `SessionError`, `TaskError`, `SecretError`,
 ///   ... → 400 or 409 per the model's own `status()`
-/// - `EngineError` → 500, or 409 for state conflicts
+/// - `EngineError` → 500, 409 for state conflicts, and 400 for a container
+///   specification the builder refused (`EngineError::InvalidSpec`)
 /// - `GitError` → 500, 400 for a ref the caller named wrong, 409 for a
 ///   non-fast-forward push, a dirty work tree or a missing credential, and 422
 ///   when it carries conflicting paths ([`Error::GitConflict`])

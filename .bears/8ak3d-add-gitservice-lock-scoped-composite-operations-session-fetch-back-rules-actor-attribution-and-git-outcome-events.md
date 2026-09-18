@@ -1,10 +1,10 @@
 ---
 id: "8ak3d"
 title: "Add GitService: lock-scoped composite operations, session fetch-back rules, actor attribution and git outcome events"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:33:07.410019602Z"
-updated: "2026-09-16T20:33:07.410019602Z"
+updated: "2026-09-18T01:37:45.504452947Z"
 tags:
   - orchestrator
   - git
@@ -17,6 +17,8 @@ depends_on:
   - nzchj
   - "55pqv"
 parent: z4u4e
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

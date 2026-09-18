@@ -6,6 +6,8 @@
 //! configuration.
 
 use axum::extract::FromRef;
+use futures_util::future::BoxFuture;
+use uuid::Uuid;
 
 use crate::email::EmailClient;
 use crate::engine::ContainerEngine;
@@ -14,6 +16,17 @@ use crate::prelude::*;
 use crate::routes::throttle::{LoginThrottle, ResetRateLimit};
 use crate::secrets::SecretsKeyring;
 use crate::session::SessionRegistry;
+
+/// What runs when a session reaches `done` or `failed`.
+///
+/// One hook rather than a dependency: the session owner, the launcher and the
+/// session service all end sessions, and what has to happen when one ends —
+/// releasing the tasks it held (`ARCHITECTURE.md`, "Task tracker", leases) —
+/// belongs to the tracker, which is a layer the session code must not reach
+/// into. The tracker installs itself here at startup with
+/// [`AppState::with_session_ended_hook`]; everywhere else the field is `None`
+/// and the ending paths do nothing extra.
+pub type SessionEndedHook = Arc<dyn Fn(Uuid) -> BoxFuture<'static, ()> + Send + Sync>;
 
 /// The state cloned into every handler.
 ///
@@ -71,6 +84,9 @@ pub struct AppState {
     /// `Clone` with its map behind an `Arc` of its own, so it needs no second
     /// `Arc` here.
     pub session_registry: SessionRegistry,
+    /// What to run when a session reaches `done` or `failed`, or `None` when
+    /// nothing is installed. See [`SessionEndedHook`].
+    pub on_session_ended: Option<SessionEndedHook>,
 }
 
 impl AppState {
@@ -106,6 +122,27 @@ impl AppState {
             reset_rate_limit: Arc::new(ResetRateLimit::new()),
             git_locks: Arc::new(ProjectGitLocks::new()),
             session_registry: SessionRegistry::new(),
+            on_session_ended: None,
+        }
+    }
+
+    /// The same state with `hook` run whenever a session ends.
+    ///
+    /// Installed once at startup, before the router is built, so every clone of
+    /// the state carries it.
+    #[must_use]
+    pub fn with_session_ended_hook(mut self, hook: SessionEndedHook) -> Self {
+        self.on_session_ended = Some(hook);
+        self
+    }
+
+    /// Run the end-of-session hook, if one is installed.
+    ///
+    /// Here rather than at each call site so that "no hook" is one branch in
+    /// one place; the ending paths call it unconditionally.
+    pub async fn session_ended(&self, session_id: Uuid) {
+        if let Some(hook) = &self.on_session_ended {
+            hook(session_id).await;
         }
     }
 }

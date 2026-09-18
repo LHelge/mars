@@ -11,6 +11,7 @@
 //! The database side of a project is [`crate::repositories::ProjectRepository`];
 //! the git side is [`crate::git::mirror`]. This module is only the directories.
 
+pub mod clone_job;
 pub mod layout;
 
 pub use layout::{ProjectLayout, session_dir};

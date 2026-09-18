@@ -38,7 +38,7 @@ use mars_orchestrator::models::{Email, NewUser, User, Username};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;
 use mars_orchestrator::secrets::SecretsKeyring;
-use mars_orchestrator::session::SessionRegistry;
+use mars_orchestrator::session::{RecoveryReport, SessionRegistry};
 use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -182,6 +182,23 @@ impl TestApp {
     /// input reads the queue from here.
     pub fn session_registry(&self) -> &SessionRegistry {
         &self.state.session_registry
+    }
+
+    /// Run startup recovery against this app's database, data directory and
+    /// engine (`ARCHITECTURE.md`, "Restart procedure").
+    ///
+    /// What a restart amounts to in a test: the registry is emptied first,
+    /// because a new process starts with an empty one and the queues in it are
+    /// not durable (ADR 0020), and then the same `recover` `main.rs` calls runs
+    /// over the rows and containers that survived. A test that wants to simulate
+    /// a crash aborts its owner task, calls this, and asserts on what the new
+    /// owner did.
+    pub async fn recover(&self) -> RecoveryReport {
+        self.state.session_registry.clear();
+
+        mars_orchestrator::session::recover(&self.state)
+            .await
+            .expect("startup recovery runs")
     }
 
     /// Forget every failed login and password-reset request counted so far.

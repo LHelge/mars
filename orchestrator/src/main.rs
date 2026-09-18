@@ -220,9 +220,6 @@ async fn serve(bootstrap: Bootstrap) {
         }
     };
 
-    // Session lifecycle epic: adopt running containers, fail sessions in creating
-    // Background jobs epic: CronService::start
-
     let api_port = config.api_port;
     let mcp_port = config.mcp_port;
     let drain_grace = Duration::from_secs(config.stop_grace_secs).max(MIN_DRAIN_GRACE);
@@ -257,6 +254,27 @@ async fn serve(bootstrap: Bootstrap) {
         git_credentials,
         keyring,
     );
+
+    // Step 2 and 3 of the restart procedure, and before either listener accepts
+    // a request: an owner adopted here must be in the registry before a launch
+    // or a resume can race it (`ARCHITECTURE.md`, "Restart procedure"). The
+    // engine's startup probe is already done, so nothing is adopted through an
+    // engine that has not been verified. A listing that fails is fatal: an
+    // orchestrator that does not know which containers are running would park
+    // sessions whose CLI is alive. The cron jobs start after this, which is
+    // step 4 — the background-jobs epic adds `CronService::start` here.
+    match mars_orchestrator::session::recover(&state).await {
+        Ok(report) => info!(
+            adopted = report.adopted,
+            parked = report.parked,
+            failed = report.failed,
+            "startup recovery done",
+        ),
+        Err(err) => {
+            error!(error = %err, "startup recovery failed; refusing to serve");
+            std::process::exit(EXIT_FAILURE);
+        }
+    }
 
     // One signal future, watched twice: once by the listeners, which start
     // draining, and once by the deadline, which gives up on a request that

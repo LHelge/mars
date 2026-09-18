@@ -337,7 +337,8 @@ impl<'a> ProjectRepository<'a> {
     /// next launch (`ARCHITECTURE.md`, "Storage"). Both ways of colliding with
     /// an existing entry — the name, which is the primary key, and the mount
     /// point, which has its own unique index — map to the 409 `SPEC.md`,
-    /// "Shared directories" promises.
+    /// "Shared directories" promises, and an unknown project maps to
+    /// [`Error::NotFound`].
     pub async fn insert_shared_dir(
         &self,
         tx: &mut PgConnection,
@@ -362,6 +363,24 @@ impl<'a> ProjectRepository<'a> {
         debug!(project_id = %project_id, name = %inserted.name, "shared directory inserted");
 
         Ok(inserted)
+    }
+
+    /// The shared directory with this name in this project, or `None`.
+    pub async fn find_shared_dir(&self, project_id: Uuid, name: &str) -> Result<Option<SharedDir>> {
+        let dir = sqlx::query_as!(
+            SharedDir,
+            r#"
+            SELECT project_id, name, container_path, created_at
+            FROM project_shared_dirs
+            WHERE project_id = $1 AND name = $2
+            "#,
+            project_id,
+            name,
+        )
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(dir)
     }
 
     /// The project's shared directories, by name.
@@ -640,17 +659,29 @@ fn map_project_error(err: sqlx::Error) -> Error {
     Error::from(err)
 }
 
-/// Map the two ways a shared directory can collide with an existing one.
+/// Map the two ways a shared directory can collide with an existing one, and
+/// the one way its project can be missing.
+///
+/// The name is the table's primary key and the mount point has a unique index
+/// of its own, so the two 409s `SPEC.md`, "Shared directories" promises are
+/// told apart by constraint name. The foreign key is the third: a directory
+/// added to a project that was deleted between the route's lookup and this
+/// insert is a 404 for that project, not an internal error.
 fn map_shared_dir_error(err: sqlx::Error) -> Error {
     match unique_violation(&err) {
         Some("project_shared_dirs_pkey") => {
-            Error::Conflict("shared directory name already used".into())
+            return Error::Conflict("shared directory name already used".into());
         }
         Some("project_shared_dirs_project_id_container_path_key") => {
-            Error::Conflict("container path already used".into())
+            return Error::Conflict("container path already used".into());
         }
-        _ => Error::from(err),
+        _ => {}
     }
+    if let Some("project_shared_dirs_project_id_fkey") = foreign_key_violation(&err) {
+        return Error::NotFound;
+    }
+
+    Error::from(err)
 }
 
 /// Map the profile constraints a caller can break.

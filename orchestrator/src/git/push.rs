@@ -267,7 +267,10 @@ fn push_argv(force: bool, refspec: &str) -> Vec<String> {
 }
 
 /// The upstream branch a source ref publishes as when the caller named none.
-fn default_remote_branch(git_ref: &GitRef) -> std::result::Result<String, GitError> {
+///
+/// Visible to the rest of `git/` so the service can name the branch a failed
+/// push was aiming at in its `git` outcome event without restating the rule.
+pub(super) fn default_remote_branch(git_ref: &GitRef) -> std::result::Result<String, GitError> {
     match git_ref {
         GitRef::Head(name) => Ok(name.clone()),
         // `session/<sid>`: the same branch name the session's own clone uses,
@@ -284,7 +287,10 @@ fn default_remote_branch(git_ref: &GitRef) -> std::result::Result<String, GitErr
 /// is a legal integration head is exactly a name that is a legal push target.
 /// The `refs/` and empty cases are checked first only so the error names what
 /// the caller actually sent instead of the qualified form built from it.
-fn validate_remote_branch(requested: &str) -> std::result::Result<String, GitError> {
+///
+/// Visible to the rest of `git/` so the service can refuse a malformed name
+/// before it takes the project git lock and syncs anything.
+pub(super) fn validate_remote_branch(requested: &str) -> std::result::Result<String, GitError> {
     let invalid = || GitError::InvalidRef(requested.to_string());
 
     if requested.is_empty() || requested.starts_with("refs/") {

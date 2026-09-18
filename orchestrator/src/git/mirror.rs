@@ -65,9 +65,10 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use super::service::GitService;
 use super::{
-    CredentialConfig, DataPaths, GitActor, GitCommand, GitCredential, GitError, GitOutput,
-    ProjectGitGuard, refs,
+    CredentialConfig, DataPaths, GitActor, GitCommand, GitCredential, GitCredentialProvider,
+    GitError, GitOutput, ProjectGitGuard, ProjectGitLocks, refs,
 };
 use crate::models::{Branch, BranchKind, Project, ProjectStatus, RemoteUrl};
 use crate::prelude::*;
@@ -298,7 +299,26 @@ pub async fn fetch_project(
     actor: &GitActor,
     max_age: Option<Duration>,
 ) -> Result<FetchOutcome> {
-    let projects = ProjectRepository::new(&state.pool);
+    GitService::from_state(state)
+        .fetch_project(project_id, actor, max_age)
+        .await
+}
+
+/// [`fetch_project`] against the pieces rather than the whole [`AppState`].
+///
+/// [`GitService`] holds exactly these four and offers this operation beside
+/// the composite ones, so that a caller reaches every git operation through
+/// one handle; this is where the work lives, next to the fetch it runs.
+pub(super) async fn fetch_project_with(
+    pool: &PgPool,
+    paths: &DataPaths,
+    locks: &ProjectGitLocks,
+    credentials: &dyn GitCredentialProvider,
+    project_id: Uuid,
+    actor: &GitActor,
+    max_age: Option<Duration>,
+) -> Result<FetchOutcome> {
+    let projects = ProjectRepository::new(pool);
     let project = projects.find(project_id).await?.ok_or(Error::NotFound)?;
 
     if project.status != ProjectStatus::Ready {
@@ -312,21 +332,18 @@ pub async fn fetch_project(
         return Ok(FetchOutcome { fetched: false, at });
     }
 
-    let paths = DataPaths::from_config(&state.config);
-
     {
-        let guard = state.git_locks.lock(project_id).await;
-        let credential = state
-            .git_credentials
+        let guard = locks.lock(project_id).await;
+        let credential = credentials
             .credential_for(project_id, actor, CREDENTIAL_TTL)
             .await?;
 
-        fetch_upstream(&guard, &paths, credential.as_ref()).await?;
+        fetch_upstream(&guard, paths, credential.as_ref()).await?;
     }
 
     // Only after the command succeeded, and with the git lock already
     // released (ADR 0021).
-    let mut tx = state.pool.begin().await?;
+    let mut tx = pool.begin().await?;
     let updated = projects
         .set_last_fetched_at(&mut tx, project_id)
         .await?

@@ -28,6 +28,15 @@
 //! `SPEC.md`, "Git"). `diff::diff` is reached through its module rather than
 //! re-exported here, so that the name of the operation and the name of the
 //! module cannot be mistaken for each other at a call site.
+//!
+//! [`service`] is what the rest of the orchestrator calls. [`GitService`]
+//! composes the primitives above into the operations the REST routes, the MCP
+//! tools and the session endpoints expose: it takes the project git lock once,
+//! syncs the participating sessions, resolves every ref to a fixed commit,
+//! obtains the credential and the commit identity for the [`GitActor`] that
+//! asked, runs the primitive and records the outcome as a `git` event on the
+//! sessions that took part (ADR 0007; `ARCHITECTURE.md`, "Git model";
+//! `SPEC.md`, "AgentEvent").
 
 pub mod command;
 pub mod credentials;
@@ -39,6 +48,7 @@ pub mod mirror;
 pub mod paths;
 pub mod push;
 pub mod refs;
+pub mod service;
 pub mod session;
 pub mod tempclone;
 
@@ -50,7 +60,7 @@ pub use credentials::{
 pub use diff::{MAX_PATCH_BYTES, session_branches};
 pub use error::GitError;
 pub use integrate::{
-    MergeOutcome, RebaseOutcome, WorkTreeOutcome, merge, rebase, requested_by_trailer,
+    MergeOutcome, RebaseOutcome, WorkTreeOutcome, merge, rebase, requested_by, requested_by_trailer,
 };
 pub use lock::{ProjectGitGuard, ProjectGitLocks};
 pub use mirror::{
@@ -60,6 +70,7 @@ pub use mirror::{
 pub use paths::DataPaths;
 pub use push::{ComparePage, PushOutcome, github_compare_url, push};
 pub use refs::{GitRef, RefEntry, ResolvedRef};
+pub use service::{DiffSelector, GitService};
 pub use session::{create_work_clone, fetch_back, remove_work_clone, resolve_base, session_branch};
 pub use tempclone::TempClone;
 

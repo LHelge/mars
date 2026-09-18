@@ -20,6 +20,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+// The one type a detail borrows from the operation that produces it, rather
+// than spelling its three values a second time
+// ([`GitRebaseDetail::work_tree`]).
+use crate::git::WorkTreeOutcome;
 // The crate convention (`CLAUDE.md`, "Backend conventions"); nothing in this
 // module needs a prelude item, but every module imports it.
 #[allow(unused_imports)]
@@ -191,6 +195,126 @@ pub struct SessionBranch {
     pub updated_at: DateTime<Utc>,
 }
 
+/// What `POST /sessions/{id}/sync` answers, and what a successful `sync`
+/// event's `detail` carries (`SPEC.md`, "Sessions"; "AgentEvent").
+///
+/// `ref` is the fully qualified `refs/sessions/<session id>`, the same
+/// spelling [`SessionBranch::git_ref`] uses, so the two describe one ref the
+/// same way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncOutcome {
+    /// The session ref that was updated.
+    #[serde(rename = "ref")]
+    pub git_ref: String,
+    /// The commit it now points at.
+    pub commit: String,
+}
+
+/// The `detail` of a `git` event with `op: "sync"` (`SPEC.md`, "AgentEvent").
+///
+/// `commit` on success, `error` on failure; never both. `error` is the generic
+/// user-facing message [`Error::user_message`] produces — never git's stderr
+/// and never a credential (`CLAUDE.md` rule 3), which is the rule for the
+/// `error` field of every detail in this module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitSyncDetail {
+    /// The session ref the sync was for.
+    #[serde(rename = "ref")]
+    pub git_ref: String,
+    /// The commit the ref now points at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Why the sync failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The `detail` of a `git` event with `op: "merge"` (`SPEC.md`, "AgentEvent").
+///
+/// `source` and `target` are API ref names, except for the task-merge form,
+/// where `source` is the label the caller gave the pinned hand-off commit.
+/// `requested_by` is `user:<uuid>`, `session:<uuid>` or `system`, the same
+/// value the merge commit's `Requested-By` trailer carries
+/// (`ARCHITECTURE.md`, "Git model", Commit identity).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitMergeDetail {
+    /// What was merged.
+    pub source: String,
+    /// The integration head it was merged into.
+    pub target: String,
+    /// The commit the target now points at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Whether the target moved to the source commit rather than gaining a
+    /// merge commit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fast_forward: Option<bool>,
+    /// The paths a stopped merge left conflicting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflicts: Option<Vec<String>>,
+    /// Who asked for the operation.
+    pub requested_by: String,
+    /// Why the merge failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The `detail` of a `git` event with `op: "rebase"` (`SPEC.md`,
+/// "AgentEvent").
+///
+/// `work_tree` is the one thing only this event reports: whether the session's
+/// checkout was updated to the rewritten commits or still has to be reconciled
+/// by somebody (`ARCHITECTURE.md`, "Git model", Merge, rebase, push).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitRebaseDetail {
+    /// The branch that was rewritten.
+    pub branch: String,
+    /// What it was replayed onto.
+    pub onto: String,
+    /// The commit the branch now points at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// The paths a stopped rebase left conflicting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflicts: Option<Vec<String>>,
+    /// What became of the session's checkout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_tree: Option<WorkTreeOutcome>,
+    /// Who asked for the operation.
+    pub requested_by: String,
+    /// Why the rebase failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The `detail` of a `git` event with `op: "push"` (`SPEC.md`, "AgentEvent").
+///
+/// `compare_url` is where the UI offers "open a pull request"; it is absent
+/// for a remote that is not a GitHub one. The REST body stays
+/// `{remote_branch, commit}` (`SPEC.md`, "Git"), which is why the link travels
+/// here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPushDetail {
+    /// The local ref that was pushed, by its API name.
+    #[serde(rename = "ref")]
+    pub git_ref: String,
+    /// The upstream branch it was sent to, short name.
+    pub remote_branch: String,
+    /// The commit that was published.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Whether the caller asked for a forced push.
+    pub force: bool,
+    /// The GitHub compare page for opening a pull request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compare_url: Option<String>,
+    /// Who asked for the operation.
+    pub requested_by: String,
+    /// Why the push failed; a non-fast-forward rejection says so here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +437,97 @@ mod tests {
         assert_eq!(json["behind"], 1);
         assert_eq!(json["base"], "main");
         assert_eq!(json["updated_at"], "2025-01-02T03:04:05Z");
+    }
+
+    #[test]
+    fn a_successful_detail_carries_no_error_and_a_failed_one_no_commit() {
+        let succeeded = serde_json::to_value(GitSyncDetail {
+            git_ref: "refs/sessions/x".to_string(),
+            commit: Some("5".repeat(40)),
+            error: None,
+        })
+        .expect("a detail serialises");
+        assert_eq!(succeeded["ref"], "refs/sessions/x");
+        assert_eq!(succeeded["commit"], "5".repeat(40));
+        assert!(succeeded.get("error").is_none(), "{succeeded}");
+
+        let failed = serde_json::to_value(GitSyncDetail {
+            git_ref: "refs/sessions/x".to_string(),
+            commit: None,
+            error: Some("internal error".to_string()),
+        })
+        .expect("a detail serialises");
+        assert!(failed.get("commit").is_none(), "{failed}");
+        assert_eq!(failed["error"], "internal error");
+    }
+
+    #[test]
+    fn a_merge_detail_carries_its_outcome_and_who_asked() {
+        let user_id = Uuid::new_v4();
+        let json = serde_json::to_value(GitMergeDetail {
+            source: "main".to_string(),
+            target: "release".to_string(),
+            commit: Some("6".repeat(40)),
+            fast_forward: Some(false),
+            conflicts: None,
+            requested_by: format!("user:{user_id}"),
+            error: None,
+        })
+        .expect("a detail serialises");
+
+        assert_eq!(json["source"], "main");
+        assert_eq!(json["target"], "release");
+        assert_eq!(json["fast_forward"], false);
+        assert_eq!(json["requested_by"], format!("user:{user_id}"));
+        assert!(json.get("conflicts").is_none(), "{json}");
+    }
+
+    #[test]
+    fn a_rebase_detail_spells_the_work_tree_outcome_as_the_event_contract_does() {
+        let json = serde_json::to_value(GitRebaseDetail {
+            branch: "main".to_string(),
+            onto: "origin/main".to_string(),
+            commit: None,
+            conflicts: Some(vec!["src/lib.rs".to_string()]),
+            work_tree: Some(WorkTreeOutcome::ReconciliationRequired),
+            requested_by: "system".to_string(),
+            error: Some("merge conflict".to_string()),
+        })
+        .expect("a detail serialises");
+
+        assert_eq!(json["work_tree"], "reconciliation_required");
+        assert_eq!(json["conflicts"][0], "src/lib.rs");
+        assert_eq!(json["error"], "merge conflict");
+    }
+
+    #[test]
+    fn a_push_detail_spells_its_ref_field_ref_and_always_says_whether_it_forced() {
+        let json = serde_json::to_value(GitPushDetail {
+            git_ref: "main".to_string(),
+            remote_branch: "main".to_string(),
+            commit: Some("7".repeat(40)),
+            force: false,
+            compare_url: None,
+            requested_by: "system".to_string(),
+            error: None,
+        })
+        .expect("a detail serialises");
+
+        assert_eq!(json["ref"], "main");
+        assert!(json.get("git_ref").is_none(), "{json}");
+        assert_eq!(json["force"], false);
+        assert!(json.get("compare_url").is_none(), "{json}");
+    }
+
+    #[test]
+    fn a_sync_outcome_is_the_documented_response_body() {
+        let json = serde_json::to_value(SyncOutcome {
+            git_ref: "refs/sessions/x".to_string(),
+            commit: "8".repeat(40),
+        })
+        .expect("an outcome serialises");
+
+        assert_eq!(json["ref"], "refs/sessions/x");
+        assert_eq!(json["commit"], "8".repeat(40));
     }
 }

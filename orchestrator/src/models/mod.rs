@@ -24,7 +24,10 @@ pub use agent_profile::{
     is_secret_name,
 };
 pub use event::{EventRow, INTERNAL_FIELD_PREFIX, NewEvent, OFFSET_FIELD};
-pub use git::{Branch, BranchKind, Diff, DiffFile, DiffStatus, SessionBranch};
+pub use git::{
+    Branch, BranchKind, Diff, DiffFile, DiffStatus, GitMergeDetail, GitPushDetail, GitRebaseDetail,
+    GitSyncDetail, SessionBranch, SyncOutcome,
+};
 pub use project::{
     BranchName, DEFAULT_MAX_ATTEMPTS, MAX_MAX_ATTEMPTS, MAX_PROJECT_NAME_CHARS, MIN_MAX_ATTEMPTS,
     MaxAttempts, NewProject, Project, ProjectError, ProjectName, ProjectResult, ProjectStatus,

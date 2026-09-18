@@ -612,12 +612,39 @@ async fn run_with_credential(
     credential: Option<&GitCredential>,
     paths: &DataPaths,
 ) -> std::result::Result<GitOutput, GitError> {
+    with_credential(command, credential, paths, true).await
+}
+
+/// The same, for a command whose non-zero exit is an answer rather than a
+/// failure.
+///
+/// [`push`](super::push) is the case: `git push --porcelain` reports *why* it
+/// refused a ref on stdout and exits non-zero for every refusal, so the caller
+/// needs the output that [`GitCommand::run_ok`] would have thrown away in
+/// order to tell a non-fast-forward from a declined hook. The credential
+/// handling is identical and lives here rather than being written a second
+/// time next to the parser.
+pub(crate) async fn run_with_credential_raw(
+    command: GitCommand,
+    credential: Option<&GitCredential>,
+    paths: &DataPaths,
+) -> std::result::Result<GitOutput, GitError> {
+    with_credential(command, credential, paths, false).await
+}
+
+/// The body both of the above share: write the config, run, delete it.
+async fn with_credential(
+    command: GitCommand,
+    credential: Option<&GitCredential>,
+    paths: &DataPaths,
+    require_success: bool,
+) -> std::result::Result<GitOutput, GitError> {
     let Some(credential) = credential else {
-        return command.run_ok().await;
+        return run(command, require_success).await;
     };
 
     let config = CredentialConfig::write(credential, &paths.tmp())?;
-    let result = command.config_global(config.path()).run_ok().await;
+    let result = run(command.config_global(config.path()), require_success).await;
     let removed = config.close();
 
     match result {
@@ -628,6 +655,18 @@ async fn run_with_credential(
             }
             Err(err)
         }
+    }
+}
+
+/// Run `command`, failing on a non-zero exit only when the caller wants that.
+async fn run(
+    command: GitCommand,
+    require_success: bool,
+) -> std::result::Result<GitOutput, GitError> {
+    if require_success {
+        command.run_ok().await
+    } else {
+        command.run().await
     }
 }
 

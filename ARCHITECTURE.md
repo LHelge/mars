@@ -280,8 +280,11 @@ pub trait AgentBackend: Send + Sync {
     fn launch_command(&self, ctx: &LaunchContext) -> Command;      // fresh or resume
     fn translate(&self, line: &str, state: &mut TranslateState) -> Vec<AgentEvent>;
     fn encode_input(&self, input: &SessionInput) -> Result<String>; // one line, newline-terminated
+    fn as_any(&self) -> &dyn Any;                                   // downcast hook for tests
 }
 ```
+
+The owner constructs the two argument types itself, one pair per launch: a `LaunchContext` (the profile's `model`, `system_prompt` and `partial_messages`, the MCP configuration path, and a `LaunchMode` that is either `Conversational { resume: Option<String> }` or `Ephemeral { prompt: String }`, so an ephemeral resume or an inline prompt on a conversational launch cannot be expressed), and a fresh `TranslateState` holding the per-process translation memory — whether this launch resumed, whether partial messages were asked for, which credential was injected, the hashes of the inputs written into the process and the open-subagent and denial bookkeeping. `backend_for(backend)` maps the profile's `agent_backend` value to the `Arc<dyn AgentBackend>` the owner uses; the `integration-tests` feature adds a `MockAgentBackend` that records its launch contexts and translates scripted `AgentEvent` lines.
 
 ### Claude Code invocation
 

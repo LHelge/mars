@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM secrets WHERE scope = $1 AND scope_id IS NOT DISTINCT FROM $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "secret_scope",
+            "kind": {
+              "Enum": [
+                "global",
+                "user",
+                "project"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "181cedbbdcc2771a2cec78ba934aaf63e00251c4b253875af2941e105cdd7a73"
+}

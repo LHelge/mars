@@ -1116,3 +1116,494 @@ async fn fetching_and_listing_an_unknown_project_is_404() {
         response.assert_json(&json!({ "status": 404, "error": "not found" }));
     }
 }
+
+// --- DELETE /projects/{id}
+
+// The deletion tests' own imports and helpers, kept together down here rather
+// than in the shared blocks at the top of the file.
+use mars_orchestrator::models::{
+    NewEvent, NewSession, NewSharedDir, NewTask, NewTaskComment, NewTaskEvent, NewTaskHandoff,
+    ProfileKind, SecretUsePurpose, SessionState, StateChange, TaskDependencyKind, task_event_kind,
+};
+use mars_orchestrator::projects::session_dir;
+use mars_orchestrator::repositories::{
+    ProjectRepository, SecretRepository, SessionRepository, TaskRepository,
+};
+use sqlx::PgPool;
+
+/// An obviously fake but well-formed SHA-1 object id (rule 3).
+const FAKE_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// An obviously fake second project secret, and the name it is stored under
+/// (rule 3).
+const EXTRA_SECRET_NAME: &str = "FAKE_DEPLOY_TOKEN";
+const EXTRA_SECRET_VALUE: &str = "fake-deploy-token-for-tests";
+
+/// The ids a deleted project's rows are found by afterwards.
+///
+/// Seven tables are reached from the project id alone; the rest hang off a
+/// session, a profile, a task or a secret, all of which are gone once the
+/// project is. Counting those through a join would report zero whether or not
+/// the child rows survived, so the ids are captured while the project is still
+/// there and the counts are taken against them.
+struct Owned {
+    project: Uuid,
+    sessions: Vec<Uuid>,
+    profiles: Vec<Uuid>,
+    tasks: Vec<Uuid>,
+    secrets: Vec<Uuid>,
+}
+
+/// How many rows every table still holds for this project.
+///
+/// Runtime `query_scalar` rather than the macro: the table and the column are
+/// what varies, and both are this file's own constants, never anything a
+/// request carried.
+async fn rows_left(pool: &PgPool, owned: &Owned) -> Vec<(&'static str, i64)> {
+    let project = std::slice::from_ref(&owned.project);
+    let tables: [(&'static str, &'static str, &[Uuid]); 14] = [
+        ("projects", "id", project),
+        ("agent_profiles", "project_id", project),
+        ("project_shared_dirs", "project_id", project),
+        ("sessions", "project_id", project),
+        ("task_states", "project_id", project),
+        ("tasks", "project_id", project),
+        ("task_events", "project_id", project),
+        ("secrets", "scope_id", project),
+        ("events", "session_id", &owned.sessions),
+        ("profile_states", "profile_id", &owned.profiles),
+        ("task_dependencies", "task_id", &owned.tasks),
+        ("task_comments", "task_id", &owned.tasks),
+        ("task_handoffs", "task_id", &owned.tasks),
+        ("secret_uses", "secret_id", &owned.secrets),
+    ];
+
+    let mut counts = Vec::with_capacity(tables.len());
+    for (table, column, ids) in tables {
+        // `AssertSqlSafe` is the audit sqlx asks for: both halves of the
+        // statement come from the table above and never from a request.
+        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT COUNT(*) FROM {table} WHERE {column} = ANY($1)"
+        )))
+        .bind(ids)
+        .fetch_one(pool)
+        .await
+        .expect("the count reads");
+
+        counts.push((table, count));
+    }
+
+    counts
+}
+
+/// Every table named above holds something, which is what makes the assertion
+/// after the deletion mean anything.
+fn assert_every_table_seeded(counts: &[(&'static str, i64)]) {
+    for (table, count) in counts {
+        assert!(*count > 0, "{table} was not seeded");
+    }
+}
+
+/// Not one row is left anywhere.
+fn assert_every_table_empty(counts: &[(&'static str, i64)]) {
+    for (table, count) in counts {
+        assert_eq!(*count, 0, "{table} still holds rows of the deleted project");
+    }
+}
+
+/// A `ready` project created with a credential, so it starts with the
+/// project-scoped `GIT_CREDENTIAL` secret.
+///
+/// The mock credential provider is what the clone actually uses, so storing one
+/// changes nothing about the clone; it is here because deleting the secret is
+/// part of what these tests assert.
+async fn credentialled_project(
+    app: &TestApp,
+    user: &AuthenticatedUser,
+    upstream: &TestUpstream,
+) -> Uuid {
+    let created = created(
+        app,
+        user,
+        &json!({
+            "name": "mars",
+            "remote_url": file_url(&upstream.path),
+            "credential": FAKE_CREDENTIAL,
+        }),
+    )
+    .await;
+    assert_eq!(created["has_credential"], json!(true));
+
+    let id = id_of(&created);
+    let project = clone_job::wait_for_clone(&app.state, id, CLONE_TIMEOUT).await;
+    assert_eq!(
+        project.status,
+        ProjectStatus::Ready,
+        "{:?}",
+        project.status_message
+    );
+
+    id
+}
+
+/// A session of this project in `state`, with an event and its directory.
+///
+/// A session starts `creating`; anything further is reached through the
+/// repository's own transitions, so the row is one the lifecycle could really
+/// have produced.
+async fn session_in(app: &TestApp, project_id: Uuid, state: SessionState) -> Uuid {
+    let profile = ProjectRepository::new(&app.state.pool)
+        .find_default_profile(project_id)
+        .await
+        .expect("the profile reads")
+        .expect("a created project has a default profile");
+
+    let sessions = SessionRepository::new(&app.state.pool);
+    let new_session = NewSession::new(
+        project_id,
+        profile.id,
+        ProfileKind::Conversational,
+        "main",
+        // Not a credential: a fake stand-in for the hashed MCP token (rule 3).
+        format!("fake-mcp-token-hash-{}", Uuid::new_v4()),
+    );
+
+    let mut tx = app.state.pool.begin().await.expect("a transaction begins");
+    let session = sessions
+        .insert(&mut tx, &new_session)
+        .await
+        .expect("the session inserts");
+    // Everything but `creating` is reached through `running`, which is the
+    // only edge out of the state a session is inserted in.
+    if state != SessionState::Creating {
+        sessions
+            .set_state(
+                &mut tx,
+                session.id,
+                SessionState::Running,
+                &StateChange::plain(),
+            )
+            .await
+            .expect("a created session may start running");
+
+        if state != SessionState::Running {
+            sessions
+                .set_state(&mut tx, session.id, state, &StateChange::plain())
+                .await
+                .expect("the transition is a legal one");
+        }
+    }
+    sessions
+        .append_events(
+            &mut tx,
+            session.id,
+            &[NewEvent::now("status", json!({ "state": "seeded" }))],
+        )
+        .await
+        .expect("the event appends");
+    tx.commit().await.expect("the transaction commits");
+
+    tokio::fs::create_dir_all(session_dir(&app.state.config.data_dir, session.id))
+        .await
+        .expect("the session directory is created");
+
+    session.id
+}
+
+/// Everything a project can own, written through the repositories that own it.
+///
+/// A shared-directory row and its directory, two tasks with a dependency, a
+/// comment and a hand-off between them, a project-wide task event, a `parked`
+/// session with an event and a directory, and a second project secret with an
+/// audit row of its own.
+async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uuid) -> Owned {
+    let pool = &app.state.pool;
+    let projects = ProjectRepository::new(pool);
+    let tasks = TaskRepository::new(pool);
+
+    let layout = app.state.config.project_layout(project_id);
+    let mut tx = pool.begin().await.expect("a transaction begins");
+    projects
+        .insert_shared_dir(
+            &mut tx,
+            project_id,
+            &NewSharedDir::new("target", "/session/work/target").expect("the shared dir parses"),
+        )
+        .await
+        .expect("the shared directory inserts");
+    tx.commit().await.expect("the transaction commits");
+    layout
+        .ensure_shared_dir("target")
+        .await
+        .expect("the shared directory is created");
+
+    let session_id = session_in(app, project_id, SessionState::Parked).await;
+
+    let mut tx = tasks
+        .begin_mutation(project_id)
+        .await
+        .expect("the mutation opens");
+    let blocker = tasks
+        .insert_task(
+            &mut tx,
+            project_id,
+            &NewTask::new(project_id, "the blocker").expect("the title parses"),
+        )
+        .await
+        .expect("the task inserts");
+    let blocked = tasks
+        .insert_task(
+            &mut tx,
+            project_id,
+            &NewTask::new(project_id, "the blocked one").expect("the title parses"),
+        )
+        .await
+        .expect("the task inserts");
+    tasks
+        .insert_dependency(
+            &mut tx,
+            project_id,
+            blocked.id,
+            blocker.id,
+            TaskDependencyKind::Blocks,
+        )
+        .await
+        .expect("the dependency inserts");
+
+    let comment = NewTaskComment::from_user(blocker.id, user.user.id, "implemented and pushed");
+    tasks
+        .insert_comment(&mut tx, project_id, &comment)
+        .await
+        .expect("the comment inserts");
+    let mut handoff = NewTaskHandoff::new(
+        blocker.id,
+        format!("session/{session_id}"),
+        FAKE_COMMIT,
+        comment.id,
+    );
+    handoff.source_session_id = Some(session_id);
+    handoff.created_by_session_id = Some(session_id);
+    tasks
+        .insert_handoff(&mut tx, project_id, &handoff)
+        .await
+        .expect("the hand-off inserts");
+
+    tasks
+        .append_task_events(
+            &mut tx,
+            project_id,
+            &[NewTaskEvent::project_wide(
+                task_event_kind::STATES_CHANGED,
+                json!({ "states": [] }),
+            )],
+        )
+        .await
+        .expect("the task event appends");
+    tx.commit().await.expect("the transaction commits");
+
+    let response = app
+        .post_as(user, "/api/secrets")
+        .json(&json!({
+            "scope": "project",
+            "scope_id": project_id,
+            "name": EXTRA_SECRET_NAME,
+            "value": EXTRA_SECRET_VALUE,
+        }))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+
+    let secrets: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM secrets WHERE scope = 'project' AND scope_id = $1")
+            .bind(project_id)
+            .fetch_all(pool)
+            .await
+            .expect("the project's secrets read");
+    assert_eq!(secrets.len(), 2, "the credential and the extra secret");
+
+    // Attributed to the user and to no session, so the only thing that can
+    // remove it is the secret going with the project.
+    let mut tx = pool.begin().await.expect("a transaction begins");
+    SecretRepository::new(pool)
+        .insert_use(
+            &mut tx,
+            secrets[0],
+            None,
+            Some(user.user.id),
+            SecretUsePurpose::Git,
+        )
+        .await
+        .expect("the use records");
+    tx.commit().await.expect("the transaction commits");
+
+    Owned {
+        project: project_id,
+        sessions: vec![session_id],
+        profiles: vec![
+            projects
+                .find_default_profile(project_id)
+                .await
+                .expect("the profile reads")
+                .expect("a created project has a default profile")
+                .id,
+        ],
+        tasks: vec![blocker.id, blocked.id],
+        secrets,
+    }
+}
+
+#[tokio::test]
+async fn deleting_a_project_removes_every_row_and_every_directory_it_owned() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let upstream = upstream_with(&[]).await;
+    let id = credentialled_project(&app, &user, &upstream).await;
+
+    let owned = seed_everything(&app, &user, id).await;
+    assert_every_table_seeded(&rows_left(&app.state.pool, &owned).await);
+
+    let paths = DataPaths::from_config(&app.state.config);
+    let project_dir = paths.project_dir(id);
+    let session_directory = paths.session_dir(owned.sessions[0]);
+    assert!(project_dir.is_dir());
+    assert!(paths.project_repo(id).is_dir());
+    assert!(session_directory.is_dir());
+
+    let response = app.delete_as(&user, &project_path(id)).await;
+    response.assert_status(StatusCode::NO_CONTENT);
+
+    assert_every_table_empty(&rows_left(&app.state.pool, &owned).await);
+    assert!(
+        !project_dir.exists(),
+        "the mirror, the CLI state directory and the shared directories go with the project"
+    );
+    assert!(
+        !session_directory.exists(),
+        "each former session's directory goes too"
+    );
+
+    // A second deletion has nothing left to delete (`SPEC.md`, "Projects").
+    app.delete_as(&user, &project_path(id))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_live_session_refuses_the_deletion_until_it_has_ended() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let upstream = upstream_with(&[]).await;
+    let id = credentialled_project(&app, &user, &upstream).await;
+
+    let owned = seed_everything(&app, &user, id).await;
+    let paths = DataPaths::from_config(&app.state.config);
+    let project_dir = paths.project_dir(id);
+
+    // A session starts `creating` and becomes `running`; both are live, and a
+    // deletion attempted in either state changes nothing at all.
+    let live = session_in(&app, id, SessionState::Creating).await;
+    for state in [SessionState::Creating, SessionState::Running] {
+        if state == SessionState::Running {
+            let mut tx = app.state.pool.begin().await.expect("a transaction begins");
+            SessionRepository::new(&app.state.pool)
+                .set_state(&mut tx, live, state, &StateChange::plain())
+                .await
+                .expect("the session starts running");
+            tx.commit().await.expect("the transaction commits");
+        }
+
+        let response = app.delete_as(&user, &project_path(id)).await;
+        response.assert_status(StatusCode::CONFLICT);
+        response.assert_json(&json!({
+            "status": 409,
+            "error": "project has running sessions"
+        }));
+
+        assert_every_table_seeded(&rows_left(&app.state.pool, &owned).await);
+        assert!(project_dir.is_dir(), "a refused deletion removes nothing");
+    }
+
+    // `parked` never counted, and `done` does not either: the run has ended
+    // and its container is gone, so there is nothing left to refuse for.
+    let mut tx = app.state.pool.begin().await.expect("a transaction begins");
+    SessionRepository::new(&app.state.pool)
+        .set_state(&mut tx, live, SessionState::Done, &StateChange::plain())
+        .await
+        .expect("the session ends");
+    tx.commit().await.expect("the transaction commits");
+
+    app.delete_as(&user, &project_path(id))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    assert_every_table_empty(&rows_left(&app.state.pool, &owned).await);
+    assert!(!project_dir.exists());
+    assert!(
+        !paths.session_dir(live).exists(),
+        "every session's directory goes, not only the ones seeded first"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_project_whose_directory_was_never_created_is_still_204() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+
+    // Straight through the creation transaction rather than the route, which
+    // spawns the clone job at once: this is a project whose job has not
+    // started, the only way to catch one that is `cloning` with nothing on
+    // disk.
+    let project = create_project(
+        &app.state,
+        NewProjectRequest {
+            name: "mars".to_string(),
+            remote_url: TEST_REMOTE.to_string(),
+            default_branch: None,
+            credential: None,
+        },
+        user.user.id,
+    )
+    .await
+    .expect("the project is created");
+    assert_eq!(project.status, ProjectStatus::Cloning);
+
+    let project_dir = DataPaths::from_config(&app.state.config).project_dir(project.id);
+    assert!(!project_dir.exists(), "the clone job never ran");
+
+    app.delete_as(&user, &project_path(project.id))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    assert!(
+        ProjectRepository::new(&app.state.pool)
+            .find(project.id)
+            .await
+            .expect("the project reads")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_unknown_project_is_404() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+
+    let response = app.delete_as(&user, &project_path(Uuid::new_v4())).await;
+
+    response.assert_status(StatusCode::NOT_FOUND);
+    response.assert_json(&json!({ "status": 404, "error": "not found" }));
+}
+
+#[tokio::test]
+async fn deleting_a_project_needs_a_token_and_an_ungated_user() {
+    let app = TestApp::spawn().await;
+    let gated = app.create_gated_user("gated", "gated@example.test").await;
+    let id = Uuid::new_v4();
+
+    let anonymous = app.server.delete(&project_path(id)).await;
+    anonymous.assert_status(StatusCode::UNAUTHORIZED);
+    anonymous.assert_json(&unauthorized());
+
+    let refused = app.delete_as(&gated, &project_path(id)).await;
+    refused.assert_status(StatusCode::FORBIDDEN);
+    refused.assert_json(&password_change_required());
+}

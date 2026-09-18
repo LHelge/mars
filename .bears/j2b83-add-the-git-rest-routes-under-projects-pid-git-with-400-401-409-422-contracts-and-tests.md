@@ -1,10 +1,10 @@
 ---
 id: j2b83
 title: Add the git REST routes under /projects/{pid}/git with 400/401/409/422 contracts and tests
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:33:45.045085157Z"
-updated: "2026-09-18T02:14:14.749209525Z"
+updated: "2026-09-18T02:43:14.407051169Z"
 tags:
   - orchestrator
   - git

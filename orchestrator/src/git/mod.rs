@@ -28,6 +28,7 @@ pub mod lock;
 pub mod mirror;
 pub mod paths;
 pub mod refs;
+pub mod session;
 
 pub use command::{GitCommand, GitOutput};
 pub use credentials::{
@@ -42,6 +43,7 @@ pub use mirror::{
 };
 pub use paths::DataPaths;
 pub use refs::{GitRef, RefEntry, ResolvedRef};
+pub use session::{create_work_clone, fetch_back, remove_work_clone, resolve_base, session_branch};
 
 /// Real repositories for tests: `CLAUDE.md`, "Testing expectations" — git is
 /// never mocked, so both the unit tests here and the integration tests under

@@ -11,6 +11,7 @@ use crate::prelude::*;
 pub mod auth;
 pub mod cookies;
 pub mod extractors;
+pub mod git;
 pub mod health;
 pub mod secrets;
 pub mod throttle;
@@ -22,13 +23,16 @@ pub mod users;
 #[cfg(feature = "integration-tests")]
 pub mod test;
 
-pub use extractors::{AdminUser, CurrentUser, UngatedUser, authenticate_access_token};
+pub use extractors::{AdminUser, CurrentUser, Path, Query, UngatedUser, authenticate_access_token};
 
 /// Every resource router, merged into the one router nested under `/api`.
 pub fn routes() -> Router<AppState> {
     let router = Router::new()
         .merge(health::routes())
         .nest("/auth", auth::routes())
+        // The git routes carry their own `{pid}/git/…` paths, so the projects
+        // epic can merge its own `/projects` router beside them.
+        .nest("/projects", git::routes())
         .nest("/secrets", secrets::routes())
         .nest("/users", users::routes());
 

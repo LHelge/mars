@@ -65,6 +65,7 @@
 
 use std::time::Duration;
 
+use async_trait::async_trait;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -118,6 +119,66 @@ pub enum DiffSelector {
     Handoff(Uuid),
 }
 
+/// The hand-off a task merge was allowed to take, as the verifier answers it.
+///
+/// A pinned commit rather than a branch: the task form merges exactly the
+/// commit the hand-off retained and never a newer session tip (`SPEC.md`,
+/// "Git"; `ARCHITECTURE.md`, "Git model", Merge, rebase, push).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovedHandoff {
+    /// The full object id retained under `refs/handoffs/<id>` (ADR 0018).
+    pub commit: String,
+    /// The branch the hand-off was published from, for the outcome event.
+    pub source_branch: String,
+}
+
+/// Who decides whether a `{task_id, handoff_id}` pair may be merged.
+///
+/// The seam between this epic and "Code hand-offs and review": the task merge
+/// has to verify *under the project git lock* that the hand-off is the task's
+/// current one and that its review status is `approved`
+/// (`ARCHITECTURE.md`, "Git model", Merge, rebase, push), and that reads
+/// `task_handoffs`, which is the other epic's table. So the check is a hook
+/// rather than a query here, and [`GitService::merge_handoff`] calls it with
+/// the lock already held, between taking it and merging.
+///
+/// The contract for an implementation: [`Error::Conflict`] when the hand-off
+/// is not the task's current one or is not `approved` (409, `SPEC.md`, "Git"),
+/// and [`Error::NotFound`] for a task or hand-off this project does not have.
+///
+/// `#[async_trait]` for the reason [`GitCredentialProvider`] gives: it is held
+/// as an `Arc<dyn …>` and has to stay dyn compatible.
+#[async_trait]
+pub trait HandoffVerifier: Send + Sync {
+    /// The commit `handoff_id` pinned, if it is `task_id`'s current, approved
+    /// hand-off in this project.
+    async fn approved_commit(
+        &self,
+        project_id: Uuid,
+        task_id: Uuid,
+        handoff_id: Uuid,
+    ) -> Result<ApprovedHandoff>;
+}
+
+/// What a task merge answers while no verifier is installed (409).
+const NO_HANDOFFS: &str = "task hand-offs are not available";
+
+/// The verifier a [`GitService`] carries until the hand-off epic injects its
+/// own with [`GitService::with_handoff_verifier`].
+///
+/// It refuses every task merge with the documented conflict rather than
+/// pretending to approve one: an orchestrator that cannot read a hand-off's
+/// review status must never merge on its behalf.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoHandoffs;
+
+#[async_trait]
+impl HandoffVerifier for NoHandoffs {
+    async fn approved_commit(&self, _: Uuid, _: Uuid, _: Uuid) -> Result<ApprovedHandoff> {
+        Err(Error::Conflict(NO_HANDOFFS.to_string()))
+    }
+}
+
 /// The composite git operations, over the four things they all need.
 ///
 /// Cheap to build — a pool handle, a path layout and two `Arc`s — so a route
@@ -129,6 +190,7 @@ pub struct GitService {
     paths: DataPaths,
     locks: Arc<ProjectGitLocks>,
     credentials: Arc<dyn GitCredentialProvider>,
+    handoffs: Arc<dyn HandoffVerifier>,
 }
 
 impl std::fmt::Debug for GitService {
@@ -154,7 +216,20 @@ impl GitService {
             paths,
             locks,
             credentials,
+            handoffs: Arc::new(NoHandoffs),
         }
+    }
+
+    /// The same service with `handoffs` deciding its task merges.
+    ///
+    /// How "Code hand-offs and review" installs the real verifier without
+    /// another [`AppState`] field: the caller that has one builds the service
+    /// and wraps it, and every other call site keeps the [`NoHandoffs`]
+    /// default.
+    #[must_use]
+    pub fn with_handoff_verifier(mut self, handoffs: Arc<dyn HandoffVerifier>) -> Self {
+        self.handoffs = handoffs;
+        self
     }
 
     /// The service the handlers use: the same pool, the same lock table and
@@ -474,6 +549,52 @@ impl GitService {
             &target_ref.api_name(),
             actor,
             &targets,
+        )
+        .await
+    }
+
+    /// Merge a task's approved hand-off into an integration head
+    /// (`POST /projects/{pid}/git/merge`, task form; the `merge` MCP tool).
+    ///
+    /// The whole point is the order: the project git lock is taken *first*,
+    /// the hand-off is verified under it, and the merge runs before it is
+    /// released, so the current-hand-off check and the target write are
+    /// serialized against hand-off changes (`ARCHITECTURE.md`, "Git model",
+    /// Merge, rebase, push). Nothing is synced: the source is the commit the
+    /// hand-off pinned, not a branch that may have moved since.
+    ///
+    /// A stale or unapproved hand-off is 409 and leaves the target untouched;
+    /// the refusal comes from the [`HandoffVerifier`], which is
+    /// [`NoHandoffs`] until the hand-off epic installs its own.
+    pub async fn merge_handoff(
+        &self,
+        project_id: Uuid,
+        task_id: Uuid,
+        handoff_id: Uuid,
+        target: &str,
+        message: Option<&str>,
+        actor: &GitActor,
+    ) -> Result<MergeOutcome> {
+        // Before the lock and before the verification, so a target of the
+        // wrong kind refuses the request with no side effects at all.
+        let target_ref = GitRef::parse(target)?;
+        require_kind(matches!(target_ref, GitRef::Head(_)), &target_ref)?;
+
+        self.ready_project(project_id).await?;
+
+        let guard = self.locks.lock(project_id).await;
+        let approved = self
+            .handoffs
+            .approved_commit(project_id, task_id, handoff_id)
+            .await?;
+
+        self.merge_commit(
+            &guard,
+            &approved.commit,
+            &handoff_id.to_string(),
+            target,
+            message,
+            actor,
         )
         .await
     }

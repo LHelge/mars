@@ -1,10 +1,10 @@
 ---
 id: gukce
 title: Align the Claude translator, SPEC and stop semantics with the native shapes recorded from Claude Code 2.1.274
-status: open
+status: done
 priority: P1
 created: "2026-09-18T08:02:01.345008599Z"
-updated: "2026-09-18T08:02:01.345008599Z"
+updated: "2026-09-18T18:08:18.699971113Z"
 tags:
   - orchestrator
   - agent
@@ -14,6 +14,7 @@ depends_on:
   - "4c387"
   - eeswv
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

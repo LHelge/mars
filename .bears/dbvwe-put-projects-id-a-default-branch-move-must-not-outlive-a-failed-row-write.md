@@ -1,10 +1,10 @@
 ---
 id: dbvwe
 title: "PUT /projects/{id}: a default_branch move must not outlive a failed row write"
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-18T11:09:46.766794158Z"
-updated: "2026-09-18T11:50:20.209878103Z"
+updated: "2026-09-18T12:22:24.919405841Z"
 tags:
   - orchestrator
   - projects

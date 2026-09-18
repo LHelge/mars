@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH launch AS (\n                SELECT COALESCE(MAX(seq), 0) AS seq\n                FROM events\n                WHERE session_id = $1\n                  AND kind = 'state_change'\n                  AND payload->>'to' = 'running'\n            )\n            SELECT\n                launch.seq AS \"launch_seq!\",\n                COALESCE(\n                    (\n                        SELECT MAX((payload->>'_offset')::bigint)\n                        FROM events\n                        WHERE session_id = $1 AND seq < launch.seq\n                    ),\n                    0\n                ) AS \"start_offset!\"\n            FROM launch\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "launch_seq!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "start_offset!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "64b20415dc3f6c46fc77fd41d750e00b5408ecc1090e6287af14f4a83f0ec39c"
+}

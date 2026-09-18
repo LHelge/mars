@@ -11,11 +11,21 @@
 //! the session's directories under `DATA_DIR/sessions/<sid>/`, a fresh MCP
 //! bearer token from [`token`] and the `mcp.json` that carries it, written
 //! atomically after the matching hash has committed (ADR 0029).
+//!
+//! [`owner`] is the loop itself: the one reader of `log/stream.jsonl` and the
+//! one writer of the CLI's stdin, committing each complete native line's
+//! events, offset and counters together (`ARCHITECTURE.md`, "Session owner
+//! task", "Durability and recovery").
 
+pub mod owner;
 pub mod prepare;
 pub mod registry;
 pub mod token;
 
+pub use owner::{
+    COST_ACCOUNTING, CostAccounting, MARS_MCP_SERVER, OwnerContext, ResultSummary, SessionOwner,
+    TAIL_POLL_INTERVAL,
+};
 pub use prepare::{SessionDirs, initial_token, rotate_token, write_mcp_json};
 pub use registry::{
     LaunchGuard, OwnerCommand, OwnerRx, Phase, QueuedInput, SessionRegistry, SubmitResult,

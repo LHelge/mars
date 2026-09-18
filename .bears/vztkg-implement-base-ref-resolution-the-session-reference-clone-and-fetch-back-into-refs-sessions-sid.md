@@ -1,10 +1,10 @@
 ---
 id: vztkg
 title: Implement base-ref resolution, the session reference clone and fetch-back into refs/sessions/<sid>
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:30:17.561615227Z"
-updated: "2026-09-16T20:30:17.561615227Z"
+updated: "2026-09-18T00:53:57.465826821Z"
 tags:
   - orchestrator
   - git
@@ -13,6 +13,8 @@ depends_on:
   - g6vk2
   - cfrb3
 parent: z4u4e
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

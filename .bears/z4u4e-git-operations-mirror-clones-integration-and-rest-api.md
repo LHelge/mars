@@ -2,10 +2,10 @@
 id: z4u4e
 title: "Git operations: mirror, clones, integration and REST API"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:12:40.916965835Z"
-updated: "2026-09-16T20:15:18.877232109Z"
+updated: "2026-09-18T02:43:22.150239888Z"
 tags:
   - orchestrator
   - git

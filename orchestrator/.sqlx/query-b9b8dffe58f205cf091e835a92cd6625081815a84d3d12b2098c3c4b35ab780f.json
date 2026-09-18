@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET mcp_token_hash = $2\n             WHERE id = $1\n               AND state IN ('parked'::session_state, 'creating'::session_state,\n                             'failed'::session_state)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b9b8dffe58f205cf091e835a92cd6625081815a84d3d12b2098c3c4b35ab780f"
+}

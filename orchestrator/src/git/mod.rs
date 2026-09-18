@@ -12,11 +12,18 @@
 //! reaches the child — a temporary mode-0600 config selected through
 //! `GIT_CONFIG_GLOBAL` ([`CredentialConfig`]), never argv
 //! (`ARCHITECTURE.md`, "Git model", Credentials).
+//!
+//! [`mirror`] is the first operation built on both: creating a project's bare
+//! repository, configuring it and seeding its integration heads
+//! (`ARCHITECTURE.md`, "Git model", Project clone). [`paths`] is where under
+//! `DATA_DIR` any of it lives (`ARCHITECTURE.md`, "Storage").
 
 pub mod command;
 pub mod credentials;
 pub mod error;
 pub mod lock;
+pub mod mirror;
+pub mod paths;
 pub mod refs;
 
 pub use command::{GitCommand, GitOutput};
@@ -26,6 +33,8 @@ pub use credentials::{
 };
 pub use error::GitError;
 pub use lock::{ProjectGitGuard, ProjectGitLocks};
+pub use mirror::{InitOutcome, init_project_repo, remove_project_repo};
+pub use paths::DataPaths;
 pub use refs::{GitRef, RefEntry, ResolvedRef};
 
 /// Real repositories for tests: `CLAUDE.md`, "Testing expectations" — git is

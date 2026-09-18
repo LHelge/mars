@@ -180,6 +180,20 @@ impl RemoteUrl {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// A local path standing in for a remote, for tests only.
+    ///
+    /// Git treats a path as a remote over the `file` transport, which is what
+    /// lets the git tests point `origin` at a bare repository in a `tempfile`
+    /// directory instead of at a network host (`CLAUDE.md`, "Testing
+    /// expectations": git is never mocked). [`RemoteUrl::parse`] rejects it,
+    /// as it must — a project's stored URL is `https://` only — so this
+    /// bypass is compiled only under `cfg(test)` and behind the
+    /// `integration-tests` feature and can never be reached by a request.
+    #[cfg(any(test, feature = "integration-tests"))]
+    pub fn local_for_tests(path: &std::path::Path) -> Self {
+        Self(path.display().to_string())
+    }
 }
 
 impl From<RemoteUrl> for String {

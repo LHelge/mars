@@ -10,7 +10,9 @@
 //! `resumed` flag, whether partial messages are expected at all, the
 //! credential to name in a fatal authentication `error`, the hashes of the
 //! inputs the owner wrote (so the CLI's echo of them is suppressed instead of
-//! being stored a second time), and the subagent and denial bookkeeping the
+//! being stored a second time), the CLI session id the process already
+//! announced (so the `init` line the CLI repeats at the start of every turn
+//! becomes one event per process), and the subagent and denial bookkeeping the
 //! `subagent_start`/`subagent_end` and `permission_denied` rules need.
 
 use std::collections::{HashMap, HashSet};
@@ -98,6 +100,15 @@ pub struct TranslateState {
     /// system message and the same denial in `result.permission_denials` do
     /// not produce two events (`ARCHITECTURE.md`, "Claude Code invocation").
     pub(crate) denied_tool_use_ids: HashSet<String>,
+    /// The CLI session id the `init` event of this process already announced.
+    ///
+    /// Claude Code 2.1.274 writes a `system`/`init` line at the start of every
+    /// turn, not once per process (`images/claude/VERIFY.md`, "Observed on
+    /// 2.1.274"). One process is one `init` event, so a later line that repeats
+    /// the same session id only refreshes this memory and produces nothing; a
+    /// line that reports a different one is a new conversation and is announced
+    /// (`SPEC.md`, "AgentEvent", the `init` rule).
+    pub(crate) init_session_id: Option<String>,
     /// Whether the fatal authentication `error` was already emitted.
     ///
     /// The CLI reports one failed credential many times — a run of `api_retry`
@@ -116,6 +127,7 @@ impl TranslateState {
             sent_input_hashes: HashSet::new(),
             open_subagents: HashMap::new(),
             denied_tool_use_ids: HashSet::new(),
+            init_session_id: None,
             authentication_failed: false,
         }
     }
@@ -195,6 +207,7 @@ mod tests {
         assert!(state.sent_input_hashes.is_empty());
         assert!(state.open_subagents.is_empty());
         assert!(state.denied_tool_use_ids.is_empty());
+        assert_eq!(state.init_session_id, None);
         assert!(!state.authentication_failed);
     }
 

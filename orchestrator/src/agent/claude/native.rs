@@ -95,10 +95,17 @@ pub(crate) struct NativePermissionDenied {
 /// `usage` is passed through untouched: the owner accumulates it, nothing here
 /// interprets it. `total_cost_usd` is cumulative for the process on 2.1.274,
 /// which is the owner's problem and not the translator's.
+///
+/// `terminal_reason` is read because it is the only field that tells a turn the
+/// user stopped (`aborted_streaming`) from a turn that failed: both arrive with
+/// `is_error: true` and `subtype: "error_during_execution"`
+/// (`ARCHITECTURE.md`, "Stop semantics").
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct NativeResult {
     #[serde(default)]
     pub subtype: Option<String>,
+    #[serde(default)]
+    pub terminal_reason: Option<String>,
     #[serde(default)]
     pub is_error: bool,
     #[serde(default)]
@@ -402,6 +409,7 @@ mod tests {
         let result: NativeResult = serde_json::from_value(json!({ "type": "result" })).unwrap();
 
         assert_eq!(result.subtype, None);
+        assert_eq!(result.terminal_reason, None);
         assert!(!result.is_error);
         assert_eq!(result.num_turns, 0);
         assert_eq!(result.duration_ms, 0);
@@ -418,6 +426,7 @@ mod tests {
             "is_error": false,
             "num_turns": 2,
             "duration_ms": 4335,
+            "terminal_reason": "completed",
             "total_cost_usd": 0.1633155,
             "usage": { "input_tokens": 12 },
             "permission_denials": [{
@@ -429,6 +438,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.subtype.as_deref(), Some("success"));
+        assert_eq!(result.terminal_reason.as_deref(), Some("completed"));
         assert_eq!(result.num_turns, 2);
         assert_eq!(result.duration_ms, 4335);
         assert_eq!(result.total_cost_usd, Some(0.1633155));

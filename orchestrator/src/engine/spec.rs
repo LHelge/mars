@@ -16,10 +16,15 @@
 //! everything above it speaks the plain types of [`super::types`].
 //!
 //! **Secrets.** Resolved secrets enter through [`SessionSpecInput::secrets`]
-//! and leave only in [`ContainerSpec::env`], whose [`Debug`] prints keys and
-//! never values (CLAUDE.md rule 3). Nothing here logs, and the one error
-//! message names the colliding *variable* — one of five fixed names — and
-//! never a value.
+//! and leave only in [`ContainerSpec::secret_env`], whose [`Debug`] prints keys
+//! and never values (CLAUDE.md rule 3). They are `Zeroizing<String>` at both
+//! ends and are moved, never reformatted, in between: [`to_bollard`] is the one
+//! place the bytes are copied into a plain `String`, and that copy is where the
+//! zeroization guarantee ends (`ARCHITECTURE.md`, "Secrets", Resolution at
+//! launch). [`SessionSpecInput`] deliberately has no [`Debug`] at all, because
+//! [`Zeroizing`]'s own is that of the value it wraps. Nothing here logs, and
+//! the one error message names the colliding *variable* — one of five fixed
+//! names — and never a value.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -29,6 +34,7 @@ use std::result::Result;
 
 use bollard::models::{ContainerCreateBody, HostConfig};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use super::EngineError;
 use super::types::{
@@ -102,7 +108,14 @@ pub struct SharedDirMount {
 ///
 /// Every field is an input the launcher already has; none of them is a knob
 /// over a fixed value in the specification table.
-#[derive(Debug, Clone)]
+///
+/// No [`Debug`], on purpose: [`secrets`](Self::secrets) holds decrypted
+/// credentials and [`Zeroizing`]'s own [`Debug`] is that of the `String` it
+/// wraps, so a derive here would make `{:?}` on the launcher's input print
+/// them. The absent impl is the guarantee, enforced by the compiler rather than
+/// by a test (CLAUDE.md rule 3). What a diagnostic wants is the built
+/// [`ContainerSpec`], whose [`Debug`] is redacted.
+#[derive(Clone)]
 pub struct SessionSpecInput {
     /// The session this container runs.
     pub session_id: Uuid,
@@ -123,7 +136,13 @@ pub struct SessionSpecInput {
     pub cmd: Vec<String>,
     /// The resolved secrets, in resolution order, appended after the fixed
     /// environment.
-    pub secrets: Vec<(String, String)>,
+    ///
+    /// `ResolvedSecrets::env` verbatim: the values arrive zeroizing from
+    /// [`crate::secrets::resolve_for_launch`] and are cloned into
+    /// [`ContainerSpec::secret_env`] in the same wrapper, so the launcher never
+    /// materialises a plain `String` of a credential
+    /// (`ARCHITECTURE.md`, "Secrets", Resolution at launch).
+    pub secrets: Vec<(String, Zeroizing<String>)>,
     /// The project's shared directories.
     pub shared_dirs: Vec<SharedDirMount>,
     /// `Config::data_dir`: the orchestrator's own view of the volume, which is
@@ -213,8 +232,10 @@ pub fn build_session_spec(input: &SessionSpecInput) -> Result<ContainerSpec, Eng
     // own path (ADR 0001, ADR 0015).
     let claude_config_dir = path_string(&project_data.join("claude"));
 
-    // The fixed variables first and the secrets after, so a project secret can
-    // never shadow one of them — and the check above means it cannot try.
+    // The fixed variables only; the secrets are a field of their own, appended
+    // after these when the adapter builds the engine's environment, so a
+    // project secret can never shadow one of them — and the check above means
+    // it cannot try.
     let mut env = vec![
         ("HOME".to_string(), HOME_TARGET.to_string()),
         ("CLAUDE_CONFIG_DIR".to_string(), claude_config_dir.clone()),
@@ -224,7 +245,6 @@ pub fn build_session_spec(input: &SessionSpecInput) -> Result<ContainerSpec, Eng
     if let Some(task_id) = input.task_id {
         env.push(("MARS_TASK_ID".to_string(), task_id.to_string()));
     }
-    env.extend(input.secrets.iter().cloned());
 
     let mut binds = vec![
         rw(session_host.join("work"), WORK_TARGET),
@@ -261,6 +281,8 @@ pub fn build_session_spec(input: &SessionSpecInput) -> Result<ContainerSpec, Eng
         working_dir: WORK_TARGET.to_string(),
         cmd: input.cmd.clone(),
         env,
+        // Cloned inside the `Zeroizing`, so the copy zeroizes with the spec.
+        secret_env: input.secrets.clone(),
         binds,
         network: input.network_internal.clone(),
         extra_hosts: input.extra_hosts.clone(),
@@ -299,6 +321,7 @@ pub fn build_probe_spec(input: &ProbeSpecInput) -> ContainerSpec {
             "touch /session/work/probe-ok".to_string(),
         ],
         env: Vec::new(),
+        secret_env: Vec::new(),
         binds,
         network: input.network_internal.clone(),
         extra_hosts: input.extra_hosts.clone(),
@@ -343,6 +366,18 @@ pub fn order_binds(binds: &mut [Bind]) {
 ///
 /// `kind` decides exactly one thing: `UsernsMode: keep-id`, which Podman needs
 /// for the uid contract and Docker ignores (ADR 0004).
+///
+/// **This is where zeroization ends.** `bollard` takes `Env` as owned
+/// `Vec<String>`, so the `NAME=value` line of every
+/// [`ContainerSpec::secret_env`] entry is a plain `String` this function builds
+/// and hands to the engine call, and neither it nor the JSON body `bollard`
+/// serialises it into is wiped. The copy is unavoidable — the container process
+/// holds the values anyway — and the guarantee the zeroizing types buy is the
+/// narrower one that no orchestrator-side buffer outlives the launch call
+/// (`ARCHITECTURE.md`, "Secrets", Resolution at launch). The environment is
+/// therefore built here and nowhere else, and the fixed variables come first
+/// with the secrets appended last, which is the documented order (`ARCHITECTURE.md`,
+/// "Session container specification").
 pub fn to_bollard(spec: &ContainerSpec, kind: EngineKind) -> ContainerCreateBody {
     let host_config = HostConfig {
         binds: none_if_empty(spec.binds.iter().map(bind_string).collect::<Vec<String>>()),
@@ -384,6 +419,11 @@ pub fn to_bollard(spec: &ContainerSpec, kind: EngineKind) -> ContainerCreateBody
             spec.env
                 .iter()
                 .map(|(key, value)| format!("{key}={value}"))
+                .chain(
+                    spec.secret_env
+                        .iter()
+                        .map(|(key, value)| format!("{key}={}", value.as_str())),
+                )
                 .collect::<Vec<String>>(),
         ),
         open_stdin: Some(spec.open_stdin),
@@ -504,8 +544,19 @@ mod tests {
         }
     }
 
+    /// Every variable name the container will get, in the order `to_bollard`
+    /// renders them: the fixed environment and then the secrets.
     fn env_keys(spec: &ContainerSpec) -> Vec<&str> {
-        spec.env.iter().map(|(key, _)| key.as_str()).collect()
+        spec.env
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .chain(spec.secret_env.iter().map(|(key, _)| key.as_str()))
+            .collect()
+    }
+
+    /// A secret as the resolver hands it over. Obviously fake (rule 3).
+    fn secret(name: &str, value: &str) -> (String, Zeroizing<String>) {
+        (name.to_string(), Zeroizing::new(value.to_string()))
     }
 
     fn targets(spec: &ContainerSpec) -> Vec<&str> {
@@ -556,6 +607,7 @@ mod tests {
                     ("MARS_SESSION_ID".to_string(), SID.to_string()),
                     ("MARS_PROJECT_ID".to_string(), PID.to_string()),
                 ],
+                secret_env: Vec::new(),
                 binds: vec![
                     rw(
                         PathBuf::from(format!("/host/mars/data/sessions/{SID}/home")),
@@ -640,11 +692,8 @@ mod tests {
         let mut input = session_input();
         input.task_id = Some(uuid(TID));
         input.secrets = vec![
-            (
-                "ANTHROPIC_API_KEY".to_string(),
-                "not-a-real-key".to_string(),
-            ),
-            ("GH_TOKEN".to_string(), "not-a-real-token".to_string()),
+            secret("ANTHROPIC_API_KEY", "not-a-real-key"),
+            secret("GH_TOKEN", "not-a-real-token"),
         ];
 
         let spec = build_session_spec(&input).expect("the inputs are valid");
@@ -661,13 +710,22 @@ mod tests {
                 "GH_TOKEN",
             ]
         );
+        // The fixed half holds no secret and the secret half holds nothing
+        // else, which is what makes the order structural rather than a rule.
+        assert_eq!(
+            spec.secret_env,
+            vec![
+                secret("ANTHROPIC_API_KEY", "not-a-real-key"),
+                secret("GH_TOKEN", "not-a-real-token"),
+            ]
+        );
     }
 
     #[test]
     fn a_secret_named_like_a_fixed_variable_is_refused_by_name() {
         for reserved in RESERVED_ENV_NAMES {
             let mut input = session_input();
-            input.secrets = vec![(reserved.to_string(), "not-a-real-value".to_string())];
+            input.secrets = vec![secret(reserved, "not-a-real-value")];
 
             let error = build_session_spec(&input).expect_err("the collision is refused");
             assert!(
@@ -754,6 +812,7 @@ mod tests {
         assert_eq!(spec.runtime, None);
         assert!(!spec.open_stdin, "the probe takes no input");
         assert!(spec.env.is_empty(), "the probe gets no MARS_* environment");
+        assert!(spec.secret_env.is_empty(), "the probe gets no secrets");
         assert_eq!(
             spec.cmd,
             vec![
@@ -910,10 +969,7 @@ mod tests {
     #[test]
     fn the_create_body_carries_exactly_the_documented_fields() {
         let mut input = session_input();
-        input.secrets = vec![(
-            "ANTHROPIC_API_KEY".to_string(),
-            "not-a-real-key".to_string(),
-        )];
+        input.secrets = vec![secret("ANTHROPIC_API_KEY", "not-a-real-key")];
         let spec = build_session_spec(&input).expect("the inputs are valid");
 
         let body = to_bollard(&spec, EngineKind::Podman);
@@ -974,6 +1030,53 @@ mod tests {
                 format!("MARS_PROJECT_ID={PID}"),
                 "ANTHROPIC_API_KEY=not-a-real-key".to_string(),
             ])
+        );
+    }
+
+    /// The one place the resolved values become plain bytes, and the position
+    /// they take when they do (`ARCHITECTURE.md`, "Session container
+    /// specification", Environment).
+    ///
+    /// The other half of the guarantee is not assertable at runtime and is not
+    /// meant to be: [`SessionSpecInput`] has no [`Debug`] impl, so a
+    /// `format!("{:?}", input)` anywhere would not compile, and
+    /// [`ContainerSpec`]'s own is redacted (asserted in `engine::types`).
+    #[test]
+    fn to_bollard_is_where_the_secrets_become_bytes_and_it_appends_them_last() {
+        let mut input = session_input();
+        input.task_id = Some(uuid(TID));
+        input.secrets = vec![
+            secret("ANTHROPIC_API_KEY", "not-a-real-key"),
+            secret("GH_TOKEN", "not-a-real-token"),
+        ];
+        let spec = build_session_spec(&input).expect("the inputs are valid");
+
+        let env = to_bollard(&spec, EngineKind::Podman)
+            .env
+            .expect("a session has an environment");
+
+        assert_eq!(
+            env,
+            vec![
+                "HOME=/session/home".to_string(),
+                format!("CLAUDE_CONFIG_DIR=/srv/mars/data/projects/{PID}/claude"),
+                format!("MARS_SESSION_ID={SID}"),
+                format!("MARS_PROJECT_ID={PID}"),
+                format!("MARS_TASK_ID={TID}"),
+                "ANTHROPIC_API_KEY=not-a-real-key".to_string(),
+                "GH_TOKEN=not-a-real-token".to_string(),
+            ],
+            "the secrets must be last, in resolution order"
+        );
+
+        // And nowhere else in the body: the environment is the only field the
+        // values reach.
+        let json = serde_json::to_string(&to_bollard(&spec, EngineKind::Podman))
+            .expect("a create body serialises");
+        assert_eq!(
+            json.matches("not-a-real-key").count(),
+            1,
+            "a secret value appears outside Env: {json}"
         );
     }
 

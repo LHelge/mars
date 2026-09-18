@@ -36,6 +36,14 @@
 //! Values live in `Zeroizing` buffers from the moment they leave the cipher
 //! and only names reach a log line or a span
 //! (`ARCHITECTURE.md`, "Secrets", Credential handling and transcripts; rule 3).
+//! They stay in those buffers all the way through the launch seam:
+//! [`ResolvedSecrets::env`] is moved into
+//! [`SessionSpecInput::secrets`](crate::engine::spec::SessionSpecInput::secrets)
+//! and then into
+//! [`ContainerSpec::secret_env`](crate::engine::ContainerSpec::secret_env)
+//! unchanged, and the only copy into plain bytes is the `NAME=value` line
+//! [`to_bollard`](crate::engine::spec::to_bollard) builds for the engine call
+//! (`ARCHITECTURE.md`, "Secrets", Resolution at launch).
 
 use std::collections::HashMap;
 
@@ -124,8 +132,10 @@ fn rank(scope: SecretScope) -> u8 {
 ///
 /// The refusal to inject `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`
 /// together is the launcher's rule applied to `env` afterwards, not this
-/// function's: it is about what the CLI tolerates, not about what the caller
-/// is allowed to read.
+/// function's, and stays there: it is about what one backend's CLI tolerates,
+/// not about what the caller is allowed to read, and a resolver that knew the
+/// two names would be deciding for every future [`crate::agent::AgentBackend`]
+/// (`ARCHITECTURE.md`, "Claude Code invocation", Credentials).
 ///
 /// # Errors
 ///

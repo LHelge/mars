@@ -208,6 +208,7 @@ pub fn test_spec(name: &str, cmd: &[&str]) -> ContainerSpec {
         working_dir: "/".to_string(),
         cmd: cmd.iter().map(|part| (*part).to_string()).collect(),
         env: Vec::new(),
+        secret_env: Vec::new(),
         binds: Vec::new(),
         network: TEST_NETWORK.to_string(),
         extra_hosts: Vec::new(),

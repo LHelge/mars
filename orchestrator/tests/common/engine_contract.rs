@@ -655,6 +655,7 @@ impl EngineContract {
                 .map(|part| (*part).to_string())
                 .collect(),
             env: Vec::new(),
+            secret_env: Vec::new(),
             binds: Vec::new(),
             network: self.env.network.clone(),
             extra_hosts: Vec::new(),

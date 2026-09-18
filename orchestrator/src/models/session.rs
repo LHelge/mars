@@ -18,14 +18,29 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-// The crate convention (`CLAUDE.md`, "Backend conventions"). Models report
-// their own error rather than the crate-wide one, so the glob is here for the
-// doc links.
-#[allow(unused_imports)]
+use crate::events::StopSignal;
 use crate::models::agent_profile::ProfileKind;
 // The crate convention (`CLAUDE.md`, "Backend conventions"); see `task.rs`.
 #[allow(unused_imports)]
 use crate::prelude::*;
+
+/// What a session was launched as (`docs/data-model.md`, "Enums",
+/// `profile_kind`).
+///
+/// The same enum as [`ProfileKind`] rather than a copy of it: `sessions.kind`
+/// is the `profile_kind` column, the session records the profile's kind at
+/// launch (`SPEC.md`, "Sessions") and two enums with the same two values would
+/// only invite a mismatched conversion. The alias is the name the session code
+/// reads better under, and `SessionKind::from(profile.kind)` is the identity.
+pub type SessionKind = ProfileKind;
+
+/// The longest title a caller may set on `POST /projects/{pid}/sessions` or
+/// `PUT /sessions/{id}`, in characters after trimming (`SPEC.md`, "Sessions").
+pub const MAX_SESSION_TITLE_CHARS: usize = 200;
+
+/// The longest title derived from a first message, in characters (`SPEC.md`,
+/// "Sessions").
+pub const MAX_DERIVED_TITLE_CHARS: usize = 80;
 
 /// Where a session is in its lifecycle (`ARCHITECTURE.md`, "Session
 /// lifecycle").
@@ -108,26 +123,55 @@ pub enum SessionError {
     /// The branch was not `session/<id>`.
     #[error("branch must be session/<id>")]
     InvalidBranch,
-    /// A title was given but was empty once trimmed.
-    #[error("title must not be empty")]
+    /// A title was given but was empty or too long once trimmed.
+    #[error("title must be 1 to 200 characters")]
     InvalidTitle,
     /// A cost or token increment was negative, or not a finite number.
     #[error("usage increments must be finite and not negative")]
     InvalidUsage,
+    /// Input was addressed to an ephemeral session, which only ever takes its
+    /// launch prompt (ADR 0003; `ARCHITECTURE.md`, "Session lifecycle").
+    #[error("ephemeral sessions accept no input")]
+    EphemeralInput,
+    /// The session is in a final state, so there is nothing to send input to.
+    #[error("session is {0}")]
+    NotAcceptingInput(SessionState),
+    /// An ephemeral session is never retried; a new one is launched instead
+    /// (ADR 0003).
+    #[error("ephemeral sessions are not retried; launch a new one")]
+    EphemeralNotRetried,
+    /// Only a `failed` session can be retried.
+    #[error("session is {0}, only a failed session can be retried")]
+    NotRetryable(SessionState),
+    /// An ephemeral session has no interactive input, so it needs its prompt at
+    /// launch (`SPEC.md`, "Sessions").
+    #[error("an ephemeral session needs a task_id or a message")]
+    EphemeralRequiresPrompt,
+    /// A live session cannot be deleted; it has to end first.
+    #[error("session must be done or failed")]
+    NotDeletable(SessionState),
 }
 
 impl SessionError {
     /// The HTTP status this rejection maps to.
     ///
-    /// A transition the diagram does not have is a state conflict rather than
-    /// malformed input — the same request would have succeeded a moment
-    /// earlier — so it is 409 and everything else is 400.
+    /// Everything the session's current state refuses is a conflict — the same
+    /// request would have succeeded, or will succeed, in another state — and
+    /// everything malformed in the request itself is a 400. An ephemeral
+    /// session's refusals are conflicts too: the session's kind is the state of
+    /// the world the caller is fighting, not a field they can fix.
     pub fn status(&self) -> StatusCode {
         match self {
-            SessionError::InvalidTransition { .. } => StatusCode::CONFLICT,
+            SessionError::InvalidTransition { .. }
+            | SessionError::EphemeralInput
+            | SessionError::NotAcceptingInput(_)
+            | SessionError::EphemeralNotRetried
+            | SessionError::NotRetryable(_)
+            | SessionError::NotDeletable(_) => StatusCode::CONFLICT,
             SessionError::InvalidBranch
             | SessionError::InvalidTitle
-            | SessionError::InvalidUsage => StatusCode::BAD_REQUEST,
+            | SessionError::InvalidUsage
+            | SessionError::EphemeralRequiresPrompt => StatusCode::BAD_REQUEST,
         }
     }
 }
@@ -144,20 +188,22 @@ pub fn session_branch(id: Uuid) -> String {
     format!("session/{id}")
 }
 
-/// A validated session title: trimmed and non-empty.
+/// A validated session title: trimmed, 1 to [`MAX_SESSION_TITLE_CHARS`]
+/// characters.
 ///
-/// The title is a label, not an identifier, so nothing is normalised beyond
-/// the trim and there is no length bound in the schema; `SPEC.md`, "Sessions"
-/// truncates a *derived* title to 80 characters at the point it derives one.
+/// The title is a label, not an identifier, so nothing is normalised beyond the
+/// trim; the schema's column is unbounded `TEXT` and the 200-character limit is
+/// the API contract (`SPEC.md`, "Sessions"). A *derived* title is truncated to
+/// [`MAX_DERIVED_TITLE_CHARS`] by [`default_title`] instead of being rejected.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct SessionTitle(String);
 
 impl SessionTitle {
-    /// Trim `raw` and accept it when anything is left.
+    /// Trim `raw` and accept it when it is 1 to 200 characters long.
     pub fn parse(raw: &str) -> SessionResult<Self> {
         let trimmed = raw.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || trimmed.chars().count() > MAX_SESSION_TITLE_CHARS {
             return Err(SessionError::InvalidTitle);
         }
         Ok(Self(trimmed.to_string()))
@@ -178,6 +224,50 @@ impl From<SessionTitle> for String {
 impl std::fmt::Display for SessionTitle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+/// Validate a caller-supplied title and return it trimmed
+/// (`PUT /sessions/{id}`, `SPEC.md`, "Sessions").
+///
+/// The same rule as [`SessionTitle::parse`], for the routes that bind a plain
+/// `String`.
+pub fn validate_title(raw: &str) -> SessionResult<String> {
+    SessionTitle::parse(raw).map(String::from)
+}
+
+/// The title a session gets when the caller did not give one (`SPEC.md`,
+/// "Sessions").
+///
+/// The task's title when the session was launched for a task, else the first
+/// line of the first message — the first line, not the first non-empty one —
+/// trimmed and truncated to [`MAX_DERIVED_TITLE_CHARS`] characters, else
+/// `None`. A message whose first line is blank leaves the session untitled; a
+/// `PUT` can name it later.
+///
+/// Truncation counts characters and cuts on a char boundary, so a multi-byte
+/// title can never panic or be split mid-character.
+pub fn default_title(task_title: Option<&str>, message: Option<&str>) -> Option<String> {
+    if let Some(title) = task_title {
+        let trimmed = title.trim();
+        if !trimmed.is_empty() {
+            return Some(truncate_chars(trimmed, MAX_SESSION_TITLE_CHARS));
+        }
+    }
+
+    let first_line = message?.split('\n').next().unwrap_or_default().trim();
+    if first_line.is_empty() {
+        return None;
+    }
+
+    Some(truncate_chars(first_line, MAX_DERIVED_TITLE_CHARS))
+}
+
+/// `text` cut to at most `max` characters, on a char boundary.
+fn truncate_chars(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((byte, _)) => text[..byte].to_string(),
+        None => text.to_string(),
     }
 }
 
@@ -214,6 +304,63 @@ pub struct Session {
     pub created_at: DateTime<Utc>,
     pub parked_at: Option<DateTime<Utc>>,
     pub ended_at: Option<DateTime<Utc>>,
+}
+
+impl Session {
+    /// The branch a session's work lives on, from its id alone
+    /// (`docs/data-model.md`, `sessions.branch`).
+    ///
+    /// The associated form of [`session_branch`], for the call sites that
+    /// already have the `Session` type in scope.
+    pub fn branch_name(id: Uuid) -> String {
+        session_branch(id)
+    }
+
+    /// Whether this session can be sent a message now (`ARCHITECTURE.md`,
+    /// "Session lifecycle", the state table).
+    ///
+    /// A conversational session takes input in `creating`, `running` and
+    /// `parked` — queued while `creating`, relaunching from `parked` — and
+    /// nothing at all once it is `done` or `failed`. An ephemeral session takes
+    /// only its launch prompt, in any state (ADR 0003).
+    pub fn accepts_input(&self) -> SessionResult<()> {
+        if self.kind == SessionKind::Ephemeral {
+            return Err(SessionError::EphemeralInput);
+        }
+
+        match self.state {
+            SessionState::Creating | SessionState::Running | SessionState::Parked => Ok(()),
+            state @ (SessionState::Done | SessionState::Failed) => {
+                Err(SessionError::NotAcceptingInput(state))
+            }
+        }
+    }
+
+    /// Whether this session can be retried, which moves it `failed → parked`
+    /// and relaunches (`ARCHITECTURE.md`, "Session lifecycle").
+    ///
+    /// Only a conversational session, and only from `failed`. An ephemeral one
+    /// is never retried; the caller launches a new one (ADR 0003).
+    pub fn can_retry(&self) -> SessionResult<()> {
+        if self.kind == SessionKind::Ephemeral {
+            return Err(SessionError::EphemeralNotRetried);
+        }
+
+        if self.state != SessionState::Failed {
+            return Err(SessionError::NotRetryable(self.state));
+        }
+
+        Ok(())
+    }
+
+    /// Whether this session can be deleted, which only a session that has
+    /// stopped can be (`SPEC.md`, "Sessions", `DELETE /sessions/{id}`).
+    pub fn can_delete(&self) -> SessionResult<()> {
+        match self.state {
+            SessionState::Done | SessionState::Failed => Ok(()),
+            state => Err(SessionError::NotDeletable(state)),
+        }
+    }
 }
 
 /// The caller-supplied half of a new session.
@@ -298,6 +445,26 @@ impl NewSession {
     }
 }
 
+/// Reject an ephemeral launch that carries no prompt (`SPEC.md`, "Sessions",
+/// `POST /projects/{pid}/sessions`).
+///
+/// An ephemeral session accepts no input after launch (ADR 0003), so its whole
+/// prompt has to be there at launch: either a task, whose generated message
+/// names it, or a `message`. A conversational session may start silent.
+pub fn validate_launch_prompt(
+    kind: SessionKind,
+    task_id: Option<Uuid>,
+    message: Option<&str>,
+) -> SessionResult<()> {
+    let has_prompt = task_id.is_some() || message.is_some_and(|m| !m.trim().is_empty());
+
+    if kind == SessionKind::Ephemeral && !has_prompt {
+        return Err(SessionError::EphemeralRequiresPrompt);
+    }
+
+    Ok(())
+}
+
 /// What a state change carries besides the new state.
 ///
 /// A struct rather than a bare argument because the fields a transition sets
@@ -332,12 +499,27 @@ impl StateChange {
 /// Building it here keeps `set_state` and the event that records it spelling
 /// the states the same way; the caller appends the event itself, in the same
 /// transaction as the state change (`ARCHITECTURE.md`, "Session owner task").
-pub fn state_change_payload(from: SessionState, to: SessionState, reason: &str) -> Value {
-    serde_json::json!({
+///
+/// `signal` is set when the transition was caused by a stop — `SIGINT`, then
+/// `SIGTERM` after the grace period (`ARCHITECTURE.md`, "Stop semantics") — and
+/// is omitted from the payload otherwise, as `SPEC.md`, "AgentEvent" specifies.
+pub fn state_change_payload(
+    from: SessionState,
+    to: SessionState,
+    reason: &str,
+    signal: Option<StopSignal>,
+) -> Value {
+    let mut payload = serde_json::json!({
         "from": from.as_str(),
         "to": to.as_str(),
         "reason": reason,
-    })
+    });
+
+    if let Some(signal) = signal {
+        payload["signal"] = serde_json::to_value(signal).unwrap_or(Value::Null);
+    }
+
+    payload
 }
 
 #[cfg(test)]
@@ -355,6 +537,36 @@ mod tests {
         SessionState::Done,
         SessionState::Failed,
     ];
+
+    const ALL_KINDS: [SessionKind; 2] = [SessionKind::Conversational, SessionKind::Ephemeral];
+
+    fn session(kind: SessionKind, state: SessionState) -> Session {
+        Session {
+            id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            profile_id: Uuid::nil(),
+            kind,
+            created_by: None,
+            title: None,
+            task_id: None,
+            handoff_id: None,
+            state,
+            base_ref: "main".into(),
+            branch: session_branch(Uuid::nil()),
+            container_id: None,
+            cli_session_id: None,
+            mcp_token_hash: FAKE_TOKEN_HASH.into(),
+            last_seq: 0,
+            last_activity_at: Utc::now(),
+            cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            error: None,
+            created_at: Utc::now(),
+            parked_at: None,
+            ended_at: None,
+        }
+    }
 
     fn new_session() -> NewSession {
         NewSession::new(
@@ -453,10 +665,40 @@ mod tests {
             SessionError::InvalidBranch,
             SessionError::InvalidTitle,
             SessionError::InvalidUsage,
+            SessionError::EphemeralRequiresPrompt,
         ] {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
             assert!(!error.to_string().is_empty(), "{error:?} has no message");
         }
+
+        for error in [
+            SessionError::EphemeralInput,
+            SessionError::NotAcceptingInput(SessionState::Done),
+            SessionError::EphemeralNotRetried,
+            SessionError::NotRetryable(SessionState::Running),
+            SessionError::NotDeletable(SessionState::Running),
+        ] {
+            assert_eq!(error.status(), StatusCode::CONFLICT);
+            assert!(!error.to_string().is_empty(), "{error:?} has no message");
+        }
+
+        // The messages the API returns verbatim (`SPEC.md`, "Sessions").
+        assert_eq!(
+            SessionError::EphemeralInput.to_string(),
+            "ephemeral sessions accept no input",
+        );
+        assert_eq!(
+            SessionError::NotAcceptingInput(SessionState::Done).to_string(),
+            "session is done",
+        );
+        assert_eq!(
+            SessionError::EphemeralRequiresPrompt.to_string(),
+            "an ephemeral session needs a task_id or a message",
+        );
+        assert_eq!(
+            SessionError::NotDeletable(SessionState::Running).to_string(),
+            "session must be done or failed",
+        );
     }
 
     #[test]
@@ -543,9 +785,195 @@ mod tests {
     #[test]
     fn a_state_change_payload_spells_both_states() {
         assert_eq!(
-            state_change_payload(SessionState::Running, SessionState::Parked, "stopped"),
+            state_change_payload(SessionState::Running, SessionState::Parked, "stopped", None),
             serde_json::json!({ "from": "running", "to": "parked", "reason": "stopped" }),
         );
+    }
+
+    #[test]
+    fn a_stopped_state_change_records_the_signal() {
+        assert_eq!(
+            state_change_payload(
+                SessionState::Running,
+                SessionState::Parked,
+                "stopped",
+                Some(StopSignal::Sigint),
+            ),
+            serde_json::json!({
+                "from": "running", "to": "parked", "reason": "stopped", "signal": "SIGINT",
+            }),
+        );
+        assert_eq!(
+            state_change_payload(
+                SessionState::Running,
+                SessionState::Failed,
+                "stop timed out",
+                Some(StopSignal::Sigterm),
+            )["signal"],
+            serde_json::json!("SIGTERM"),
+        );
+    }
+
+    #[test]
+    fn only_a_conversational_session_that_has_not_ended_accepts_input() {
+        for state in ALL_STATES {
+            let accepted = matches!(
+                state,
+                SessionState::Creating | SessionState::Running | SessionState::Parked
+            );
+            let result = session(SessionKind::Conversational, state).accepts_input();
+            assert_eq!(result.is_ok(), accepted, "conversational {state}");
+            if !accepted {
+                assert_eq!(result, Err(SessionError::NotAcceptingInput(state)));
+            }
+
+            assert_eq!(
+                session(SessionKind::Ephemeral, state).accepts_input(),
+                Err(SessionError::EphemeralInput),
+                "ephemeral {state}",
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_failed_conversational_session_is_retried() {
+        for state in ALL_STATES {
+            let result = session(SessionKind::Conversational, state).can_retry();
+            if state == SessionState::Failed {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result, Err(SessionError::NotRetryable(state)));
+            }
+
+            assert_eq!(
+                session(SessionKind::Ephemeral, state).can_retry(),
+                Err(SessionError::EphemeralNotRetried),
+                "ephemeral {state}",
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_stopped_session_is_deletable() {
+        for kind in ALL_KINDS {
+            for state in ALL_STATES {
+                let result = session(kind, state).can_delete();
+                if matches!(state, SessionState::Done | SessionState::Failed) {
+                    assert!(result.is_ok(), "{kind:?} {state}");
+                } else {
+                    assert_eq!(result, Err(SessionError::NotDeletable(state)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_ephemeral_launch_needs_a_task_or_a_message() {
+        let task = Some(Uuid::new_v4());
+
+        assert!(validate_launch_prompt(SessionKind::Ephemeral, task, None).is_ok());
+        assert!(validate_launch_prompt(SessionKind::Ephemeral, None, Some("go")).is_ok());
+        assert_eq!(
+            validate_launch_prompt(SessionKind::Ephemeral, None, None),
+            Err(SessionError::EphemeralRequiresPrompt),
+        );
+        assert_eq!(
+            validate_launch_prompt(SessionKind::Ephemeral, None, Some("  \n ")),
+            Err(SessionError::EphemeralRequiresPrompt),
+        );
+
+        // A conversational session may start with nothing at all.
+        assert!(validate_launch_prompt(SessionKind::Conversational, None, None).is_ok());
+    }
+
+    #[test]
+    fn a_default_title_prefers_the_task_and_falls_back_to_the_first_line() {
+        assert_eq!(
+            default_title(Some("fix the parser"), Some("ignored")).as_deref(),
+            Some("fix the parser"),
+        );
+        assert_eq!(
+            default_title(None, Some("  first line  \nsecond line\n")).as_deref(),
+            Some("first line"),
+        );
+        assert_eq!(default_title(None, None), None);
+        assert_eq!(default_title(None, Some("")), None);
+        assert_eq!(default_title(None, Some("   ")), None);
+
+        // "First line", not "first non-empty line": a leading blank line leaves
+        // the session untitled.
+        assert_eq!(default_title(None, Some("\nsecond line")), None);
+
+        // An empty task title falls through to the message.
+        assert_eq!(
+            default_title(Some("  "), Some("from the message")).as_deref(),
+            Some("from the message"),
+        );
+    }
+
+    #[test]
+    fn a_derived_title_is_cut_at_eighty_characters_on_a_char_boundary() {
+        let long = "a".repeat(MAX_DERIVED_TITLE_CHARS + 20);
+        let derived = default_title(None, Some(&long)).unwrap();
+        assert_eq!(derived.chars().count(), MAX_DERIVED_TITLE_CHARS);
+        assert_eq!(derived, "a".repeat(MAX_DERIVED_TITLE_CHARS));
+
+        // Exactly 80 characters is kept whole.
+        let exact = "b".repeat(MAX_DERIVED_TITLE_CHARS);
+        assert_eq!(default_title(None, Some(&exact)).as_deref(), Some(&*exact));
+
+        // A multi-byte character straddling the boundary is not split: 79 ASCII
+        // characters then an emoji fits, 80 then an emoji drops it.
+        let fits = format!("{}🚀", "c".repeat(MAX_DERIVED_TITLE_CHARS - 1));
+        assert_eq!(default_title(None, Some(&fits)).as_deref(), Some(&*fits));
+
+        let cut = format!("{}🚀", "c".repeat(MAX_DERIVED_TITLE_CHARS));
+        let derived = default_title(None, Some(&cut)).unwrap();
+        assert_eq!(derived, "c".repeat(MAX_DERIVED_TITLE_CHARS));
+        assert!(!derived.contains('🚀'));
+
+        // And a long task title is bounded by the API's own limit.
+        let task = "d".repeat(MAX_SESSION_TITLE_CHARS + 5);
+        assert_eq!(
+            default_title(Some(&task), None).unwrap().chars().count(),
+            MAX_SESSION_TITLE_CHARS,
+        );
+    }
+
+    #[test]
+    fn a_validated_title_is_one_to_two_hundred_characters() {
+        assert_eq!(validate_title(" x ").unwrap(), "x");
+
+        let longest = "e".repeat(MAX_SESSION_TITLE_CHARS);
+        assert_eq!(validate_title(&longest).unwrap(), longest);
+        // Trimming happens before counting.
+        assert_eq!(validate_title(&format!("  {longest}  ")).unwrap(), longest);
+
+        assert_eq!(validate_title(""), Err(SessionError::InvalidTitle));
+        assert_eq!(
+            validate_title(&"e".repeat(MAX_SESSION_TITLE_CHARS + 1)),
+            Err(SessionError::InvalidTitle),
+        );
+        // Characters, not bytes: 200 emoji are fine.
+        assert!(validate_title(&"🚀".repeat(MAX_SESSION_TITLE_CHARS)).is_ok());
+    }
+
+    #[test]
+    fn a_session_kind_is_the_profiles_kind() {
+        assert_eq!(
+            SessionKind::from(ProfileKind::Ephemeral),
+            SessionKind::Ephemeral
+        );
+        assert_eq!(
+            serde_json::to_value(SessionKind::Conversational).unwrap(),
+            serde_json::json!("conversational"),
+        );
+    }
+
+    #[test]
+    fn a_session_branch_is_derived_from_its_id() {
+        let id = Uuid::new_v4();
+        assert_eq!(Session::branch_name(id), format!("session/{id}"));
     }
 
     #[test]

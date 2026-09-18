@@ -8,6 +8,16 @@ stream-json), or the whole fixture back to back in one-shot mode. No model
 credentials are needed, so the session-owner tests and Playwright can run
 against real containers.
 
+Like the real CLI on the pinned version (images/claude/VERIFY.md, "Observed on
+2.1.274") it writes one system/init line per turn, all carrying the process's
+single session_id; the first one goes out before any input is read, so the
+session owner learns the session id before it flushes queued input
+(ARCHITECTURE.md, "Session lifecycle"). The fixture's own init lines are
+dropped. SIGINT mid-turn ends the turn the way the real CLI does: a user line
+`[Request interrupted by user]`, then a result with subtype
+"error_during_execution", is_error true and terminal_reason
+"aborted_streaming", then exit 0.
+
 Environment: MARS_STUB_FIXTURE (default /opt/mars-stub/fixtures/default.jsonl),
 MARS_STUB_LINE_DELAY_MS (default 0), MARS_STUB_EXIT_AFTER_TURNS (default unset),
 MARS_STUB_EXIT_CODE (default 1), CLAUDE_CONFIG_DIR (transcript copy).
@@ -23,18 +33,24 @@ import time
 import uuid
 
 DEFAULT_FIXTURE = "/opt/mars-stub/fixtures/default.jsonl"
-TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "Task"]
+# 2.1.274 lists the subagent tool in init.tools as `Task` but names it `Agent`
+# in the tool_use frames it then writes (images/claude/VERIFY.md, "Observed on
+# 2.1.274"; images/stub/fixtures/README.md). The stub lists both so a
+# translator that reads either name has an example.
+TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "Task", "Agent"]
+INTERRUPT_TEXT = "[Request interrupted by user]"
 VERSION = "0.0.0-stub (Claude Code stub)"
 USAGE = (
     "claude (Claude Code stub): a dependency-free replay of a recorded stream-json "
     "transcript for Mars tests. It accepts and ignores the flags of the real CLI, "
-    "emits a system/init line, and then replays the fixture named by "
+    "emits a system/init line per turn, and then replays the fixture named by "
     "MARS_STUB_FIXTURE (default " + DEFAULT_FIXTURE + ") one turn per JSON line "
     "read on stdin under --input-format stream-json, or every turn back to back "
     "otherwise. MARS_STUB_LINE_DELAY_MS paces the output, MARS_STUB_EXIT_AFTER_TURNS "
     "with MARS_STUB_EXIT_CODE ends the run after a given number of results, and "
     "CLAUDE_CONFIG_DIR receives a copy of the transcript. SIGINT ends the turn with "
-    "a result and exits 0; SIGTERM exits 143."
+    "an interrupted user line and an error_during_execution result and exits 0; "
+    "SIGTERM exits 143."
 )
 
 VALUELESS = {
@@ -58,6 +74,8 @@ STATE = {
     "first_line": True,
     "interruptible": True,
     "interrupted": False,
+    "mcp_servers": [],
+    "init_pending": True,
 }
 
 
@@ -217,11 +235,37 @@ def emit(obj):
             raise StubExit(STATE["exit_code"])
 
 
-def make_result(started):
+def emit_init():
+    """One system/init line, as the real CLI writes at the start of every turn."""
+    emit({
+        "type": "system",
+        "subtype": "init",
+        "cwd": "/session/work",
+        "session_id": STATE["session_id"],
+        "tools": TOOLS,
+        "mcp_servers": STATE["mcp_servers"],
+        "model": "stub",
+        "permissionMode": "bypassPermissions",
+    })
+    STATE["init_pending"] = False
+
+
+def make_interrupt_user():
+    return {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": INTERRUPT_TEXT}],
+        },
+    }
+
+
+def make_result(started, interrupted=False):
     return {
         "type": "result",
-        "subtype": "success",
-        "is_error": False,
+        "subtype": "error_during_execution" if interrupted else "success",
+        "is_error": bool(interrupted),
+        **({"terminal_reason": "aborted_streaming"} if interrupted else {}),
         "num_turns": 1,
         "duration_ms": int((time.monotonic() - started) * 1000),
         "session_id": STATE["session_id"],
@@ -249,15 +293,19 @@ def make_assistant(text):
 def emit_turn(turn):
     started = time.monotonic()
     try:
+        if STATE["init_pending"]:
+            emit_init()
         for obj in turn:
             emit(obj)
     except Interrupted:
         STATE["interruptible"] = False
         STATE["delay"] = 0.0
-        emit(make_result(started))
+        emit(make_interrupt_user())
+        emit(make_result(started, interrupted=True))
         raise StubExit(0)
     if not turn or turn[-1].get("type") != "result":
         emit(make_result(started))
+    STATE["init_pending"] = True
 
 
 def message_text(line):
@@ -342,18 +390,12 @@ def run(argv):
 
     fixture = os.environ.get("MARS_STUB_FIXTURE") or DEFAULT_FIXTURE
     turns = load_turns(fixture, "--include-partial-messages" in opts["flags"])
-    servers = load_mcp_servers(opts["values"].get("--mcp-config"))
+    STATE["mcp_servers"] = load_mcp_servers(opts["values"].get("--mcp-config"))
 
-    emit({
-        "type": "system",
-        "subtype": "init",
-        "cwd": "/session/work",
-        "session_id": STATE["session_id"],
-        "tools": TOOLS,
-        "mcp_servers": servers,
-        "model": "stub",
-        "permissionMode": "bypassPermissions",
-    })
+    # The first init goes out before any input is read, so the session owner
+    # has the session id before it flushes queued input; every later turn
+    # opens with one of its own (ARCHITECTURE.md, "Session image").
+    emit_init()
 
     if opts["values"].get("--input-format") == "stream-json":
         return run_interactive(turns)

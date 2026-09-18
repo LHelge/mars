@@ -1,16 +1,18 @@
 ---
 id: "55pqv"
 title: Implement the read-only diff (numstat, patch from merge-base, 1 MiB truncation) and session-branch listing with ahead/behind
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:32:13.054796135Z"
-updated: "2026-09-16T20:32:13.054796135Z"
+updated: "2026-09-18T01:27:39.471914818Z"
 tags:
   - orchestrator
   - git
 depends_on:
   - vztkg
 parent: z4u4e
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

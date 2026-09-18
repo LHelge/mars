@@ -1692,6 +1692,41 @@ async fn an_ephemeral_exit_before_its_result_fails_the_session() {
     );
 }
 
+/// An ephemeral session is never parked (ADR 0003), so a stop — the idle reaper
+/// sends one to a stalled run — fails it, with the signal still recorded
+/// (`ARCHITECTURE.md`, "Stop semantics").
+#[tokio::test]
+async fn a_stopped_ephemeral_session_fails_instead_of_parking() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture_of_kind(&app, ProfileKind::Ephemeral).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture)
+        .kind(ProfileKind::Ephemeral)
+        .container(&container)
+        .spawn();
+    owner
+        .commands
+        .send(OwnerCommand::Stop)
+        .await
+        .expect("the owner is listening");
+
+    wait_for_signal(&app, &container, Signal::Sigint).await;
+    assert!(app.engine().exit(&container, 0));
+    owner.ended().await;
+
+    let (state, _, parked_at, ended_at, error) = lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "failed");
+    assert_eq!(parked_at, None);
+    assert!(ended_at.is_some());
+    assert_eq!(error.as_deref(), Some("stopped by user"));
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["to"], "failed");
+    assert_eq!(change["signal"], "SIGINT");
+}
+
 /// A container that exits while the session is still `creating` never got as far
 /// as its CLI, so the launch failed (`ARCHITECTURE.md`, "Session lifecycle").
 #[tokio::test]

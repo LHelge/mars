@@ -1,10 +1,10 @@
 ---
 id: w2uhm
 title: Implement GitCredentialProvider with the PAT provider, temp-config transport, secret_uses audit and mock
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:28:43.060799825Z"
-updated: "2026-09-17T20:05:02.991010559Z"
+updated: "2026-09-18T00:02:43.769656705Z"
 tags:
   - orchestrator
   - git
@@ -13,6 +13,8 @@ depends_on:
   - bv7a5
   - escp8
 parent: z4u4e
+assignee: claude-opus-subagent
+attempts: 1
 ---
 
 ## Summary

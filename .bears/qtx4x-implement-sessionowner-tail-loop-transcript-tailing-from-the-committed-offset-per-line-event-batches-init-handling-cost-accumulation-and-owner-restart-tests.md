@@ -1,10 +1,10 @@
 ---
 id: qtx4x
 title: "Implement SessionOwner tail loop: transcript tailing from the committed offset, per-line event batches, init handling, cost accumulation, and owner restart tests"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:30:45.126836266Z"
-updated: "2026-09-17T20:04:50.000932899Z"
+updated: "2026-09-18T22:21:49.915091364Z"
 tags:
   - orchestrator
   - sessions
@@ -15,6 +15,7 @@ depends_on:
   - nky3h
   - n7tzv
 parent: s52qg
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: n7tzv
 title: "Align MockEngine with the engine contract: remove, stop, start and wait semantics, stdin write-after-exit fails, exec exit codes; delete the mock tests that assert the opposite"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-17T20:02:26.338561620Z"
-updated: "2026-09-17T20:02:26.338561620Z"
+updated: "2026-09-18T21:08:41.324778945Z"
 tags:
   - orchestrator
   - engine
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - "6m8br"
 parent: quxdn
+attempts: 1
 ---
 
 ## Summary

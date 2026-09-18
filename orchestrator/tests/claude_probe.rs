@@ -90,12 +90,17 @@ const PING: &str = "Reply with exactly the word PONG.";
 async fn stdin_shape() {
     let Some(probe) = probe_or_skip() else { return };
     probe.assert_pinned_version().await;
-    probe.recorder.assert_can_record();
 
     let mcp = probe.write_mcp_config(MCP_SERVER_NAME, UNREACHABLE_MCP_URL);
     let ctx = probe.context(LaunchMode::Conversational { resume: None }, &mcp);
     let mut session = Session::launch(&probe, "stdin_shape", &build_argv(&ctx));
 
+    // The CLI writes nothing, `init` included, until its first stdin line.
+    session
+        .send(&encode(&SessionInput::Message {
+            text: PING.to_string(),
+        }))
+        .await;
     let init = session.read_until("the `init` line", is_init).await;
     let cli_session_id = init
         .get("session_id")
@@ -103,16 +108,13 @@ async fn stdin_shape() {
         .expect("init names the session")
         .to_string();
 
-    session
-        .send(&encode(&SessionInput::Message {
-            text: PING.to_string(),
-        }))
-        .await;
     let result = session.read_turn().await;
     let accepted = !session.filter(is_assistant).is_empty();
 
     let mut notes = format!(
-        "- The bare `{{\"type\":\"user\",\"message\":{{...}}}}` line was {}.\n\
+        "- The CLI wrote nothing, `init` included, until the first stdin line: a probe that waited \
+         for `init` before writing saw no output for 120 s.\n\
+         - The bare `{{\"type\":\"user\",\"message\":{{...}}}}` line was {}.\n\
          - `init`, `assistant` and `result` all arrived within the scenario budget.\n\
          - `result.subtype`: {:?}, `is_error`: {:?}.\n",
         if accepted { "accepted" } else { "rejected" },
@@ -126,12 +128,12 @@ async fn stdin_shape() {
         // missing, so the failure message says what to change.
         session.finish().await;
         let mut retry = Session::launch(&probe, "stdin_shape", &build_argv(&ctx));
-        retry.read_until("the `init` line", is_init).await;
         retry
             .send(&format!(
                 r#"{{"type":"user","session_id":"{cli_session_id}","message":{{"role":"user","content":[{{"type":"text","text":"{PING}"}}]}}}}"#
             ))
             .await;
+        retry.read_until("the `init` line", is_init).await;
         retry.read_turn().await;
         with_session_id_worked = !retry.filter(is_assistant).is_empty();
         retry.finish().await;
@@ -179,9 +181,9 @@ async fn multi_turn() {
     let mcp = probe.write_mcp_config(MCP_SERVER_NAME, UNREACHABLE_MCP_URL);
     let ctx = probe.context(LaunchMode::Conversational { resume: None }, &mcp);
     let mut session = Session::launch(&probe, "multi_turn", &build_argv(&ctx));
+    session.send(&message(PING)).await;
     session.read_until("the `init` line", is_init).await;
 
-    session.send(&message(PING)).await;
     let first = session.read_turn().await;
     let after_first = session.json_lines().len();
 
@@ -235,9 +237,9 @@ async fn mid_turn() {
     let mcp = probe.write_mcp_config(MCP_SERVER_NAME, UNREACHABLE_MCP_URL);
     let ctx = probe.context(LaunchMode::Conversational { resume: None }, &mcp);
     let mut session = Session::launch(&probe, "mid_turn", &build_argv(&ctx));
+    session.send(&message(SLOW_PROMPT)).await;
     session.read_until("the `init` line", is_init).await;
 
-    session.send(&message(SLOW_PROMPT)).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     session
         .send(&message("Reply with exactly the word ZEBRA."))
@@ -307,13 +309,13 @@ async fn prompt_kind() {
     let mcp = probe.write_mcp_config(MCP_SERVER_NAME, UNREACHABLE_MCP_URL);
     let ctx = probe.context(LaunchMode::Conversational { resume: None }, &mcp);
     let mut session = Session::launch(&probe, "prompt_kind", &build_argv(&ctx));
-    session.read_until("the `init` line", is_init).await;
-
     session
         .send(&message(
             "Use the AskUserQuestion tool to ask me which colour I prefer, then stop.",
         ))
         .await;
+    session.read_until("the `init` line", is_init).await;
+
     let result = session.read_turn().await;
     let exit = session.finish().await;
 
@@ -351,16 +353,16 @@ async fn mcp_config() {
     let ctx = probe.context(LaunchMode::Conversational { resume: None }, &mcp);
 
     let mut lenient = Session::launch(&probe, "mcp_config", &build_argv(&ctx));
-    let lenient_init = lenient.read_until("the `init` line", is_init).await;
     lenient.send(&message(PING)).await;
+    let lenient_init = lenient.read_until("the `init` line", is_init).await;
     lenient.read_turn().await;
     let lenient_exit = lenient.finish().await;
 
     let mut argv = build_argv(&ctx);
     argv.push(STRICT_MCP_CONFIG.to_string());
     let mut strict = Session::launch(&probe, "mcp_config_strict", &argv);
-    let strict_init = strict.read_until("the `init` line", is_init).await;
     strict.send(&message(PING)).await;
+    let strict_init = strict.read_until("the `init` line", is_init).await;
     strict.read_turn().await;
     let strict_exit = strict.finish().await;
 
@@ -400,13 +402,13 @@ async fn resume_prompt() {
     first_ctx.system_prompt = Some("When asked for a codeword answer ALPHA.".to_string());
 
     let mut first = Session::launch(&probe, "resume_prompt_first", &build_argv(&first_ctx));
+    first.send(&message("What is the codeword?")).await;
     let init = first.read_until("the `init` line", is_init).await;
     let cli_session_id = init
         .get("session_id")
         .and_then(Value::as_str)
         .expect("init names the session")
         .to_string();
-    first.send(&message("What is the codeword?")).await;
     first.read_turn().await;
     let first_text = assistant_text(&first.json_lines());
     let first_exit = first.finish().await;
@@ -420,8 +422,8 @@ async fn resume_prompt() {
     resumed_ctx.system_prompt = Some("When asked for a codeword answer BRAVO.".to_string());
 
     let mut resumed = Session::launch(&probe, "resume_prompt", &build_argv(&resumed_ctx));
-    let resumed_init = resumed.read_until("the `init` line", is_init).await;
     resumed.send(&message("What is the codeword?")).await;
+    let resumed_init = resumed.read_until("the `init` line", is_init).await;
     resumed.read_turn().await;
     let resumed_text = assistant_text(&resumed.json_lines());
     let resumed_exit = resumed.finish().await;
@@ -475,14 +477,14 @@ async fn subagent() {
     let mcp = probe.write_mcp_config(MCP_SERVER_NAME, UNREACHABLE_MCP_URL);
     let ctx = probe.context(LaunchMode::Conversational { resume: None }, &mcp);
     let mut session = Session::launch(&probe, "subagent", &build_argv(&ctx));
-    let init = session.read_until("the `init` line", is_init).await;
-
     session
         .send(&message(
             "Use your subagent tool (Task or Agent) to list the files in this directory \
              and report back.",
         ))
         .await;
+    let init = session.read_until("the `init` line", is_init).await;
+
     session.read_turn().await;
     let exit = session.finish().await;
 

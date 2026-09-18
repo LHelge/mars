@@ -21,10 +21,14 @@
 //!
 //! - an empty `PUT` body is a 200 that returns the current row and writes
 //!   nothing, which is what a client re-sending an unedited form sends;
-//! - a `PUT` that moves `default_branch` on a `ready` project checks the new
-//!   name against the repository and moves the bare `HEAD` to it **before** the
-//!   row is written, under the project git lock and with no transaction open
-//!   (ADR 0021; [`set_default_branch`]). On a `cloning` or `error` project the
+//! - a `PUT` that moves `default_branch` on a `ready` project takes the project
+//!   git lock, checks the new name against the repository
+//!   ([`verify_default_branch`]), writes the row in a transaction, moves the
+//!   bare `HEAD` ([`set_default_branch`]) and only then commits, so a row write
+//!   that still fails — a taken name, a project deleted in between — cannot
+//!   leave `HEAD` naming a branch the row does not, and a `HEAD` that cannot be
+//!   moved rolls the row back. The lock is taken before the transaction opens,
+//!   never while one is (ADR 0021). On a `cloning` or `error` project the
 //!   value is stored unchecked, because there may be no repository yet and the
 //!   clone job validates it against the fetched heads;
 //! - `mark_cloning_from_error` answering `None` is 404 or 409, told apart by a
@@ -47,7 +51,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::git::{DataPaths, GitActor, GitError, fetch_project, list_branches, set_default_branch};
+use crate::git::{
+    DataPaths, GitActor, GitError, fetch_project, list_branches, set_default_branch,
+    verify_default_branch,
+};
 use crate::models::{
     Branch, BranchName, MaxAttempts, Project, ProjectName, ProjectStatus, ProjectUpdate,
 };
@@ -247,11 +254,21 @@ impl UpdateProjectBody {
 /// `PUT /projects/{id}` → the stored project (400 invalid, 404 unknown, 409 a
 /// name that is taken).
 ///
-/// The order is the documented one: validate the body, load the project, do the
-/// git work if there is any, then write the row. The git lock is taken and
-/// released before the transaction opens, so no database transaction is ever
-/// open while git runs and no transaction holding the project row ever waits
-/// for a git lock (ADR 0021).
+/// The order: validate the body, load the project, and — when the update moves
+/// `default_branch` on a `ready` project — take the project git lock, check the
+/// new name against the repository, write the row inside a transaction, move
+/// the bare `HEAD` and only then commit. Nothing irreversible happens before
+/// the row write can no longer fail: a colliding name (409) or a project
+/// deleted in between (404) aborts with `HEAD` untouched, and a `HEAD` that
+/// cannot be moved rolls the row write back, so the repository and the row
+/// cannot disagree.
+///
+/// The git lock is taken before the transaction opens and held across it, so no
+/// transaction is ever open while *waiting* for a git lock and the lock order
+/// stays git-before-database (ADR 0021; `ARCHITECTURE.md`, "Git model",
+/// Serialization). Holding it also settles the race with `DELETE`, which takes
+/// the same lock first: once this handler holds it the deletion either already
+/// happened, and the row write answers 404, or it waits.
 async fn update(
     State(state): State<AppState>,
     CurrentUser(_): CurrentUser,
@@ -269,27 +286,48 @@ async fn update(
         return Ok(Json(project.into()));
     }
 
-    if let Some(branch) = moved_default_branch(&project, &update) {
-        let paths = DataPaths::from_config(&state.config);
-        let guard = state.git_locks.lock(id).await;
+    let moved = moved_default_branch(&project, &update);
+    let paths = DataPaths::from_config(&state.config);
 
-        set_default_branch(&guard, &paths, branch)
-            .await
-            .map_err(|error| match error {
-                // The repository has no such integration head. The name is the
-                // caller's, so this is their 400 and not the git layer's 500.
-                GitError::UnknownRef(_) => Error::BadRequest(format!(
-                    "default_branch {branch:?} is not an integration head of this project"
-                )),
-                other => Error::from(other),
-            })?;
-    }
+    // The lock is only taken when there is git work, and always before the
+    // transaction below opens.
+    let guard = match moved {
+        Some(branch) => {
+            let guard = state.git_locks.lock(id).await;
+
+            verify_default_branch(&guard, &paths, branch)
+                .await
+                .map_err(|error| match error {
+                    // The repository has no such integration head. The name is
+                    // the caller's, so this is their 400 and not the git
+                    // layer's 500.
+                    GitError::UnknownRef(_) => Error::BadRequest(format!(
+                        "default_branch {branch:?} is not an integration head of this project"
+                    )),
+                    other => Error::from(other),
+                })?;
+
+            Some(guard)
+        }
+        None => None,
+    };
 
     let mut tx = state.pool.begin().await?;
+
+    // A 409 on a taken name or a 404 on a row deleted in between leaves the
+    // transaction to roll back with `HEAD` never touched.
     let updated = projects
         .update(&mut tx, id, &update)
         .await?
         .ok_or(Error::NotFound)?;
+
+    if let (Some(branch), Some(guard)) = (moved, guard.as_ref())
+        && let Err(error) = set_default_branch(guard, &paths, branch).await
+    {
+        tx.rollback().await?;
+        return Err(Error::from(error));
+    }
+
     tx.commit().await?;
 
     info!(project_id = %id, "project updated");

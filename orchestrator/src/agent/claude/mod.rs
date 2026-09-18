@@ -1,19 +1,17 @@
 //! The Claude Code adapter (`ARCHITECTURE.md`, "Claude Code invocation").
 //!
 //! The launch command is built in [`launch`], `translate` dispatches to
-//! [`translate::translate_line`] — whose `assistant`, `user` and
-//! `stream_event` branches still answer `raw` until their tasks land — and
-//! `encode_input` writes the SDK user-message shape (`ARCHITECTURE.md`,
-//! "Input encoding").
+//! [`translate::translate_line`] and `encode_input` to
+//! [`input::encode_input`], which writes the SDK user-message shape
+//! (`ARCHITECTURE.md`, "Input encoding").
 
 use std::any::Any;
-
-use serde_json::json;
 
 use super::{AgentBackend, Command, LaunchContext, TranslateState};
 use crate::events::{AgentEvent, SessionInput};
 use crate::prelude::*;
 
+mod input;
 pub mod launch;
 mod native;
 mod translate;
@@ -52,15 +50,10 @@ impl AgentBackend for ClaudeBackend {
         translate::translate_line(line, state)
     }
 
+    /// The stdin line documented in `ARCHITECTURE.md`, "Input encoding", built
+    /// in [`input`].
     fn encode_input(&self, input: &SessionInput) -> Result<String> {
-        let line = json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [{ "type": "text", "text": input.text() }],
-            },
-        });
-        Ok(format!("{line}\n"))
+        input::encode_input(input)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -70,6 +63,8 @@ impl AgentBackend for ClaudeBackend {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::super::{LaunchMode, TranslateConfig};
     use super::*;
 
@@ -133,8 +128,9 @@ mod tests {
         );
     }
 
+    /// The shape itself is tested in `input.rs`; this is the wiring.
     #[test]
-    fn an_input_is_encoded_as_one_sdk_user_message_line() {
+    fn encode_input_dispatches_to_the_encoder() {
         let encoded = ClaudeBackend::new()
             .encode_input(&SessionInput::Message {
                 text: "hi".to_string(),
@@ -150,6 +146,14 @@ mod tests {
                     "content": [{ "type": "text", "text": "hi" }],
                 },
             }),
+        );
+
+        assert!(
+            ClaudeBackend::new()
+                .encode_input(&SessionInput::Message {
+                    text: "  ".to_string(),
+                })
+                .is_err(),
         );
     }
 }

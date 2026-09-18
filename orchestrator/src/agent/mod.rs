@@ -136,6 +136,11 @@ pub trait AgentBackend: Send + Sync {
     fn translate(&self, line: &str, state: &mut TranslateState) -> Vec<AgentEvent>;
 
     /// Encode one input as the single newline-terminated line the CLI reads.
+    ///
+    /// The returned string carries exactly one newline, at its end: whatever
+    /// the text contains is escaped into the line. An input whose text is
+    /// empty or only whitespace is rejected with [`Error::BadRequest`] rather
+    /// than written.
     fn encode_input(&self, input: &SessionInput) -> Result<String>;
 
     /// Downcast hook, so a test that injected a concrete backend can read back

@@ -240,6 +240,104 @@ impl<'de> Deserialize<'de> for NativeContentBlock {
     }
 }
 
+/// `{"type":"user","message":{...},"parent_tool_use_id":...}` (`SPEC.md`,
+/// "AgentEvent", the `user` rule).
+///
+/// The CLI writes a `user` line for two quite different things: the tool
+/// results it feeds back to the model, and the plain text of a message — its
+/// echo of one the orchestrator wrote, a subagent's prompt, or the
+/// `[Request interrupted by user]` line it writes on `SIGINT`
+/// (`images/claude/VERIFY.md`). The translator tells them apart by the content
+/// blocks, so both shapes have to survive parsing.
+///
+/// The 2.1.274 recording repeats the tool result in a top-level
+/// `tool_use_result` field; it is deliberately not read, because the block
+/// inside `message.content` already carries it.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct NativeUser {
+    #[serde(default)]
+    pub message: Option<NativeUserMessage>,
+}
+
+/// The `message` object of a `user` line.
+///
+/// No `id`: the CLI does not give its `user` lines a backend message id, and an
+/// event with none simply leaves the field off.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct NativeUserMessage {
+    /// Absent, `null`, a bare string and a block array are all accepted.
+    #[serde(default)]
+    pub content: Option<NativeUserContent>,
+}
+
+/// `message.content` of a `user` line.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum NativeUserContent {
+    Text(String),
+    Blocks(Vec<NativeUserBlock>),
+}
+
+/// One entry of a `user` message's `content`.
+///
+/// Deliberately its own enum rather than [`NativeContentBlock`]: the two block
+/// sets barely overlap (a `user` message carries `tool_result`, an `assistant`
+/// message never does) and the `user` rule needs every block it has no rule for
+/// — including a `thinking` or `tool_use` block that has no business being
+/// here — kept verbatim as [`Self::Other`], so it can become a `raw` event
+/// carrying exactly what arrived.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum NativeUserBlock {
+    Text(NativeTextBlock),
+    ToolResult(NativeToolResultBlock),
+    Other(Value),
+}
+
+/// `{"type":"tool_result","tool_use_id":...,"content":...,"is_error":...}`.
+///
+/// `tool_use_id` is required, which is what sends a result the frontend could
+/// not pair with its call to [`NativeUserBlock::Other`]. `content` is a string
+/// in most recorded results and a block array in some, and is passed through
+/// untouched apart from the size limit, with no redaction (ADR 0027).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub(crate) struct NativeToolResultBlock {
+    pub tool_use_id: String,
+    /// Absent and `null` both mean "no content", which the translator stores
+    /// as an empty string.
+    #[serde(default)]
+    pub content: Option<Value>,
+    /// Absent means `false` (`SPEC.md`, "AgentEvent", `tool_result`).
+    #[serde(default)]
+    pub is_error: Option<bool>,
+}
+
+/// The `type` of the one `user` block kind that has a rule.
+const BLOCK_TYPE_TOOL_RESULT: &str = "tool_result";
+
+/// The `type` of a `user` block whose text takes part in the echo hash.
+const BLOCK_TYPE_TEXT: &str = "text";
+
+impl<'de> Deserialize<'de> for NativeUserBlock {
+    // The crate's `Result` alias has its own error type, so this one is
+    // spelled out.
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+
+        let block = match value.get("type").and_then(Value::as_str) {
+            Some(BLOCK_TYPE_TEXT) => serde_json::from_value(value.clone()).map(Self::Text).ok(),
+            Some(BLOCK_TYPE_TOOL_RESULT) => serde_json::from_value(value.clone())
+                .map(Self::ToolResult)
+                .ok(),
+            _ => None,
+        };
+
+        Ok(block.unwrap_or(Self::Other(value)))
+    }
+}
+
 /// `{"type":"stream_event","event":{...}}`, which the CLI only writes with
 /// `--include-partial-messages` (`ARCHITECTURE.md`, "Claude Code invocation").
 ///
@@ -449,6 +547,95 @@ mod tests {
         let assistant: NativeAssistant =
             serde_json::from_value(json!({ "type": "assistant" })).unwrap();
         assert!(assistant.message.is_none());
+    }
+
+    #[test]
+    fn a_user_line_reads_its_tool_result_blocks() {
+        let user: NativeUser = serde_json::from_value(json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "tool_use_id": "toolu_01FIXTURE0001",
+                        "type": "tool_result",
+                        "content": "1\t# Greeter\n",
+                    },
+                    {
+                        "tool_use_id": "toolu_01FIXTURE0002",
+                        "type": "tool_result",
+                        "content": [{ "type": "text", "text": "rows" }],
+                        "is_error": true,
+                    },
+                ],
+            },
+            "tool_use_result": { "ignored": true },
+            "parent_tool_use_id": null,
+        }))
+        .unwrap();
+
+        let Some(NativeUserContent::Blocks(blocks)) = user.message.unwrap().content else {
+            panic!("expected a block array");
+        };
+        assert_eq!(
+            blocks,
+            vec![
+                NativeUserBlock::ToolResult(NativeToolResultBlock {
+                    tool_use_id: "toolu_01FIXTURE0001".to_string(),
+                    content: Some(json!("1\t# Greeter\n")),
+                    is_error: None,
+                }),
+                NativeUserBlock::ToolResult(NativeToolResultBlock {
+                    tool_use_id: "toolu_01FIXTURE0002".to_string(),
+                    content: Some(json!([{ "type": "text", "text": "rows" }])),
+                    is_error: Some(true),
+                }),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_user_line_accepts_text_blocks_a_string_and_no_content() {
+        let user: NativeUser = serde_json::from_value(json!({
+            "type": "user",
+            "message": { "content": [{ "type": "text", "text": "[Request interrupted by user]" }] },
+        }))
+        .unwrap();
+        assert_eq!(
+            user.message.unwrap().content,
+            Some(NativeUserContent::Blocks(vec![NativeUserBlock::Text(
+                NativeTextBlock {
+                    text: "[Request interrupted by user]".to_string(),
+                }
+            )])),
+        );
+
+        let user: NativeUser =
+            serde_json::from_value(json!({ "message": { "content": "plain" } })).unwrap();
+        assert_eq!(
+            user.message.unwrap().content,
+            Some(NativeUserContent::Text("plain".to_string())),
+        );
+
+        let user: NativeUser = serde_json::from_value(json!({ "type": "user" })).unwrap();
+        assert!(user.message.is_none());
+    }
+
+    #[test]
+    fn a_tool_result_without_a_tool_use_id_is_kept_as_other() {
+        let block: NativeUserBlock =
+            serde_json::from_value(json!({ "type": "tool_result", "content": "x" })).unwrap();
+        assert_eq!(
+            block,
+            NativeUserBlock::Other(json!({ "type": "tool_result", "content": "x" })),
+        );
+
+        let block: NativeUserBlock =
+            serde_json::from_value(json!({ "type": "image", "source": {} })).unwrap();
+        assert_eq!(
+            block,
+            NativeUserBlock::Other(json!({ "type": "image", "source": {} })),
+        );
     }
 
     #[test]

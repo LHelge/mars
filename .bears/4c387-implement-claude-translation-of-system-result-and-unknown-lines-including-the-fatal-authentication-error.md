@@ -1,16 +1,17 @@
 ---
 id: "4c387"
 title: Implement Claude translation of system, result and unknown lines including the fatal authentication error
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:28:05.957687193Z"
-updated: "2026-09-16T20:28:05.957687193Z"
+updated: "2026-09-18T16:18:30.081053185Z"
 tags:
   - orchestrator
   - agent
 depends_on:
   - w8ezk
 parent: "8vnwy"
+attempts: 1
 ---
 
 ## Summary

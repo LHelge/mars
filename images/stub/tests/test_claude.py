@@ -156,7 +156,8 @@ class InitTests(StubTestCase):
         self.assertEqual(init["subtype"], "init")
         self.assertEqual(init["cwd"], "/session/work")
         self.assertEqual(
-            init["tools"], ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "Task"]
+            init["tools"],
+            ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "Task", "Agent"],
         )
         self.assertEqual(init["mcp_servers"], [])
         self.assertEqual(init["model"], "stub")
@@ -164,6 +165,54 @@ class InitTests(StubTestCase):
         self.assertEqual(len(init["session_id"]), 36)
         for line in lines:
             self.assertEqual(line["session_id"], init["session_id"])
+
+    def test_one_init_per_turn_with_one_session_id(self):
+        """The real CLI opens every turn with an init line, not just the process.
+
+        images/claude/VERIFY.md, "Observed on 2.1.274"; ARCHITECTURE.md,
+        "Session image".
+        """
+        fixture = self.write_fixture(
+            [assistant("one"), result(1), assistant("two"), result(2)]
+        )
+        completed = self.run_stub(["-p", "do it"], fixture=fixture)
+        lines = self.lines(completed)
+        self.assertEqual(
+            [line["type"] for line in lines],
+            ["system", "assistant", "result", "system", "assistant", "result"],
+        )
+        inits = [line for line in lines if line.get("subtype") == "init"]
+        self.assertEqual(len(inits), 2)
+        self.assertEqual(len({line["session_id"] for line in lines}), 1)
+
+    def test_interactive_writes_an_init_before_every_turn(self):
+        fixture = self.write_fixture([assistant("recorded"), result()])
+        completed = self.run_stub(
+            ["--print", "--input-format", "stream-json"],
+            fixture=fixture,
+            stdin=user_line("first") + "\n" + user_line("second") + "\n",
+        )
+        lines = self.lines(completed)
+        self.assertEqual(
+            [line["type"] for line in lines],
+            ["system", "assistant", "result", "system", "assistant", "result"],
+        )
+        # The first init precedes any input, so the owner has the session id
+        # before it flushes queued messages.
+        self.assertEqual(lines[0]["subtype"], "init")
+        self.assertEqual(lines[3]["subtype"], "init")
+
+    def test_no_init_is_written_when_no_turn_follows(self):
+        fixture = self.write_fixture([assistant("recorded"), result()])
+        completed = self.run_stub(
+            ["--print", "--input-format", "stream-json"],
+            fixture=fixture,
+            stdin=user_line("only") + "\n",
+        )
+        lines = self.lines(completed)
+        self.assertEqual(
+            [line["type"] for line in lines], ["system", "assistant", "result"]
+        )
 
     def test_resume_reuses_the_session_id(self):
         fixture = self.write_fixture([assistant("hi"), result()])
@@ -221,7 +270,8 @@ class OneShotTests(StubTestCase):
         self.assertEqual(completed.returncode, 0)
         kinds = [line["type"] for line in self.lines(completed)]
         self.assertEqual(
-            kinds, ["system", "assistant", "result", "assistant", "result"]
+            kinds,
+            ["system", "assistant", "result", "system", "assistant", "result"],
         )
 
     def test_prompt_is_read_from_stdin_without_a_positional(self):
@@ -283,13 +333,13 @@ class InteractiveTests(StubTestCase):
         lines = self.lines(completed)
         self.assertEqual(
             [line["type"] for line in lines],
-            ["system", "assistant", "result", "assistant", "result"],
+            ["system", "assistant", "result", "system", "assistant", "result"],
         )
         self.assertEqual(lines[1]["message"]["content"][0]["text"], "recorded")
         self.assertEqual(
-            lines[3]["message"]["content"][0]["text"], "Stub reply to: second"
+            lines[4]["message"]["content"][0]["text"], "Stub reply to: second"
         )
-        synthesised = lines[4]
+        synthesised = lines[5]
         self.assertEqual(synthesised["subtype"], "success")
         self.assertFalse(synthesised["is_error"])
         self.assertEqual(synthesised["num_turns"], 1)
@@ -321,11 +371,11 @@ class InteractiveTests(StubTestCase):
         lines = self.lines(completed)
         self.assertEqual(
             [line["type"] for line in lines],
-            ["system", "assistant", "result", "assistant", "result"],
+            ["system", "assistant", "result", "system", "assistant", "result"],
         )
         self.assertEqual(lines[1]["message"]["content"][0]["text"], "Stub reply to: ")
         self.assertEqual(
-            lines[3]["message"]["content"][0]["text"],
+            lines[4]["message"]["content"][0]["text"],
             "Stub reply to: not json at all",
         )
 
@@ -438,9 +488,14 @@ class ShippedFixtureTests(StubTestCase):
         )
         self.assertEqual(completed.returncode, 0)
         lines = self.lines(completed)
-        self.assertEqual(len(lines), 253)
+        # 255 = the fixture's 255 lines, its 3 init lines dropped and one
+        # written by the stub at the start of each of the 3 turns.
+        self.assertEqual(len(lines), 255)
         self.assertEqual(lines[0]["type"], "system")
         self.assertEqual(lines[0]["subtype"], "init")
+        self.assertEqual(
+            len([line for line in lines if line.get("subtype") == "init"]), 3
+        )
         results = [line for line in lines if line["type"] == "result"]
         self.assertEqual(len(results), 3)
         self.assertEqual(
@@ -456,7 +511,7 @@ class ShippedFixtureTests(StubTestCase):
         self.assertEqual(completed.returncode, 0)
         lines = self.lines(completed)
         self.assertEqual([line["type"] for line in lines if line["type"] == "stream_event"], [])
-        self.assertEqual(len(lines), 48)
+        self.assertEqual(len(lines), 50)
         self.assertEqual(len([line for line in lines if line["type"] == "result"]), 3)
 
     def test_agent_tool_fixture_replays_one_turn(self):
@@ -519,7 +574,7 @@ class SignalTests(StubTestCase):
             time.sleep(0.02)
         self.fail("stub produced only %d lines: %r" % (len(collected), collected))
 
-    def test_sigint_mid_turn_writes_a_result_and_exits_zero(self):
+    def test_sigint_mid_turn_writes_the_real_cli_s_interrupt_shape(self):
         fixture = self.write_fixture(
             [assistant("a"), assistant("b"), assistant("c"), assistant("d"), result(7)]
         )
@@ -538,11 +593,18 @@ class SignalTests(StubTestCase):
         thread.join(timeout=TIMEOUT)
 
         lines = [json.loads(line) for line in collected if line.strip()]
-        self.assertLess(len(lines), 6, "the interrupted turn should not finish")
+        self.assertLess(len(lines), 7, "the interrupted turn should not finish")
+        interrupted = lines[-2]
+        self.assertEqual(interrupted["type"], "user")
+        self.assertEqual(
+            interrupted["message"]["content"][0]["text"],
+            "[Request interrupted by user]",
+        )
         closing = lines[-1]
         self.assertEqual(closing["type"], "result")
-        self.assertEqual(closing["subtype"], "success")
-        self.assertFalse(closing["is_error"])
+        self.assertEqual(closing["subtype"], "error_during_execution")
+        self.assertTrue(closing["is_error"])
+        self.assertEqual(closing["terminal_reason"], "aborted_streaming")
         self.assertEqual(closing["num_turns"], 1)
         self.assertEqual(closing["session_id"], lines[0]["session_id"])
         self.assertEqual(closing["total_cost_usd"], 0.001)

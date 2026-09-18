@@ -14,8 +14,12 @@
 #   - a session without a command fails loudly with exit 2;
 #   - the claude image carries the pinned CLI, git and a working login bash;
 #   - the stub replays its fixture under both `-p` and `--input-format
-#     stream-json`, and reports the MCP server from --mcp-config as connected;
-#   - the agent CLI is PID 1, SIGINT ends the turn with a `result` and exit 0,
+#     stream-json`, opens every turn with a `system`/`init` line as the real
+#     CLI does, and reports the MCP server from --mcp-config as connected;
+#   - the agent CLI is PID 1, SIGINT ends the turn with the real CLI's
+#     interrupt shape (a `user` line `[Request interrupted by user]` and a
+#     `result` with `subtype: "error_during_execution"`, `is_error: true`,
+#     `terminal_reason: "aborted_streaming"`) and exit 0,
 #     and SIGTERM exits 143 (ARCHITECTURE.md, "Stop semantics"). A signal that
 #     failed to reach PID 1 would mean the launcher needs `Init: true`, which
 #     is the engine adapter's decision, not this script's to work around.
@@ -258,6 +262,14 @@ result_count() {
     printf '%s\n' "${n:-0}"
 }
 
+# One `system`/`init` line opens every turn, as the real CLI writes them
+# (ARCHITECTURE.md, "Session image"; images/claude/VERIFY.md).
+init_count() {
+    local n
+    n="$(grep -c -F '"subtype":"init"' "$1" 2>/dev/null || true)"
+    printf '%s\n' "${n:-0}"
+}
+
 fail() {
     printf '%s\n' "$*"
     return 1
@@ -369,6 +381,8 @@ check_stub_oneshot() {
     expect_contains "$dir/first.txt" '"subtype":"init"' "the first line" || return 1
     expect_eq "$(result_count "$dir/log/stream.jsonl")" "$expected" \
         "result lines replayed from the fixture" || return 1
+    expect_eq "$(init_count "$dir/log/stream.jsonl")" "$expected" \
+        "init lines, one per replayed turn" || return 1
 }
 
 check_stub_interactive() {
@@ -385,6 +399,8 @@ check_stub_interactive() {
     wait_for_line "$stream" '"type":"result"' 30 1 || return 1
     send_user_line
     wait_for_line "$stream" '"type":"result"' 30 2 || return 1
+    expect_eq "$(init_count "$stream")" 2 \
+        "init lines after two turns (one opens each turn)" || return 1
     close_stdin
     code="$(timeout 30 "$ENGINE" wait "$BG_NAME")" \
         || { fail "the container did not exit within 30s of stdin closing"; return 1; }
@@ -416,8 +432,17 @@ check_stub_sigint() {
     code="$(timeout 10 "$ENGINE" wait "$BG_NAME")" \
         || { fail "the container did not exit within 10s of SIGINT"; return 1; }
     expect_eq "$code" 0 "exit code after SIGINT" || return 1
+    tail -n 2 "$stream" >"$dir/last.txt"
+    expect_contains "$dir/last.txt" '[Request interrupted by user]' \
+        "the interrupted user line of stream.jsonl" || return 1
     tail -n 1 "$stream" >"$dir/last.txt"
     expect_contains "$dir/last.txt" '"type":"result"' "the last line of stream.jsonl" || return 1
+    expect_contains "$dir/last.txt" '"subtype":"error_during_execution"' \
+        "the subtype of the closing result" || return 1
+    expect_contains "$dir/last.txt" '"is_error":true' \
+        "the is_error of the closing result" || return 1
+    expect_contains "$dir/last.txt" '"terminal_reason":"aborted_streaming"' \
+        "the terminal_reason of the closing result" || return 1
 }
 
 check_stub_sigterm() {

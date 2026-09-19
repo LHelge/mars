@@ -216,6 +216,14 @@ The claude image's version tag is the CLI version pinned in `images/claude/Docke
 
 `orchestrator/tests/session_e2e.rs` runs the session lifecycle on real containers and needs the stub image; it takes the tag from `MARS_STUB_IMAGE` and defaults to `localhost/mars-session-stub:dev`, so either build it under that tag (`podman build -t localhost/mars-session-stub:dev images/stub`) or point the variable at the tag you have. Like the rest of the engine suite it runs only with `DOCKER_HOST` set. The test suite starts its own Postgres through testcontainers; on an engine that cannot publish a port to it, set `MARS_TEST_POSTGRES_URL` (`postgres://user:password@host:port`, no database name) to a throw-away server and the suite uses that instead, rebuilding its template database there.
 
+**Deployment images**, built from the repository root. The orchestrator image is a multi-stage build that compiles the crate offline (`SQLX_OFFLINE=true`, from the committed `.sqlx/`, so no `DATABASE_URL` is needed) and ships the binary, `git` and CA certificates on `debian:bookworm-slim`, running as uid 1000 under a read-only root filesystem with a tmpfs at `/tmp` (`ARCHITECTURE.md`, "Trust boundaries"; ADR 0012):
+
+```bash
+podman build -t mars-orchestrator:dev orchestrator
+```
+
+The builder stage's `rust:<version>-bookworm` tag and `orchestrator/rust-toolchain.toml` must move together; the Dockerfile says so at the `FROM` line. With Docker, run the same command with `docker build`. The nginx image that serves the frontend is planned, and once `compose.yml` exists `compose build` builds both.
+
 **Frontend**:
 
 ```bash

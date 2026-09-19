@@ -1,16 +1,17 @@
 ---
 id: "6jycg"
 title: "Add task creation, listing and detail routes: POST and GET /projects/{pid}/tasks, GET /tasks/{id} as TaskDetail, and GET /tasks?state_kind=human"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:42:53.671044036Z"
-updated: "2026-09-16T20:42:53.671044036Z"
+updated: "2026-09-19T10:33:54.230045062Z"
 tags:
   - orchestrator
   - tracker
 depends_on:
   - h8qkt
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

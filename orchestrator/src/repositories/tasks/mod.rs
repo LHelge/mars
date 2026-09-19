@@ -74,10 +74,11 @@ use uuid::Uuid;
 
 pub use events::MAX_TASK_EVENT_PAGE;
 pub use graph::BlockedState;
-pub use rows::TaskFilter;
-// Crate-private on purpose: composing these columns is `tracker::state`'s, and
-// `rows` is a private module, so this is how its one caller reaches the type.
+/// The state-column write `tracker/` composes its state moves out of. Crate-
+/// private like the helper that takes it: `rows` is a private module, so this
+/// re-export is how the tracker names the type at all.
 pub(crate) use rows::StateFields;
+pub use rows::TaskFilter;
 
 use crate::prelude::*;
 use crate::repositories::ProjectRepository;

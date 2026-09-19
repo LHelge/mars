@@ -72,6 +72,13 @@ const FAKE_PASSWORD_HASH: &str = "$argon2id$fake$hash";
 const DELETE_SEEDED_ADMIN: &str =
     "DELETE FROM users WHERE id = '00000000-0000-0000-0000-000000000001'";
 
+/// The `PUBLIC_URL` [`test_config`] sets, which every emailed link is built
+/// on.
+const PUBLIC_URL: &str = "http://localhost";
+
+/// The administrator invite collection.
+const INVITES: &str = "/api/users/invites";
+
 /// A running orchestrator with every collaborator mocked — or, from
 /// [`TestApp::spawn_with_engine`], with the real container engine in the mock's
 /// place.
@@ -576,6 +583,152 @@ impl TestApp {
         }
     }
 
+    /// Invite `email` as `caller` and read the token back out of the email.
+    ///
+    /// The invite flow's arrangement step, in one call: the raw token exists
+    /// only in the delivered message — the response never carries it
+    /// (`SPEC.md`, "Users") — so this reads it out of the mock the way a person
+    /// reads it out of their inbox, and clears the capture so the next message
+    /// in the same test is unambiguous.
+    ///
+    /// Asserts 201. A test about a *refused* invitation posts to
+    /// `/api/users/invites` itself.
+    pub async fn invite(&self, caller: &AuthenticatedUser, email: &str, admin: bool) -> Invitation {
+        let response = self
+            .post_as(caller, INVITES)
+            .json(&serde_json::json!({ "email": email, "admin": admin }))
+            .await;
+
+        response.assert_status(StatusCode::CREATED);
+        let body = response.json::<Value>();
+
+        assert_eq!(
+            self.email.sent().len(),
+            1,
+            "exactly one invitation goes out"
+        );
+        let token = self.invite_link_token(0);
+        self.email.clear();
+
+        Invitation {
+            id: body["id"]
+                .as_str()
+                .expect("the invitation carries an id")
+                .parse()
+                .expect("the id is a uuid"),
+            token,
+            body,
+        }
+    }
+
+    /// The raw invitation token out of the `nth` captured message.
+    ///
+    /// Like [`TestApp::reset_link_token`]: the link is the only place the token
+    /// exists, because the `Invite` response never carries it (`SPEC.md`,
+    /// "Users").
+    pub fn invite_link_token(&self, nth: usize) -> String {
+        let sent = self.email.sent();
+        let message = sent.get(nth).expect("a captured message");
+
+        token_in_link(&message.text, "/invite/")
+    }
+
+    /// `GET /api/auth/invite/{token}`, unauthenticated.
+    ///
+    /// The interface that answers whether a link still resolves: 200 for an
+    /// open invitation, the documented 400 for one that is unknown, expired,
+    /// revoked, superseded or already accepted.
+    pub async fn lookup_invite(&self, token: &str) -> TestResponse {
+        self.server.get(&format!("/api/auth/invite/{token}")).await
+    }
+
+    /// `POST /api/auth/accept-invite`, unauthenticated.
+    pub async fn accept_invite(&self, token: &str, username: &str, password: &str) -> TestResponse {
+        self.server
+            .post("/api/auth/accept-invite")
+            .json(&serde_json::json!({
+                "token": token,
+                "username": username,
+                "password": password,
+            }))
+            .await
+    }
+
+    /// Invite `email` as `caller` and accept the invitation, answering the
+    /// signed-in user it created.
+    ///
+    /// The whole documented flow over HTTP, for the tests that need an invite
+    /// in the *accepted* state rather than a test of the flow itself: the
+    /// invitation row then names the user the acceptance created, exactly as it
+    /// does in production.
+    ///
+    /// Asserts 201 on both halves.
+    pub async fn invite_and_accept(
+        &self,
+        caller: &AuthenticatedUser,
+        email: &str,
+        username: &str,
+        password: &str,
+        admin: bool,
+    ) -> (Invitation, AuthenticatedUser) {
+        let invitation = self.invite(caller, email, admin).await;
+
+        let response = self
+            .accept_invite(&invitation.token, username, password)
+            .await;
+        response.assert_status(StatusCode::CREATED);
+
+        let refresh_cookie = response.cookie(REFRESH_COOKIE).value().to_string();
+        let pair = response.json::<TokenPair>();
+        let user = self.read_back(&pair.user).await;
+
+        (
+            invitation,
+            AuthenticatedUser {
+                user,
+                access_token: pair.access_token,
+                refresh_cookie,
+            },
+        )
+    }
+
+    /// Ask for a password-reset link, asserting the documented 204.
+    ///
+    /// One response covers a known identifier, an unknown one, a rate-limited
+    /// one and a failed delivery alike (`SPEC.md`, "Authentication"), so what
+    /// actually happened is read afterwards from the captured messages with
+    /// [`TestApp::reset_link_token`].
+    pub async fn request_reset_link(&self, identifier: &str) {
+        let response = self
+            .server
+            .post("/api/auth/request-password-reset")
+            .json(&serde_json::json!({ "identifier": identifier }))
+            .await;
+
+        response.assert_status(StatusCode::NO_CONTENT);
+        assert!(response.text().is_empty());
+    }
+
+    /// The raw reset token out of the `nth` captured message.
+    ///
+    /// The link is the only place it exists: the row carries the SHA-256 hex
+    /// and the response body carries nothing at all, which is the point.
+    pub fn reset_link_token(&self, nth: usize) -> String {
+        let sent = self.email.sent();
+        let message = sent.get(nth).expect("a captured message");
+
+        assert_eq!(message.subject, "Reset your Mars password");
+        token_in_link(&message.text, "/reset-password/")
+    }
+
+    /// `POST /api/auth/reset-password`, unauthenticated.
+    pub async fn reset_password(&self, token: &str, password: &str) -> TestResponse {
+        self.server
+            .post("/api/auth/reset-password")
+            .json(&serde_json::json!({ "token": token, "password": password }))
+            .await
+    }
+
     /// `GET path` as `user`.
     ///
     /// The four verbs below are the request builders every route test uses:
@@ -639,20 +792,7 @@ impl TestApp {
         response.assert_status(StatusCode::CREATED);
         let refresh_cookie = response.cookie(REFRESH_COOKIE).value().to_string();
         let pair = response.json::<TokenPair>();
-
-        // The route's response body carries the `User` DTO, which has no
-        // `Deserialize`; the row is read back instead, so callers get the same
-        // `User` the other arrangement helpers hand out.
-        let id: Uuid = pair.user["id"]
-            .as_str()
-            .expect("the created user carries an id")
-            .parse()
-            .expect("the id is a uuid");
-        let user = UserRepository::new(&self.pool)
-            .find(id)
-            .await
-            .expect("the lookup runs")
-            .expect("the created user is there");
+        let user = self.read_back(&pair.user).await;
 
         AuthenticatedUser {
             user,
@@ -660,6 +800,71 @@ impl TestApp {
             refresh_cookie,
         }
     }
+
+    /// The `users` row behind a `User` DTO a route just answered.
+    ///
+    /// The DTO has no `Deserialize` — deriving one would make an empty
+    /// `password_hash` constructible from JSON — so the row is read back
+    /// instead, and every arrangement helper hands out the same `User`.
+    async fn read_back(&self, dto: &Value) -> User {
+        let id: Uuid = dto["id"]
+            .as_str()
+            .expect("the created user carries an id")
+            .parse()
+            .expect("the id is a uuid");
+
+        UserRepository::new(&self.pool)
+            .find(id)
+            .await
+            .expect("the lookup runs")
+            .expect("the created user is there")
+    }
+}
+
+/// Assert that `response` tells the browser to drop the refresh cookie.
+///
+/// The documented attribute string is asserted once, in
+/// `tests/auth_credentials.rs`, against the cookie `auth::cookies` builds
+/// (`SPEC.md`, "Authentication"). What a route test needs of it is the
+/// behaviour: an empty value with an immediate expiry, so a browser holding a
+/// token the database will never accept again stops sending it.
+pub fn assert_refresh_cookie_cleared(response: &TestResponse) {
+    let cookie = response
+        .maybe_cookie(REFRESH_COOKIE)
+        .expect("the response clears the refresh cookie");
+
+    assert_eq!(cookie.value(), "");
+    assert_eq!(cookie.max_age().expect("a max-age").whole_seconds(), 0);
+}
+
+/// The raw token out of the first `<PUBLIC_URL><path><token>` link in `text`.
+///
+/// Both credential links Mars emails have this shape, and in both of them the
+/// token runs to the end of the word (`SPEC.md`, "Authentication").
+fn token_in_link(text: &str, path: &str) -> String {
+    let prefix = format!("{PUBLIC_URL}{path}");
+    let start = text
+        .find(&prefix)
+        .unwrap_or_else(|| panic!("no {prefix} link in the message: {text}"))
+        + prefix.len();
+
+    text[start..]
+        .split_whitespace()
+        .next()
+        .expect("the link has a token")
+        .to_string()
+}
+
+/// An invitation as a test holds it: the created row's id, the raw token out
+/// of the email, and the `Invite` DTO the route answered.
+#[derive(Debug, Clone)]
+pub struct Invitation {
+    /// The `user_invites` row's id, which is what the by-id routes name.
+    pub id: Uuid,
+    /// The raw token from the emailed link; the row holds only its hash.
+    pub token: String,
+    /// The `Invite` DTO the creation answered (`SPEC.md`, "Users").
+    pub body: Value,
 }
 
 /// A user and the credentials they were signed in with.
@@ -756,7 +961,7 @@ fn test_config(
     let data_dir = data_dir.display().to_string();
 
     let mut vars: HashMap<&str, String> = [
-        ("PUBLIC_URL", "http://localhost".to_string()),
+        ("PUBLIC_URL", PUBLIC_URL.to_string()),
         (
             "JWT_SECRET",
             "test-jwt-secret-not-for-production".to_string(),

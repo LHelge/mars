@@ -24,10 +24,9 @@ use axum::http::StatusCode;
 use axum::http::header::SET_COOKIE;
 use chrono::Utc;
 use common::TestApp;
+use common::races::unrevoked_refresh_tokens;
 use mars_orchestrator::auth::REFRESH_COOKIE;
-use mars_orchestrator::models::User;
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::UserRepository;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -50,13 +49,17 @@ fn bad_request(message: &str) -> Value {
     json!({ "status": 400, "error": message })
 }
 
-/// The row as the database has it now, whatever a response claimed.
-async fn stored(app: &TestApp, id: Uuid) -> User {
-    UserRepository::new(&app.pool)
-        .find(id)
+/// The stored Argon2id hash of `id`'s password.
+///
+/// A row-level fact with no interface: no route answers a hash, and "a fresh
+/// salt, so the stored hash differs even though the password does not" is only
+/// visible in the row.
+async fn stored_password_hash(app: &TestApp, id: Uuid) -> String {
+    sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_one(&app.pool)
         .await
-        .expect("the lookup succeeds")
-        .expect("the user exists")
+        .expect("the user row is there")
 }
 
 #[tokio::test]
@@ -151,12 +154,7 @@ async fn the_replacement_is_the_only_usable_refresh_token_left() {
     response.assert_status(StatusCode::OK);
     let replacement = response.cookie(REFRESH_COOKIE).value().to_string();
 
-    let live: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE revoked_at IS NULL")
-            .fetch_one(&app.pool)
-            .await
-            .expect("the count succeeds");
-    assert_eq!(live, 1);
+    assert_eq!(unrevoked_refresh_tokens(&app.pool, user.id).await, 1);
 
     for old in [first, second] {
         app.refresh(&old)
@@ -190,16 +188,15 @@ async fn a_wrong_current_password_is_400_and_revokes_nothing() {
     );
     assert_eq!(response.maybe_cookie(REFRESH_COOKIE), None);
 
-    // Nothing moved: the row, the tokens and the old password all still stand.
-    let row = stored(&app, user.id).await;
-    assert_eq!(row.auth_version, user.auth_version);
-    assert_eq!(row.password_hash, user.password_hash);
+    // Nothing moved: both halves of the pair still work, so `auth_version` did
+    // not, and the old password still logs in, so the hash did not either.
     app.refresh(&cookie).await.assert_status(StatusCode::OK);
     app.server
         .get(ME)
         .authorization_bearer(&pair.access_token)
         .await
         .assert_status(StatusCode::OK);
+    app.login("ada", PASSWORD).await;
 }
 
 #[tokio::test]
@@ -222,7 +219,14 @@ async fn a_missing_current_password_is_400() {
         response.json::<Value>(),
         bad_request("current password required")
     );
-    assert_eq!(stored(&app, user.id).await.auth_version, user.auth_version);
+    // Nothing was written: the token minted before the request still passes
+    // the `auth_version` check, and the old password still logs in.
+    app.server
+        .get(ME)
+        .authorization_bearer(&token)
+        .await
+        .assert_status(StatusCode::OK);
+    app.login("ada", PASSWORD).await;
 }
 
 /// The 10–128 rule, from `models::Password` (`SPEC.md`, "User-facing
@@ -251,7 +255,14 @@ async fn a_password_outside_the_documented_range_is_400() {
         );
     }
 
-    assert_eq!(stored(&app, user.id).await.auth_version, user.auth_version);
+    // Neither attempt was written: the pair still works and the old password
+    // still logs in.
+    app.server
+        .get(ME)
+        .authorization_bearer(&pair.access_token)
+        .await
+        .assert_status(StatusCode::OK);
+    app.login("ada", PASSWORD).await;
 }
 
 /// The primary first-login path: a gated user clears their own flag here and
@@ -287,7 +298,6 @@ async fn a_gated_user_completes_their_first_login_through_this_route() {
     response.assert_status(StatusCode::OK);
     let body = response.json::<Value>();
     assert_eq!(body["user"]["must_change_password"], json!(false));
-    assert!(!stored(&app, user.id).await.must_change_password);
 
     // After: the pair the change handed back passes the gate.
     app.server
@@ -296,6 +306,11 @@ async fn a_gated_user_completes_their_first_login_through_this_route() {
         .json(&json!({}))
         .await
         .assert_status(StatusCode::OK);
+
+    // And the flag was stored, not only answered: a fresh login sees it
+    // cleared too.
+    let (after, _cookie) = app.login("admin", NEW_PASSWORD).await;
+    assert_eq!(after.user["must_change_password"], json!(false));
 }
 
 #[tokio::test]
@@ -321,10 +336,8 @@ async fn an_ordinary_user_may_not_change_somebody_elses_password() {
         response.json::<Value>(),
         json!({ "status": 403, "error": "admin required" })
     );
-    assert_eq!(
-        stored(&app, target.id).await.auth_version,
-        target.auth_version
-    );
+    // The refusal wrote nothing: the target's password is still the old one.
+    app.login("grace", PASSWORD).await;
 
     // An unknown id gets the same 403, not a 404: whether a user exists is not
     // something a non-administrator learns here.
@@ -339,8 +352,7 @@ async fn an_ordinary_user_may_not_change_somebody_elses_password() {
 #[tokio::test]
 async fn an_administrator_changing_another_password_gets_204_and_keeps_their_own_login() {
     let app = TestApp::spawn().await;
-    let admin = app
-        .insert_user_with_password("grace", "grace@example.test", PASSWORD, true, false)
+    app.insert_user_with_password("grace", "grace@example.test", PASSWORD, true, false)
         .await;
     let target = app
         .insert_user_with_password("ada", "ada@example.test", PASSWORD, false, true)
@@ -362,9 +374,6 @@ async fn an_administrator_changing_another_password_gets_204_and_keeps_their_own
     assert_eq!(response.headers().get(SET_COOKIE), None);
 
     // The target: revoked, re-hashed, and no longer gated.
-    let row = stored(&app, target.id).await;
-    assert_eq!(row.auth_version, target.auth_version + 1);
-    assert!(!row.must_change_password);
     app.refresh(&target_cookie)
         .await
         .assert_status(StatusCode::UNAUTHORIZED);
@@ -373,13 +382,10 @@ async fn an_administrator_changing_another_password_gets_204_and_keeps_their_own
         .authorization_bearer(&target_pair.access_token)
         .await
         .assert_status(StatusCode::UNAUTHORIZED);
-    app.login("ada", NEW_PASSWORD).await;
+    let (after, _cookie) = app.login("ada", NEW_PASSWORD).await;
+    assert_eq!(after.user["must_change_password"], json!(false));
 
-    // The acting administrator: untouched.
-    assert_eq!(
-        stored(&app, admin.id).await.auth_version,
-        admin.auth_version
-    );
+    // The acting administrator: untouched, on both halves of their pair.
     app.refresh(&admin_cookie)
         .await
         .assert_status(StatusCode::OK);
@@ -433,13 +439,18 @@ async fn a_gated_administrator_may_still_change_another_password() {
         .await
         .assert_status(StatusCode::NO_CONTENT);
 
-    assert_eq!(
-        stored(&app, target.id).await.auth_version,
-        target.auth_version + 1
-    );
+    // The target's password moved.
+    app.login("ada", NEW_PASSWORD).await;
+
     // The administrator's own flag is still set: they changed somebody else's
-    // password, not their own.
-    assert!(stored(&app, admin.id).await.must_change_password);
+    // password, not their own, so the gate still refuses them an ordinary
+    // route.
+    app.server
+        .patch(ME)
+        .authorization_bearer(&token)
+        .json(&json!({}))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -479,11 +490,12 @@ async fn the_new_password_may_be_the_old_one() {
         .await
         .assert_status(StatusCode::OK);
 
-    let row = stored(&app, user.id).await;
-    assert_eq!(row.auth_version, user.auth_version + 1);
     // A fresh salt, so the stored hash differs even though the password does
     // not.
-    assert_ne!(row.password_hash, user.password_hash);
+    assert_ne!(
+        stored_password_hash(&app, user.id).await,
+        user.password_hash
+    );
     app.refresh(&cookie)
         .await
         .assert_status(StatusCode::UNAUTHORIZED);

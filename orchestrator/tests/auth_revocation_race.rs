@@ -33,10 +33,9 @@
 mod common;
 
 use axum::http::StatusCode;
-use axum::http::header::SET_COOKIE;
 use axum_test::TestResponse;
 use common::TestApp;
-use common::app::TokenPair;
+use common::app::{TokenPair, assert_refresh_cookie_cleared};
 use common::races::{
     IN_FLIGHT, RACE_ITERATIONS, RACE_TIMEOUT, hold_user_lock, unrevoked_refresh_tokens,
 };
@@ -81,22 +80,11 @@ fn invalid_credentials() -> Value {
     json!({ "status": 401, "error": "invalid username or password" })
 }
 
-/// The `Set-Cookie` a rejected refresh sends, as `tests/auth_refresh.rs`
-/// pins it.
-const CLEARING_SET_COOKIE: &str = "refresh_token=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
-
 /// Assert that `response` is the documented 401 *and* clears the cookie.
 fn assert_rejected_and_cleared(response: &TestResponse) {
     response.assert_status(StatusCode::UNAUTHORIZED);
     assert_eq!(response.json::<Value>(), unauthorized());
-
-    let header = response
-        .headers()
-        .get(SET_COOKIE)
-        .expect("a rejected refresh clears the cookie")
-        .to_str()
-        .expect("an ASCII header");
-    assert_eq!(header, CLEARING_SET_COOKIE);
+    assert_refresh_cookie_cleared(response);
 }
 
 /// The row as the database has it now, whatever a response claimed.

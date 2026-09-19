@@ -29,7 +29,6 @@ use common::TestApp;
 use mars_orchestrator::auth::REFRESH_COOKIE;
 use mars_orchestrator::models::OpaqueToken;
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::UserRepository;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -51,45 +50,15 @@ fn invalid_token() -> Value {
     json!({ "status": 400, "error": "invalid or expired token" })
 }
 
-/// Ask for a reset link and assert the documented 204.
-async fn request(app: &TestApp, identifier: &str) {
-    let response = app
-        .server
-        .post(REQUEST)
-        .json(&json!({ "identifier": identifier }))
-        .await;
-
-    response.assert_status(StatusCode::NO_CONTENT);
-    assert!(response.text().is_empty());
-}
-
-/// The raw token out of the `nth` captured message.
+/// How many reset tokens the database holds.
 ///
-/// The link is the only place it exists: the database has the SHA-256 hex and
-/// the response body has nothing at all, which is the point.
-fn token_from_message(app: &TestApp, nth: usize) -> String {
-    let sent = app.mock_email().sent();
-    let message = sent.get(nth).expect("a captured message");
-
-    assert_eq!(message.subject, "Reset your Mars password");
-    let start = message
-        .text
-        .find(LINK_PREFIX)
-        .expect("the message carries the reset link")
-        + LINK_PREFIX.len();
-    message.text[start..]
-        .split_whitespace()
-        .next()
-        .expect("the link has a token")
-        .to_string()
-}
-
-/// The stored expiry of the user's only reset token.
-async fn stored_expiry(app: &TestApp) -> DateTime<Utc> {
-    sqlx::query_scalar("SELECT expires_at FROM password_reset_tokens")
+/// A row-level fact: the endpoint answers 204 whether or not it wrote one, so
+/// nothing but the row says whether a link was issued.
+async fn reset_token_rows(app: &TestApp) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM password_reset_tokens")
         .fetch_one(&app.pool)
         .await
-        .expect("exactly one reset token row")
+        .expect("the count succeeds")
 }
 
 #[tokio::test]
@@ -99,7 +68,7 @@ async fn a_request_for_a_known_email_sends_exactly_one_link() {
         .insert_user_with_password("ada", "ada@example.test", PASSWORD, false, false)
         .await;
 
-    request(&app, "ada@example.test").await;
+    app.request_reset_link("ada@example.test").await;
 
     let sent = app.mock_email().sent();
     assert_eq!(sent.len(), 1);
@@ -108,12 +77,13 @@ async fn a_request_for_a_known_email_sends_exactly_one_link() {
 
     // The row carries the hash of the emailed token and nothing that resembles
     // the token itself (`docs/data-model.md`).
-    let token = token_from_message(&app, 0);
-    let row: (Uuid, String, Option<DateTime<Utc>>) =
-        sqlx::query_as("SELECT user_id, token_hash, used_at FROM password_reset_tokens")
-            .fetch_one(&app.pool)
-            .await
-            .expect("exactly one reset token row");
+    let token = app.reset_link_token(0);
+    let row: (Uuid, String, Option<DateTime<Utc>>, DateTime<Utc>) = sqlx::query_as(
+        "SELECT user_id, token_hash, used_at, expires_at FROM password_reset_tokens",
+    )
+    .fetch_one(&app.pool)
+    .await
+    .expect("exactly one reset token row");
     assert_eq!(row.0, user.id);
     assert_eq!(row.1, OpaqueToken::hash_of(&token));
     assert_ne!(row.1, token, "the raw token must never be stored");
@@ -121,7 +91,7 @@ async fn a_request_for_a_known_email_sends_exactly_one_link() {
 
     // One hour, the documented reset-link validity (`SPEC.md`, "User-facing
     // features").
-    let ttl = stored_expiry(&app).await - Utc::now();
+    let ttl = row.3 - Utc::now();
     assert!(
         ttl > PASSWORD_RESET_TTL - chrono::TimeDelta::minutes(1) && ttl <= PASSWORD_RESET_TTL,
         "unexpected expiry: {ttl}"
@@ -137,8 +107,8 @@ async fn a_request_by_username_or_by_a_differently_cased_email_finds_the_same_us
     app.insert_user_with_password("ada", "ada@example.test", PASSWORD, false, false)
         .await;
 
-    request(&app, "ada").await;
-    request(&app, "  ADA@Example.TEST  ").await;
+    app.request_reset_link("ada").await;
+    app.request_reset_link("  ADA@Example.TEST  ").await;
 
     let sent = app.mock_email().sent();
     assert_eq!(sent.len(), 2);
@@ -151,15 +121,11 @@ async fn a_request_for_an_unknown_identifier_is_204_and_sends_nothing() {
     app.insert_user_with_password("ada", "ada@example.test", PASSWORD, false, false)
         .await;
 
-    request(&app, "nobody").await;
-    request(&app, "nobody@example.test").await;
+    app.request_reset_link("nobody").await;
+    app.request_reset_link("nobody@example.test").await;
 
     assert!(app.mock_email().sent().is_empty());
-    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM password_reset_tokens")
-        .fetch_one(&app.pool)
-        .await
-        .expect("the count succeeds");
-    assert_eq!(rows, 0);
+    assert_eq!(reset_token_rows(&app).await, 0);
 }
 
 /// Three per identifier per hour, and the fourth is still a 204 (`SPEC.md`,
@@ -171,19 +137,15 @@ async fn the_fourth_request_within_the_hour_sends_nothing_and_still_answers_204(
         .await;
 
     for _ in 0..4 {
-        request(&app, "ada@example.test").await;
+        app.request_reset_link("ada@example.test").await;
     }
 
     assert_eq!(app.mock_email().sent().len(), 3);
-    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM password_reset_tokens")
-        .fetch_one(&app.pool)
-        .await
-        .expect("the count succeeds");
-    assert_eq!(rows, 3);
+    assert_eq!(reset_token_rows(&app).await, 3);
 
     // The limit is a fact about the limiter, not about the account.
     app.reset_limiters();
-    request(&app, "ada@example.test").await;
+    app.request_reset_link("ada@example.test").await;
     assert_eq!(app.mock_email().sent().len(), 4);
 }
 
@@ -194,14 +156,14 @@ async fn an_unknown_identifier_is_counted_by_the_limiter() {
     let app = TestApp::spawn().await;
 
     for _ in 0..3 {
-        request(&app, "ada@example.test").await;
+        app.request_reset_link("ada@example.test").await;
     }
 
     // Only now is the user created; the limit was already spent by the
     // requests that found nobody.
     app.insert_user_with_password("ada", "ada@example.test", PASSWORD, false, false)
         .await;
-    request(&app, "ada@example.test").await;
+    app.request_reset_link("ada@example.test").await;
 
     assert!(app.mock_email().sent().is_empty());
 }
@@ -215,14 +177,10 @@ async fn a_failed_delivery_still_answers_204() {
         .await;
     app.mock_email().fail_next();
 
-    request(&app, "ada@example.test").await;
+    app.request_reset_link("ada@example.test").await;
 
     assert!(app.mock_email().sent().is_empty());
-    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM password_reset_tokens")
-        .fetch_one(&app.pool)
-        .await
-        .expect("the count succeeds");
-    assert_eq!(rows, 1);
+    assert_eq!(reset_token_rows(&app).await, 1);
 }
 
 #[tokio::test]
@@ -233,30 +191,18 @@ async fn a_reset_sets_the_password_revokes_the_logins_and_does_not_sign_anybody_
         .await;
     let (pair, cookie) = app.login("ada", PASSWORD).await;
 
-    request(&app, "ada@example.test").await;
-    let token = token_from_message(&app, 0);
+    app.request_reset_link("ada@example.test").await;
+    let token = app.reset_link_token(0);
 
-    let response = app
-        .server
-        .post(RESET)
-        .json(&json!({ "token": token, "password": NEW_PASSWORD }))
-        .await;
+    let response = app.reset_password(&token, NEW_PASSWORD).await;
 
     response.assert_status(StatusCode::NO_CONTENT);
     assert!(response.text().is_empty());
     assert_eq!(response.headers().get(SET_COOKIE), None);
 
-    // The row moved as a whole: new hash, new generation, gate cleared.
-    let row = UserRepository::new(&app.pool)
-        .find(user.id)
-        .await
-        .expect("the lookup succeeds")
-        .expect("the user exists");
-    assert_eq!(row.auth_version, user.auth_version + 1);
-    assert_ne!(row.password_hash, user.password_hash);
-    assert!(!row.must_change_password);
-
-    // The old credentials are gone, and the new password is what logs in.
+    // The whole credential moved, which the old half of it proves: the cookie
+    // and the access token minted before the reset are both refused, so every
+    // refresh token was revoked and `auth_version` moved on.
     app.refresh(&cookie)
         .await
         .assert_status(StatusCode::UNAUTHORIZED);
@@ -265,12 +211,17 @@ async fn a_reset_sets_the_password_revokes_the_logins_and_does_not_sign_anybody_
         .authorization_bearer(&pair.access_token)
         .await
         .assert_status(StatusCode::UNAUTHORIZED);
+
+    // The password itself changed, and the gate the user was under is cleared
+    // — both of them as the login that follows the reset sees them.
     app.server
         .post("/api/auth/login")
         .json(&json!({ "username": "ada", "password": PASSWORD }))
         .await
         .assert_status(StatusCode::UNAUTHORIZED);
-    app.login("ada", NEW_PASSWORD).await;
+    let (after, _cookie) = app.login("ada", NEW_PASSWORD).await;
+    assert_eq!(after.user["id"], json!(user.id.to_string()));
+    assert_eq!(after.user["must_change_password"], json!(false));
 }
 
 #[tokio::test]
@@ -279,20 +230,14 @@ async fn a_link_cannot_be_used_twice() {
     app.insert_user_with_password("ada", "ada@example.test", PASSWORD, false, false)
         .await;
 
-    request(&app, "ada@example.test").await;
-    let token = token_from_message(&app, 0);
+    app.request_reset_link("ada@example.test").await;
+    let token = app.reset_link_token(0);
 
-    app.server
-        .post(RESET)
-        .json(&json!({ "token": token, "password": NEW_PASSWORD }))
+    app.reset_password(&token, NEW_PASSWORD)
         .await
         .assert_status(StatusCode::NO_CONTENT);
 
-    let response = app
-        .server
-        .post(RESET)
-        .json(&json!({ "token": token, "password": "yet-another-phrase" }))
-        .await;
+    let response = app.reset_password(&token, "yet-another-phrase").await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(response.json::<Value>(), invalid_token());
@@ -308,23 +253,17 @@ async fn spending_one_link_invalidates_the_others() {
     app.insert_user_with_password("ada", "ada@example.test", PASSWORD, false, false)
         .await;
 
-    request(&app, "ada@example.test").await;
-    request(&app, "ada@example.test").await;
-    let first = token_from_message(&app, 0);
-    let second = token_from_message(&app, 1);
+    app.request_reset_link("ada@example.test").await;
+    app.request_reset_link("ada@example.test").await;
+    let first = app.reset_link_token(0);
+    let second = app.reset_link_token(1);
     assert_ne!(first, second);
 
-    app.server
-        .post(RESET)
-        .json(&json!({ "token": second, "password": NEW_PASSWORD }))
+    app.reset_password(&second, NEW_PASSWORD)
         .await
         .assert_status(StatusCode::NO_CONTENT);
 
-    let response = app
-        .server
-        .post(RESET)
-        .json(&json!({ "token": first, "password": "yet-another-phrase" }))
-        .await;
+    let response = app.reset_password(&first, "yet-another-phrase").await;
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(response.json::<Value>(), invalid_token());
 }
@@ -338,8 +277,8 @@ async fn a_self_service_change_invalidates_an_outstanding_link() {
         .insert_user_with_password("ada", "ada@example.test", PASSWORD, false, false)
         .await;
 
-    request(&app, "ada@example.test").await;
-    let token = token_from_message(&app, 0);
+    app.request_reset_link("ada@example.test").await;
+    let token = app.reset_link_token(0);
 
     let (pair, _cookie) = app.login("ada", PASSWORD).await;
     app.server
@@ -349,11 +288,7 @@ async fn a_self_service_change_invalidates_an_outstanding_link() {
         .await
         .assert_status(StatusCode::OK);
 
-    let response = app
-        .server
-        .post(RESET)
-        .json(&json!({ "token": token, "password": "yet-another-phrase" }))
-        .await;
+    let response = app.reset_password(&token, "yet-another-phrase").await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(response.json::<Value>(), invalid_token());
@@ -366,20 +301,18 @@ async fn an_expired_link_is_400() {
     app.insert_user_with_password("ada", "ada@example.test", PASSWORD, false, false)
         .await;
 
-    request(&app, "ada@example.test").await;
-    let token = token_from_message(&app, 0);
+    app.request_reset_link("ada@example.test").await;
+    let token = app.reset_link_token(0);
 
-    // Aged past its hour, the way the clock would have done on its own.
+    // A row-level fact with no interface: the expiry lives in the row and no
+    // route moves it, so it is aged past its hour the way the clock would have
+    // done on its own.
     sqlx::query("UPDATE password_reset_tokens SET expires_at = NOW() - INTERVAL '1 minute'")
         .execute(&app.pool)
         .await
         .expect("the token ages");
 
-    let response = app
-        .server
-        .post(RESET)
-        .json(&json!({ "token": token, "password": NEW_PASSWORD }))
-        .await;
+    let response = app.reset_password(&token, NEW_PASSWORD).await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(response.json::<Value>(), invalid_token());
@@ -393,9 +326,7 @@ async fn an_unknown_token_is_the_same_400() {
     let app = TestApp::spawn().await;
 
     let response = app
-        .server
-        .post(RESET)
-        .json(&json!({ "token": "not-a-real-reset-token", "password": NEW_PASSWORD }))
+        .reset_password("not-a-real-reset-token", NEW_PASSWORD)
         .await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
@@ -411,14 +342,10 @@ async fn a_password_outside_the_documented_range_is_400_and_keeps_the_link() {
     app.insert_user_with_password("ada", "ada@example.test", PASSWORD, false, false)
         .await;
 
-    request(&app, "ada@example.test").await;
-    let token = token_from_message(&app, 0);
+    app.request_reset_link("ada@example.test").await;
+    let token = app.reset_link_token(0);
 
-    let response = app
-        .server
-        .post(RESET)
-        .json(&json!({ "token": token, "password": "too-short" }))
-        .await;
+    let response = app.reset_password(&token, "too-short").await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(
@@ -427,9 +354,7 @@ async fn a_password_outside_the_documented_range_is_400_and_keeps_the_link() {
     );
 
     // Still usable: nothing was written.
-    app.server
-        .post(RESET)
-        .json(&json!({ "token": token, "password": NEW_PASSWORD }))
+    app.reset_password(&token, NEW_PASSWORD)
         .await
         .assert_status(StatusCode::NO_CONTENT);
 }

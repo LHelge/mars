@@ -19,13 +19,13 @@
 mod common;
 
 use axum::http::StatusCode;
-use axum::http::header::SET_COOKIE;
 use chrono::{TimeDelta, Utc};
 use common::TestApp;
+use common::app::assert_refresh_cookie_cleared;
+use common::races::unrevoked_refresh_tokens;
 use mars_orchestrator::auth::REFRESH_COOKIE;
 use mars_orchestrator::models::{OpaqueToken, User};
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::UserRepository;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -47,22 +47,19 @@ fn gated(user: &User) -> String {
     format!("/api/users/{}", user.id)
 }
 
-/// The `Set-Cookie` that tells a browser to drop the refresh cookie: the same
-/// attributes as the real one, an empty value and `Max-Age=0`.
-const CLEARING_SET_COOKIE: &str = "refresh_token=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
+/// Obviously fake, and long enough for the documented 10–128 range.
+const NEW_PASSWORD: &str = "a-completely-different-phrase";
+
+/// `POST /users/{id}/password` for `id`.
+fn password_route(id: Uuid) -> String {
+    format!("/api/users/{id}/password")
+}
 
 /// Assert that `response` is the documented 401 *and* clears the cookie.
 fn assert_rejected_and_cleared(response: &axum_test::TestResponse) {
     response.assert_status(StatusCode::UNAUTHORIZED);
     assert_eq!(response.json::<Value>(), unauthorized());
-
-    let header = response
-        .headers()
-        .get(SET_COOKIE)
-        .expect("a rejected refresh clears the cookie")
-        .to_str()
-        .expect("an ASCII header");
-    assert_eq!(header, CLEARING_SET_COOKIE);
+    assert_refresh_cookie_cleared(response);
 }
 
 #[tokio::test]
@@ -93,14 +90,7 @@ async fn a_refresh_returns_a_new_pair_and_a_new_cookie() {
 
     // The old row is revoked and the new one is not, so exactly one usable
     // token remains for this user.
-    let usable: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL",
-    )
-    .bind(user.id)
-    .fetch_one(&app.pool)
-    .await
-    .expect("the count runs");
-    assert_eq!(usable, 1);
+    assert_eq!(unrevoked_refresh_tokens(&app.pool, user.id).await, 1);
 
     // And the new access token works, while the first one is untouched: an
     // access token is not revoked by rotation, it simply expires.
@@ -164,7 +154,8 @@ async fn an_expired_token_is_401() {
         .await;
     let (_pair, cookie) = app.login("ada", PASSWORD).await;
 
-    // Age the row rather than the clock: the expiry lives in the database.
+    // A row-level fact with no interface: the expiry lives in the row and no
+    // route moves it, so the row is aged rather than the clock.
     sqlx::query(
         "UPDATE refresh_tokens SET expires_at = NOW() - INTERVAL '1 second' WHERE token_hash = $1",
     )
@@ -184,12 +175,14 @@ async fn a_cookie_for_a_deleted_user_is_401() {
         .await;
     let (_pair, cookie) = app.login("ada", PASSWORD).await;
 
-    // Any acting id but the target's: `UserRepository::delete` reads it only
-    // to refuse a self-deletion.
-    UserRepository::new(&app.pool)
-        .delete(user.id, Uuid::new_v4())
+    // Deleted the way a user is deleted: by an administrator, over the route
+    // (`SPEC.md`, "Users").
+    let admin = app
+        .create_admin("root", "root@example.test", PASSWORD)
+        .await;
+    app.delete_as(&admin, &format!("/api/users/{}", user.id))
         .await
-        .expect("the delete runs");
+        .assert_status(StatusCode::NO_CONTENT);
 
     assert_rejected_and_cleared(&app.refresh(&cookie).await);
 }
@@ -205,18 +198,15 @@ async fn a_refresh_after_a_password_change_is_401() {
         .await;
     let (pair, cookie) = app.login("ada", PASSWORD).await;
 
-    let users = UserRepository::new(&app.pool);
-    let mut tx = app.pool.begin().await.expect("a transaction begins");
-    users
-        .lock_user(&mut tx, user.id)
+    // An administrator's change, over the route: it issues no replacement, so
+    // everything `ada` holds is dead afterwards (`SPEC.md`, "Users").
+    let admin = app
+        .create_admin("root", "root@example.test", PASSWORD)
+        .await;
+    app.post_as(&admin, &password_route(user.id))
+        .json(&json!({ "password": NEW_PASSWORD }))
         .await
-        .expect("the lock runs")
-        .expect("the user is there");
-    users
-        .apply_password_change(&mut tx, user.id, "$argon2id$fake$hash", None)
-        .await
-        .expect("the password change applies");
-    tx.commit().await.expect("the transaction commits");
+        .assert_status(StatusCode::NO_CONTENT);
 
     assert_rejected_and_cleared(&app.refresh(&cookie).await);
 
@@ -242,15 +232,17 @@ async fn the_refreshed_token_carries_the_current_admin_flag() {
     let claims = Claims::decode(&pair.access_token, &app.state.config).expect("it verifies");
     assert!(claims.admin);
 
-    // Straight in the database: a demotion does not touch `auth_version` and
-    // revokes nothing (ADR 0025), so the cookie stays usable. Not through
-    // `UserRepository::replace`, which would refuse it — `ada` is the only
-    // administrator this test app has.
-    sqlx::query("UPDATE users SET admin = FALSE, updated_at = NOW() WHERE id = $1")
-        .bind(user.id)
-        .execute(&app.pool)
+    // Demoted over the route by a second administrator, because demoting the
+    // last one is refused (`SPEC.md`, "Users"). A demotion does not touch
+    // `auth_version` and revokes nothing (ADR 0025), so the cookie stays
+    // usable.
+    let root = app
+        .create_admin("root", "root@example.test", PASSWORD)
+        .await;
+    app.put_as(&root, &format!("/api/users/{}", user.id))
+        .json(&json!({ "username": "ada", "admin": false }))
         .await
-        .expect("the demotion runs");
+        .assert_status(StatusCode::OK);
 
     let response = app.refresh(&cookie).await;
     response.assert_status(StatusCode::OK);
@@ -280,6 +272,8 @@ async fn the_replacement_token_is_valid_for_thirty_days() {
     response.assert_status(StatusCode::OK);
     let replacement = response.cookie(REFRESH_COOKIE).value().to_string();
 
+    // A row-level fact with no interface: the replacement's own expiry, thirty
+    // days out, lives only in the row.
     let expires_at: chrono::DateTime<Utc> =
         sqlx::query_scalar("SELECT expires_at FROM refresh_tokens WHERE token_hash = $1")
             .bind(OpaqueToken::hash_of(&replacement))

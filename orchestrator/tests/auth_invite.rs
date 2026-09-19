@@ -31,25 +31,17 @@ use axum::http::StatusCode;
 use chrono::{DateTime, TimeDelta, Utc};
 use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::auth::REFRESH_COOKIE;
-use mars_orchestrator::email::EmailMessage;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// The administrator route that creates the invitations under test.
 const INVITES: &str = "/api/users/invites";
 
-/// The acceptance route.
-const ACCEPT: &str = "/api/auth/accept-invite";
-
 /// A route every authenticated user reaches.
 const ME: &str = "/api/users/me";
 
 /// A route only an administrator reaches.
 const USERS: &str = "/api/users";
-
-/// The `PUBLIC_URL` the harness configures, which the emailed link is built
-/// on.
-const PUBLIC_URL: &str = "http://localhost";
 
 /// Obviously fake, and inside the documented 10–128 range.
 const PASSWORD: &str = "correct-horse-battery-staple";
@@ -73,74 +65,10 @@ async fn admin(app: &TestApp) -> AuthenticatedUser {
         .await
 }
 
-/// The raw token out of the `<PUBLIC_URL>/invite/<token>` link in `message`.
-fn token_in(message: &EmailMessage) -> String {
-    let prefix = format!("{PUBLIC_URL}/invite/");
-    let start = message
-        .text
-        .find(&prefix)
-        .unwrap_or_else(|| panic!("no invite link in the message"))
-        + prefix.len();
-
-    message.text[start..]
-        .split_whitespace()
-        .next()
-        .expect("the link has a token")
-        .to_string()
-}
-
-/// Create an invitation as `caller` and return its id and its raw token.
-///
-/// The token exists only in the delivered message — the response never carries
-/// it (`SPEC.md`, "Users") — so this reads it back out of the mock the way a
-/// person reads it out of their inbox, and clears the capture so the next
-/// invitation in the same test is unambiguous.
-async fn invite(app: &TestApp, caller: &AuthenticatedUser, email: &str, is_admin: bool) -> Invited {
-    let response = app
-        .post_as(caller, INVITES)
-        .json(&json!({ "email": email, "admin": is_admin }))
-        .await;
-
-    response.assert_status(StatusCode::CREATED);
-    let body = response.json::<Value>();
-
-    let sent = app.mock_email().sent();
-    assert_eq!(sent.len(), 1, "exactly one invitation goes out");
-    let token = token_in(&sent[0]);
-    app.mock_email().clear();
-
-    Invited {
-        id: Uuid::parse_str(body["id"].as_str().expect("id is a string")).expect("id is a UUID"),
-        token,
-    }
-}
-
-/// An invitation as the test holds it: the row's id, and the token from the
-/// email.
-struct Invited {
-    id: Uuid,
-    token: String,
-}
-
-/// `GET /api/auth/invite/{token}`, unauthenticated.
-async fn lookup(app: &TestApp, token: &str) -> axum_test::TestResponse {
-    app.server.get(&format!("/api/auth/invite/{token}")).await
-}
-
-/// `POST /api/auth/accept-invite`, unauthenticated.
-async fn accept(
-    app: &TestApp,
-    token: &str,
-    username: &str,
-    password: &str,
-) -> axum_test::TestResponse {
-    app.server
-        .post(ACCEPT)
-        .json(&json!({ "token": token, "username": username, "password": password }))
-        .await
-}
-
 /// Move an invitation's expiry into the past.
+///
+/// A row-level fact with no interface: the expiry lives in the row and no
+/// route moves it backwards.
 ///
 /// An unchecked query: this file introduces no compile-time checked query, so
 /// `.sqlx/` never has to carry one for a test (`CLAUDE.md`, "Backend
@@ -155,6 +83,9 @@ async fn expire(app: &TestApp, id: Uuid) {
 }
 
 /// The `accepted_user_id` column of one invitation.
+///
+/// A row-level fact with no interface: no route answers a spent invitation, so
+/// which user it created is only visible in the row.
 async fn accepted_user_id(app: &TestApp, id: Uuid) -> Option<Uuid> {
     sqlx::query_scalar::<_, Option<Uuid>>("SELECT accepted_user_id FROM user_invites WHERE id = $1")
         .bind(id)
@@ -172,9 +103,9 @@ fn user_id(body: &Value) -> Uuid {
 async fn looking_up_an_open_invite_answers_the_three_documented_keys() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
-    let response = lookup(&app, &invited.token).await;
+    let response = app.lookup_invite(&invited.token).await;
 
     response.assert_status_ok();
     let body = response.json::<Value>();
@@ -214,9 +145,9 @@ async fn looking_up_an_open_invite_answers_the_three_documented_keys() {
 async fn looking_up_an_invite_that_makes_an_administrator_says_so() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", true).await;
+    let invited = app.invite(&caller, "ada@example.test", true).await;
 
-    let response = lookup(&app, &invited.token).await;
+    let response = app.lookup_invite(&invited.token).await;
 
     response.assert_status_ok();
     assert_eq!(response.json::<Value>()["admin"], json!(true));
@@ -228,11 +159,9 @@ async fn looking_up_an_unknown_token_is_a_bad_request() {
 
     // Well formed and never issued: two UUIDs joined by a dot is the shape of
     // a real token.
-    let response = lookup(
-        &app,
-        "00000000-0000-0000-0000-0000000000ff.00000000-0000-0000-0000-0000000000ee",
-    )
-    .await;
+    let response = app
+        .lookup_invite("00000000-0000-0000-0000-0000000000ff.00000000-0000-0000-0000-0000000000ee")
+        .await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(response.json::<Value>(), invalid_invite());
@@ -242,11 +171,11 @@ async fn looking_up_an_unknown_token_is_a_bad_request() {
 async fn looking_up_an_expired_invite_is_a_bad_request() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
     expire(&app, invited.id).await;
 
-    let response = lookup(&app, &invited.token).await;
+    let response = app.lookup_invite(&invited.token).await;
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(response.json::<Value>(), invalid_invite());
 }
@@ -255,13 +184,13 @@ async fn looking_up_an_expired_invite_is_a_bad_request() {
 async fn looking_up_a_revoked_invite_is_a_bad_request() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
     app.delete_as(&caller, &format!("{INVITES}/{}", invited.id))
         .await
         .assert_status(StatusCode::NO_CONTENT);
 
-    let response = lookup(&app, &invited.token).await;
+    let response = app.lookup_invite(&invited.token).await;
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(response.json::<Value>(), invalid_invite());
 }
@@ -270,13 +199,13 @@ async fn looking_up_a_revoked_invite_is_a_bad_request() {
 async fn looking_up_an_accepted_invite_is_a_bad_request() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
-    accept(&app, &invited.token, "ada", PASSWORD)
+    app.accept_invite(&invited.token, "ada", PASSWORD)
         .await
         .assert_status(StatusCode::CREATED);
 
-    let response = lookup(&app, &invited.token).await;
+    let response = app.lookup_invite(&invited.token).await;
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(response.json::<Value>(), invalid_invite());
 }
@@ -285,9 +214,9 @@ async fn looking_up_an_accepted_invite_is_a_bad_request() {
 async fn accepting_an_invite_creates_the_user_and_signs_them_in() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
-    let response = accept(&app, &invited.token, "ada", PASSWORD).await;
+    let response = app.accept_invite(&invited.token, "ada", PASSWORD).await;
 
     response.assert_status(StatusCode::CREATED);
     let cookie = response.cookie(REFRESH_COOKIE).value().to_string();
@@ -333,12 +262,12 @@ async fn accepting_an_invite_creates_the_user_and_signs_them_in() {
 async fn a_token_with_surrounding_whitespace_is_still_accepted() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
     // A token pasted out of a mail client, newline and all, is the same
     // invitation.
     let padded = format!("  {}\n", invited.token);
-    accept(&app, &padded, "ada", PASSWORD)
+    app.accept_invite(&padded, "ada", PASSWORD)
         .await
         .assert_status(StatusCode::CREATED);
 }
@@ -347,13 +276,15 @@ async fn a_token_with_surrounding_whitespace_is_still_accepted() {
 async fn accepting_the_same_invite_twice_is_a_bad_request() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
-    let first = accept(&app, &invited.token, "ada", PASSWORD).await;
+    let first = app.accept_invite(&invited.token, "ada", PASSWORD).await;
     first.assert_status(StatusCode::CREATED);
     let first_body = first.json::<Value>();
 
-    let second = accept(&app, &invited.token, "grace-two", PASSWORD).await;
+    let second = app
+        .accept_invite(&invited.token, "grace-two", PASSWORD)
+        .await;
     second.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(second.json::<Value>(), invalid_invite());
 
@@ -372,11 +303,11 @@ async fn accepting_the_same_invite_twice_is_a_bad_request() {
 async fn accepting_an_expired_invite_is_a_bad_request() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
     expire(&app, invited.id).await;
 
-    let response = accept(&app, &invited.token, "ada", PASSWORD).await;
+    let response = app.accept_invite(&invited.token, "ada", PASSWORD).await;
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(response.json::<Value>(), invalid_invite());
     assert_eq!(accepted_user_id(&app, invited.id).await, None);
@@ -386,9 +317,9 @@ async fn accepting_an_expired_invite_is_a_bad_request() {
 async fn a_username_that_is_too_short_is_rejected_and_the_invite_stays_open() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
-    let response = accept(&app, &invited.token, "ad", PASSWORD).await;
+    let response = app.accept_invite(&invited.token, "ad", PASSWORD).await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(
@@ -397,7 +328,7 @@ async fn a_username_that_is_too_short_is_rejected_and_the_invite_stays_open() {
     );
 
     // Validated before the transaction opened, so the link is untouched.
-    lookup(&app, &invited.token).await.assert_status_ok();
+    app.lookup_invite(&invited.token).await.assert_status_ok();
     assert_eq!(accepted_user_id(&app, invited.id).await, None);
 }
 
@@ -405,9 +336,9 @@ async fn a_username_that_is_too_short_is_rejected_and_the_invite_stays_open() {
 async fn a_password_that_is_too_short_is_rejected_and_the_invite_stays_open() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
-    let response = accept(&app, &invited.token, "ada", "too-short").await;
+    let response = app.accept_invite(&invited.token, "ada", "too-short").await;
 
     response.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(
@@ -415,7 +346,7 @@ async fn a_password_that_is_too_short_is_rejected_and_the_invite_stays_open() {
         json!({ "status": 400, "error": "password must be 10-128 characters" })
     );
 
-    lookup(&app, &invited.token).await.assert_status_ok();
+    app.lookup_invite(&invited.token).await.assert_status_ok();
     assert_eq!(accepted_user_id(&app, invited.id).await, None);
 }
 
@@ -424,18 +355,18 @@ async fn a_username_somebody_else_has_is_a_conflict_and_the_invite_stays_open() 
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
     app.create_user("ada", "other@example.test", PASSWORD).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
-    let response = accept(&app, &invited.token, "ada", PASSWORD).await;
+    let response = app.accept_invite(&invited.token, "ada", PASSWORD).await;
 
     response.assert_status(StatusCode::CONFLICT);
     assert_eq!(response.json::<Value>(), conflict("username already taken"));
 
     // The whole acceptance rolled back, so the invitee can pick another name.
-    lookup(&app, &invited.token).await.assert_status_ok();
+    app.lookup_invite(&invited.token).await.assert_status_ok();
     assert_eq!(accepted_user_id(&app, invited.id).await, None);
 
-    accept(&app, &invited.token, "ada-lovelace", PASSWORD)
+    app.accept_invite(&invited.token, "ada-lovelace", PASSWORD)
         .await
         .assert_status(StatusCode::CREATED);
 }
@@ -444,14 +375,14 @@ async fn a_username_somebody_else_has_is_a_conflict_and_the_invite_stays_open() 
 async fn an_address_that_has_become_a_user_is_a_conflict_and_the_invite_stays_open() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
     // The address becomes a user by another path while the invitation is open
     // — here the test route, in production an administrator's own seeding.
     app.create_user("ada-elsewhere", "ada@example.test", PASSWORD)
         .await;
 
-    let response = accept(&app, &invited.token, "ada", PASSWORD).await;
+    let response = app.accept_invite(&invited.token, "ada", PASSWORD).await;
 
     response.assert_status(StatusCode::CONFLICT);
     assert_eq!(
@@ -461,7 +392,7 @@ async fn an_address_that_has_become_a_user_is_a_conflict_and_the_invite_stays_op
 
     // Still open, so an administrator can revoke a link that can no longer be
     // accepted.
-    lookup(&app, &invited.token).await.assert_status_ok();
+    app.lookup_invite(&invited.token).await.assert_status_ok();
     assert_eq!(accepted_user_id(&app, invited.id).await, None);
 }
 
@@ -469,9 +400,9 @@ async fn an_address_that_has_become_a_user_is_a_conflict_and_the_invite_stays_op
 async fn an_administrator_invite_creates_an_administrator() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", true).await;
+    let invited = app.invite(&caller, "ada@example.test", true).await;
 
-    let response = accept(&app, &invited.token, "ada", PASSWORD).await;
+    let response = app.accept_invite(&invited.token, "ada", PASSWORD).await;
     response.assert_status(StatusCode::CREATED);
     let body = response.json::<Value>();
     assert_eq!(body["user"]["admin"], json!(true));
@@ -489,9 +420,9 @@ async fn an_administrator_invite_creates_an_administrator() {
 async fn an_ordinary_invite_creates_a_user_who_is_not_an_administrator() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
-    let response = accept(&app, &invited.token, "ada", PASSWORD).await;
+    let response = app.accept_invite(&invited.token, "ada", PASSWORD).await;
     response.assert_status(StatusCode::CREATED);
     let body = response.json::<Value>();
     assert_eq!(body["user"]["admin"], json!(false));
@@ -509,9 +440,9 @@ async fn an_ordinary_invite_creates_a_user_who_is_not_an_administrator() {
 async fn the_accepted_user_can_log_in_with_the_password_they_chose() {
     let app = TestApp::spawn().await;
     let caller = admin(&app).await;
-    let invited = invite(&app, &caller, "ada@example.test", false).await;
+    let invited = app.invite(&caller, "ada@example.test", false).await;
 
-    accept(&app, &invited.token, "ada", PASSWORD)
+    app.accept_invite(&invited.token, "ada", PASSWORD)
         .await
         .assert_status(StatusCode::CREATED);
 

@@ -1,10 +1,10 @@
 ---
 id: n9zms
 title: "Add the tracker event-matrix and history-hygiene test suite: every TaskEvent kind with actor, from/to and reason; no rows on rejected or no-op operations; deleted keeps task_id; touch timestamps"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-16T20:47:28.451006585Z"
-updated: "2026-09-16T20:47:28.451006585Z"
+updated: "2026-09-19T17:49:58.670657033Z"
 tags:
   - orchestrator
   - tracker
@@ -16,6 +16,7 @@ depends_on:
   - "2sjtz"
   - rujpc
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

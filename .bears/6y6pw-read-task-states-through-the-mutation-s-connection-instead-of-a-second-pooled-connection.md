@@ -1,15 +1,16 @@
 ---
 id: "6y6pw"
 title: Read task states through the mutation's connection instead of a second pooled connection
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-19T13:44:06.958456872Z"
-updated: "2026-09-19T13:44:06.958456872Z"
+updated: "2026-09-19T17:49:56.714665683Z"
 tags:
   - orchestrator
   - tracker
   - architecture
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

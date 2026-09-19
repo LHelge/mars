@@ -1,10 +1,10 @@
 ---
 id: "89kct"
 title: "Add HandoffService::update_with_handoff composing git preparation and the tracker transaction with failure cleanup"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:42:24.782704435Z"
-updated: "2026-09-16T20:42:24.782704435Z"
+updated: "2026-09-19T21:55:23.406284821Z"
 tags:
   - orchestrator
   - tracker
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - sgwwv
 parent: xjaah
+attempts: 1
 ---
 
 ## Summary

@@ -2,10 +2,10 @@
 id: "5czwa"
 title: "Deployment packaging: compose, nginx and orchestrator image"
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:15:04.556266020Z"
-updated: "2026-09-16T20:16:06.634775793Z"
+updated: "2026-09-19T18:14:10.519438038Z"
 tags:
   - infra
 depends_on:

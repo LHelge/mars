@@ -1,10 +1,10 @@
 ---
 id: "66w65"
 title: Wire the route table, ProtectedRoute, AdminRoute, authenticated bootstrap via GET /users/me and the sign-out path
-status: in_progress
+status: done
 priority: P0
 created: "2026-09-16T20:41:12.006070444Z"
-updated: "2026-09-19T10:55:37.735424320Z"
+updated: "2026-09-19T11:04:05.292353673Z"
 tags:
   - frontend
   - auth

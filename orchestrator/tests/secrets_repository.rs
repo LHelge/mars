@@ -297,16 +297,11 @@ async fn a_filtered_listing_narrows_by_scope_and_by_who_may_see_it() {
 
     async fn names(
         repository: &SecretRepository<'_>,
-        scope: Option<SecretScope>,
-        scope_id: Option<Uuid>,
+        scope: Option<ScopeRef>,
         user_ids: UserFilter,
     ) -> Vec<String> {
         repository
-            .list_meta_filtered(&SecretListFilter {
-                scope,
-                scope_id,
-                user_ids,
-            })
+            .list_meta_filtered(&SecretListFilter { scope, user_ids })
             .await
             .unwrap()
             .into_iter()
@@ -317,58 +312,48 @@ async fn a_filtered_listing_narrows_by_scope_and_by_who_may_see_it() {
     // Grouped by the enum's order — `global`, `user`, `project` — and by name
     // inside each group.
     assert_eq!(
-        names(&repository, None, None, UserFilter::All).await,
+        names(&repository, None, UserFilter::All).await,
         ["ALPHA", "DELTA", "GAMMA", "BETA"]
     );
     // An ordinary user sees the two shared scopes and only their own.
     assert_eq!(
-        names(&repository, None, None, UserFilter::Only(vec![ada.id])).await,
+        names(&repository, None, UserFilter::Only(vec![ada.id])).await,
         ["ALPHA", "GAMMA", "BETA"]
     );
     // Nobody's user-scoped secrets: a legitimate filter, not an error.
     assert_eq!(
-        names(&repository, None, None, UserFilter::Only(vec![])).await,
+        names(&repository, None, UserFilter::Only(vec![])).await,
         ["ALPHA", "BETA"]
     );
+    // One scope is one validated pair, so a listing of a user's secrets names
+    // the user (`ScopeRef::user`) rather than the population alone.
     assert_eq!(
-        names(&repository, Some(SecretScope::User), None, UserFilter::All).await,
-        ["DELTA", "GAMMA"]
-    );
-    assert_eq!(
-        names(
-            &repository,
-            Some(SecretScope::User),
-            None,
-            UserFilter::Only(vec![bob.id]),
-        )
-        .await,
+        names(&repository, Some(ScopeRef::user(bob.id)), UserFilter::All).await,
         ["DELTA"]
     );
-    assert_eq!(
-        names(&repository, None, Some(project_id), UserFilter::All).await,
-        ["BETA"]
-    );
-    assert_eq!(
-        names(
-            &repository,
-            Some(SecretScope::Global),
-            None,
-            UserFilter::All
-        )
-        .await,
-        ["ALPHA"]
-    );
-    // The two halves compose rather than override: a scope this id is not in
-    // is empty.
+    // The two halves compose rather than override: the scope selects the row
+    // and the visibility filter may still hide it.
     assert!(
         names(
             &repository,
-            Some(SecretScope::User),
-            Some(project_id),
-            UserFilter::All,
+            Some(ScopeRef::user(ada.id)),
+            UserFilter::Only(vec![bob.id]),
         )
         .await
         .is_empty()
+    );
+    assert_eq!(
+        names(
+            &repository,
+            Some(ScopeRef::project(project_id)),
+            UserFilter::All
+        )
+        .await,
+        ["BETA"]
+    );
+    assert_eq!(
+        names(&repository, Some(ScopeRef::global()), UserFilter::All).await,
+        ["ALPHA"]
     );
 }
 
@@ -629,35 +614,4 @@ async fn a_scope_exists_only_while_its_target_row_does() {
         repository.find(orphaned.id).await.unwrap().is_some(),
         "the row is the reaper's, not the foreign key's"
     );
-}
-
-#[tokio::test]
-async fn a_useless_use_limit_is_clamped_to_one_row() {
-    let app = TestApp::spawn().await;
-    let repository = SecretRepository::new(&app.pool);
-
-    let secret = insert(&app.pool, &new_secret(ScopeRef::global(), "TOKEN", "one")).await;
-
-    let mut tx = app.pool.begin().await.unwrap();
-    for _ in 0..2 {
-        repository
-            .insert_use(&mut tx, secret.id, None, None, SecretUsePurpose::Launch)
-            .await
-            .unwrap();
-    }
-    let newest = repository
-        .insert_use(&mut tx, secret.id, None, None, SecretUsePurpose::Git)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-
-    assert_eq!(repository.list_uses(secret.id, 10).await.unwrap().len(), 3);
-
-    // Zero and negative are the caller's bug: one row, the newest, rather than
-    // an empty list that reads as "never used".
-    for limit in [0, -5] {
-        let uses = repository.list_uses(secret.id, limit).await.unwrap();
-        assert_eq!(uses.len(), 1, "limit {limit}");
-        assert_eq!(uses[0].id, newest.id, "limit {limit}");
-    }
 }

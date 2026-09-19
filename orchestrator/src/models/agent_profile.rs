@@ -21,16 +21,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::models::SecretName;
 // The crate convention (`CLAUDE.md`, "Backend conventions").
 #[allow(unused_imports)]
 use crate::prelude::*;
 
 /// The only permission mode v1 accepts (`SPEC.md`, "Agent profiles").
 pub const PERMISSION_MODE_BYPASS: &str = "bypass";
-
-/// Longest accepted secret name, in characters (`docs/data-model.md`,
-/// `secrets`): one leading letter and up to 127 more characters.
-pub const MAX_SECRET_NAME_CHARS: usize = 128;
 
 /// The column default for `idle_timeout_secs`, repeated here so a profile
 /// built in code matches one built by the database.
@@ -167,29 +164,6 @@ impl ProfileError {
 /// The result type the agent-profile models return.
 pub type ProfileResult<T> = std::result::Result<T, ProfileError>;
 
-/// Does `raw` match the secret-name pattern, `[A-Z][A-Z0-9_]*` at 1–128
-/// characters?
-///
-/// A profile's `secrets` are the names it wants injected as environment
-/// variables, so the pattern is the environment-variable one:
-/// `ANTHROPIC_API_KEY`, never `anthropic-api-key`. The secrets epic needs the
-/// same rule for `secrets.name`, which is why this is a free function and not
-/// a method — it moves to that module unchanged when it lands
-/// (`docs/data-model.md`, `secrets`).
-pub fn is_secret_name(raw: &str) -> bool {
-    let mut characters = raw.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    if !first.is_ascii_uppercase() {
-        return false;
-    }
-    if raw.chars().count() > MAX_SECRET_NAME_CHARS {
-        return false;
-    }
-    characters.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-}
-
 /// An `agent_profiles` row, column for column (`docs/data-model.md`), plus the
 /// `profile_states` link it is always read with.
 ///
@@ -223,6 +197,35 @@ pub struct AgentProfile {
     pub is_default: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl AgentProfile {
+    /// The `secrets` column as the validated names a launch resolves.
+    ///
+    /// The resolver is handed [`SecretName`]s rather than strings, so the
+    /// pattern is checked on the way *into* the column
+    /// ([`validate_secrets`]) and nowhere again on the way out
+    /// (`ARCHITECTURE.md`, "Secrets", Resolution at launch). An entry that is
+    /// not a name therefore cannot exist; one written by an older version, or
+    /// straight into the column, is dropped with a warning rather than
+    /// failing a launch, because a profile that lists an impossible name has
+    /// no row to resolve it to either.
+    pub fn secret_names(&self) -> Vec<SecretName> {
+        self.secrets
+            .iter()
+            .filter_map(|raw| match SecretName::parse(raw) {
+                Ok(name) => Some(name),
+                Err(_) => {
+                    warn!(
+                        profile_id = %self.id,
+                        secret_name = %raw,
+                        "a stored profile secret is not a valid secret name"
+                    );
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 /// The caller-supplied half of a new agent profile.
@@ -623,9 +626,15 @@ fn validate_idle_timeout(secs: i32) -> ProfileResult<()> {
 
 /// The listed secrets, deduplicated, once every entry is an
 /// environment-variable name.
+///
+/// The pattern itself is [`SecretName`]'s and is not repeated here: a
+/// profile's `secrets` are the names of `secrets` rows, so there is one rule
+/// and one place it lives (`docs/data-model.md`, `secrets`). Only the error
+/// changes, because a malformed entry in a profile body is a profile's
+/// rejection.
 fn validate_secrets(secrets: &[String]) -> ProfileResult<Vec<String>> {
-    if !secrets.iter().all(|name| is_secret_name(name)) {
-        return Err(ProfileError::InvalidSecretName);
+    for name in secrets {
+        SecretName::parse(name).map_err(|_| ProfileError::InvalidSecretName)?;
     }
 
     Ok(deduplicate(secrets))
@@ -658,6 +667,30 @@ mod tests {
 
     fn profile() -> NewAgentProfile {
         NewAgentProfile::new(Uuid::nil(), "default", TEST_IMAGE).expect("the defaults are valid")
+    }
+
+    /// A stored row, for the accessors that only a read has.
+    fn profile_row() -> AgentProfile {
+        AgentProfile {
+            id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            name: "default".into(),
+            kind: ProfileKind::Conversational,
+            backend: AgentBackend::Claude,
+            model: None,
+            system_prompt: None,
+            permission_mode: PERMISSION_MODE_BYPASS.into(),
+            image: TEST_IMAGE.into(),
+            runtime: None,
+            mcp_tools: Vec::new(),
+            secrets: Vec::new(),
+            serves_states: vec![DEFAULT_SERVED_STATE.into()],
+            partial_messages: true,
+            idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+            is_default: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
     }
 
     #[test]
@@ -806,42 +839,48 @@ mod tests {
     }
 
     #[test]
-    fn secret_names_are_environment_variable_names() {
-        for raw in ["A", "GIT_CREDENTIAL", "ANTHROPIC_API_KEY", "S3", "A_1_B"] {
-            assert!(is_secret_name(raw), "rejected {raw:?}");
-        }
-        assert!(is_secret_name(&format!(
-            "A{}",
-            "B".repeat(MAX_SECRET_NAME_CHARS - 1)
-        )));
-
-        for raw in [
-            "",
-            "_LEADING",
-            "9LEADING",
-            "lower",
-            "MIXEDcase",
-            "WITH-DASH",
-            "WITH SPACE",
-            "WITH.DOT",
-            "WITH$",
-        ] {
-            assert!(!is_secret_name(raw), "accepted {raw:?}");
-        }
-        assert!(!is_secret_name(&format!(
-            "A{}",
-            "B".repeat(MAX_SECRET_NAME_CHARS)
-        )));
-    }
-
-    #[test]
-    fn every_secret_entry_is_checked() {
+    fn every_secret_entry_is_checked_against_the_one_name_rule() {
+        // The pattern itself is `SecretName::parse`'s and is asserted in
+        // `models::secret`; what this file owns is that a profile applies it
+        // to every entry and reports its own error.
         let mut profile = profile();
         profile.secrets = vec!["ANTHROPIC_API_KEY".to_string(), "NPM_TOKEN".to_string()];
         assert!(profile.validate().is_ok());
 
-        profile.secrets.push("not-a-name".to_string());
-        assert_eq!(profile.validate(), Err(ProfileError::InvalidSecretName));
+        for raw in ["not-a-name", "lower", "9LEADING", ""] {
+            profile.secrets = vec!["NPM_TOKEN".to_string(), raw.to_string()];
+            assert_eq!(
+                profile.validate(),
+                Err(ProfileError::InvalidSecretName),
+                "accepted {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_hands_the_resolver_names_and_drops_what_cannot_be_one() {
+        let mut row = profile_row();
+        row.secrets = vec!["NPM_TOKEN".into(), "ANTHROPIC_API_KEY".into()];
+
+        assert_eq!(
+            row.secret_names()
+                .iter()
+                .map(SecretName::as_str)
+                .collect::<Vec<_>>(),
+            ["NPM_TOKEN", "ANTHROPIC_API_KEY"]
+        );
+
+        // Validation refuses these on the way in, so this is the defence in
+        // depth for a column written by something else: a name no row can
+        // carry is dropped rather than passed on.
+        row.secrets = vec!["npm_token".into(), "NPM TOKEN".into(), "NPM_TOKEN".into()];
+        assert_eq!(
+            row.secret_names()
+                .iter()
+                .map(SecretName::as_str)
+                .collect::<Vec<_>>(),
+            ["NPM_TOKEN"]
+        );
     }
 
     #[test]

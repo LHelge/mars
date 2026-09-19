@@ -236,7 +236,7 @@ Example: an implementer moves a task to `review` with a revision hand-off at com
 | DELETE | `/secrets/{id}` | JWT | → 204 |
 | GET | `/secrets/{id}/uses` | JWT | `?limit=` → `{session_id, user_id, purpose, at}[]` |
 
-`SecretMeta = { id, scope, scope_id, name, orchestrator_only, key_version, created_by, created_at, updated_at, last_used_at }`. No response ever contains `value`. User-scoped secrets are listed, changed and deleted only by their owner or an admin (403 otherwise); global and project secrets by any user. With no `scope`, `GET /secrets` returns the global secrets, every project's and the caller's own user-scoped ones — every user's for an admin. `GET /secrets/{id}/uses` returns 50 uses without `?limit=` and never more than 500.
+`SecretMeta = { id, scope, scope_id, name, orchestrator_only, key_version, created_by, created_at, updated_at, last_used_at }`. No response ever contains `value`. User-scoped secrets are listed, changed and deleted only by their owner or an admin (403 otherwise); global and project secrets by any user. With no `scope`, `GET /secrets` returns the global secrets, every project's and the caller's own user-scoped ones — every user's for an admin; a `scope_id` without a `scope` narrows nothing. `GET /secrets/{id}/uses` returns 50 uses without `?limit=` and never more than 500: a larger `?limit=` is reduced to 500 rather than refused, and `?limit=0` is a 400.
 
 ### Health
 

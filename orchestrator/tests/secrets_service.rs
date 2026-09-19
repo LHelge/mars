@@ -969,6 +969,55 @@ async fn the_uses_of_a_user_secret_follow_the_same_ownership_rule() {
 }
 
 #[tokio::test]
+async fn every_write_answers_the_stored_metadata_including_the_last_use() {
+    // The write returns the row it wrote — `last_used_at` and all, which is an
+    // aggregate over `secret_uses` — rather than the service reading the row
+    // back afterwards (`SPEC.md`, "Secrets").
+    let app = TestApp::spawn().await;
+    let ada = seed_user(&app, "ada", false).await;
+    let meta = user_secret(&app, &ada, "DEPLOY_TOKEN").await;
+    assert_eq!(meta.last_used_at, None, "a fresh row has never been used");
+
+    seed_uses(&app.pool, meta.id, 1).await;
+    let service = service(&app);
+
+    let replaced = service
+        .replace_value(&actor(&ada), meta.id, value("fake-value-the-second"))
+        .await
+        .expect("the value is replaced");
+    assert!(replaced.last_used_at.is_some(), "{replaced:?}");
+
+    let renamed = service
+        .patch(
+            &actor(&ada),
+            meta.id,
+            PatchSecret {
+                name: Some("RELEASE_TOKEN".into()),
+                orchestrator_only: Some(true),
+            },
+        )
+        .await
+        .expect("the secret is renamed and re-flagged");
+    assert_eq!(renamed.name, "RELEASE_TOKEN");
+    assert!(renamed.orchestrator_only);
+    assert_eq!(renamed.last_used_at, replaced.last_used_at);
+
+    // And a patch that writes nothing answers the same metadata.
+    let unchanged = service
+        .patch(
+            &actor(&ada),
+            meta.id,
+            PatchSecret {
+                name: None,
+                orchestrator_only: None,
+            },
+        )
+        .await
+        .expect("an empty patch is not an error");
+    assert_eq!(unchanged, renamed);
+}
+
+#[tokio::test]
 async fn a_use_makes_last_used_at_appear_in_the_metadata() {
     let app = TestApp::spawn().await;
     let ada = seed_user(&app, "ada", false).await;

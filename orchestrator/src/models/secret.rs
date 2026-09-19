@@ -36,7 +36,6 @@ use uuid::Uuid;
 // The crate convention (`CLAUDE.md`, "Backend conventions"). Models report
 // their own error rather than the crate-wide one, so the glob is here for the
 // doc links and for what these models grow into.
-use crate::models::agent_profile::is_secret_name;
 #[allow(unused_imports)]
 use crate::prelude::*;
 use crate::secrets::SealedSecret;
@@ -69,6 +68,15 @@ pub enum SecretError {
     #[error("secret value must be between 1 and {MAX_SECRET_VALUE_BYTES} bytes")]
     InvalidValue,
 }
+
+/// Longest accepted secret name, in characters (`docs/data-model.md`,
+/// `secrets`): one leading letter and up to 127 more characters.
+///
+/// A profile's `secrets` are the same names — they become the environment
+/// variables of its sessions — so the profile model measures them against this
+/// one constant through [`SecretName::parse`] rather than repeating the rule
+/// (`SPEC.md`, "Agent profiles").
+pub const MAX_SECRET_NAME_CHARS: usize = 128;
 
 /// The largest value the API accepts, in bytes of UTF-8.
 ///
@@ -227,6 +235,13 @@ impl ScopeRef {
 /// variable in the container and is part of the additional authenticated data,
 /// so `secrets_scope_scope_id_name_key` compares exactly the bytes that were
 /// entered.
+///
+/// [`SecretName::parse`] is the *only* place the pattern is written down. A
+/// profile's `secrets` are the same names, so
+/// [`crate::models::agent_profile`] validates its list through this type
+/// rather than with a rule of its own, and the launch resolver is handed
+/// `SecretName`s instead of re-checking strings
+/// (`ARCHITECTURE.md`, "Secrets", Resolution at launch).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct SecretName(String);
@@ -235,13 +250,22 @@ impl SecretName {
     /// Accept `raw` when it matches `^[A-Z][A-Z0-9_]{0,127}$`.
     ///
     /// Nothing is trimmed: whitespace is not in the pattern, so a name with
-    /// any is rejected rather than quietly changed into a different name.
+    /// any is rejected rather than quietly changed into a different name. The
+    /// length is counted in characters, and every accepted character is ASCII,
+    /// so it is also the byte length of the stored name.
     pub fn parse(raw: &str) -> SecretResult<Self> {
-        if is_secret_name(raw) {
-            Ok(Self(raw.to_string()))
-        } else {
-            Err(SecretError::InvalidName)
+        let mut characters = raw.chars();
+        let Some(first) = characters.next() else {
+            return Err(SecretError::InvalidName);
+        };
+        if !first.is_ascii_uppercase() || raw.chars().count() > MAX_SECRET_NAME_CHARS {
+            return Err(SecretError::InvalidName);
         }
+        if !characters.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
+            return Err(SecretError::InvalidName);
+        }
+
+        Ok(Self(raw.to_string()))
     }
 
     /// The name, ready to bind to the `TEXT` column.
@@ -378,6 +402,33 @@ pub struct SecretMeta {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
+impl From<&Secret> for SecretMeta {
+    /// The metadata of a row that was *just inserted*.
+    ///
+    /// `last_used_at` is `None` because it is an aggregate over `secret_uses`
+    /// which the row itself does not carry, and a row a statement old has no
+    /// uses to aggregate — so this conversion is exactly right for
+    /// [`crate::secrets::service::SecretsService::create`] and for nothing
+    /// else. Every other `SecretMeta` is produced by the repository's SQL
+    /// projection, which computes the aggregate, including the ones the
+    /// updating statements return
+    /// ([`crate::repositories::SecretRepository::find_meta`]).
+    fn from(row: &Secret) -> Self {
+        Self {
+            id: row.id,
+            scope: row.scope,
+            scope_id: row.scope_id,
+            name: row.name.clone(),
+            orchestrator_only: row.orchestrator_only,
+            key_version: row.key_version,
+            created_by: row.created_by,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            last_used_at: None,
+        }
+    }
+}
+
 /// Why a secret was read (`docs/data-model.md`, `secret_uses`).
 ///
 /// Stored as `TEXT` rather than an enum type: the document lists no `CHECK`
@@ -443,7 +494,6 @@ pub struct SecretUse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::agent_profile::MAX_SECRET_NAME_CHARS;
     use crate::secrets::{SecretIdentity, WrappedKey};
 
     /// Not key material and not a real envelope: obviously fake bytes wherever
@@ -751,6 +801,27 @@ mod tests {
         }
         assert!(rendered.contains("GIT_CREDENTIAL"), "{rendered}");
         assert!(rendered.contains("version: 1"), "{rendered}");
+    }
+
+    #[test]
+    fn the_metadata_of_a_fresh_row_is_the_row_without_its_ciphertext() {
+        let row = fake_row();
+        let meta = SecretMeta::from(&row);
+
+        assert_eq!(meta.id, row.id);
+        assert_eq!(meta.scope, row.scope);
+        assert_eq!(meta.scope_id, row.scope_id);
+        assert_eq!(meta.name, row.name);
+        assert_eq!(meta.orchestrator_only, row.orchestrator_only);
+        assert_eq!(meta.key_version, row.key_version);
+        assert_eq!(meta.created_by, row.created_by);
+        assert_eq!(meta.created_at, row.created_at);
+        assert_eq!(meta.updated_at, row.updated_at);
+        // An aggregate over `secret_uses`, and a row this old has none.
+        assert_eq!(meta.last_used_at, None);
+
+        let json = serde_json::to_value(&meta).unwrap();
+        assert!(json.get("ciphertext").is_none(), "{json}");
     }
 
     #[test]

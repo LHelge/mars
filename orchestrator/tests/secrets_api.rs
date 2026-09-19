@@ -1,15 +1,22 @@
 //! `/api/secrets` through the real router (`SPEC.md`, "Secrets
 //! (`/api/secrets`)").
 //!
-//! The rules themselves — ownership, scopes, renaming, the audit limits — are
-//! asserted against the service in `tests/secrets_service.rs`. What is
-//! asserted here is the adapter: the status of every success and of every
-//! documented failure, the exact shape of `SecretMeta` and of one audit row,
-//! the JWT requirement and the password-change gate on all six endpoints, and
-//! the one guarantee the whole module exists to keep — **no response ever
-//! contains `value`** — checked against the raw response text rather than
-//! against a parsed field, so a value smuggled into an unexpected key would
-//! still fail it.
+//! The rules themselves — ownership, scopes, names, values, conflicts and the
+//! audit limits — are asserted against the service in
+//! `tests/secrets_service.rs` and are not repeated here. What this file
+//! asserts is the adapter, and only what a service test cannot reach:
+//!
+//! - every endpoint needs a token and every endpoint applies the
+//!   password-change gate and the ownership gate, which is the one thing a
+//!   handler can get wrong on its own by building the [`Actor`] badly;
+//! - a request body or query string the handler cannot read is a 400 in the
+//!   documented shape, including a scope or a limit that is not one;
+//! - each endpoint answers the documented status and the documented shape;
+//! - one end-to-end create → list → delete over HTTP;
+//! - and the one guarantee the whole module exists to keep — **no response
+//!   ever contains `value`** — checked against the raw response text rather
+//!   than against a parsed field, so a value smuggled into an unexpected key
+//!   would still fail it.
 //!
 //! Every value here is an obviously fake credential and no test prints one
 //! (`CLAUDE.md`, rule 3).
@@ -21,11 +28,10 @@
 mod common;
 
 use axum::http::StatusCode;
+use axum_test::TestResponse;
 use chrono::DateTime;
 use common::{AuthenticatedUser, TestApp};
-use mars_orchestrator::models::NewProject;
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::ProjectRepository;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -37,9 +43,6 @@ const FAKE_VALUE: &str = "fake-value-not-a-credential";
 
 /// Not a real credential either: the replacement `PUT` writes (rule 3).
 const OTHER_FAKE_VALUE: &str = "another-fake-value-not-a-credential";
-
-/// Not a real remote: the fixture the project tests use (rule 3).
-const TEST_REMOTE: &str = "https://git.example.com/fake/repo.git";
 
 /// The ten fields `SPEC.md`, "Secrets" gives `SecretMeta`, and no others.
 const META_FIELDS: [&str; 10] = [
@@ -79,19 +82,6 @@ async fn user(app: &TestApp, name: &str) -> AuthenticatedUser {
 async fn admin(app: &TestApp, name: &str) -> AuthenticatedUser {
     app.create_admin(name, &format!("{name}@example.test"), &password(name))
         .await
-}
-
-/// A committed project for the `project` scope to point at.
-async fn seed_project(pool: &PgPool, project_name: &str) -> Uuid {
-    let project = NewProject::new(project_name, TEST_REMOTE).expect("the test project is valid");
-    let mut tx = pool.begin().await.expect("a transaction begins");
-    let inserted = ProjectRepository::new(pool)
-        .insert(&mut tx, &project)
-        .await
-        .expect("the project inserts");
-    tx.commit().await.expect("the transaction commits");
-
-    inserted.id
 }
 
 /// A create body, with the two fields most tests do not vary.
@@ -161,6 +151,21 @@ fn assert_meta_shape(meta: &Value) {
     assert!(object["last_used_at"].is_null() || object["last_used_at"].is_string());
 }
 
+/// Assert a 400 in the documented `{ status, error }` shape.
+#[track_caller]
+fn assert_bad_request(response: &TestResponse, about: &str) {
+    assert_eq!(
+        response.status_code(),
+        StatusCode::BAD_REQUEST,
+        "{about}: {}",
+        response.text()
+    );
+
+    let error = response.json::<Value>();
+    assert_eq!(error["status"], json!(400), "{about}: {error}");
+    assert!(error["error"].is_string(), "{about}: {error}");
+}
+
 /// Seed `count` uses, one second apart, newest last.
 ///
 /// The unchecked query rather than a repository call: this file introduces no
@@ -180,7 +185,7 @@ async fn seed_uses(pool: &PgPool, secret_id: Uuid, user_id: Uuid, count: i32) {
     .expect("the uses insert");
 }
 
-// ---- authentication ----
+// ---- who may call ----
 
 #[tokio::test]
 async fn every_endpoint_requires_a_token() {
@@ -245,7 +250,120 @@ async fn the_password_change_gate_applies_to_every_endpoint() {
     }
 }
 
-// ---- create ----
+#[tokio::test]
+async fn every_endpoint_applies_the_ownership_gate_and_an_administrator_passes_it() {
+    // The rule is `secrets_service.rs`'s; what is asserted here is that each
+    // handler builds the `Actor` from the row it loaded and passes it down —
+    // so an administrator reaches the same secret every other user is refused
+    // (ADR 0025; `src/routes/secrets.rs`).
+    let app = TestApp::spawn().await;
+    let ada = user(&app, "ada").await;
+    let bob = user(&app, "bob").await;
+    let root = admin(&app, "root").await;
+
+    let meta = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
+    let id = id_of(&meta);
+    let owned = format!("{SECRETS}?scope=user&scope_id={}", ada.user.id);
+
+    let refused = vec![
+        app.get_as(&bob, &owned).await,
+        app.post_as(&bob, SECRETS)
+            .json(&create_body("user", Some(ada.user.id), "OTHER_TOKEN"))
+            .await,
+        app.put_as(&bob, &format!("{SECRETS}/{id}"))
+            .json(&json!({ "value": OTHER_FAKE_VALUE }))
+            .await,
+        app.patch_as(&bob, &format!("{SECRETS}/{id}"))
+            .json(&json!({ "name": "BOBS_TOKEN" }))
+            .await,
+        app.delete_as(&bob, &format!("{SECRETS}/{id}")).await,
+        app.get_as(&bob, &format!("{SECRETS}/{id}/uses")).await,
+    ];
+
+    for response in refused {
+        response.assert_status(StatusCode::FORBIDDEN);
+        assert_eq!(response.json::<Value>()["status"], json!(403));
+    }
+
+    // The same two reads as the administrator, who may.
+    let response = app.get_as(&root, &owned).await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(response.json::<Vec<Value>>().len(), 1);
+
+    let response = app.get_as(&root, &format!("{SECRETS}/{id}/uses")).await;
+    response.assert_status(StatusCode::OK);
+}
+
+// ---- bodies and query strings the handler cannot read ----
+
+#[tokio::test]
+async fn a_body_or_query_the_handler_cannot_read_is_400() {
+    let app = TestApp::spawn().await;
+    let ada = user(&app, "ada").await;
+    let meta = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
+    let id = id_of(&meta);
+
+    let bodies = vec![
+        // Not one of the three scopes.
+        create_body("team", None, "DEPLOY_TOKEN"),
+        // Missing the two fields that have no default.
+        json!({ "scope": "global", "name": "DEPLOY_TOKEN" }),
+        // The server's own columns are not the client's to send
+        // (`deny_unknown_fields`).
+        json!({
+            "scope": "global",
+            "name": "DEPLOY_TOKEN",
+            "value": FAKE_VALUE,
+            "key_version": 1,
+        }),
+    ];
+    for body in bodies {
+        let response = app.post_as(&ada, SECRETS).json(&body).await;
+        assert_bad_request(&response, &format!("POST {body}"));
+    }
+
+    // A value is `PUT`'s field and a name is `PATCH`'s; neither endpoint
+    // silently ignores the other's.
+    let response = app
+        .patch_as(&ada, &format!("{SECRETS}/{id}"))
+        .json(&json!({ "value": OTHER_FAKE_VALUE }))
+        .await;
+    assert_bad_request(&response, "PATCH with a value");
+
+    for query in ["?scope=team", "?scope_id=not-a-uuid"] {
+        let response = app.get_as(&ada, &format!("{SECRETS}{query}")).await;
+        assert_bad_request(&response, query);
+    }
+
+    let response = app
+        .get_as(&ada, &format!("{SECRETS}/{id}/uses?limit=lots"))
+        .await;
+    assert_bad_request(&response, "?limit=lots");
+}
+
+#[tokio::test]
+async fn a_malformed_uuid_in_the_path_is_400_in_the_documented_shape() {
+    let app = TestApp::spawn().await;
+    let ada = user(&app, "ada").await;
+
+    for path in [
+        format!("{SECRETS}/not-a-uuid"),
+        format!("{SECRETS}/not-a-uuid/uses"),
+    ] {
+        let response = app.get_as(&ada, &path).await;
+        // `GET /secrets/{id}` is not a route; the uses read is.
+        if response.status_code() == StatusCode::METHOD_NOT_ALLOWED {
+            continue;
+        }
+
+        assert_bad_request(&response, &path);
+    }
+
+    let response = app.delete_as(&ada, &format!("{SECRETS}/not-a-uuid")).await;
+    assert_bad_request(&response, "DELETE with a malformed id");
+}
+
+// ---- the shape and status of each endpoint ----
 
 #[tokio::test]
 async fn creating_a_secret_answers_201_and_the_documented_metadata() {
@@ -275,205 +393,7 @@ async fn creating_a_secret_answers_201_and_the_documented_metadata() {
 }
 
 #[tokio::test]
-async fn creating_a_project_secret_stores_the_scope_id() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-    let project = seed_project(&app.pool, "mars").await;
-
-    let meta = seed_secret(&app, &ada, "project", Some(project), "DEPLOY_TOKEN").await;
-
-    assert_meta_shape(&meta);
-    assert_eq!(meta["scope"], json!("project"));
-    assert_eq!(meta["scope_id"], json!(project.to_string()));
-}
-
-#[tokio::test]
-async fn creating_rejects_a_bad_name_an_empty_value_and_an_impossible_scope() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-
-    let bodies = vec![
-        // `[A-Z][A-Z0-9_]*` at 1–128 characters (`docs/data-model.md`).
-        create_body("global", None, "lowercase"),
-        create_body("global", None, &format!("A{}", "B".repeat(128))),
-        json!({ "scope": "global", "name": "DEPLOY_TOKEN", "value": "" }),
-        // A target for a scope that takes none, and none for a scope that
-        // needs one.
-        create_body("global", Some(Uuid::new_v4()), "DEPLOY_TOKEN"),
-        json!({ "scope": "project", "name": "DEPLOY_TOKEN", "value": FAKE_VALUE }),
-        // A project that does not exist: 400, because `scope_id` is a field of
-        // the body rather than the target of the request.
-        create_body("project", Some(Uuid::new_v4()), "DEPLOY_TOKEN"),
-        // Not one of the three scopes.
-        create_body("team", None, "DEPLOY_TOKEN"),
-    ];
-
-    for body in bodies {
-        let response = app.post_as(&ada, SECRETS).json(&body).await;
-
-        let status = response.status_code();
-        let text = response.text();
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body} answered {text}");
-
-        let error = response.json::<Value>();
-        assert_eq!(error["status"], json!(400), "{body}: {error}");
-        assert!(error["error"].is_string(), "{body}: {error}");
-    }
-
-    // A `user` scope pointing at nobody is the same 400 — but only for a
-    // caller who was allowed to aim at another user in the first place: for
-    // anybody else the ownership rule answers first, and that 403 is
-    // `creating_in_another_users_scope_is_forbidden_but_an_administrator_may`.
-    let root = admin(&app, "root").await;
-    let response = app
-        .post_as(&root, SECRETS)
-        .json(&create_body("user", Some(Uuid::new_v4()), "DEPLOY_TOKEN"))
-        .await;
-
-    response.assert_status(StatusCode::BAD_REQUEST);
-    assert_eq!(response.json::<Value>()["status"], json!(400));
-}
-
-#[tokio::test]
-async fn creating_in_another_users_scope_is_forbidden_but_an_administrator_may() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-    let bob = user(&app, "bob").await;
-    let root = admin(&app, "root").await;
-
-    let response = app
-        .post_as(&bob, SECRETS)
-        .json(&create_body("user", Some(ada.user.id), "DEPLOY_TOKEN"))
-        .await;
-    response.assert_status(StatusCode::FORBIDDEN);
-
-    let response = app
-        .post_as(&root, SECRETS)
-        .json(&create_body("user", Some(ada.user.id), "DEPLOY_TOKEN"))
-        .await;
-    response.assert_status(StatusCode::CREATED);
-
-    let meta = response.json::<Value>();
-    assert_eq!(meta["scope"], json!("user"));
-    assert_eq!(meta["scope_id"], json!(ada.user.id.to_string()));
-    // The administrator created it; the secret is still Ada's.
-    assert_eq!(meta["created_by"], json!(root.user.id.to_string()));
-}
-
-#[tokio::test]
-async fn creating_a_duplicate_name_in_one_scope_is_409() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-    seed_secret(&app, &ada, "global", None, "DEPLOY_TOKEN").await;
-
-    let response = app
-        .post_as(&ada, SECRETS)
-        .json(&create_body("global", None, "DEPLOY_TOKEN"))
-        .await;
-
-    response.assert_status(StatusCode::CONFLICT);
-    assert_eq!(response.json::<Value>()["status"], json!(409));
-}
-
-// ---- list ----
-
-#[tokio::test]
-async fn listing_answers_the_secrets_the_caller_may_see() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-    let bob = user(&app, "bob").await;
-
-    seed_secret(&app, &ada, "global", None, "GLOBAL_TOKEN").await;
-    seed_secret(&app, &ada, "user", None, "ADA_TOKEN").await;
-    seed_secret(&app, &bob, "user", None, "BOB_TOKEN").await;
-
-    let response = app.get_as(&ada, SECRETS).await;
-
-    response.assert_status(StatusCode::OK);
-    let listing = response.json::<Vec<Value>>();
-    for meta in &listing {
-        assert_meta_shape(meta);
-    }
-
-    let mut names: Vec<&str> = listing
-        .iter()
-        .map(|meta| meta["name"].as_str().expect("a name"))
-        .collect();
-    names.sort_unstable();
-    assert_eq!(names, vec!["ADA_TOKEN", "GLOBAL_TOKEN"]);
-}
-
-#[tokio::test]
-async fn listing_a_scope_filters_and_refuses_the_impossible_combinations() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-    let project = seed_project(&app.pool, "mars").await;
-
-    seed_secret(&app, &ada, "global", None, "GLOBAL_TOKEN").await;
-    seed_secret(&app, &ada, "user", None, "ADA_TOKEN").await;
-    seed_secret(&app, &ada, "project", Some(project), "PROJECT_TOKEN").await;
-
-    for (query, expected) in [
-        ("?scope=global", "GLOBAL_TOKEN"),
-        ("?scope=user", "ADA_TOKEN"),
-        (
-            &format!("?scope=user&scope_id={}", ada.user.id),
-            "ADA_TOKEN",
-        ),
-        (
-            &format!("?scope=project&scope_id={project}"),
-            "PROJECT_TOKEN",
-        ),
-    ] {
-        let response = app.get_as(&ada, &format!("{SECRETS}{query}")).await;
-
-        response.assert_status(StatusCode::OK);
-        let listing = response.json::<Vec<Value>>();
-        assert_eq!(listing.len(), 1, "{query}: {listing:?}");
-        assert_eq!(listing[0]["name"], json!(expected), "{query}");
-    }
-
-    for query in [
-        // Not one of the three.
-        "?scope=team",
-        // `project` needs a target and `global` takes none.
-        "?scope=project",
-        &format!("?scope=global&scope_id={project}"),
-    ] {
-        let response = app.get_as(&ada, &format!("{SECRETS}{query}")).await;
-
-        response.assert_status(StatusCode::BAD_REQUEST);
-        let error = response.json::<Value>();
-        assert_eq!(error["status"], json!(400), "{query}: {error}");
-        assert!(error["error"].is_string(), "{query}: {error}");
-    }
-}
-
-#[tokio::test]
-async fn listing_another_users_scope_is_forbidden_but_an_administrator_may() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-    let bob = user(&app, "bob").await;
-    let root = admin(&app, "root").await;
-    seed_secret(&app, &ada, "user", None, "ADA_TOKEN").await;
-
-    let path = format!("{SECRETS}?scope=user&scope_id={}", ada.user.id);
-
-    let response = app.get_as(&bob, &path).await;
-    response.assert_status(StatusCode::FORBIDDEN);
-    assert_eq!(response.json::<Value>()["status"], json!(403));
-
-    let response = app.get_as(&root, &path).await;
-    response.assert_status(StatusCode::OK);
-    let listing = response.json::<Vec<Value>>();
-    assert_eq!(listing.len(), 1);
-    assert_eq!(listing[0]["name"], json!("ADA_TOKEN"));
-}
-
-// ---- replace ----
-
-#[tokio::test]
-async fn replacing_a_value_answers_the_metadata_and_keeps_the_name() {
+async fn replacing_a_value_answers_200_and_the_documented_metadata() {
     let app = TestApp::spawn().await;
     let ada = user(&app, "ada").await;
     let meta = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
@@ -493,36 +413,7 @@ async fn replacing_a_value_answers_the_metadata_and_keeps_the_name() {
 }
 
 #[tokio::test]
-async fn replacing_refuses_an_empty_value_an_unknown_id_and_a_foreign_secret() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-    let bob = user(&app, "bob").await;
-    let meta = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
-    let id = id_of(&meta);
-
-    let response = app
-        .put_as(&ada, &format!("{SECRETS}/{id}"))
-        .json(&json!({ "value": "" }))
-        .await;
-    response.assert_status(StatusCode::BAD_REQUEST);
-
-    let response = app
-        .put_as(&ada, &format!("{SECRETS}/{}", Uuid::new_v4()))
-        .json(&json!({ "value": OTHER_FAKE_VALUE }))
-        .await;
-    response.assert_status(StatusCode::NOT_FOUND);
-
-    let response = app
-        .put_as(&bob, &format!("{SECRETS}/{id}"))
-        .json(&json!({ "value": OTHER_FAKE_VALUE }))
-        .await;
-    response.assert_status(StatusCode::FORBIDDEN);
-}
-
-// ---- patch ----
-
-#[tokio::test]
-async fn patching_renames_reflags_and_leaves_an_empty_body_unchanged() {
+async fn patching_answers_200_and_the_documented_metadata_for_an_empty_body_too() {
     let app = TestApp::spawn().await;
     let ada = user(&app, "ada").await;
     let meta = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
@@ -547,99 +438,22 @@ async fn patching_renames_reflags_and_leaves_an_empty_body_unchanged() {
 
     response.assert_status(StatusCode::OK);
     let unchanged = response.json::<Value>();
-    assert_eq!(unchanged["name"], json!("RENAMED_TOKEN"));
-    assert_eq!(unchanged["orchestrator_only"], json!(true));
-    assert_eq!(unchanged["updated_at"], patched["updated_at"]);
+    assert_meta_shape(&unchanged);
+    assert_eq!(unchanged, patched);
 }
 
 #[tokio::test]
-async fn patching_refuses_a_bad_name_a_taken_name_an_unknown_id_and_a_foreign_secret() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-    let bob = user(&app, "bob").await;
-    let meta = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
-    seed_secret(&app, &ada, "user", None, "OTHER_TOKEN").await;
-    let id = id_of(&meta);
-
-    let response = app
-        .patch_as(&ada, &format!("{SECRETS}/{id}"))
-        .json(&json!({ "name": "lowercase" }))
-        .await;
-    response.assert_status(StatusCode::BAD_REQUEST);
-
-    // Renaming onto a name this scope already holds.
-    let response = app
-        .patch_as(&ada, &format!("{SECRETS}/{id}"))
-        .json(&json!({ "name": "OTHER_TOKEN" }))
-        .await;
-    response.assert_status(StatusCode::CONFLICT);
-
-    let response = app
-        .patch_as(&ada, &format!("{SECRETS}/{}", Uuid::new_v4()))
-        .json(&json!({ "name": "RENAMED_TOKEN" }))
-        .await;
-    response.assert_status(StatusCode::NOT_FOUND);
-
-    let response = app
-        .patch_as(&bob, &format!("{SECRETS}/{id}"))
-        .json(&json!({ "name": "RENAMED_TOKEN" }))
-        .await;
-    response.assert_status(StatusCode::FORBIDDEN);
-}
-
-// ---- delete ----
-
-#[tokio::test]
-async fn deleting_answers_204_and_then_404() {
+async fn a_use_is_answered_in_the_documented_four_fields() {
     let app = TestApp::spawn().await;
     let ada = user(&app, "ada").await;
     let meta = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
     let id = id_of(&meta);
-
-    let response = app.delete_as(&ada, &format!("{SECRETS}/{id}")).await;
-    response.assert_status(StatusCode::NO_CONTENT);
-    assert!(response.text().is_empty(), "204 carries no body");
-
-    let response = app.delete_as(&ada, &format!("{SECRETS}/{id}")).await;
-    response.assert_status(StatusCode::NOT_FOUND);
-
-    let response = app.get_as(&ada, SECRETS).await;
-    response.assert_status(StatusCode::OK);
-    assert!(response.json::<Vec<Value>>().is_empty());
-}
-
-#[tokio::test]
-async fn deleting_a_foreign_secret_is_forbidden_and_leaves_it_standing() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-    let bob = user(&app, "bob").await;
-    let meta = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
-    let id = id_of(&meta);
-
-    let response = app.delete_as(&bob, &format!("{SECRETS}/{id}")).await;
-    response.assert_status(StatusCode::FORBIDDEN);
-
-    let response = app.get_as(&ada, &format!("{SECRETS}?scope=user")).await;
-    response.assert_status(StatusCode::OK);
-    assert_eq!(response.json::<Vec<Value>>().len(), 1);
-}
-
-// ---- uses ----
-
-#[tokio::test]
-async fn uses_are_newest_first_and_honour_the_limit() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-    let meta = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
-    let id = id_of(&meta);
-    assert_eq!(meta["last_used_at"], Value::Null);
-
-    seed_uses(&app.pool, id, ada.user.id, 5).await;
+    seed_uses(&app.pool, id, ada.user.id, 3).await;
 
     let response = app.get_as(&ada, &format!("{SECRETS}/{id}/uses")).await;
     response.assert_status(StatusCode::OK);
     let uses = response.json::<Vec<Value>>();
-    assert_eq!(uses.len(), 5);
+    assert_eq!(uses.len(), 3);
 
     let mut keys: Vec<&str> = uses[0]
         .as_object()
@@ -655,67 +469,44 @@ async fn uses_are_newest_first_and_honour_the_limit() {
     assert_eq!(uses[0]["purpose"], json!("launch"));
     assert_eq!(uses[0]["user_id"], json!(ada.user.id.to_string()));
     assert_eq!(uses[0]["session_id"], Value::Null);
+    DateTime::parse_from_rfc3339(uses[0]["at"].as_str().expect("a timestamp"))
+        .expect("at is RFC 3339");
 
-    // Newest first (`SPEC.md`, "Secrets").
-    let at: Vec<&str> = uses
-        .iter()
-        .map(|use_row| use_row["at"].as_str().expect("an RFC 3339 timestamp"))
-        .collect();
-    for pair in at.windows(2) {
-        let newer = DateTime::parse_from_rfc3339(pair[0]).expect("RFC 3339");
-        let older = DateTime::parse_from_rfc3339(pair[1]).expect("RFC 3339");
-        assert!(newer > older, "{pair:?} is not newest first");
-    }
-
+    // `?limit=` reaches the service, which decides the range.
     let response = app
         .get_as(&ada, &format!("{SECRETS}/{id}/uses?limit=2"))
         .await;
     response.assert_status(StatusCode::OK);
     assert_eq!(response.json::<Vec<Value>>().len(), 2);
-
-    // A use makes `last_used_at` appear.
-    let response = app.get_as(&ada, &format!("{SECRETS}?scope=user")).await;
-    response.assert_status(StatusCode::OK);
-    let listing = response.json::<Vec<Value>>();
-    assert!(listing[0]["last_used_at"].is_string());
 }
+
+// ---- end to end ----
 
 #[tokio::test]
-async fn uses_refuse_a_bad_limit_an_unknown_id_and_a_foreign_secret() {
+async fn a_secret_is_created_listed_and_deleted_over_http() {
     let app = TestApp::spawn().await;
     let ada = user(&app, "ada").await;
-    let bob = user(&app, "bob").await;
-    let root = admin(&app, "root").await;
-    let meta = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
-    let id = id_of(&meta);
-    seed_uses(&app.pool, id, ada.user.id, 1).await;
 
-    for query in ["?limit=lots", "?limit=0"] {
-        let response = app
-            .get_as(&ada, &format!("{SECRETS}/{id}/uses{query}"))
-            .await;
+    let created = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
+    let id = id_of(&created);
 
-        response.assert_status(StatusCode::BAD_REQUEST);
-        let error = response.json::<Value>();
-        assert_eq!(error["status"], json!(400), "{query}: {error}");
-        assert!(error["error"].is_string(), "{query}: {error}");
-    }
-
-    let response = app
-        .get_as(&ada, &format!("{SECRETS}/{}/uses", Uuid::new_v4()))
-        .await;
-    response.assert_status(StatusCode::NOT_FOUND);
-
-    let response = app.get_as(&bob, &format!("{SECRETS}/{id}/uses")).await;
-    response.assert_status(StatusCode::FORBIDDEN);
-
-    // The owner's administrator may read the same audit.
-    let response = app.get_as(&root, &format!("{SECRETS}/{id}/uses")).await;
+    let response = app.get_as(&ada, SECRETS).await;
     response.assert_status(StatusCode::OK);
-    assert_eq!(response.json::<Vec<Value>>().len(), 1);
+    let listing = response.json::<Vec<Value>>();
+    assert_eq!(listing.len(), 1);
+    assert_meta_shape(&listing[0]);
+    assert_eq!(listing[0], created);
+
+    let response = app.delete_as(&ada, &format!("{SECRETS}/{id}")).await;
+    response.assert_status(StatusCode::NO_CONTENT);
+    assert!(response.text().is_empty(), "204 carries no body");
+
+    let response = app.get_as(&ada, SECRETS).await;
+    response.assert_status(StatusCode::OK);
+    assert!(response.json::<Vec<Value>>().is_empty());
 }
 
-// ---- values, and the shape of a rejection ----
+// ---- values ----
 
 #[tokio::test]
 async fn no_success_response_of_any_endpoint_carries_the_value() {
@@ -774,30 +565,4 @@ async fn no_success_response_of_any_endpoint_carries_the_value() {
             "{endpoint} carries a value key: {text}"
         );
     }
-}
-
-#[tokio::test]
-async fn a_malformed_uuid_in_the_path_is_400_in_the_documented_shape() {
-    let app = TestApp::spawn().await;
-    let ada = user(&app, "ada").await;
-
-    for path in [
-        format!("{SECRETS}/not-a-uuid"),
-        format!("{SECRETS}/not-a-uuid/uses"),
-    ] {
-        let response = app.get_as(&ada, &path).await;
-        // `GET /secrets/{id}` is not a route; the uses read is.
-        if response.status_code() == StatusCode::METHOD_NOT_ALLOWED {
-            continue;
-        }
-
-        response.assert_status(StatusCode::BAD_REQUEST);
-        let error = response.json::<Value>();
-        assert_eq!(error["status"], json!(400), "{path}: {error}");
-        assert!(error["error"].is_string(), "{path}: {error}");
-    }
-
-    let response = app.delete_as(&ada, &format!("{SECRETS}/not-a-uuid")).await;
-    response.assert_status(StatusCode::BAD_REQUEST);
-    assert_eq!(response.json::<Value>()["status"], json!(400));
 }

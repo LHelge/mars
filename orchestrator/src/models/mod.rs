@@ -20,9 +20,9 @@ pub mod user;
 
 pub use agent_profile::{
     AgentBackend, AgentProfile, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_SERVED_STATE, KNOWN_MCP_TOOLS,
-    MAX_IMAGE_CHARS, MAX_MODEL_CHARS, MAX_PROFILE_NAME_CHARS, MAX_SECRET_NAME_CHARS,
-    MAX_SYSTEM_PROMPT_BYTES, NewAgentProfile, PERMISSION_MODE_BYPASS, ProfileError, ProfileInput,
-    ProfileKind, ProfileResult, ProfileUpdate, is_secret_name,
+    MAX_IMAGE_CHARS, MAX_MODEL_CHARS, MAX_PROFILE_NAME_CHARS, MAX_SYSTEM_PROMPT_BYTES,
+    NewAgentProfile, PERMISSION_MODE_BYPASS, ProfileError, ProfileInput, ProfileKind,
+    ProfileResult, ProfileUpdate,
 };
 pub use event::{EventRow, INTERNAL_FIELD_PREFIX, NewEvent, OFFSET_FIELD};
 pub use git::{
@@ -35,8 +35,9 @@ pub use project::{
     ProjectName, ProjectResult, ProjectStatus, ProjectUpdate, RemoteUrl, is_branch_name,
 };
 pub use secret::{
-    MAX_SECRET_VALUE_BYTES, NewSecret, ScopeRef, Secret, SecretError, SecretMeta, SecretName,
-    SecretResult, SecretScope, SecretUse, SecretUsePurpose, validate_secret_value,
+    MAX_SECRET_NAME_CHARS, MAX_SECRET_VALUE_BYTES, NewSecret, ScopeRef, Secret, SecretError,
+    SecretMeta, SecretName, SecretResult, SecretScope, SecretUse, SecretUsePurpose,
+    validate_secret_value,
 };
 pub use session::{
     MAX_DERIVED_TITLE_CHARS, MAX_SESSION_TITLE_CHARS, NewSession, Session, SessionError,

@@ -368,7 +368,9 @@ async fn launch(
             project_id,
             created_by: session.created_by,
         },
-        &profile.secrets,
+        // The profile yields validated names; the resolver checks none of its
+        // own (`ARCHITECTURE.md`, "Secrets", Resolution at launch).
+        &profile.secret_names(),
     )
     .await
     .map_err(|err| {

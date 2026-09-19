@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE secrets\n            SET ciphertext = $2,\n                nonce = $3,\n                data_key_wrapped = $4,\n                data_key_nonce = $5,\n                key_version = $6,\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING id, scope AS \"scope: SecretScope\", scope_id, name, ciphertext, nonce,\n                      data_key_wrapped, data_key_nonce, key_version, orchestrator_only,\n                      created_by, created_at, updated_at\n            ",
+  "query": "\n            UPDATE secrets s\n            SET name = $2,\n                ciphertext = $3,\n                nonce = $4,\n                data_key_wrapped = $5,\n                data_key_nonce = $6,\n                key_version = $7,\n                updated_at = NOW()\n            WHERE s.id = $1\n            RETURNING s.id, s.scope AS \"scope: SecretScope\", s.scope_id, s.name,\n                      s.orchestrator_only, s.key_version, s.created_by, s.created_at, s.updated_at,\n                      (SELECT MAX(u.at) FROM secret_uses u WHERE u.secret_id = s.id)\n                          AS \"last_used_at?\"\n            ",
   "describe": {
     "columns": [
       {
@@ -60,61 +60,6 @@
       },
       {
         "ordinal": 4,
-        "name": "ciphertext",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "secrets",
-            "name": "ciphertext"
-          }
-        }
-      },
-      {
-        "ordinal": 5,
-        "name": "nonce",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "secrets",
-            "name": "nonce"
-          }
-        }
-      },
-      {
-        "ordinal": 6,
-        "name": "data_key_wrapped",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "secrets",
-            "name": "data_key_wrapped"
-          }
-        }
-      },
-      {
-        "ordinal": 7,
-        "name": "data_key_nonce",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "secrets",
-            "name": "data_key_nonce"
-          }
-        }
-      },
-      {
-        "ordinal": 8,
-        "name": "key_version",
-        "type_info": "Int4",
-        "origin": {
-          "Table": {
-            "table": "secrets",
-            "name": "key_version"
-          }
-        }
-      },
-      {
-        "ordinal": 9,
         "name": "orchestrator_only",
         "type_info": "Bool",
         "origin": {
@@ -125,7 +70,18 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 5,
+        "name": "key_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "key_version"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "created_by",
         "type_info": "Uuid",
         "origin": {
@@ -136,7 +92,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +103,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -156,11 +112,18 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "last_used_at?",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
+        "Text",
         "Bytea",
         "Bytea",
         "Bytea",
@@ -175,14 +138,11 @@
       false,
       false,
       false,
-      false,
-      false,
-      false,
-      false,
       true,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "4da3850f7660a159524ca105d3e95d93f469cbce8b07668f7e0711b662546a8f"
+  "hash": "9fb8bc2875500e971ff4f781fa813b14cabcc52e77c841454afc13579dc4bd75"
 }

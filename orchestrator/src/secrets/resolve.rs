@@ -79,14 +79,36 @@ pub struct LaunchScope {
 /// `orchestrator_only` row and are therefore absent from `env` on purpose —
 /// the launcher has both so it can tell "never existed" from "withheld".
 ///
+/// `scopes` is the winning scope of each injected name, in the same order and
+/// with the same names as `env`. The launcher needs it for one thing: the
+/// `InjectedCredential` it hands the translator names the model credential
+/// *and* the scope it came from, so a failed authentication can say where to
+/// fix it (`ARCHITECTURE.md`, "Claude Code invocation", Credentials). It is a
+/// parallel list rather than a third element of the `env` tuples so that
+/// `env` can still be moved into
+/// [`SessionSpecInput::secrets`](crate::engine::spec::SessionSpecInput::secrets)
+/// unchanged.
+///
 /// `Debug` redacts the values: the struct exists to carry credentials, so a
 /// `?` field on it anywhere would be the one way they reach a log line
 /// (rule 3).
 #[derive(Clone, PartialEq, Eq)]
 pub struct ResolvedSecrets {
     pub env: Vec<(String, Zeroizing<String>)>,
+    pub scopes: Vec<(String, SecretScope)>,
     pub warnings: Vec<String>,
     pub skipped: Vec<String>,
+}
+
+impl ResolvedSecrets {
+    /// The scope the row that supplied `name` was stored at, or `None` when
+    /// this resolution did not inject that name.
+    pub fn scope_of(&self, name: &str) -> Option<SecretScope> {
+        self.scopes
+            .iter()
+            .find(|(injected, _)| injected == name)
+            .map(|(_, scope)| *scope)
+    }
 }
 
 impl std::fmt::Debug for ResolvedSecrets {
@@ -98,6 +120,7 @@ impl std::fmt::Debug for ResolvedSecrets {
         f.debug_struct("ResolvedSecrets")
             .field("env", &names)
             .field("values", &"<redacted>")
+            .field("scopes", &self.scopes)
             .field("warnings", &self.warnings)
             .field("skipped", &self.skipped)
             .finish()
@@ -159,6 +182,7 @@ pub async fn resolve_for_launch(
 ) -> Result<ResolvedSecrets> {
     let mut resolved = ResolvedSecrets {
         env: Vec::new(),
+        scopes: Vec::new(),
         warnings: Vec::new(),
         skipped: Vec::new(),
     };
@@ -281,6 +305,7 @@ pub async fn resolve_for_launch(
             )
             .await?;
 
+        resolved.scopes.push((winner.name.clone(), winner.scope));
         resolved.env.push((winner.name.clone(), value));
     }
 
@@ -321,6 +346,7 @@ mod tests {
                 "DEPLOY_TOKEN".to_string(),
                 Zeroizing::new("fake-token-value".to_string()),
             )],
+            scopes: vec![("DEPLOY_TOKEN".to_string(), SecretScope::Project)],
             warnings: vec![undefined_warning("ABSENT")],
             skipped: vec!["WITHHELD".to_string()],
         };

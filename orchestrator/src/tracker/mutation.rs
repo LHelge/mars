@@ -214,6 +214,15 @@ impl<'a> TrackerMutation<'a> {
     /// a [`Locked`], so a repository built from this pool can only read, and a
     /// read outside the mutation is the pool read it already was (ADR 0021).
     ///
+    /// **Constructing the repository is all it is for.** A query run on this
+    /// pool while the mutation is open makes the caller hold two pooled
+    /// connections at once, so as many concurrent mutations as the pool has
+    /// connections would each hold one and wait for a second until the acquire
+    /// timeout — a stall the project lock itself never causes, because the
+    /// mutations are on distinct projects. Every read a mutation makes
+    /// therefore goes through [`TrackerMutation::conn`], which is why the
+    /// repository carries an `_in` form of each read a mutation needs.
+    ///
     /// The borrow is the mutation's own `'a`, not `&self`'s, so holding the
     /// repository does not stop the caller from taking the token.
     pub fn pool(&self) -> &'a PgPool {

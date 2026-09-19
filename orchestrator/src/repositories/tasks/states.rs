@@ -147,20 +147,24 @@ impl TaskRepository<'_> {
 
     /// The state with this id in this project, or `None`.
     pub async fn find_state(&self, project_id: Uuid, id: Uuid) -> Result<Option<TaskState>> {
-        let state = sqlx::query_as!(
-            TaskState,
-            r#"
-            SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
-            FROM task_states
-            WHERE id = $1 AND project_id = $2
-            "#,
-            id,
-            project_id,
-        )
-        .fetch_optional(self.pool)
-        .await?;
+        state_by_id(self.pool, project_id, id).await
+    }
 
-        Ok(state)
+    /// The same lookup under the caller's lock.
+    ///
+    /// What a mutation resolving a task's own state asks: the mutation already
+    /// holds a pooled connection with the project row locked, so reading this
+    /// on the pool would make it hold two at once — enough concurrent
+    /// mutations on distinct projects then wait on each other for the pool
+    /// rather than for the lock (`docs/data-model.md`, "Tracker mutation
+    /// transactions").
+    pub async fn find_state_in(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<TaskState>> {
+        state_by_id(&mut *tx, project_id, id).await
     }
 
     /// The state with this name in this project, or `None`.
@@ -583,21 +587,31 @@ impl TaskRepository<'_> {
         project_id: Uuid,
         id: Uuid,
     ) -> Result<TaskState> {
-        let state = sqlx::query_as!(
-            TaskState,
-            r#"
-            SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
-            FROM task_states
-            WHERE id = $1 AND project_id = $2
-            "#,
-            id,
-            project_id,
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        state.ok_or(Error::NotFound)
+        state_by_id(&mut *tx, project_id, id)
+            .await?
+            .ok_or(Error::NotFound)
     }
+}
+
+/// One state of this project by id, from the pool or from inside a mutation.
+async fn state_by_id<'e, E>(executor: E, project_id: Uuid, id: Uuid) -> Result<Option<TaskState>>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let state = sqlx::query_as!(
+        TaskState,
+        r#"
+        SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
+        FROM task_states
+        WHERE id = $1 AND project_id = $2
+        "#,
+        id,
+        project_id,
+    )
+    .fetch_optional(executor)
+    .await?;
+
+    Ok(state)
 }
 
 /// The project's states in board order, from the pool or from inside a

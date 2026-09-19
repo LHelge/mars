@@ -110,6 +110,19 @@ pub struct NewTaskHandoff {
     pub reviewed_at: Option<DateTime<Utc>>,
     pub created_by_user_id: Option<Uuid>,
     pub created_by_session_id: Option<Uuid>,
+    /// Whether the review fields were copied from the record being forwarded
+    /// rather than decided by this caller.
+    ///
+    /// Not a column: `task_handoffs` stores what the review *is*, not where it
+    /// came from. It exists because the one rule it relaxes cannot be decided
+    /// from the other fields. "Forwarding preserves attribution even when a
+    /// prior reviewer has since been deleted" (`docs/data-model.md`,
+    /// `task_handoffs`), and deletion nulls `reviewed_by_user_id` and
+    /// `reviewed_by_session_id` — so a carried decision can legitimately be a
+    /// reviewed status with a `reviewed_at` and *no* reviewer, which is exactly
+    /// what [`NewTaskHandoff::validate`] refuses for a decision a caller makes
+    /// now. Set only by [`NewTaskHandoff::carry_review`].
+    pub carried: bool,
 }
 
 impl NewTaskHandoff {
@@ -137,7 +150,24 @@ impl NewTaskHandoff {
             reviewed_at: None,
             created_by_user_id: None,
             created_by_session_id: None,
+            carried: false,
         }
+    }
+
+    /// Carry `previous`'s review verdict, reviewer and time onto this record.
+    ///
+    /// A forward with no decision of its own: "no decision means the previous
+    /// review status and reviewer are carried forward" (`SPEC.md`, "Code
+    /// hand-offs and review"). The four fields are copied verbatim, including
+    /// a reviewer pair that deletion has already nulled, and [`Self::carried`]
+    /// records that they were copied so that [`NewTaskHandoff::validate`] lets
+    /// that one shape through.
+    pub fn carry_review(&mut self, previous: &TaskHandoff) {
+        self.review_status = previous.review_status;
+        self.reviewed_by_user_id = previous.reviewed_by_user_id;
+        self.reviewed_by_session_id = previous.reviewed_by_session_id;
+        self.reviewed_at = previous.reviewed_at;
+        self.carried = true;
     }
 
     /// Every rule that needs only this record: a pinned commit, one creating
@@ -164,7 +194,17 @@ impl NewTaskHandoff {
         let reviewers = usize::from(self.reviewed_by_user_id.is_some())
             + usize::from(self.reviewed_by_session_id.is_some());
         let reviewed = self.review_status.is_reviewed();
-        if reviewers != usize::from(reviewed) || self.reviewed_at.is_some() != reviewed {
+        if self.reviewed_at.is_some() != reviewed {
+            return Err(TaskError::InvalidReview);
+        }
+        // A decision made here names exactly one reviewer. A decision *carried*
+        // from the record being forwarded names at most one, because deletion
+        // nulls the reviewer and the verdict outlives the reviewer.
+        let reviewers_allowed = match (reviewed, self.carried) {
+            (true, true) => reviewers <= 1,
+            (reviewed, _) => reviewers == usize::from(reviewed),
+        };
+        if !reviewers_allowed {
             return Err(TaskError::InvalidReview);
         }
 
@@ -876,5 +916,52 @@ mod tests {
             handoff.reviewed_by_session_id = None;
             assert_eq!(handoff.validate(), Err(TaskError::InvalidReview));
         }
+    }
+
+    #[test]
+    fn a_carried_decision_survives_the_reviewer_being_deleted() {
+        let reviewed_at = Utc::now();
+        let previous = TaskHandoff {
+            id: Uuid::new_v4(),
+            task_id: Uuid::new_v4(),
+            source_session_id: None,
+            source_branch: "session/11111111-1111-4111-8111-111111111111".to_string(),
+            commit: SHA1.to_string(),
+            comment_id: Some(Uuid::new_v4()),
+            review_status: ReviewStatus::Approved,
+            // The reviewer's row is gone: `ON DELETE SET NULL` left the
+            // verdict and its time behind.
+            reviewed_by_user_id: None,
+            reviewed_by_session_id: None,
+            reviewed_at: Some(reviewed_at),
+            created_by_user_id: Some(Uuid::new_v4()),
+            created_by_session_id: None,
+            created_at: reviewed_at,
+        };
+
+        let mut handoff = published();
+        handoff.carry_review(&previous);
+
+        assert!(handoff.carried);
+        assert_eq!(handoff.review_status, ReviewStatus::Approved);
+        assert_eq!(handoff.reviewed_at, Some(reviewed_at));
+        assert!(handoff.validate().is_ok());
+
+        // The relaxation is only about the *reviewer*: a carried decision
+        // still needs its time, and a carried record may name one reviewer.
+        handoff.reviewed_at = None;
+        assert_eq!(handoff.validate(), Err(TaskError::InvalidReview));
+
+        handoff.reviewed_at = Some(reviewed_at);
+        handoff.reviewed_by_user_id = Some(Uuid::new_v4());
+        assert!(handoff.validate().is_ok());
+        handoff.reviewed_by_session_id = Some(Uuid::new_v4());
+        assert_eq!(handoff.validate(), Err(TaskError::InvalidReview));
+
+        // And it never excuses a record the caller decided itself.
+        let mut fresh = published();
+        fresh.review_status = ReviewStatus::Approved;
+        fresh.reviewed_at = Some(reviewed_at);
+        assert_eq!(fresh.validate(), Err(TaskError::InvalidReview));
     }
 }

@@ -98,6 +98,20 @@ impl<'a> ProjectRepository<'a> {
 
     /// The project with this id, or `None`.
     pub async fn find(&self, id: Uuid) -> Result<Option<Project>> {
+        let mut conn = self.pool.acquire().await?;
+
+        self.find_in(&mut conn, id).await
+    }
+
+    /// The same, on the caller's connection.
+    ///
+    /// What a tracker mutation reads right after
+    /// [`ProjectRepository::lock_project`]: the row it just locked, so the
+    /// values it validates against — `max_attempts` above all — are the ones
+    /// nobody else can change until it commits (`docs/data-model.md`,
+    /// "Tracker mutation transactions"). Read on the pool instead and the
+    /// answer is a snapshot from before the lock.
+    pub async fn find_in(&self, conn: &mut PgConnection, id: Uuid) -> Result<Option<Project>> {
         let project = sqlx::query_as!(
             Project,
             r#"
@@ -115,7 +129,7 @@ impl<'a> ProjectRepository<'a> {
             id,
             GIT_CREDENTIAL_NAME,
         )
-        .fetch_optional(self.pool)
+        .fetch_optional(&mut *conn)
         .await?;
 
         Ok(project)

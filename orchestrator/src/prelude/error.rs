@@ -7,8 +7,9 @@
 //! failures are logged once and answered with a generic message.
 
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
-use axum::extract::{FromRequest, Request};
+use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::StatusCode;
+use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
@@ -48,8 +49,9 @@ const INTERNAL_MESSAGE: &str = "internal error";
 /// - `EmailError` → 500
 ///
 /// Axum's own extractor rejections convert into [`Error::BadRequest`], so the
-/// [`Json`] extractor wrapper re-exported from this prelude answers malformed
-/// request bodies in the documented shape instead of axum's plain text.
+/// [`Json`], [`Path`] and [`Query`] extractor wrappers re-exported from this
+/// prelude answer a malformed request body, path segment or query string in
+/// the documented shape instead of axum's plain text.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The resource does not exist, or is out of the caller's scope. 404.
@@ -301,6 +303,54 @@ where
 impl<T: Serialize> IntoResponse for Json<T> {
     fn into_response(self) -> Response {
         axum::Json(self.0).into_response()
+    }
+}
+
+/// `axum::extract::Path` with [`Error`] as its rejection, so
+/// `/secrets/not-a-uuid` answers `400 { "status", "error" }` rather than
+/// axum's plain text (`SPEC.md`, "REST API"; `ARCHITECTURE.md`, "Orchestrator
+/// internals", Errors).
+///
+/// Here rather than in `routes::extractors` because it is the same promise
+/// [`Json`] makes and there is no reason for the two to live apart: a module
+/// that does `use crate::prelude::*;` gets the wrapper without asking, which
+/// is what keeps a route from reaching for axum's own by accident.
+#[derive(Debug, Clone, Copy)]
+pub struct Path<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for Path<T>
+where
+    T: serde::de::DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = Error;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
+        let axum::extract::Path(value) =
+            axum::extract::Path::<T>::from_request_parts(parts, state).await?;
+
+        Ok(Self(value))
+    }
+}
+
+/// `axum::extract::Query` with [`Error`] as its rejection, so a `scope` that
+/// is not one of the documented values or a `limit` that is not a number
+/// answers in the same `{ status, error }` shape as [`Path`] and [`Json`].
+#[derive(Debug, Clone, Copy)]
+pub struct Query<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for Query<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = Error;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
+        let axum::extract::Query(value) =
+            axum::extract::Query::<T>::from_request_parts(parts, state).await?;
+
+        Ok(Self(value))
     }
 }
 

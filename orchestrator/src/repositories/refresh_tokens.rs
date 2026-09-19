@@ -15,7 +15,7 @@
 //! [`RefreshTokenRepository::find_by_hash`] may locate the row first — that is
 //! how refresh finds the user to lock — but the value it returned is not
 //! authoritative and has to be re-read with
-//! [`RefreshTokenRepository::find_by_hash_for_user`] under the lock before any
+//! [`RefreshTokenRepository::find_usable_by_hash_for_user`] under the lock before any
 //! credential is issued.
 //!
 //! The revocation half of a password change is not here: it belongs to the one
@@ -95,7 +95,7 @@ impl<'a> RefreshTokenRepository<'a> {
     /// This is the first half of a refresh: the request arrives with a cookie
     /// and nothing else, so the row is what names the user to lock. Whether
     /// the token is still usable is *not* decided from what this returns — see
-    /// [`RefreshTokenRepository::find_by_hash_for_user`].
+    /// [`RefreshTokenRepository::find_usable_by_hash_for_user`].
     pub async fn find_by_hash(&self, token_hash: &str) -> Result<Option<RefreshToken>> {
         let token = sqlx::query_as!(
             RefreshToken,
@@ -112,18 +112,25 @@ impl<'a> RefreshTokenRepository<'a> {
         Ok(token)
     }
 
-    /// Re-read the token under the caller's user-row lock, or `None`.
+    /// Re-read the token under the caller's user-row lock, and only if it is
+    /// still usable; `None` otherwise.
     ///
-    /// The authoritative read: `revoked_at` and `expires_at` are only worth
-    /// checking on the row this returns, because only this one cannot have
-    /// been revoked by a password change that committed while the caller was
-    /// waiting for the lock (`docs/data-model.md`; ADR 0025). Callers apply
-    /// [`RefreshToken::is_usable`] to it and never to an earlier read.
+    /// The authoritative read, and the only one whose answer decides anything:
+    /// a row read before the lock may have been revoked by a password change
+    /// that committed while the caller was waiting for it (`docs/data-model.md`,
+    /// `refresh_tokens`; ADR 0025). Validity — unrevoked and unexpired — is in
+    /// the `WHERE` clause rather than checked in Rust afterwards, so there is
+    /// one statement of what a usable refresh token is and the caller cannot
+    /// forget to apply it.
     ///
-    /// `user_id` is in the `WHERE` clause rather than compared afterwards, so
-    /// a token belonging to another user is simply not found: the scope is the
+    /// `user_id` is in the `WHERE` clause for the same reason, so a token
+    /// belonging to another user is simply not found: the scope is the
     /// statement's (`ARCHITECTURE.md`, "Orchestrator internals").
-    pub async fn find_by_hash_for_user(
+    ///
+    /// `NOW()` is the transaction's start, which is before the lock wait; a
+    /// token that expires during that wait therefore survives this one
+    /// rotation, which is the same latitude the 30-day lifetime already has.
+    pub async fn find_usable_by_hash_for_user(
         &self,
         tx: &mut PgConnection,
         token_hash: &str,
@@ -135,6 +142,7 @@ impl<'a> RefreshTokenRepository<'a> {
             SELECT id, user_id, token_hash, expires_at, revoked_at, created_at
             FROM refresh_tokens
             WHERE token_hash = $1 AND user_id = $2
+              AND revoked_at IS NULL AND expires_at > NOW()
             "#,
             token_hash,
             user_id,

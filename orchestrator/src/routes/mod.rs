@@ -27,7 +27,15 @@ pub mod users;
 #[cfg(feature = "integration-tests")]
 pub mod test;
 
-pub use extractors::{AdminUser, CurrentUser, Path, Query, UngatedUser, authenticate_access_token};
+pub use extractors::{AdminUser, CurrentUser, UngatedUser, authenticate_access_token};
+
+/// Transitional: [`Path`](crate::prelude::Path) and
+/// [`Query`](crate::prelude::Query) now live in the prelude beside `Json`, and
+/// a converted route module gets them from `use crate::prelude::*;`. This
+/// re-export only keeps the modules that still spell `use crate::routes::{…,
+/// Path, Query}` compiling until they are converted too, and goes away with
+/// the last of them.
+pub use crate::prelude::{Path, Query};
 
 /// Every resource router, merged into the one router nested under `/api`.
 pub fn routes() -> Router<AppState> {

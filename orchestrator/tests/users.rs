@@ -91,6 +91,48 @@ async fn me_answers_the_signed_in_user_through_the_password_change_gate() {
     }
 }
 
+/// The prelude's `Path` wrapper through this module's routes (`SPEC.md`,
+/// "REST API"; `ARCHITECTURE.md`, "Orchestrator internals", Errors).
+///
+/// Every failure answers `{ "status", "error" }`, extractor rejections
+/// included, so a path segment that is not a UUID must not fall through to
+/// axum's plain-text rejection. The caller is an administrator so that a 403
+/// can never be what is being observed, and the routes are driven with the
+/// method each one actually has: a 405 would assert nothing.
+#[tokio::test]
+async fn a_path_segment_that_is_not_a_uuid_is_400_in_the_documented_shape() {
+    let app = TestApp::spawn().await;
+    let admin = app
+        .insert_user("ada", "ada@example.test", true, false)
+        .await;
+    let token = app.token_for(&admin);
+
+    let bad = format!("{USERS}/not-a-uuid");
+    let invite = format!("{USERS}/invites/not-a-uuid");
+    let requests = [
+        app.server.get(&bad),
+        app.server.put(&bad).json(&json!({ "username": "grace" })),
+        app.server.delete(&bad),
+        app.server
+            .post(&format!("{bad}/password"))
+            .json(&json!({ "password": "not-a-real-password" })),
+        app.server.delete(&invite),
+        app.server.post(&format!("{invite}/resend")),
+    ];
+
+    for request in requests {
+        let response = request.authorization_bearer(&token).await;
+
+        response.assert_status(StatusCode::BAD_REQUEST);
+        let body = response.json::<Value>();
+        assert_eq!(body["status"], json!(400));
+        assert!(
+            body["error"].is_string(),
+            "the rejection carried no message: {body}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn me_requires_a_token() {
     let app = TestApp::spawn().await;

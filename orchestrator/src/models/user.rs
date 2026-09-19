@@ -360,6 +360,13 @@ impl UserUpdate {
 /// `token_hash` is the SHA-256 hex of the raw token; the raw token exists only
 /// in the response cookie and cannot be reconstructed from the row. Not
 /// serialisable: no endpoint returns a refresh-token row.
+///
+/// There is no `is_usable` here. Whether a token may still be exchanged —
+/// unrevoked and unexpired — is decided by the lookup query,
+/// [`RefreshTokenRepository::find_usable_by_hash_for_user`](crate::repositories::RefreshTokenRepository::find_usable_by_hash_for_user),
+/// which runs inside the caller's locked transaction; a predicate on this
+/// struct would be a second statement of the same rule, applicable to a row
+/// read before the lock (`docs/data-model.md`, `refresh_tokens`).
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct RefreshToken {
     pub id: Uuid,
@@ -368,13 +375,6 @@ pub struct RefreshToken {
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-}
-
-impl RefreshToken {
-    /// Whether this token can still be exchanged at `now`.
-    pub fn is_usable(&self, now: DateTime<Utc>) -> bool {
-        self.revoked_at.is_none() && self.expires_at > now
-    }
 }
 
 /// A `user_invites` row, column for column (`docs/data-model.md`,
@@ -389,7 +389,10 @@ impl RefreshToken {
 /// are internal bookkeeping that only ever describes an invite the API no
 /// longer lists.
 ///
-/// There is no `Deserialize`: an invite only ever comes out of the database.
+/// There is no `Deserialize`: an invite only ever comes out of the database,
+/// and no `is_usable`: whether an invite is still open — unaccepted and
+/// unexpired — is in the `WHERE` clause of the lookups that find one
+/// (`docs/data-model.md`, `user_invites`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct UserInvite {
     pub id: Uuid,
@@ -406,18 +409,14 @@ pub struct UserInvite {
     pub created_at: DateTime<Utc>,
 }
 
-impl UserInvite {
-    /// Whether this invite can still be accepted at `now`.
-    pub fn is_usable(&self, now: DateTime<Utc>) -> bool {
-        self.accepted_at.is_none() && self.expires_at > now
-    }
-}
-
 /// A `password_reset_tokens` row, column for column (`docs/data-model.md`,
 /// `password_reset_tokens`).
 ///
 /// Single-use: a successful password change or reset sets `used_at` on every
 /// outstanding row for that user. Not serialisable; no endpoint returns one.
+///
+/// No `is_usable`: unused and unexpired is part of the lookup query
+/// (`docs/data-model.md`, `password_reset_tokens`).
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct PasswordResetToken {
     pub id: Uuid,
@@ -428,17 +427,8 @@ pub struct PasswordResetToken {
     pub created_at: DateTime<Utc>,
 }
 
-impl PasswordResetToken {
-    /// Whether this token can still be consumed at `now`.
-    pub fn is_usable(&self, now: DateTime<Utc>) -> bool {
-        self.used_at.is_none() && self.expires_at > now
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use chrono::TimeDelta;
-
     use super::*;
 
     /// Not a credential: a syntactically valid PHC string with a fake body,
@@ -850,53 +840,5 @@ mod tests {
 
         assert!(verify_password(SEEDED, "changeme"));
         assert!(!verify_password(SEEDED, "changeme "));
-    }
-
-    #[test]
-    fn a_token_is_usable_only_while_unspent_and_unexpired() {
-        let now = Utc::now();
-        let hour = TimeDelta::try_hours(1).unwrap();
-
-        let mut token = RefreshToken {
-            id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
-            token_hash: "fake-hash".into(),
-            expires_at: now + hour,
-            revoked_at: None,
-            created_at: now,
-        };
-        assert!(token.is_usable(now));
-        token.expires_at = now - hour;
-        assert!(!token.is_usable(now));
-        token.expires_at = now + hour;
-        token.revoked_at = Some(now);
-        assert!(!token.is_usable(now));
-
-        let mut reset = PasswordResetToken {
-            id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
-            token_hash: "fake-hash".into(),
-            expires_at: now + hour,
-            used_at: None,
-            created_at: now,
-        };
-        assert!(reset.is_usable(now));
-        reset.used_at = Some(now);
-        assert!(!reset.is_usable(now));
-
-        let mut invite = UserInvite {
-            id: Uuid::new_v4(),
-            email: "ada@example.com".into(),
-            token_hash: "fake-hash".into(),
-            admin: false,
-            invited_by: None,
-            expires_at: now + hour,
-            accepted_at: None,
-            accepted_user_id: None,
-            created_at: now,
-        };
-        assert!(invite.is_usable(now));
-        invite.accepted_at = Some(now);
-        assert!(!invite.is_usable(now));
     }
 }

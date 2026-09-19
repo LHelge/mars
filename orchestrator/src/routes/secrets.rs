@@ -34,7 +34,7 @@ use zeroize::Zeroizing;
 
 use crate::models::{SecretMeta, SecretScope, SecretUse as SecretUseRow, SecretUsePurpose, User};
 use crate::prelude::*;
-use crate::routes::{CurrentUser, Path, Query};
+use crate::routes::CurrentUser;
 use crate::secrets::service::{Actor, CreateSecret, PatchSecret, SecretsService};
 
 /// The router nested under `/api/secrets`.

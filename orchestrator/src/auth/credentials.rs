@@ -50,10 +50,6 @@ use crate::repositories::{
     password_reset_tokens, user_invites,
 };
 
-/// What a failed refresh or logout-shaped authentication answers with, the
-/// same string `routes::extractors` uses (`SPEC.md`, "Authentication").
-const AUTHENTICATION_REQUIRED: &str = "authentication required";
-
 /// What login answers for an unknown username *and* for a wrong password.
 ///
 /// One message for both: which of the two a caller got wrong is exactly what
@@ -259,20 +255,17 @@ impl<'a> Credentials<'a> {
             return Err(unauthorized());
         };
 
-        // The authoritative read. A password change that committed while this
-        // request waited for the lock has already set `revoked_at`, so this is
+        // The authoritative read, validity and all. A password change that
+        // committed while this request waited for the lock has already set
+        // `revoked_at`, so this statement — inside the locked transaction — is
         // where the revocation race is decided (ADR 0025).
         let Some(current) = tokens
-            .find_by_hash_for_user(&mut tx, &hash, user.id)
+            .find_usable_by_hash_for_user(&mut tx, &hash, user.id)
             .await?
         else {
+            debug!(user_id = %user.id, "refresh token is unknown, revoked or expired");
             return Err(unauthorized());
         };
-
-        if !current.is_usable(Utc::now()) {
-            debug!(user_id = %user.id, "refresh token is revoked or expired");
-            return Err(unauthorized());
-        }
 
         tokens.revoke(&mut tx, current.id).await?;
         let pair = self.issue(&mut tx, user).await?;

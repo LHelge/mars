@@ -1,10 +1,10 @@
 ---
 id: "6y4q6"
 title: "Write back the hand-off publication contract: error messages, caller authority rules, failure cleanup and lock span into SPEC.md and ARCHITECTURE.md"
-status: open
+status: done
 priority: P3
 created: "2026-09-16T20:44:51.876909612Z"
-updated: "2026-09-16T20:44:51.876909612Z"
+updated: "2026-09-19T23:50:40.139954517Z"
 tags:
   - docs
   - tracker
@@ -15,6 +15,7 @@ depends_on:
   - rz6bj
   - bq5mf
 parent: xjaah
+attempts: 1
 ---
 
 ## Summary

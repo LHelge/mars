@@ -1,4 +1,5 @@
-//! Publishing a code hand-off: the git half, under the project git lock.
+//! Publishing a code hand-off: the git half, the database half, and the one
+//! entry point that composes them under the project git lock.
 //!
 //! `SPEC.md`, "Code hand-offs and review" gives `PUT
 //! /projects/{pid}/tasks/{id}` and the MCP `update` tool a `handoff` field: a
@@ -8,7 +9,7 @@
 //!
 //! "Git and Postgres cannot share a transaction" (`ARCHITECTURE.md`, "Task
 //! tracker"), so publication is two halves with one lock order between them,
-//! and the caller — not this module — owns both locks:
+//! which [`HandoffService::update_with_handoff`] takes in this order:
 //!
 //! 1. take the project **git lock**;
 //! 2. [`prepare`]: validate the task's state, holder and current hand-off with
@@ -38,26 +39,45 @@
 //! one function: the recheck, the comment, the record, the pointer, the move
 //! and the events.
 //!
-//! **What is still missing**: the *composition* of the two halves, and the
-//! route that reaches it. [`publish`] — the extension point
-//! `PUT /projects/{pid}/tasks/{id}` still calls — is the stub it has been since
-//! the tracker epic and refuses every hand-off with [`HANDOFFS_UNAVAILABLE`]
-//! until that rewiring lands.
+//! [`HandoffService::update_with_handoff`] is the *composition* of the two
+//! halves and the only code path that publishes or forwards a hand-off: the
+//! REST `PUT /projects/{pid}/tasks/{id}` handler and the MCP `update` tool
+//! both call it when their body carries a `handoff`, with the
+//! [`HandoffCaller`] each of them authenticated.
+//!
+//! **Concurrency.** Two callers publishing on the same project serialise
+//! twice: first on the project git lock, then — inside it — on the project
+//! row. The second one therefore does its preparation *after* the first one's
+//! transaction has committed, re-reads the task under both locks, and either
+//! succeeds against the new state or is answered [`Error::Conflict`] by
+//! preparation (a stale `handoff_id`, a lease it no longer holds, a session
+//! tip that has moved) or by the recheck
+//! ([`HANDOFF_RECHECK_FAILED`]). A partial change is never published: the
+//! database half is one transaction, and the ref the git half pinned is
+//! discarded when that transaction does not commit (`SPEC.md`, "Tasks";
+//! ADR 0021).
+//!
+//! **What is still missing**: the route that reaches the service. [`publish`]
+//! — the extension point `PUT /projects/{pid}/tasks/{id}` still calls — is the
+//! stub it has been since the tracker epic and refuses every hand-off with
+//! [`HANDOFFS_UNAVAILABLE`] until that rewiring lands.
 
 use chrono::Utc;
 use uuid::Uuid;
 
+use crate::events::TaskActor;
+use crate::git::service::NOT_READY;
 use crate::git::{DataPaths, GitError, GitRef, GitService, ProjectGitGuard, refs};
 use crate::models::{
-    HandoffCaller, HandoffInput, NewTaskComment, NewTaskHandoff, ReviewDecision, ReviewStatus,
-    Task, TaskError, TaskHandoff, TaskState, ValidatedHandoff,
+    HandoffCaller, HandoffInput, NewTaskComment, NewTaskHandoff, ProjectStatus, ReviewDecision,
+    ReviewStatus, Task, TaskError, TaskHandoff, TaskRef, TaskState, ValidatedHandoff,
 };
 use crate::prelude::*;
 use crate::repositories::tasks::StateFields;
-use crate::repositories::{SessionRepository, TaskRepository, unique_violation};
-use crate::tracker::state::resolve_state;
+use crate::repositories::{ProjectRepository, SessionRepository, TaskRepository, unique_violation};
+use crate::tracker::state::{resolve_state, resolve_state_in_pool};
 use crate::tracker::tasks::{UpdateTaskInput, update_task};
-use crate::tracker::{CommentDto, TaskDto, TrackerMutation};
+use crate::tracker::{CommentDto, TaskDto, TrackerMutation, commit_and_notify};
 
 /// What a `handoff` is answered with until the database half lands.
 pub const HANDOFFS_UNAVAILABLE: &str = "code hand-offs are not available yet";
@@ -558,6 +578,234 @@ pub async fn publish_in_transaction(
     );
 
     Ok(outcome.task)
+}
+
+/// Publishing a code hand-off, both halves, in the one documented order.
+///
+/// Cheap to build for the reason [`GitService`] gives — the state is a handful
+/// of `Arc`s and a pool handle — so a route or a tool builds one per request
+/// with [`HandoffService::from_state`] rather than [`AppState`] carrying
+/// another field.
+#[derive(Clone)]
+pub struct HandoffService {
+    state: AppState,
+}
+
+impl std::fmt::Debug for HandoffService {
+    /// The state holds key material and connection details, so none of it is
+    /// rendered here.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HandoffService").finish_non_exhaustive()
+    }
+}
+
+impl HandoffService {
+    /// The service over an [`AppState`]'s pool, paths, git locks and
+    /// credentials, exactly as [`GitService::from_state`] takes them.
+    pub fn from_state(state: &AppState) -> Self {
+        Self {
+            state: state.clone(),
+        }
+    }
+
+    /// Update a task *with* a hand-off: the whole documented order, once.
+    ///
+    /// The only code path that publishes or forwards a hand-off. `task` is
+    /// already parsed, because REST takes it from a path segment and MCP from
+    /// a tool argument; `update` is the ordinary update the same request
+    /// carries, whose `state` names the target the hand-off moves the task to.
+    ///
+    /// In order (`ARCHITECTURE.md`, "Task tracker" → "Code hand-offs"):
+    ///
+    /// 1. the task — [`Error::NotFound`] when this project has no such task;
+    /// 2. its current state and the target `update.state` names —
+    ///    [`Error::BadRequest`] naming the valid states for an unknown one;
+    /// 3. [`HandoffInput::require_state_change`] and
+    ///    [`HandoffInput::validate`], the rules that need neither lock;
+    /// 4. the project must be `ready` — [`Error::Conflict`] otherwise, before
+    ///    any git work, because a project that is still cloning holds the git
+    ///    lock for the length of that clone;
+    /// 5. the project **git lock**;
+    /// 6. [`prepare`]: sync, tip check, `refs/handoffs/<id>`;
+    /// 7. [`TrackerMutation::begin`]: the project row lock;
+    /// 8. the task again, `FOR UPDATE`, and [`publish_in_transaction`];
+    /// 9. the commit, with the escalation mail it may owe;
+    /// 10. the git lock is released — the guard lives across the whole
+    ///     transaction, and the transaction never waits for it (ADR 0021);
+    /// 11. the task, as it now is.
+    ///
+    /// Steps 1 to 4 take no lock and have no side effect, so a request refused
+    /// there leaves no ref, no event and no row (ADR 0030). **Any** failure of
+    /// steps 7 to 9 — a recheck conflict, a deleted task, a serialisation
+    /// error, a pool timeout, a connection lost at commit time — discards the
+    /// prepared ref first and then returns its *own* error, never the outcome
+    /// of the cleanup: the publication failed for its own reason, and the
+    /// orphan-cleanup job is the backstop for a ref that could not be dropped.
+    #[instrument(skip_all, fields(project_id = %project_id))]
+    pub async fn update_with_handoff(
+        &self,
+        project_id: Uuid,
+        task: TaskRef,
+        update: UpdateTaskInput,
+        handoff: HandoffInput,
+        caller: HandoffCaller,
+    ) -> Result<TaskDto> {
+        let state = &self.state;
+        let repository = TaskRepository::new(&state.pool);
+
+        // (1) The task, before anything else: an unknown one is a 404 whatever
+        // else the body got wrong.
+        let existing = repository
+            .find_task(project_id, task)
+            .await?
+            .ok_or(Error::NotFound)?;
+
+        // (2) The states, by id and by name, both off the pool: nothing is
+        // being changed yet.
+        let current_state = repository
+            .find_state(project_id, existing.state_id)
+            .await?
+            .ok_or_else(|| {
+                // Unreachable by construction: `tasks.state_id` references
+                // `task_states` and a state is never deleted out from under a
+                // task (`docs/data-model.md`, `task_states`).
+                error!(
+                    project_id = %project_id,
+                    task_id = %existing.id,
+                    "the task's state row is missing",
+                );
+                Error::Internal("task state is missing".into())
+            })?;
+        let target_name = update
+            .state
+            .as_deref()
+            .ok_or(TaskError::HandoffRequiresStateChange)?;
+        let target_state = resolve_state_in_pool(&state.pool, project_id, target_name).await?;
+
+        // (3) The two input rules: the hand-off has to move the task, and the
+        // input has to match the caller.
+        HandoffInput::require_state_change(Some(&target_state.name), &current_state.name)?;
+        let validated = handoff.validate(&caller)?;
+
+        // (4) A project with no usable repository, before the lock.
+        let project = ProjectRepository::new(&state.pool)
+            .find(project_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if project.status != ProjectStatus::Ready {
+            return Err(Error::Conflict(NOT_READY.to_string()));
+        }
+
+        // (5) The git lock, held through step 10.
+        let guard = state.git_locks.lock(project_id).await;
+
+        // (6) Sync and pin. A failure here has pinned nothing to discard.
+        let prepared = prepare(
+            state,
+            &guard,
+            project_id,
+            &existing,
+            &current_state,
+            &target_state,
+            &validated,
+            &caller,
+        )
+        .await?;
+
+        // (7) to (9), with the ref discarded on every way out but success.
+        match self.publish(project_id, &prepared, &caller, update).await {
+            Ok(published) => {
+                info!(
+                    project_id = %project_id,
+                    task_id = %prepared.task_id,
+                    handoff_id = %prepared.id,
+                    kind = handoff_kind(&validated),
+                    "hand-off published with the task update",
+                );
+                // (10) The guard is dropped here, after the commit.
+                Ok(published)
+            }
+            Err(err) => {
+                discard_prepared(state, &guard, &prepared).await;
+                Err(err)
+            }
+        }
+    }
+
+    /// Steps 7 to 9: the tracker transaction around [`publish_in_transaction`].
+    ///
+    /// Split out so that the caller has exactly one `Result` to attach the ref
+    /// cleanup to, and so that the commit — which can fail on its own, with the
+    /// rows already written but unconfirmed — is inside that same `Result`.
+    async fn publish(
+        &self,
+        project_id: Uuid,
+        prepared: &PreparedHandoff,
+        caller: &HandoffCaller,
+        update: UpdateTaskInput,
+    ) -> Result<TaskDto> {
+        let state = &self.state;
+
+        let mut mutation = TrackerMutation::begin(&state.pool, project_id, actor(caller)).await?;
+
+        let published = async {
+            // The task under the project row lock, which is the row every rule
+            // is decided against. Gone since step 1 is a 404, and the prepared
+            // ref is discarded by the caller.
+            let task = TaskRepository::new(mutation.pool())
+                .find_task_for_update(mutation.conn(), project_id, TaskRef::Id(prepared.task_id))
+                .await?
+                .ok_or(Error::NotFound)?;
+
+            publish_in_transaction(&mut mutation, &task, prepared, caller, update).await
+        }
+        .await;
+
+        match published {
+            Ok(published) => {
+                commit_and_notify(mutation, state).await?;
+                Ok(published)
+            }
+            Err(err) => {
+                // Rolled back explicitly rather than by dropping the mutation,
+                // so the project row is free again before this returns: the
+                // caller behind it is waiting on that row, not on a `Drop`
+                // (ADR 0021, 0030 — nothing was written either way). Its own
+                // failure never replaces the refusal being reported: dropping
+                // the transaction rolls it back regardless.
+                if let Err(rollback) = mutation.no_change().await {
+                    warn!(
+                        project_id = %project_id,
+                        error = %rollback,
+                        "a refused hand-off's transaction could not be rolled back",
+                    );
+                }
+                Err(err)
+            }
+        }
+    }
+}
+
+/// The tracker actor a hand-off caller acts as.
+fn actor(caller: &HandoffCaller) -> TaskActor {
+    match caller {
+        HandoffCaller::User { user_id } => TaskActor::User { user_id: *user_id },
+        HandoffCaller::Session { session_id } => TaskActor::Session {
+            session_id: *session_id,
+        },
+    }
+}
+
+/// `"revision"` or `"forward"`, for the one success log line.
+///
+/// The comment is deliberately not a field of it: a hand-off comment is user
+/// and agent content, which the orchestrator stores and displays but does not
+/// copy into its own logs (`CLAUDE.md`, "Backend conventions").
+fn handoff_kind(validated: &ValidatedHandoff) -> &'static str {
+    match validated {
+        ValidatedHandoff::Revision { .. } => "revision",
+        ValidatedHandoff::Forward { .. } => "forward",
+    }
 }
 
 /// The one insert failure that is ours rather than the caller's.

@@ -49,7 +49,7 @@ pub use escalation::Escalation;
 pub use graph::{BlockedFlip, DeletionCapture};
 // `prepare` and `discard_prepared` stay behind `handoffs::`: a bare `prepare`
 // at the tracker root would say nothing about what it prepares.
-pub use handoffs::{PreparedHandoff, ReviewCarry};
+pub use handoffs::{HandoffService, PreparedHandoff, ReviewCarry};
 pub use hooks::{on_session_dead, session_ended_hook};
 pub use leases::{
     ReleaseReason, claim_for_launch, claim_for_profile, needs_human, ready_summaries,

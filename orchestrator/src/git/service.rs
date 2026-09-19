@@ -97,7 +97,12 @@ const OP_PUSH: &str = "push";
 /// The same words [`mirror::fetch_project`] uses, and for the same reason: a
 /// project that is still cloning has no repository to work in, and one in
 /// `error` has nothing anybody should write to.
-const NOT_READY: &str = "project is not ready";
+///
+/// `pub(crate)` because hand-off publication refuses an unready project with
+/// the identical message before it takes the git lock
+/// ([`crate::tracker::handoffs::HandoffService`]), and one spelling of it is
+/// one fewer string for a client to have to match twice.
+pub(crate) const NOT_READY: &str = "project is not ready";
 
 /// How much life a credential must have left to be worth starting a push with
 /// (ADR 0002). Five minutes, as the fetch asks for.

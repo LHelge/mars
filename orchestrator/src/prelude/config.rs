@@ -27,6 +27,14 @@ const REDACTED: &str = "<redacted>";
 /// image built from `images/claude/` (`README.md`, "Session image").
 const SESSION_IMAGE_DEFAULT: &str = "mars-session-claude:latest";
 
+/// The default value of `API_PORT` (`README.md`, "Configuration").
+///
+/// Public because the `healthcheck` subcommand resolves the same variable with
+/// the same default without building a whole [`Config`]
+/// (`crate::healthcheck`), and two literals would be two things to keep in
+/// step.
+pub const API_PORT_DEFAULT: u16 = 7000;
+
 /// Where the secrets master keyring is read from.
 ///
 /// Exactly one of `SECRETS_MASTER_KEYS` and `SECRETS_MASTER_KEY_FILE` is set.
@@ -142,7 +150,13 @@ impl Config {
         Self::from_vars(|name| std::env::var(name).ok())
     }
 
-    fn load_dotenv() {
+    /// Load `.env` into the process environment and nothing else.
+    ///
+    /// Public for the one caller that needs a single variable rather than a
+    /// whole configuration: the `healthcheck` subcommand reads `API_PORT` from
+    /// the same sources in the same order, and must not fail because some
+    /// unrelated required variable is missing (`crate::healthcheck`).
+    pub fn load_dotenv() {
         for candidate in [".env", "../.env"] {
             match dotenvy::from_filename(candidate) {
                 Ok(path) => {
@@ -253,7 +267,7 @@ impl Config {
         let data_dir = lexically_normalise(&current_dir.join(data_dir));
         let data_dir_host = lexically_normalise(&current_dir.join(data_dir_host));
 
-        let api_port: u16 = optional_parsed(&vars, "API_PORT", 7000)?;
+        let api_port: u16 = optional_parsed(&vars, "API_PORT", API_PORT_DEFAULT)?;
         let mcp_port: u16 = optional_parsed(&vars, "MCP_PORT", 7001)?;
         if api_port == mcp_port {
             return Err(ConfigError::invalid(

@@ -17,6 +17,7 @@ pub mod email;
 pub mod engine;
 pub mod events;
 pub mod git;
+pub mod healthcheck;
 pub mod mcp;
 pub mod models;
 pub mod projects;

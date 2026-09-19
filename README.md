@@ -41,7 +41,7 @@ flowchart LR
     S2 -->|MCP| O
 ```
 
-- **orchestrator**: Rust (`axum`, `bollard`, `sqlx`, `rmcp`). Serves the API, owns every session, holds the engine socket, runs `git`. Unprivileged user.
+- **orchestrator**: Rust (`axum`, `bollard`, `sqlx`, `rmcp`). Serves the API, owns every session, holds the engine socket, runs `git`. Unprivileged user. The image ships only the binary and `git`, so the compose health check is `mars-orchestrator healthcheck`, a subcommand of that binary: it asks `GET /api/health` on the local `API_PORT` and exits 0 on 200, 1 on anything else.
 - **postgres**: the only system of record.
 - **nginx**: serves the built React frontend and proxies `/api` and `/ws`. The MCP endpoint is not proxied.
 - **session containers**: one per session, created by the orchestrator, on an internal network for MCP and a separate egress network for the internet, never given the engine socket.

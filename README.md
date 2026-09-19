@@ -257,6 +257,8 @@ Working conventions, code-quality commands and test expectations are in `CLAUDE.
 
 The orchestrator, the frontend, the session images, the deployment images, `.env.example` and the compose files are all in the repository; these steps are for developing on the host instead of running the compose stack. The socket commands assume Linux.
 
+Unlike the packaged stack, a host run and the git tests use the host's `git`. The supported floor is **git 2.39**, the version the orchestrator image ships (`ARCHITECTURE.md`, "Git model", Supported git); newer is fine, but a newer host git accepts argv forms 2.39 does not, so Orchestrator CI reruns the git tests on 2.39.5 as well.
+
 **Postgres**:
 
 ```bash
@@ -339,7 +341,7 @@ npm run test:e2e             # starts the dev server itself, or reuses a running
 
 | Workflow | Triggers on | Checks |
 | --- | --- | --- |
-| Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests with `SQLX_OFFLINE=true`; a second job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
+| Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests with `SQLX_OFFLINE=true`; a second job reruns the git tests that need no database or engine inside `rust:1.98.1-bookworm`, the Dockerfile's builder base, so they run on the git 2.39.5 the orchestrator image ships rather than the runner's newer one; a third job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
 | Engine | `orchestrator/**` or `images/**` | `tests/engine.rs` against the runner's Docker daemon and against rootless Podman via its compatible socket; then the stub session image is built with that engine and `tests/session_e2e.rs` runs the session lifecycle on real containers, with a `postgres:18` service container as its database through `MARS_TEST_POSTGRES_URL` (on Docker the runner's uid is not 1000, so that binary reports the uid contract and returns) |
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright; the real orchestrator, Postgres and stub session image are added by their own epics |

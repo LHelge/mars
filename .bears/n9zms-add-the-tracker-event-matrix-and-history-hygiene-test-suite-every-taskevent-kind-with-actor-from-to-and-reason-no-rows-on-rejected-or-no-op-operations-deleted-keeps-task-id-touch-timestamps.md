@@ -1,10 +1,10 @@
 ---
 id: n9zms
 title: "Add the tracker event-matrix and history-hygiene test suite: every TaskEvent kind with actor, from/to and reason; no rows on rejected or no-op operations; deleted keeps task_id; touch timestamps"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:47:28.451006585Z"
-updated: "2026-09-19T17:49:58.670657033Z"
+updated: "2026-09-19T18:51:40.401991321Z"
 tags:
   - orchestrator
   - tracker

@@ -24,11 +24,17 @@
 //! written.
 //!
 //! The input, stop and terminal messages are parsed here and handed to
-//! [`handle_client_message`] and [`handle_binary`], which are the seams the
-//! input and terminal tasks fill in. The loop itself — the `select!` over the
-//! socket, the fan-out receiver, the safety read and the ping — is settled
-//! here.
+//! [`handle_client_message`] and [`handle_binary`], the second of which is
+//! still the seam the terminal task fills in. The loop itself — the `select!`
+//! over the socket, the fan-out receiver, the safety read and the ping — is
+//! settled here.
+//!
+//! Writing is authorized per message, not per socket: [`ensure_authorized`]
+//! re-runs the database half of the stream contract before every application
+//! message and at every ping tick, and a failure closes the socket with 1008
+//! without touching the agent session (`SPEC.md`, "Authentication"; ADR 0025).
 
+mod input;
 pub mod protocol;
 
 use std::time::Duration;
@@ -49,7 +55,10 @@ use uuid::Uuid;
 use crate::events::Notice;
 use crate::prelude::*;
 use crate::repositories::SessionRepository;
-use crate::routes::{StreamAuthFailure, StreamPrincipal, StreamToken, authenticate_stream};
+use crate::routes::{
+    AUTH_REQUIRED, StreamPrincipal, StreamToken, authenticate_stream, reauthorize,
+};
+use crate::session::SessionService;
 use crate::ws::protocol::{ClientMessage, ServerMessage};
 
 /// What a socket for a session that does not exist is answered with (404).
@@ -180,7 +189,11 @@ async fn session_socket(
 struct SocketContext {
     state: AppState,
     session_id: Uuid,
-    /// Who the socket was opened as, re-checked by [`reauthorize_hook`].
+    /// The lifecycle rules for everything this socket asks of the session, so
+    /// `input` and `stop` are the same call the REST routes make. Built once
+    /// per socket: it is an [`AppState`] clone and nothing more.
+    service: SessionService,
+    /// Who the socket was opened as, re-checked by [`ensure_authorized`].
     principal: StreamPrincipal,
     cursor: i64,
     missed_pongs: u8,
@@ -207,12 +220,22 @@ enum End {
     /// The peer went away, or a write failed: nothing more can be written.
     Gone,
     /// Close cleanly with this code, after an `error` frame carrying
-    /// `message` if one is given.
+    /// `message` if one is given, and with `reason` in the close frame itself.
     ///
     /// The text rather than a [`ServerMessage`]: the only message that ever
     /// precedes a close is `error`, and a whole `ServerMessage` here would put
     /// a `Session` in every `Err` this module returns.
-    Close { code: u16, message: Option<String> },
+    ///
+    /// `reason` is empty for every close but the revoked one: a close frame's
+    /// reason is not shown to anybody and the `error` message is where a
+    /// client reads what happened, but `SPEC.md`, "Authentication" spells the
+    /// revocation close out as 1008 `authentication required`, and a client
+    /// that only sees the close event is exactly the one this is for.
+    Close {
+        code: u16,
+        message: Option<String>,
+        reason: &'static str,
+    },
 }
 
 impl End {
@@ -221,6 +244,18 @@ impl End {
         End::Close {
             code,
             message: Some(message.to_string()),
+            reason: "",
+        }
+    }
+
+    /// The documented close for a socket whose user may no longer be there:
+    /// `error { authentication required }` and 1008 (`SPEC.md`,
+    /// "Authentication").
+    fn unauthenticated() -> Self {
+        End::Close {
+            code: close_code::POLICY,
+            message: Some(AUTH_REQUIRED.to_string()),
+            reason: AUTH_REQUIRED,
         }
     }
 }
@@ -238,9 +273,11 @@ async fn run(
 ) {
     let mut rx = state.fanout.subscribe_session(session_id);
 
+    let service = SessionService::new(&state);
     let mut context = SocketContext {
         state,
         session_id,
+        service,
         principal,
         cursor: after,
         missed_pongs: 0,
@@ -253,14 +290,19 @@ async fn run(
     let end = stream(&mut context, &mut rx, &out, &mut incoming).await;
     let closing = matches!(end, End::Close { .. });
 
-    if let End::Close { code, message } = end {
+    if let End::Close {
+        code,
+        message,
+        reason,
+    } = end
+    {
         if let Some(message) = message {
             let _ = send(&out, ServerMessage::Error { message }).await;
         }
         let _ = out
             .send(Message::Close(Some(CloseFrame {
                 code,
-                reason: "".into(),
+                reason: reason.into(),
             })))
             .await;
     }
@@ -360,10 +402,7 @@ async fn on_ping(
     context: &mut SocketContext,
     out: &mpsc::Sender<Message>,
 ) -> std::result::Result<(), End> {
-    if let Err(failure) = reauthorize_hook(context).await {
-        debug!(session_id = %context.session_id, %failure, "session websocket closed by re-authorization");
-        return Err(End::error(close_code::POLICY, &failure.to_string()));
-    }
+    ensure_authorized(context).await?;
 
     out.send(Message::Ping(PING_PAYLOAD.into()))
         .await
@@ -375,6 +414,7 @@ async fn on_ping(
         return Err(End::Close {
             code: close_code::AWAY,
             message: None,
+            reason: "",
         });
     }
 
@@ -509,34 +549,63 @@ fn spawn_writer(
     (out, writer)
 }
 
-/// The per-tick half of the stream authentication contract (`SPEC.md`,
-/// "Authentication"; `routes::stream_auth`).
+/// The per-message and per-tick half of the stream authentication contract
+/// (`SPEC.md`, "Authentication"; `routes::stream_auth`).
 ///
-/// A no-op today: this task builds the read side, and nothing it sends depends
-/// on the user still being authorized to *write*. The input task replaces the
-/// body with `routes::reauthorize(&context.state, &context.principal)`, at
-/// which point a revoked login closes the socket on the next ping.
-async fn reauthorize_hook(context: &SocketContext) -> std::result::Result<(), StreamAuthFailure> {
-    let _ = context.principal;
-    Ok(())
+/// One unlocked read of the user row — no transaction, no lock — before every
+/// application message and at every ping tick. Both failures close: a database
+/// that cannot be read is [`StreamAuthFailure::Unavailable`](crate::routes::StreamAuthFailure::Unavailable)
+/// and "database failures must not authorize input".
+///
+/// Closing is *all* it does. The agent session is untouched — no stop, no
+/// state change — because the person whose login was revoked is not the
+/// session, and a revoked browser tab must not end somebody's run.
+async fn ensure_authorized(context: &SocketContext) -> std::result::Result<(), End> {
+    match reauthorize(&context.state, &context.principal).await {
+        Ok(()) => Ok(()),
+        Err(failure) => {
+            debug!(
+                session_id = %context.session_id,
+                user_id = %context.principal.user_id,
+                ?failure,
+                "session websocket closed by re-authorization",
+            );
+            Err(End::unauthenticated())
+        }
+    }
 }
 
 /// Act on a parsed client message.
 ///
-/// The seam for the input and terminal tasks: `input` and `stop` go to the
-/// session's owner through the registry, `terminal_*` to the exec. Until then
-/// a well-formed message is accepted and ignored, which is deliberately not
-/// the same as refusing it — the protocol is what this task fixes, not the
-/// behaviour behind it.
+/// Re-authorization first, for every message alike: the specification puts it
+/// "before every incoming WebSocket application message", and doing it here
+/// rather than in each handler is what makes that true of a message added
+/// later as well.
+///
+/// `input` and `stop` are [`input`]'s, which takes them through
+/// [`SessionService`]. The terminal messages are still the terminal task's
+/// seam: a well-formed one is accepted and ignored, which is deliberately not
+/// the same as refusing it.
 async fn handle_client_message(
     context: &mut SocketContext,
     out: &mpsc::Sender<Message>,
     message: ClientMessage,
 ) -> std::result::Result<(), End> {
-    let _ = (out, message);
-    debug!(session_id = %context.session_id, "session websocket received a client message");
+    ensure_authorized(context).await?;
 
-    Ok(())
+    match message {
+        ClientMessage::Input {
+            client_id,
+            input: sent,
+        } => input::handle_input(context, out, client_id, sent).await,
+        ClientMessage::Stop => input::handle_stop(context).await,
+        ClientMessage::TerminalOpen { .. }
+        | ClientMessage::TerminalResize { .. }
+        | ClientMessage::TerminalClose => {
+            debug!(session_id = %context.session_id, "session websocket received a terminal message with no terminal support yet");
+            Ok(())
+        }
+    }
 }
 
 /// Bytes for the PTY (`SPEC.md`, "WebSocket: session stream", the terminal).

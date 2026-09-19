@@ -36,8 +36,10 @@ pub enum ServerMessage {
     /// The session row: once immediately after the upgrade, and then on every
     /// state change.
     Session { session: Session },
-    /// An input the orchestrator took responsibility for, with the `seq` of
-    /// the `user_message` event it wrote. Acceptance, not delivery (ADR 0020).
+    /// An input the orchestrator took responsibility for, with the highest
+    /// committed sequence at acceptance; the `user_message` event recording it
+    /// follows later with the same `client_id`. Acceptance, not delivery
+    /// (ADR 0020).
     InputAccepted { client_id: String, seq: i64 },
     /// An input the orchestrator refused, with the reason the REST route would
     /// have answered 400 or 409 with.

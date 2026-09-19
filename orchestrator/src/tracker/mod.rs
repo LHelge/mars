@@ -21,7 +21,8 @@
 //! `docs/data-model.md`, "Tracker mutation transactions"). Git preparation
 //! finishes before the tracker transaction opens, and the escalation emails a
 //! mutation makes due are sent after it commits, from
-//! [`MutationOutcome::escalations`].
+//! [`MutationOutcome::escalations`] — which is what [`commit_and_notify`] does
+//! in one call.
 
 pub mod comments;
 pub mod dependencies;
@@ -32,6 +33,8 @@ pub mod leases;
 pub mod mutation;
 pub mod state;
 pub mod tasks;
+
+use crate::prelude::*;
 
 pub use comments::{CommentAuthor, add_comment};
 pub use dependencies::{add_dependency, remove_dependency, resolve_dependency};
@@ -47,3 +50,30 @@ pub use leases::{
 pub use mutation::{Locked, MutationOutcome, TrackerMutation};
 pub use state::{StateChangeOptions, StateChangeResult, StateEventKind};
 pub use tasks::{CreateTaskInput, CreatedBy, create_task};
+
+/// Commit a mutation and send the escalation emails it made due.
+///
+/// The pairing every transport uses: a REST handler, an MCP tool and a
+/// background job all finish a tracker mutation here, so "email goes out after
+/// the commit, and only after a commit" is one line at each call site instead
+/// of a rule to remember (`ARCHITECTURE.md`, "Task tracker" → "One mutation at
+/// a time per project" and "Notification").
+///
+/// A mutation that owes no email — which is nearly all of them — pays a loop
+/// over an empty vector and nothing else. The outcome is returned whole, so a
+/// caller that wants the sequences still has them; the escalations stay in it
+/// as the record of what was sent.
+///
+/// Sending cannot fail this: [`escalation::notify`] returns `()` and logs, so
+/// the only error this can answer with is the commit's own. A caller that
+/// rolled back calls [`TrackerMutation::no_change`] instead, and sends nothing.
+pub async fn commit_and_notify(
+    m: TrackerMutation<'_>,
+    state: &AppState,
+) -> Result<MutationOutcome> {
+    let outcome = m.commit().await?;
+
+    escalation::notify(state, outcome.escalations.clone()).await;
+
+    Ok(outcome)
+}

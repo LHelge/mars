@@ -1,10 +1,10 @@
 ---
 id: cws3a
 title: "Implement claims: atomic claim for a profile's served states, claim-for-launch over all non-terminal states, the ready list, and the user release route"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:44:45.993609259Z"
-updated: "2026-09-17T04:57:52.802984543Z"
+updated: "2026-09-19T11:22:43.732324151Z"
 tags:
   - orchestrator
   - tracker
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - "6jycg"
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

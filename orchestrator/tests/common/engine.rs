@@ -176,9 +176,10 @@ pub async fn remove_image_if_present(image: &str) {
     }
 }
 
-/// The two probe scenarios share one thing no label can separate: the probe
-/// container's own `mars.probe` label, whose absence afterwards they assert.
-/// They take this lock so only one probe is ever in flight.
+/// The bootstrap scenario asserts that no container carries the probe's own
+/// `mars.probe` label once it is done, which no label can separate from a
+/// probe running beside it. It takes this lock so only one probe is ever in
+/// flight.
 pub fn probe_lock() -> &'static Mutex<()> {
     static PROBE: Mutex<()> = Mutex::const_new(());
     &PROBE
@@ -198,7 +199,7 @@ pub fn unique_name(scenario: &str) -> String {
 /// root is the host user, so a container that writes into a temporary
 /// directory produces files the test can read whichever engine it ran on. The
 /// two scenarios where ownership is the point — `userns_keep_id_accepted` and
-/// `startup_probe_end_to_end` — use the session's own `1000:1000` instead.
+/// `bootstrap_engine_end_to_end` — use the session's own `1000:1000` instead.
 pub fn test_spec(name: &str, cmd: &[&str]) -> ContainerSpec {
     ContainerSpec {
         image: TEST_IMAGE.to_string(),

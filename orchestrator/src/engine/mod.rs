@@ -1,5 +1,7 @@
-//! The `ContainerEngine` trait, its bollard implementation and the mock
-//! behind the `integration-tests` feature.
+//! The `ContainerEngine` trait, its bollard implementation, the mock behind
+//! the `integration-tests` feature, and the startup sequence
+//! [`bootstrap_engine`] runs over an engine — the session networks and the
+//! startup probe.
 //!
 //! The trait is the boundary: everything a session needs from a container
 //! engine is expressed here in the plain types of [`types`], so `HostConfig`,
@@ -25,22 +27,25 @@
 //! even a careless `{:?}` cannot leak one (CLAUDE.md rule 3).
 
 use std::any::Any;
+use std::fs::{self, DirBuilder, OpenOptions};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 // Shadows the prelude's one-parameter `Result<T>` alias: every engine
 // operation fails with an `EngineError`, not with the crate-wide `Error`, so
 // that callers can match on the variant before deciding what it means.
 use std::result::Result;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
 // The crate convention (`CLAUDE.md`, "Backend conventions"). The engine
 // reports its own [`EngineError`] rather than the crate-wide one, so the glob
-// is here for [`Config`], [`Arc`] and the `tracing` macros [`bootstrap_engine`]
-// uses, and for the doc links.
+// is here for [`Config`], [`Arc`] and the `tracing` macros the bootstrap and
+// the startup probe use, and for the doc links.
 use crate::prelude::*;
 
 pub mod bollard;
 pub mod error;
-pub mod probe;
 pub mod spec;
 mod streams;
 pub mod types;
@@ -51,7 +56,7 @@ pub mod mock;
 // `self::`, because a plain `bollard::` in this one module is the submodule
 // below and not the crate (see `bollard`'s own module documentation).
 use self::bollard::BollardEngine;
-use self::probe::{ProbeInput, run_startup_probe};
+use self::spec::{ProbeSpecInput, build_probe_spec};
 
 pub use error::EngineError;
 pub use types::{
@@ -265,6 +270,22 @@ pub async fn bootstrap_engine(config: &Config) -> Result<Arc<dyn ContainerEngine
     // else), so nothing is logged again here.
     let engine = BollardEngine::connect(&config.docker_host).await?;
 
+    bootstrap_connected(&engine, config).await?;
+
+    Ok(Arc::new(engine))
+}
+
+/// Everything [`bootstrap_engine`] does once it has an engine: the networks and
+/// then the probe, in that order.
+///
+/// It is separate only so that the steps past the connection can be driven over
+/// a `MockEngine` — the tests at the bottom of this module are the probe's own
+/// coverage, and the live version of the same sequence is
+/// `tests/engine.rs::bootstrap_engine_end_to_end`.
+async fn bootstrap_connected(
+    engine: &dyn ContainerEngine,
+    config: &Config,
+) -> Result<(), EngineError> {
     // Created if missing and left alone if they exist. The sessions network is
     // internal — no route off the host — and the egress one is how a session
     // reaches the world (`ARCHITECTURE.md`, "Networks"). An existing network
@@ -284,20 +305,320 @@ pub async fn bootstrap_engine(config: &Config) -> Result<Arc<dyn ContainerEngine
 
     // The same `HostConfig` a session gets, over the same data directory: what
     // passes here is what a launch can rely on.
-    run_startup_probe(
-        &engine,
-        ProbeInput {
-            image: config.session_image_default.clone(),
-            data_dir: config.data_dir.clone(),
-            data_dir_host: config.data_dir_host.clone(),
-            network_internal: config.session_network_internal.clone(),
-            network_egress: config.session_network_egress.clone(),
-            extra_hosts: config.session_extra_hosts.clone(),
-        },
-    )
-    .await?;
+    run_startup_probe(engine, config).await
+}
 
-    Ok(Arc::new(engine))
+// ---- the startup probe ----------------------------------------------------
+//
+// A short-lived container run with the same `HostConfig` a session would get,
+// proving that a file it writes under `DATA_DIR` comes back owned by the
+// orchestrator's own uid.
+//
+// It is what verifies that Podman honours `keep-id` and that the bind mounts
+// and uid layout are sane on either engine (`ARCHITECTURE.md`, "Engine
+// adapter", Startup probe; ADR 0004). A failure is [`EngineError::Probe`] and
+// is fatal at startup, because every session would otherwise fail later in
+// less obvious ways.
+//
+// **Why the file is enough.** The probe container runs as uid 1000 inside its
+// user namespace and touches one file on a bind mount the orchestrator can
+// see. Three things can be wrong with the result and each has its own message:
+// the file is missing, which on macOS means `DATA_DIR_HOST` is not shared with
+// the engine's VM; it is there but owned by somebody else, which under
+// rootless Podman means `keep-id:uid=1000,gid=1000` was not honoured and the
+// owner is a sub-uid; or it is owned correctly and still not writable. Only
+// the owning uid is compared — the group may legitimately differ under
+// `keep-id`.
+//
+// **Who owns "the orchestrator's uid".** The probe directory the orchestrator
+// created itself a moment earlier is the reference, so the answer needs no
+// `libc` call: whoever owns that directory is who the orchestrator runs as.
+//
+// **Secrets.** The probe spec carries no environment at all (see
+// `build_probe_spec`), so nothing here can log one (CLAUDE.md rule 3).
+
+/// How long the probe container is given to touch one file and exit.
+///
+/// Generous on purpose: the container is `touch` and nothing else, so the
+/// whole budget is the engine's own create-and-start latency on a loaded
+/// machine. Reaching it means the engine is wedged, not that the probe is
+/// slow.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The file the probe container touches, relative to its `work` directory.
+///
+/// The container side of this name is the `cmd` in
+/// [`build_probe_spec`](spec::build_probe_spec) — `touch
+/// /session/work/probe-ok` — and the two have to agree: that bind's host
+/// source is the directory read here.
+const PROBE_FILE: &str = "probe-ok";
+
+/// The subdirectories of a probe directory, which are the session directories
+/// the spec binds into the container.
+///
+/// `home` and `log` are mounted although the probe writes only under `work`,
+/// because the image's entrypoint redirects its output into `/session/log` and
+/// takes `/session/home` as `HOME` before it runs anything: a probe that
+/// mounted only `work` would not be running what a session runs
+/// (`ARCHITECTURE.md`, "Session container specification").
+const PROBE_SUBDIRS: [&str; 3] = ["work", "home", "log"];
+
+/// The mode the probe directory itself is created with, matching the session
+/// directories the launcher creates.
+///
+/// It stays the ordinary mode because nothing writes into it: the check reads
+/// the orchestrator's own uid off this directory and the container writes one
+/// level down, in [`PROBE_SUBDIR_MODE`].
+const PROBE_DIR_MODE: u32 = 0o755;
+
+/// The mode the three session subdirectories are given after creation.
+///
+/// World-writable on purpose, so that the check measures ownership and not
+/// permission (`ARCHITECTURE.md`, "Engine adapter", Startup probe). Under
+/// Docker the container's uid 1000 is uid 1000 on the host, so against a
+/// 0o755 directory owned by an orchestrator running as some other uid the
+/// container cannot write its file at all and the probe reports an exit code
+/// instead of the uid mismatch that actually caused it. These directories are
+/// throwaway — created under `DATA_DIR/tmp`, removed after the probe, swept by
+/// orphan cleanup if the process dies — so the mode weakens nothing.
+const PROBE_SUBDIR_MODE: u32 = 0o777;
+
+/// Run the startup probe.
+///
+/// Creates `DATA_DIR/tmp/probe-<random>/{work,home,log}`, runs one container
+/// from `config.session_image_default` over it with the session `HostConfig`,
+/// and checks the file that container wrote. The container is removed on every
+/// path, the directory is removed afterwards, and neither removal failing turns
+/// a pass into a failure — `/data/tmp` and stray `mars.probe` containers are
+/// what orphan cleanup is for (`ARCHITECTURE.md`, "Background jobs").
+///
+/// Both data paths of `Config` are used and they are not the same directory
+/// seen twice: `data_dir` is where the orchestrator itself looks at the file
+/// afterwards, and `data_dir_host` is what the engine resolves the bind-mount
+/// source against (`ARCHITECTURE.md`, "Storage"). They are equal only when the
+/// orchestrator runs on the host.
+///
+/// A pass logs one `info!` line. A failure is returned, not logged: the caller
+/// is startup, which logs it once at `error!` and stops.
+///
+/// # Errors
+///
+/// [`EngineError::Probe`] when the container ran but did not prove what it has
+/// to prove — a non-zero exit, a timeout, a missing file, a file owned by
+/// another uid, a file that cannot be appended to, or a pull that failed. Any
+/// other variant is the engine itself failing and is returned unchanged, so
+/// the operator sees "the engine is unreachable" as that rather than as a
+/// probe verdict.
+async fn run_startup_probe(
+    engine: &dyn ContainerEngine,
+    config: &Config,
+) -> Result<(), EngineError> {
+    let started = Instant::now();
+    // 64 bits of randomness names both the directory and the container, so two
+    // orchestrators sharing a data directory and an engine cannot collide on
+    // either.
+    let suffix = format!("{:016x}", rand::random::<u64>());
+    let probe_dir = probe_dir_in(&config.data_dir, &suffix);
+
+    create_probe_dirs(&probe_dir)?;
+    let outcome = run_probe_container(engine, config, &suffix, &probe_dir).await;
+
+    // Unconditional: a failed probe stops startup, and leaving its directory
+    // behind would only grow `/data/tmp` across restart attempts. A directory
+    // whose contents the orchestrator may not own — precisely the uid-mismatch
+    // failure — cannot be removed, which is a `warn!` and not the verdict.
+    if let Err(error) = fs::remove_dir_all(&probe_dir) {
+        warn!(
+            path = %probe_dir.display(),
+            %error,
+            "could not remove the startup probe directory"
+        );
+    }
+
+    // On success the orchestrator's uid and the file's are equal by definition:
+    // the check is what returned the value.
+    let uid = outcome?;
+
+    info!(
+        engine_kind = %engine.kind(),
+        image = %config.session_image_default,
+        uid,
+        duration_ms = started.elapsed().as_millis() as u64,
+        "startup probe passed"
+    );
+    Ok(())
+}
+
+/// Everything between the directory being there and the verdict, so that
+/// [`run_startup_probe`] can clean the directory up on every path with one
+/// `if let`.
+///
+/// Returns the uid that owns both the probe directory and the file the
+/// container wrote.
+async fn run_probe_container(
+    engine: &dyn ContainerEngine,
+    config: &Config,
+    suffix: &str,
+    probe_dir: &Path,
+) -> Result<u32, EngineError> {
+    ensure_probe_image(engine, &config.session_image_default).await?;
+
+    let spec = build_probe_spec(&ProbeSpecInput {
+        suffix: suffix.to_string(),
+        image: config.session_image_default.clone(),
+        probe_dir_host: probe_dir_in(&config.data_dir_host, suffix),
+        network_internal: config.session_network_internal.clone(),
+        extra_hosts: config.session_extra_hosts.clone(),
+    });
+
+    let id = engine.create(&spec).await?;
+    let outcome = run_probe_to_exit(engine, &id, &config.session_network_egress).await;
+
+    // Before the verdict and on every path, including the ones that never
+    // started it: a probe container that survives its probe is an orphan.
+    match engine.remove(&id, true).await {
+        // Already gone is already removed.
+        Ok(()) | Err(EngineError::NotFound(_)) => {}
+        Err(error) => warn!(
+            container_id = %id,
+            %error,
+            "could not remove the startup probe container; orphan cleanup will take it"
+        ),
+    }
+
+    outcome?;
+    check_probe_file(probe_dir, &probe_dir.join("work").join(PROBE_FILE))
+}
+
+/// Connect the egress network, start the container and wait for it, with the
+/// same network order a session launch uses: the container never runs with the
+/// wrong set of networks.
+async fn run_probe_to_exit(
+    engine: &dyn ContainerEngine,
+    id: &ContainerId,
+    network_egress: &str,
+) -> Result<(), EngineError> {
+    engine.connect_network(id, network_egress).await?;
+    engine.start(id).await?;
+
+    match tokio::time::timeout(PROBE_TIMEOUT, engine.wait(id)).await {
+        Ok(Ok(status)) if status.code == 0 => Ok(()),
+        Ok(Ok(status)) => Err(EngineError::Probe(format!(
+            "probe container exited with code {}",
+            status.code
+        ))),
+        Ok(Err(error)) => Err(error),
+        Err(_elapsed) => {
+            // The removal that follows is forced and would kill it anyway;
+            // signalling first means the engine is asked to end a process it
+            // still believes in, which is the friendlier order and the one
+            // whose failure is worth a line.
+            if let Err(error) = engine.kill(id, Signal::Sigkill).await {
+                warn!(
+                    container_id = %id,
+                    %error,
+                    "could not kill the timed-out startup probe container"
+                );
+            }
+            Err(EngineError::Probe(format!(
+                "probe container did not exit within {}s",
+                PROBE_TIMEOUT.as_secs()
+            )))
+        }
+    }
+}
+
+/// Pull the image if the engine does not have it, which is the ordinary state
+/// of a first start.
+///
+/// A pull failure becomes a probe failure carrying the registry's own words,
+/// because at startup there is no session row to put them in and the operator
+/// needs to read "manifest unknown" rather than "the probe failed".
+async fn ensure_probe_image(engine: &dyn ContainerEngine, image: &str) -> Result<(), EngineError> {
+    if engine.image_exists(image).await? {
+        return Ok(());
+    }
+
+    info!(%image, "pulling default session image");
+    match engine.pull_image(image).await {
+        Ok(()) => Ok(()),
+        Err(EngineError::ImagePull { message, .. }) => Err(EngineError::Probe(format!(
+            "probe image pull failed: {message}"
+        ))),
+        Err(error) => Err(error),
+    }
+}
+
+/// `<data>/tmp/probe-<suffix>`, in whichever of the two views of the data
+/// directory is passed.
+fn probe_dir_in(data: &Path, suffix: &str) -> PathBuf {
+    data.join("tmp").join(format!("probe-{suffix}"))
+}
+
+/// Create the probe directory and its three session subdirectories, and
+/// `DATA_DIR/tmp` along the way.
+fn create_probe_dirs(probe_dir: &Path) -> Result<(), EngineError> {
+    let mut builder = DirBuilder::new();
+    builder.recursive(true).mode(PROBE_DIR_MODE);
+
+    for subdir in PROBE_SUBDIRS {
+        let path = probe_dir.join(subdir);
+        builder.create(&path)?;
+        // Separately from the builder's mode, which the process umask masks:
+        // the container has to be able to write here whatever umask the
+        // service was started with.
+        fs::set_permissions(&path, fs::Permissions::from_mode(PROBE_SUBDIR_MODE))?;
+    }
+    Ok(())
+}
+
+/// The whole verdict: the file is there, the orchestrator owns it, and the
+/// orchestrator can write to it.
+///
+/// `probe_dir` is the reference for "the orchestrator's uid" — it created that
+/// directory itself moments ago — and `file` is what the container wrote.
+/// Returns the uid both are owned by.
+fn check_probe_file(probe_dir: &Path, file: &Path) -> Result<u32, EngineError> {
+    let own_uid = fs::metadata(probe_dir)?.uid();
+
+    // Any failure to stat the file is "it is not there": the directory was
+    // stat-ed a line earlier, so a permission error on a child of it is not a
+    // distinction the operator can act on differently. The common cause is a
+    // `DATA_DIR_HOST` the engine's VM does not share, where the container
+    // wrote its file into a directory nobody else can see.
+    let Ok(metadata) = fs::metadata(file) else {
+        return Err(EngineError::Probe(format!(
+            "probe file was not written: {}",
+            file.display()
+        )));
+    };
+
+    let file_uid = metadata.uid();
+    if file_uid != own_uid {
+        // Both numbers, because which one is surprising depends on the engine:
+        // a sub-uid like 100999 is Podman ignoring `keep-id`, and a file owned
+        // by 1000 under an orchestrator that is not 1000 is the documented
+        // Docker contract not being met.
+        return Err(EngineError::Probe(format!(
+            "probe file is owned by uid {file_uid}, orchestrator runs as uid {own_uid}: \
+             on Podman check that keep-id:uid=1000,gid=1000 is supported, \
+             on Docker run the orchestrator as uid 1000 with DATA_DIR_HOST owned by uid 1000"
+        )));
+    }
+
+    // Ownership is not permission: a file the container wrote 0o444 would pass
+    // the uid check and still stop every session that tried to edit it.
+    // Appending nothing changes nothing.
+    OpenOptions::new()
+        .append(true)
+        .open(file)
+        .map_err(|error| {
+            EngineError::Probe(format!(
+                "probe file is not writable by the orchestrator: {error}"
+            ))
+        })?;
+
+    Ok(own_uid)
 }
 
 /// The engine fixture for the tests that must compile *without* the
@@ -496,5 +817,410 @@ mod tests {
                 .downcast_ref::<PlaceholderEngine>()
                 .is_some()
         );
+    }
+}
+
+/// The bootstrap's networks and the startup probe, driven over `MockEngine`.
+///
+/// The mock has no filesystem, so a test that wants the probe to pass writes
+/// `work/probe-ok` itself between the container starting and exiting — the
+/// simplest of the two options, and the one that also checks that the bind the
+/// container would have written through is the directory the orchestrator then
+/// reads. Everything else is read back through the mock's own recorders
+/// (`specs`/`spec_of`, `connections`, `networks`, `state_of`), so there is no
+/// test double here beyond the mock every other suite uses.
+///
+/// What the mock cannot show is the uid mismatch — chowning a file to another
+/// uid is exactly the privilege a test does not have — so that message is
+/// asserted live, on both engines, by `tests/engine.rs`.
+#[cfg(all(test, feature = "integration-tests"))]
+mod probe_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::engine::mock::MockEngine;
+
+    /// The mock mints ids in creation order and the probe creates exactly one
+    /// container.
+    const PROBE_CONTAINER: &str = "mock-0";
+
+    /// The image the probe runs, obviously fake (rule 3) and never pulled: the
+    /// mock answers `image_exists` with `true` unless a test says otherwise.
+    const PROBE_IMAGE: &str = "mars-session-claude:test";
+
+    const INTERNAL_NETWORK: &str = "mars-sessions-test";
+    const EGRESS_NETWORK: &str = "mars-egress-test";
+
+    /// The configuration the bootstrap is driven with: the required variables
+    /// of `README.md`, "Configuration", with obviously fake values and this
+    /// test's own data directory, which is both views of the volume because
+    /// the test process is the host.
+    fn probe_config(data: &Path) -> Config {
+        let data = data.display().to_string();
+        let vars: HashMap<String, String> = [
+            ("PUBLIC_URL", "https://mars.example.invalid"),
+            ("JWT_SECRET", "not-a-real-signing-secret"),
+            ("DATABASE_URL", "postgres://mars:fake@localhost:5432/mars"),
+            ("DOCKER_HOST", "unix:///nothing.example.invalid"),
+            ("DATA_DIR", data.as_str()),
+            ("DATA_DIR_HOST", data.as_str()),
+            ("SECRETS_MASTER_KEYS", "1=not-a-real-key"),
+            ("GIT_BOT_NAME", "Mars Bot"),
+            ("GIT_BOT_EMAIL", "mars-bot@example.invalid"),
+            ("SESSION_IMAGE_DEFAULT", PROBE_IMAGE),
+            ("SESSION_NETWORK_INTERNAL", INTERNAL_NETWORK),
+            ("SESSION_NETWORK_EGRESS", EGRESS_NETWORK),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect();
+
+        Config::from_vars(|name| vars.get(name).cloned()).expect("the fixture configuration loads")
+    }
+
+    fn probe_id() -> ContainerId {
+        ContainerId(PROBE_CONTAINER.to_string())
+    }
+
+    /// Park until the probe has started its container, which is when the mock
+    /// will accept an `exit` for it.
+    async fn started(engine: &MockEngine) -> ContainerId {
+        let id = probe_id();
+        loop {
+            if engine.state_of(&id) == Some(ContainerState::Running) {
+                return id;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// The host directory behind the container's `/session/work`, which is
+    /// where the real container's `touch` would land.
+    fn work_dir(spec: &ContainerSpec) -> PathBuf {
+        spec.binds
+            .iter()
+            .find(|bind| bind.container_target == "/session/work")
+            .expect("the probe mounts a work directory")
+            .host_source
+            .clone()
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::metadata(path).expect("the path is there").mode() & 0o777
+    }
+
+    fn reason(error: &EngineError) -> String {
+        match error {
+            EngineError::Probe(reason) => reason.clone(),
+            other => panic!("expected a probe failure, got: {other:?}"),
+        }
+    }
+
+    /// Whether this process is root, read the way the probe reads a uid: off a
+    /// directory it created itself.
+    fn running_as_root() -> bool {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        mode_owner(dir.path()) == 0
+    }
+
+    fn mode_owner(path: &Path) -> u32 {
+        fs::metadata(path).expect("the path is there").uid()
+    }
+
+    /// The whole passing path: both networks first, then pull nothing, create
+    /// the probe container on the internal network, connect the egress network
+    /// before starting it, and find the file where the bind said it would be.
+    ///
+    /// The directory modes are asserted from inside the container's lifetime,
+    /// because the probe removes the directory before it returns.
+    #[tokio::test]
+    async fn the_bootstrap_creates_both_networks_and_passes_a_probe_whose_file_comes_back() {
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let engine = Arc::new(MockEngine::default());
+        let config = probe_config(data.path());
+
+        let mock = Arc::clone(&engine);
+        let container = tokio::spawn(async move {
+            let id = started(&mock).await;
+            let spec = mock.spec_of(&id).expect("the probe container exists");
+            let work = work_dir(&spec);
+            let probe_dir = work
+                .parent()
+                .expect("the work directory has a parent")
+                .to_path_buf();
+
+            // World-writable subdirectories, an ordinary probe directory: the
+            // check measures ownership, not permission.
+            let modes: Vec<u32> = PROBE_SUBDIRS
+                .iter()
+                .map(|subdir| mode_of(&probe_dir.join(subdir)))
+                .collect();
+            let dir_mode = mode_of(&probe_dir);
+
+            fs::write(work.join(PROBE_FILE), b"").expect("the probe file is written");
+            // Read before the exit, because the mock forgets a container's
+            // connections when it is removed. Their presence here is the
+            // ordering a launch shares: egress connected before start.
+            let connections = mock.connections(&id);
+            assert!(mock.exit(&id, 0), "the probe container is still there");
+
+            (spec, connections, modes, dir_mode)
+        });
+
+        bootstrap_connected(engine.as_ref(), &config)
+            .await
+            .expect("the bootstrap passes");
+        let (spec, connections, modes, dir_mode) =
+            container.await.expect("the container task finished");
+
+        assert_eq!(
+            engine.networks(),
+            vec![
+                (INTERNAL_NETWORK.to_string(), true),
+                (EGRESS_NETWORK.to_string(), false),
+            ],
+            "the networks are created before any container is"
+        );
+        assert_eq!(connections, vec![EGRESS_NETWORK.to_string()]);
+
+        assert!(
+            spec.name.starts_with("mars-probe-"),
+            "unexpected probe container name: {}",
+            spec.name
+        );
+        assert_eq!(
+            spec.labels.get(spec::LABEL_PROBE).map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(spec.image, PROBE_IMAGE);
+        assert_eq!(spec.network, INTERNAL_NETWORK);
+        assert!(
+            work_dir(&spec).starts_with(data.path().join("tmp")),
+            "the probe writes under DATA_DIR/tmp: {:?}",
+            work_dir(&spec)
+        );
+
+        assert_eq!(modes, vec![PROBE_SUBDIR_MODE; PROBE_SUBDIRS.len()]);
+        assert_eq!(
+            dir_mode & 0o002,
+            0,
+            "the probe directory itself should not be world-writable: {dir_mode:o}"
+        );
+
+        assert_eq!(
+            engine.state_of(&probe_id()),
+            None,
+            "the probe container is removed"
+        );
+        assert!(
+            fs::read_dir(data.path().join("tmp"))
+                .expect("DATA_DIR/tmp was created")
+                .next()
+                .is_none(),
+            "the probe directory is removed"
+        );
+    }
+
+    /// The first start of a fresh host: the image is not there yet.
+    #[tokio::test]
+    async fn a_missing_image_is_pulled_before_the_probe_container_is_created() {
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let engine = Arc::new(MockEngine::default());
+        engine.set_missing_images([PROBE_IMAGE]);
+        let config = probe_config(data.path());
+
+        let mock = Arc::clone(&engine);
+        let container = tokio::spawn(async move {
+            let id = started(&mock).await;
+            let work = work_dir(&mock.spec_of(&id).expect("the probe container exists"));
+            fs::write(work.join(PROBE_FILE), b"").expect("the probe file is written");
+            mock.exit(&id, 0);
+        });
+
+        bootstrap_connected(engine.as_ref(), &config)
+            .await
+            .expect("the bootstrap passes");
+        container.await.expect("the container task finished");
+
+        assert_eq!(engine.pulled_images(), vec![PROBE_IMAGE.to_string()]);
+        assert_eq!(
+            engine.specs().len(),
+            1,
+            "one probe container, created after the pull"
+        );
+    }
+
+    /// A pull failure carries the registry's own words and never reaches the
+    /// container steps.
+    #[tokio::test]
+    async fn a_failed_pull_is_a_probe_failure_carrying_the_engine_message() {
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let engine = Arc::new(MockEngine::default());
+        engine.set_missing_images([PROBE_IMAGE]);
+        engine.fail_next_pull("manifest unknown");
+        let config = probe_config(data.path());
+
+        let error = bootstrap_connected(engine.as_ref(), &config)
+            .await
+            .expect_err("the bootstrap fails");
+
+        assert_eq!(reason(&error), "probe image pull failed: manifest unknown");
+        assert!(
+            engine.specs().is_empty(),
+            "no container is created after a failed pull"
+        );
+    }
+
+    /// A container that ran and failed is reported by its code, and is still
+    /// removed.
+    #[tokio::test]
+    async fn a_non_zero_exit_fails_the_probe_and_the_container_is_still_removed() {
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let engine = Arc::new(MockEngine::default());
+        let config = probe_config(data.path());
+
+        let mock = Arc::clone(&engine);
+        let container = tokio::spawn(async move {
+            let id = started(&mock).await;
+            mock.exit(&id, 127);
+        });
+
+        let error = bootstrap_connected(engine.as_ref(), &config)
+            .await
+            .expect_err("the bootstrap fails");
+        container.await.expect("the container task finished");
+
+        assert_eq!(reason(&error), "probe container exited with code 127");
+        assert_eq!(engine.state_of(&probe_id()), None);
+        assert!(
+            fs::read_dir(data.path().join("tmp"))
+                .expect("DATA_DIR/tmp was created")
+                .next()
+                .is_none(),
+            "a failed probe removes its directory too"
+        );
+    }
+
+    /// A container that exits cleanly without writing anything is the unshared
+    /// `DATA_DIR_HOST`: the check runs and names the path it looked at.
+    #[tokio::test]
+    async fn a_clean_exit_that_wrote_nothing_is_the_missing_file_failure() {
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let engine = Arc::new(MockEngine::default());
+        let config = probe_config(data.path());
+
+        let mock = Arc::clone(&engine);
+        let container = tokio::spawn(async move {
+            let id = started(&mock).await;
+            mock.exit(&id, 0);
+        });
+
+        let error = bootstrap_connected(engine.as_ref(), &config)
+            .await
+            .expect_err("the bootstrap fails");
+        container.await.expect("the container task finished");
+
+        let message = reason(&error);
+        assert!(
+            message.starts_with("probe file was not written: "),
+            "unexpected: {message}"
+        );
+        assert!(
+            message.ends_with("/work/probe-ok"),
+            "the path names the file the container should have touched: {message}"
+        );
+        assert_eq!(engine.state_of(&probe_id()), None);
+    }
+
+    /// Owned correctly and still unusable: a file the container left read-only
+    /// would stop every session that tried to edit it.
+    #[tokio::test]
+    async fn a_file_the_orchestrator_cannot_append_to_fails_the_probe() {
+        // Root ignores the mode bits, so there is nothing to assert as root.
+        if running_as_root() {
+            return;
+        }
+
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let engine = Arc::new(MockEngine::default());
+        let config = probe_config(data.path());
+
+        let mock = Arc::clone(&engine);
+        let container = tokio::spawn(async move {
+            let id = started(&mock).await;
+            let file =
+                work_dir(&mock.spec_of(&id).expect("the probe container exists")).join(PROBE_FILE);
+            fs::write(&file, b"").expect("the probe file is written");
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o444))
+                .expect("the file is made read-only");
+            mock.exit(&id, 0);
+        });
+
+        let error = bootstrap_connected(engine.as_ref(), &config)
+            .await
+            .expect_err("the bootstrap fails");
+        container.await.expect("the container task finished");
+
+        let message = reason(&error);
+        assert!(
+            message.starts_with("probe file is not writable by the orchestrator: "),
+            "unexpected: {message}"
+        );
+    }
+
+    /// A container that never exits is killed and removed, and the message
+    /// names the budget it blew.
+    ///
+    /// Time is paused, so the runtime advances its own clock to the deadline
+    /// the moment every task is parked; the test costs no wall-clock seconds
+    /// and still exercises the real [`PROBE_TIMEOUT`]. The mock forgets a
+    /// removed container's signals, so that the `SIGKILL` precedes the removal
+    /// is what the live suite covers; what is asserted here is the verdict and
+    /// that nothing survives it.
+    #[tokio::test(start_paused = true)]
+    async fn a_container_that_never_exits_is_killed_and_removed() {
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let engine = Arc::new(MockEngine::default());
+        let config = probe_config(data.path());
+
+        let error = bootstrap_connected(engine.as_ref(), &config)
+            .await
+            .expect_err("the bootstrap fails");
+
+        assert_eq!(reason(&error), "probe container did not exit within 60s");
+        assert_eq!(engine.state_of(&probe_id()), None);
+        assert!(
+            fs::read_dir(data.path().join("tmp"))
+                .expect("DATA_DIR/tmp was created")
+                .next()
+                .is_none(),
+            "a timed-out probe removes its directory too"
+        );
+    }
+
+    /// An engine failure is not a probe verdict: the variant is passed
+    /// through, and the container is removed all the same.
+    #[tokio::test]
+    async fn a_container_that_disappears_propagates_not_found() {
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let engine = Arc::new(MockEngine::default());
+        let config = probe_config(data.path());
+
+        let mock = Arc::clone(&engine);
+        let container = tokio::spawn(async move {
+            let id = started(&mock).await;
+            assert!(mock.vanish(&id), "the probe container is still there");
+        });
+
+        let error = bootstrap_connected(engine.as_ref(), &config)
+            .await
+            .expect_err("the bootstrap fails");
+        container.await.expect("the container task finished");
+
+        assert!(
+            matches!(error, EngineError::NotFound(_)),
+            "unexpected: {error:?}"
+        );
+        assert_eq!(engine.state_of(&probe_id()), None);
     }
 }

@@ -1,10 +1,10 @@
 ---
 id: tjhbr
 title: Add HandoffInput parsing and caller-context validation for revision and forward hand-offs
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:40:07.557220327Z"
-updated: "2026-09-16T20:51:52.188690602Z"
+updated: "2026-09-19T20:38:21.073464786Z"
 tags:
   - orchestrator
   - tracker
@@ -12,6 +12,7 @@ depends_on:
   - "5h3y4"
   - s52qg
 parent: xjaah
+attempts: 1
 ---
 
 ## Summary

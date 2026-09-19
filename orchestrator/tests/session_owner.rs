@@ -431,6 +431,18 @@ async fn append_bytes(dirs: &SessionDirs, bytes: &[u8]) -> u64 {
         .len()
 }
 
+/// Shorten the transcript to `length` bytes, as an outside hand would.
+async fn truncate_to(dirs: &SessionDirs, length: u64) {
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(dirs.stream_jsonl())
+        .await
+        .expect("the transcript is writable");
+    file.set_len(length)
+        .await
+        .expect("the transcript is truncated");
+}
+
 /// Append one complete line and answer the transcript's new length, which is
 /// the offset the owner must commit for it.
 async fn append_line(dirs: &SessionDirs, line: &str) -> u64 {
@@ -1150,8 +1162,9 @@ async fn a_second_tailer_stands_down_instead_of_double_appending() {
     }
 }
 
-/// A transcript that shrank is never rewound: the owner skips to the new end
-/// rather than re-reading history the database already holds.
+/// A transcript that shrank no further than the committed offset is never
+/// rewound: the owner drops the bytes it had buffered, skips to the new end and
+/// goes on tailing (`ARCHITECTURE.md`, "Durability and recovery").
 #[tokio::test]
 async fn a_truncated_transcript_is_not_rewound() {
     let app = TestApp::spawn().await;
@@ -1159,18 +1172,15 @@ async fn a_truncated_transcript_is_not_rewound() {
     mark_running(&app, fixture.session_id).await;
     let owner = spawn_owner(&app, &fixture, 0, false);
 
-    let lines = native_lines("multi_turn");
-    let mut length = 0;
-    for line in &lines[..4] {
-        length = append_line(&fixture.dirs, line).await;
-    }
-    wait_for_offset(&app.pool, fixture.session_id, length).await;
+    let committed = commit_four_lines(&app, &fixture).await;
     let before = snapshot(&app.pool, fixture.session_id).await;
 
-    // Replaced under the running owner, as a manual cleanup would.
-    tokio::fs::write(fixture.dirs.stream_jsonl(), b"")
-        .await
-        .expect("the transcript is truncated");
+    // A line the CLI had not finished writing, read into the owner's buffer and
+    // then taken away again: the shrink stops exactly at the committed offset,
+    // so only those uncommittable bytes are lost.
+    append_bytes(&fixture.dirs, b"{\"type\":\"assistant\"").await;
+    tokio::time::sleep(QUIET_FOR).await;
+    truncate_to(&fixture.dirs, committed).await;
     tokio::time::sleep(QUIET_FOR).await;
 
     assert_eq!(
@@ -1179,7 +1189,104 @@ async fn a_truncated_transcript_is_not_rewound() {
         "the owner re-read the transcript from its start",
     );
 
+    // No `error` event, and the next complete line commits at the new end.
+    let lines = native_lines("multi_turn");
+    let length = append_line(&fixture.dirs, &lines[5]).await;
+    wait_for_offset(&app.pool, fixture.session_id, length).await;
+    assert_eq!(
+        kinds(&app.pool, fixture.session_id).await,
+        [
+            "state_change",
+            "init",
+            "launch_warning",
+            "text",
+            "result",
+            "text"
+        ],
+    );
+
     owner.shutdown().await;
+}
+
+/// A transcript truncated *below* the committed offset would make `_offset` go
+/// backwards, so the owner records nothing from below it and says so once: one
+/// non-fatal `error` event, the session still running, and ordinary recording
+/// again as soon as the file passes the committed offset (`ARCHITECTURE.md`,
+/// "Durability and recovery").
+#[tokio::test]
+async fn a_transcript_truncated_below_the_committed_offset_waits_for_it() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let owner = spawn_owner(&app, &fixture, 0, false);
+
+    let committed = commit_four_lines(&app, &fixture).await;
+    let (count, _, offset) = snapshot(&app.pool, fixture.session_id).await;
+
+    // Replaced under the running owner, as a hand-edit or a manual cleanup
+    // would: nothing in Mars shortens the transcript.
+    tokio::fs::write(fixture.dirs.stream_jsonl(), b"")
+        .await
+        .expect("the transcript is truncated");
+    wait_for_events(&app.pool, fixture.session_id, count + 1).await;
+
+    let event = last_event(&app.pool, fixture.session_id, "error").await;
+    assert_eq!(event["fatal"], false, "the truncation failed the session");
+    let reported = event["message"].as_str().expect("the error has a message");
+    assert!(
+        reported.contains("truncated") && reported.contains(&committed.to_string()),
+        "{reported}",
+    );
+    assert_eq!(
+        session_state(&app.pool, fixture.session_id).await.1,
+        "running",
+        "the truncation left the session's state alone",
+    );
+
+    // A line that ends below the committed offset is dropped, not committed
+    // backwards, and the shrink is not announced a second time.
+    let lines = native_lines("multi_turn");
+    append_line(&fixture.dirs, &lines[5]).await;
+    tokio::time::sleep(QUIET_FOR).await;
+    let after = snapshot(&app.pool, fixture.session_id).await;
+    assert_eq!(
+        after,
+        (count + 1, count + 1, offset),
+        "a line below the committed offset reached the events table",
+    );
+
+    // Grown past the committed offset — blank lines are bytes without being
+    // output — recording resumes with the first line that ends above it.
+    append_bytes(&fixture.dirs, &vec![b'\n'; committed as usize]).await;
+    let length = append_line(&fixture.dirs, &lines[5]).await;
+    wait_for_offset(&app.pool, fixture.session_id, length).await;
+    assert_eq!(
+        kinds(&app.pool, fixture.session_id).await,
+        [
+            "state_change",
+            "init",
+            "launch_warning",
+            "text",
+            "result",
+            "error",
+            "text"
+        ],
+    );
+
+    owner.shutdown().await;
+}
+
+/// Commit the first four lines of `multi_turn` and answer the offset they end
+/// at, which is what the owner believes the database holds.
+async fn commit_four_lines(app: &TestApp, fixture: &Fixture) -> u64 {
+    let lines = native_lines("multi_turn");
+    let mut length = 0;
+    for line in &lines[..4] {
+        length = append_line(&fixture.dirs, line).await;
+    }
+    wait_for_offset(&app.pool, fixture.session_id, length).await;
+
+    length
 }
 
 /// The session row's whole lifecycle picture in one read.

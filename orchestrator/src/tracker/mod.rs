@@ -13,7 +13,19 @@
 //! `repositories/tasks/dto.rs` — and they are also what a `TaskEvent` payload
 //! carries, so the task in an event and the task in a REST response are
 //! literally the same struct.
+//!
+//! **Lock order.** git lock (outside) → project row (`begin_mutation`) →
+//! session rows → task rows; never call engine, email, git or model code while
+//! a [`TrackerMutation`] is open (`ARCHITECTURE.md`, "Task tracker";
+//! `docs/data-model.md`, "Tracker mutation transactions"). Git preparation
+//! finishes before the tracker transaction opens, and the escalation emails a
+//! mutation makes due are sent after it commits, from
+//! [`MutationOutcome::escalations`].
 
 pub mod dto;
+pub mod escalation;
+pub mod mutation;
 
 pub use dto::{CommentDto, DependencyRef, HandoffDto, TaskDetailDto, TaskDto, TaskSessionLinkDto};
+pub use escalation::Escalation;
+pub use mutation::{MutationOutcome, TrackerMutation};

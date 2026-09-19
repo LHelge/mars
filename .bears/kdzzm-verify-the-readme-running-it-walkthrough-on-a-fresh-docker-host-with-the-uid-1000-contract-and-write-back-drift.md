@@ -1,10 +1,10 @@
 ---
 id: kdzzm
 title: Verify the README "Running it" walkthrough on a fresh Docker host with the uid-1000 contract and write back drift
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:46:30.244077570Z"
-updated: "2026-09-19T17:06:14.076394164Z"
+updated: "2026-09-19T18:13:56.439615843Z"
 tags:
   - infra
   - docs
@@ -15,6 +15,7 @@ depends_on:
   - rmu9n
   - n3kps
 parent: "5czwa"
+attempts: 1
 ---
 
 ## Summary

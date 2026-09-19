@@ -1,10 +1,10 @@
 ---
 id: jt93h
 title: "Add real-engine end-to-end session tests on the stub image: running, message, stop and park, resume with token rotation, end, ephemeral done and restart adoption"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:35:39.864280371Z"
-updated: "2026-09-19T02:02:25.484133884Z"
+updated: "2026-09-19T02:54:47.092523894Z"
 tags:
   - orchestrator
   - sessions

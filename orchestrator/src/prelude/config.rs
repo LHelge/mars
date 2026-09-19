@@ -489,6 +489,12 @@ mod tests {
 
     /// The `README.md` "Configuration" table, in table order. This list is the
     /// contract: `.env.example` carries exactly these names.
+    ///
+    /// Some of them are not this module's: `POSTGRES_*` are read by the
+    /// postgres container, and `ENGINE_SOCKET_HOST`, `HTTP_PORT` and
+    /// `COMPOSE_FILE` by compose itself (`compose.yml`; ADR 0035). [`Config`]
+    /// ignores all of them, and they belong here because `.env.example` and
+    /// the README table are one list.
     const README_VARIABLES: &[&str] = &[
         "PUBLIC_URL",
         "JWT_SECRET",
@@ -497,6 +503,7 @@ mod tests {
         "POSTGRES_PASSWORD",
         "POSTGRES_DB",
         "DOCKER_HOST",
+        "ENGINE_SOCKET_HOST",
         "DATA_DIR_HOST",
         "DATA_DIR",
         "MCP_URL",
@@ -508,12 +515,14 @@ mod tests {
         "GIT_BOT_EMAIL",
         "API_PORT",
         "MCP_PORT",
+        "HTTP_PORT",
         "STOP_GRACE_SECS",
         "MIRROR_FETCH_INTERVAL_SECS",
         "SESSION_IMAGE_DEFAULT",
         "RESEND_API_KEY",
         "MAIL_FROM",
         "RUST_LOG",
+        "COMPOSE_FILE",
     ];
 
     /// A fixed directory to resolve `DATA_DIR` against, so assertions do not

@@ -56,7 +56,8 @@ These are the intended steps once the implementation exists.
 
 - A Linux host with rootless Podman 4.9+ (or Docker 24+); the engine tests run on Podman 4.9.3 and 6.1.2 and on Docker 28.0.4.
 - `podman-compose` or `docker compose`.
-- A directory for persistent data, for example `/srv/mars/data`, owned by the service user.
+- A directory for persistent data, for example `/srv/mars/data`, owned by the service user (uid 1000 under Docker). It is `DATA_DIR_HOST` and must exist before the first start: compose bind-mounts it, and the orchestrator's startup probe fails if it is missing or not writable.
+- `git` is **not** needed on the host: the orchestrator image ships it, and it is the only thing that runs `git`.
 - For private repositories: a fine-grained GitHub personal access token scoped to the repository.
 - Model credentials: an `ANTHROPIC_API_KEY`, or a `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (requires a Pro or Max subscription). Never both for the same session.
 
@@ -86,8 +87,9 @@ Copy `.env.example` to `.env` and set:
 | `PUBLIC_URL` | The URL users open, used for cookies and email links. |
 | `JWT_SECRET` | Secret for signing access tokens. |
 | `DATABASE_URL` | Postgres connection string (compose sets it for the orchestrator). |
-| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Database bootstrap. |
-| `DOCKER_HOST` | Engine socket, `unix:///run/user/1000/podman/podman.sock` for rootless Podman. |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Database bootstrap. Compose interpolates all three into the `DATABASE_URL` it gives the orchestrator, so `POSTGRES_PASSWORD` must use URL-safe characters (letters, digits, `-`, `_`, `.`, `~`); setting `DATABASE_URL` in `.env` does not help, because compose's `environment:` overrides it. |
+| `DOCKER_HOST` | Engine socket, `unix:///run/user/1000/podman/podman.sock` for rootless Podman. Compose overrides it inside the orchestrator container to the mounted socket path (`unix:///run/engine.sock`), so the value here is what `podman-compose`/`docker compose` itself and a host-run orchestrator use. |
+| `ENGINE_SOCKET_HOST` | **Compose only.** Host path of the engine socket, bind-mounted into the orchestrator at `/run/engine.sock`; `/run/user/1000/podman/podman.sock` for rootless Podman, `/var/run/docker.sock` for Docker. A path, not a `unix://` URL. |
 | `DATA_DIR_HOST` | Host path of the data directory; mounted at `/data` in the orchestrator and used as the source of session bind mounts. A bind-mount source must be absolute, so a relative path is resolved against the orchestrator's working directory at startup. |
 | `DATA_DIR` | Path at which the orchestrator itself sees the data directory: `/data` in compose, the same as `DATA_DIR_HOST` when running on the host. |
 | `MCP_URL` | URL written into each session's MCP config; default `http://orchestrator:7001/mcp`. On a development host: `http://host.containers.internal:7001/mcp`. |
@@ -97,19 +99,38 @@ Copy `.env.example` to `.env` and set:
 | `GIT_BOT_NAME`, `GIT_BOT_EMAIL` | Identity for commits the orchestrator creates (merges). |
 | `API_PORT` | Port of the API listener nginx proxies to (default 7000). |
 | `MCP_PORT` | Port of the MCP listener on the sessions network (default 7001). |
+| `HTTP_PORT` | **Compose only.** Host port nginx publishes (default 8080). Under rootless Podman a port below 1024 fails to bind unless `net.ipv4.ip_unprivileged_port_start` is lowered; keep 8080 and put any reverse proxy in front of it. |
 | `STOP_GRACE_SECS` | Seconds between SIGINT and SIGTERM when stopping a session (default 20). |
 | `MIRROR_FETCH_INTERVAL_SECS` | How often project mirrors are fetched (default 600). |
 | `SESSION_IMAGE_DEFAULT` | Image used by the default profile of new projects and by the startup probe (default `mars-session-claude:latest`). Both pull it, so it has to exist on the engine before the first start; build it as described under "Session image". |
 | `RESEND_API_KEY`, `MAIL_FROM` | Email delivery through Resend, used for invites, password resets and task escalations. `MAIL_FROM` is required once `RESEND_API_KEY` is set. Without an API key, full usable links including their tokens are intentionally written to the orchestrator log at `info` instead of sent. This supports local development without email configuration; no extra flag is required (ADR 0026). |
 | `RUST_LOG` | Log filter, `info` by default and whenever the given filter is unusable, such as the bare non-level word `verbose`. |
+| `COMPOSE_FILE` | **Compose only.** Which compose files make up the deployment, and so which engine it runs on: `compose.yml:compose.podman.yml` or `compose.yml:compose.docker.yml` (ADR 0035). |
 
 Generate a master key with `openssl rand -base64 32`.
 
 ### Start
 
+The deployment is one `compose.yml` plus a one-line override file per engine (ADR 0035). Choose the engine with `COMPOSE_FILE` in `.env`:
+
+```bash
+COMPOSE_FILE=compose.yml:compose.podman.yml   # rootless Podman
+COMPOSE_FILE=compose.yml:compose.docker.yml   # Docker
+```
+
+Then:
+
 ```bash
 podman-compose up -d        # or: docker compose up -d
 ```
+
+If a compose implementation ignores `COMPOSE_FILE` from `.env`, pass the files instead: `-f compose.yml -f compose.podman.yml`.
+
+The first start builds both images, the orchestrator and nginx, which takes a while; a build failure leaves nothing running. After pulling changes, rebuild explicitly with `compose build`. nginx then listens on `HTTP_PORT` (default 8080) and nothing else is published: neither the API (`API_PORT`) nor the MCP listener (`MCP_PORT`) is reachable from the host.
+
+TLS is terminated in front of nginx by the operator — a host reverse proxy or a load balancer — and `PUBLIC_URL` must be the `https://` URL users actually open, because the session cookie is marked `Secure` exactly when `PUBLIC_URL` is https.
+
+If the orchestrator restarts in a loop, check `compose logs orchestrator`: `startup probe failed; refusing to start` means `DATA_DIR_HOST` is missing or not owned by the right user (the service user under Podman, uid 1000 under Docker).
 
 The orchestrator applies database migrations on startup; the first migration seeds an administrator:
 
@@ -130,6 +151,7 @@ Code hand-offs keep the producing session, branch, exact commit and a comment to
 ### Operating notes
 
 - **Known v1 vulnerability:** git commands run by the orchestrator against an agent-controlled checkout can execute helpers configured by that agent, with the orchestrator's access to secrets, project data and the engine socket. This risk is explicitly accepted for v1; isolating those git operations is deferred. See [ADR 0019](docs/decisions/0019-defer-isolation-of-git-checkout-operations.md). Session containers are not a complete containment guarantee while this remains unresolved.
+- `compose down` while sessions are running cannot remove `mars-sessions`, because session containers are still attached to it: the services are gone but the network removal reports an error. Stop or delete the sessions first, or ignore that one warning.
 - Session working copies, project mirrors and transcripts live under `DATA_DIR_HOST`. Back it up with the database.
 - v1 does not automatically redact secrets from agent/tool output or user messages. Transcripts, event history and their backups may contain credentials printed by commands or pasted into messages; encryption of stored secrets does not cover these copies (ADR 0027).
 - Git fetches refresh the project's upstream-tracking branches (`origin/main`, for example). Mars keeps its integration branches (`main`) separately, so a background fetch cannot discard a merge waiting to be pushed. Merge `origin/main` into `main` explicitly to incorporate upstream changes, then push when ready. A push rejected because upstream changed leaves local work intact. Session reference clones still share history through the read-only project repository.
@@ -164,14 +186,15 @@ mars/
 ├── .env.example
 ├── images/             session container images (claude/, stub/)
 ├── nginx/              nginx.conf, default.conf.template and Dockerfile for the frontend image
-└── compose.yml         (planned)
+├── compose.yml         the deployment: postgres, orchestrator, nginx
+└── compose.podman.yml, compose.docker.yml   one-line engine overrides
 ```
 
 Working conventions, code-quality commands and test expectations are in `CLAUDE.md`.
 
 ### Running locally
 
-The orchestrator, the frontend, the session images and `.env.example` are in the repository; `compose.yml` and the nginx image are not, so the steps that need them are marked as planned. The socket commands assume Linux.
+The orchestrator, the frontend, the session images, the deployment images, `.env.example` and the compose files are all in the repository; these steps are for developing on the host instead of running the compose stack. The socket commands assume Linux.
 
 **Postgres**:
 
@@ -230,7 +253,7 @@ The nginx image builds the frontend with `npm ci && npm run build` on `node:22-a
 podman build -f nginx/Dockerfile -t mars-nginx:dev .
 ```
 
-With Docker, run either command with `docker build`. Once `compose.yml` exists, `compose build` builds both images.
+With Docker, run either command with `docker build`. `compose build` builds both images under the tags `compose.yml` names, `mars-orchestrator:latest` and `mars-nginx:latest`.
 
 **Frontend**:
 

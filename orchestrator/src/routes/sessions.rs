@@ -5,8 +5,16 @@
 //!
 //! `GET /sessions/{id}/tasks` is the tracker's content under a session's path,
 //! and it is here rather than in [`crate::routes::tasks`] because the path is
-//! a session's: one implementation, which the launch-for-task work reuses
-//! rather than repeats.
+//! a session's: one implementation, which launch-for-task reuses rather than
+//! repeats.
+//!
+//! **Launching for a task** ([`insert_claiming`]) is the one create that
+//! writes outside `sessions`: with a `task_id` the row insert and the claim are
+//! one project-locked transaction, so a session that exists holds its task and
+//! a claim that loses leaves no session behind (`ARCHITECTURE.md`, "Task
+//! tracker" → "Launching a session for a task"). The base a hand-off pins, the
+//! generated first message and the 409 for a task that is held, blocked or
+//! finished all follow from the row read under that lock.
 //!
 //! **The resource half** is a row read, a row write or one launch handed to
 //! [`crate::session::Launcher`].
@@ -40,9 +48,13 @@
 //! 4. an explicitly given `title` is 1 to 200 characters (400), and an omitted
 //!    one is derived by [`default_title`];
 //! 5. the base ref resolves in the project repository (400), checked under the
-//!    project git lock. The launcher resolves it again when it clones — the
-//!    mirror may have been fetched in between — so this check exists only to
-//!    answer 400 now instead of producing a session that fails a moment later;
+//!    project git lock and before any transaction, because a git lock is never
+//!    taken from inside a database one (ADR 0021). The launcher resolves it
+//!    again when it clones — the mirror may have been fetched in between — so
+//!    this check exists only to answer 400 now instead of producing a session
+//!    that fails a moment later. A base a task's hand-off pins is not checked
+//!    here: it is chosen under the tracker lock this request has not taken yet,
+//!    and it is a commit the project retains;
 //! 6. a fresh MCP token is generated **before** the insert, so the row's hash
 //!    and the only copy of the value come into existence together (ADR 0029;
 //!    `ARCHITECTURE.md`, "MCP design"): the raw token goes to the launcher,
@@ -52,12 +64,14 @@
 //! `creating` session, and the launch runs on its own task.
 //!
 //! **How the first message is delivered.** It is not a column: `message` is the
-//! first thing said to this session, and where it goes depends on the kind. An
-//! ephemeral session has no stdin to say it on, so it becomes the `-p` prompt
-//! the launcher passes ([`LaunchMode::Fresh`]). A conversational session reads
-//! its messages from stdin, so the message is submitted to the registry as a
-//! [`QueuedInput`] carrying the caller's `user_id`, and the owner records it as
-//! the session's first `user_message` exactly as it records any other input
+//! first thing said to this session — after the generated task message, when
+//! there is a task — and where the two go depends on the kind. An ephemeral
+//! session has no stdin to say them on, so they become the `-p` prompt the
+//! launcher passes, joined by a blank line ([`LaunchMode::Fresh`]). A
+//! conversational session reads its messages from stdin, so each is submitted
+//! to the registry as a [`QueuedInput`] — the generated one with no `user_id`,
+//! since nobody typed it, the caller's with theirs — and the owner records them
+//! as the session's first `user_message`s exactly as it records any other input
 //! (`ARCHITECTURE.md`, "Session owner task").
 //!
 //! That submission has to be race-free against the launch, which is why the
@@ -84,19 +98,21 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::events::{MAX_TEXT_BYTES, SessionEvent, SessionInput};
+use crate::events::{MAX_TEXT_BYTES, SessionEvent, SessionInput, TaskActor};
 use crate::git::{DataPaths, resolve_base};
 use crate::models::{
-    NewSession, ProjectStatus, Session, SessionKind, SessionState, SessionTitle, SyncOutcome,
-    default_title, validate_launch_prompt, validate_title,
+    AgentProfile, NewSession, ProjectStatus, Session, SessionKind, SessionState, SessionTitle,
+    SyncOutcome, TaskRef, default_title, validate_launch_prompt, validate_title,
 };
 use crate::prelude::*;
 use crate::repositories::{MAX_EVENT_PAGE, ProjectRepository, SessionRepository, TaskRepository};
+use crate::routes::tasks::task_ref;
 use crate::routes::{CurrentUser, Path, Query};
 use crate::session::{
-    LaunchMode, McpToken, Phase, QueuedInput, SessionRegistry, SessionService, SubmitResult,
+    HandoffContext, LaunchMode, McpToken, Phase, QueuedInput, SessionRegistry, SessionService,
+    SubmitResult, generated_task_message,
 };
-use crate::tracker::TaskDto;
+use crate::tracker::{TaskDto, TrackerMutation, claim_for_launch};
 
 /// What a create against a project that has no repository to clone is told
 /// (409).
@@ -251,22 +267,22 @@ async fn list(
 /// `deny_unknown_fields` for the reason the other route modules give: a client
 /// that sends `state`, `branch` or `kind` here has misunderstood the endpoint —
 /// they are the server's — and is told so rather than silently ignored.
-///
-/// `task_id`, which `SPEC.md` lists, is the launch-for-task route's and is
-/// added with it; until then a body carrying one is refused rather than
-/// creating a session that quietly holds no task.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateSessionInput {
     profile_id: Uuid,
     /// Absent means the project's `default_branch` (`SPEC.md`, "Projects":
     /// "the default session base is the integration head named by
-    /// `default_branch`").
+    /// `default_branch`"), or — with a `task_id` whose task has a current
+    /// hand-off — that hand-off's pinned commit.
     base_ref: Option<String>,
     title: Option<String>,
     /// The first thing said to this session. Not a column: it is delivered as
     /// the launch prompt or as the first queued input, never stored on the row.
     message: Option<String>,
+    /// The task this session is launched to work on, claimed in the same
+    /// transaction that inserts the row (`SPEC.md`, "Sessions").
+    task_id: Option<TaskIdInput>,
 }
 
 impl CreateSessionInput {
@@ -279,6 +295,43 @@ impl CreateSessionInput {
         self.message
             .as_deref()
             .filter(|message| !message.trim().is_empty())
+    }
+
+    /// The task this create names, in the form the tracker resolves, or 404.
+    fn task(&self) -> Result<Option<TaskRef>> {
+        self.task_id
+            .as_ref()
+            .map(TaskIdInput::reference)
+            .transpose()
+    }
+}
+
+/// A `task_id` in a create body: a task's UUID, or its per-project number as a
+/// string or as a JSON integer (`SPEC.md`, "Sessions").
+///
+/// The string forms are the ones every other endpoint takes, parsed by the one
+/// shared [`task_ref`]. The integer is accepted too because `#12` is a number
+/// on the board and a client that sends it as one has not made a mistake; a
+/// number outside `INTEGER` addresses no task and is the same 404 a malformed
+/// string gets.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TaskIdInput {
+    /// A UUID, or a number written as a string.
+    Text(String),
+    /// A per-project number sent as a JSON integer.
+    Number(i64),
+}
+
+impl TaskIdInput {
+    /// The reference this names, or 404.
+    fn reference(&self) -> Result<TaskRef> {
+        match self {
+            Self::Text(raw) => task_ref(raw),
+            Self::Number(number) => i32::try_from(*number)
+                .map(TaskRef::Number)
+                .map_err(|_| Error::NotFound),
+        }
     }
 }
 
@@ -315,30 +368,46 @@ async fn create(
         .ok_or_else(|| Error::BadRequest(UNKNOWN_PROFILE.to_string()))?;
 
     let message = body.message();
-    // No task yet: the launch-for-task route is what passes one, and an
-    // ephemeral session without either is refused here.
-    validate_launch_prompt(profile.kind, None, message)?;
+
+    // Read on the pool, for the 404 and for the title: the row the claim is
+    // decided against is the one the mutation locks a few lines down.
+    let task = match body.task()? {
+        Some(reference) => Some(
+            TaskRepository::new(&state.pool)
+                .find_task(pid, reference)
+                .await?
+                .ok_or(Error::NotFound)?,
+        ),
+        None => None,
+    };
+
+    // A task is a prompt: its generated message is what an ephemeral session
+    // runs, so one launched for a task needs no `message` (`SPEC.md`).
+    validate_launch_prompt(profile.kind, task.as_ref().map(|task| task.id), message)?;
 
     let title = match body.title.as_deref() {
         Some(raw) => Some(validate_title(raw)?),
-        None => default_title(None, message),
+        None => default_title(task.as_ref().map(|task| task.title.as_str()), message),
     };
 
-    let base_ref = body
-        .base_ref
-        .as_deref()
-        .unwrap_or(default_branch)
-        .to_string();
-
-    // Validation only, and under the project git lock like every other read of
-    // the repository (ADR 0021): no transaction is open here, and the launcher
-    // resolves the same name again when it clones.
-    {
+    // A base the caller named is resolved now, under the project git lock and
+    // before any database transaction, so that the documented lock order holds
+    // and a name that is not in the mirror is a 400 rather than a session that
+    // fails a moment later (ADR 0021). The launcher resolves it again when it
+    // clones. A hand-off's base is skipped here: it is a commit this project
+    // pinned, chosen under a lock this request has not taken yet.
+    let explicit_base = body.base_ref.as_deref();
+    let starts_from_handoff = explicit_base.is_none()
+        && task
+            .as_ref()
+            .is_some_and(|task| task.current_handoff_id.is_some());
+    if !starts_from_handoff {
+        let base_ref = explicit_base.unwrap_or(default_branch);
         let guard = state.git_locks.lock(pid).await;
         resolve_base(
             &guard,
             &DataPaths::from_config(&state.config),
-            Some(&base_ref),
+            Some(base_ref),
             default_branch,
         )
         .await
@@ -357,25 +426,54 @@ async fn create(
     // value are created together (ADR 0029). The row records the name the
     // caller gave, not the commit it resolved to.
     let token = McpToken::generate();
-    let mut new_session = NewSession::new(pid, profile.id, profile.kind, base_ref, token.hash());
-    new_session.created_by = Some(user.id);
-    let new_session = new_session.with_title(title.as_deref())?;
 
-    let mut tx = state.pool.begin().await?;
-    let session = SessionRepository::new(&state.pool)
-        .insert(&mut tx, &new_session)
-        .await?;
-    tx.commit().await?;
+    let (session, task_message) = match task {
+        Some(task) => {
+            insert_claiming(
+                &state,
+                &profile,
+                user.id,
+                task.id,
+                LaunchBase {
+                    explicit: explicit_base,
+                    default_branch,
+                },
+                title.as_deref(),
+                &token,
+            )
+            .await?
+        }
+        None => {
+            let mut new_session = NewSession::new(
+                pid,
+                profile.id,
+                profile.kind,
+                explicit_base.unwrap_or(default_branch),
+                token.hash(),
+            );
+            new_session.created_by = Some(user.id);
+            let new_session = new_session.with_title(title.as_deref())?;
+
+            let mut tx = state.pool.begin().await?;
+            let session = SessionRepository::new(&state.pool)
+                .insert(&mut tx, &new_session)
+                .await?;
+            tx.commit().await?;
+
+            (session, None)
+        }
+    };
 
     info!(
         session_id = %session.id,
         project_id = %pid,
         profile_id = %profile.id,
         kind = ?profile.kind,
+        task_id = ?session.task_id,
         "session created",
     );
 
-    let prompt = first_message(&state, &session, user.id, message);
+    let prompt = first_message(&state, &session, user.id, task_message.as_deref(), message);
     state
         .launcher()
         .launch(session.id, LaunchMode::Fresh { token, prompt });
@@ -383,41 +481,183 @@ async fn create(
     Ok((StatusCode::CREATED, Json(session)))
 }
 
-/// Deliver the first message, and answer with the ephemeral launch prompt.
+/// What a launch starts from before the task's hand-off has been read.
 ///
-/// The two kinds differ in *where* the message goes, not in whether it is
-/// delivered: an ephemeral session gets it as the `-p` prompt the returned
-/// value carries, a conversational one gets it as an input queued for the owner
-/// that is about to attach. See the module documentation for why the registry
-/// entry is created here.
+/// The caller's `base_ref` and the project's integration head: which of them
+/// the session ends up with — and whether a hand-off commit displaces both —
+/// is decided under the lock in [`insert_claiming`].
+#[derive(Debug, Clone, Copy)]
+struct LaunchBase<'a> {
+    /// The `base_ref` the caller named, already resolved in the mirror.
+    explicit: Option<&'a str>,
+    /// The project's `default_branch`.
+    default_branch: &'a str,
+}
+
+/// Insert the session row and claim its task in one tracker-locked
+/// transaction, and answer with the row and the generated task message.
+///
+/// The whole of `ARCHITECTURE.md`, "Task tracker" → "Launching a session for a
+/// task" that is not the launch itself, in the documented lock order: the
+/// project row (the mutation), then the task row, then the session insert
+/// (ADR 0021). Nothing here resolves a ref or calls the engine — a git lock is
+/// never taken from inside a database one.
+///
+/// The order within the transaction is forced by the schema:
+/// `tasks.lease_holder_session_id` references `sessions`, so the row exists
+/// before the claim points at it. Both are the same transaction, so a lost
+/// claim takes the session row with it: [`claim_for_launch`] answers 409 `task
+/// is not claimable` for a held, blocked or terminal task — the statement's
+/// `WHERE` decides all three at once — and `?` drops the mutation, which rolls
+/// back.
+///
+/// The base and the hand-off are selected from the *locked* row, so a session
+/// cannot start from a hand-off that was superseded between the read and the
+/// claim. An explicit `base_ref` overrides the hand-off commit and leaves
+/// `handoff_id` null, and the generated message says so.
+async fn insert_claiming(
+    state: &AppState,
+    profile: &AgentProfile,
+    user_id: Uuid,
+    task_id: Uuid,
+    base: LaunchBase<'_>,
+    title: Option<&str>,
+    token: &McpToken,
+) -> Result<(Session, Option<String>)> {
+    let project_id = profile.project_id;
+    let tasks = TaskRepository::new(&state.pool);
+
+    let mut mutation =
+        TrackerMutation::begin(&state.pool, project_id, TaskActor::User { user_id }).await?;
+
+    let task = tasks
+        .find_task_for_update(mutation.conn(), project_id, TaskRef::Id(task_id))
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    let handoff = match task.current_handoff_id {
+        Some(id) => {
+            tasks
+                .find_handoff_in(mutation.conn(), project_id, id)
+                .await?
+        }
+        None => None,
+    };
+    let comment = match handoff.as_ref().and_then(|handoff| handoff.comment_id) {
+        Some(id) => {
+            tasks
+                .find_comment_in(mutation.conn(), project_id, id)
+                .await?
+        }
+        None => None,
+    };
+
+    // The pinned commit is the default base for a task that has one; an
+    // explicit base wins and records no hand-off, because the session is not
+    // starting from that revision (`SPEC.md`, "Sessions").
+    let (base_ref, handoff_id, base_override) = match (base.explicit, handoff.as_ref()) {
+        (Some(explicit), handoff) => (
+            explicit.to_string(),
+            None,
+            handoff.is_some().then_some(explicit),
+        ),
+        (None, Some(handoff)) => (handoff.commit.clone(), Some(handoff.id), None),
+        (None, None) => (base.default_branch.to_string(), None, None),
+    };
+
+    let task_message = generated_task_message(
+        &task,
+        handoff.as_ref().map(|handoff| HandoffContext {
+            handoff,
+            comment: comment.as_ref().map(|comment| comment.body.as_str()),
+        }),
+        base_override,
+    );
+
+    let mut new_session =
+        NewSession::new(project_id, profile.id, profile.kind, base_ref, token.hash());
+    new_session.created_by = Some(user_id);
+    new_session.task_id = Some(task.id);
+    new_session.handoff_id = handoff_id;
+    let new_session = new_session.with_title(title)?;
+
+    let session = SessionRepository::new(&state.pool)
+        .insert(&mut mutation.conn(), &new_session)
+        .await?;
+
+    // The claim, its `claimed` event, its `task_sessions` link and the
+    // notification the commit issues are all the tracker's.
+    claim_for_launch(&mut mutation, &task, session.id).await?;
+    mutation.commit().await?;
+
+    Ok((session, Some(task_message)))
+}
+
+/// Deliver what this session is told first, and answer with the ephemeral
+/// launch prompt.
+///
+/// Up to two texts, in the one documented order: the generated task message,
+/// when the session was launched for a task, and then the caller's `message`
+/// (`SPEC.md`, "Sessions").
+///
+/// The two kinds differ in *where* they go, not in whether they are delivered:
+/// an ephemeral session gets them joined by a blank line as the `-p` prompt the
+/// returned value carries, a conversational one gets them as inputs queued for
+/// the owner that is about to attach. See the module documentation for why the
+/// registry entry is created here.
+///
+/// The generated message is queued with no `user_id`: nobody typed it, so the
+/// `user_message` the owner records for it carries `user_id: null`.
 ///
 /// A refused submission is logged and not returned: the session exists and is
-/// launching, and the caller can send the message again over the socket. The
-/// text is never logged (rule 3).
+/// launching, and the caller can send the message again over the socket. No
+/// text is ever logged (rule 3).
 fn first_message(
     state: &AppState,
     session: &Session,
     user_id: Uuid,
+    task_message: Option<&str>,
     message: Option<&str>,
 ) -> Option<String> {
-    let message = message?;
-
     if session.kind == SessionKind::Ephemeral {
-        return Some(message.to_string());
+        return match (task_message, message) {
+            (Some(task_message), Some(message)) => Some(format!("{task_message}\n\n{message}")),
+            (Some(text), None) | (None, Some(text)) => Some(text.to_string()),
+            (None, None) => None,
+        };
     }
 
-    let registry: &SessionRegistry = &state.session_registry;
+    if task_message.is_none() && message.is_none() {
+        return None;
+    }
+
     // The receiver is dropped: the launch task's own `register` installs the
-    // channel the owner reads, and keeps the queue this submission fills.
-    let _owner = registry.register(session.id, session.kind, Phase::Creating);
+    // channel the owner reads, and keeps the queue these submissions fill.
+    let _owner = state
+        .session_registry
+        .register(session.id, session.kind, Phase::Creating);
+
+    if let Some(task_message) = task_message {
+        queue_first(state, session, None, task_message);
+    }
+    if let Some(message) = message {
+        queue_first(state, session, Some(user_id), message);
+    }
+
+    None
+}
+
+/// Queue one of a new session's first inputs, or log why it was refused.
+fn queue_first(state: &AppState, session: &Session, user_id: Option<Uuid>, text: &str) {
+    let registry: &SessionRegistry = &state.session_registry;
 
     match registry.submit(
         session.id,
         QueuedInput {
             input: SessionInput::Message {
-                text: message.to_string(),
+                text: text.to_string(),
             },
-            user_id: Some(user_id),
+            user_id,
             client_id: None,
             accepted_at: Utc::now(),
         },
@@ -425,16 +665,14 @@ fn first_message(
         SubmitResult::Rejected(reason) => warn!(
             session_id = %session.id,
             reason = %reason,
-            "the first message of a new session was not queued",
+            "a first message of a new session was not queued",
         ),
         result => debug!(
             session_id = %session.id,
             result = ?result,
-            "the first message of a new session was queued",
+            "a first message of a new session was queued",
         ),
     }
-
-    None
 }
 
 // ---- read and retitle ----

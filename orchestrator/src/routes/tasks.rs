@@ -497,12 +497,16 @@ async fn release(
 
 // ---- shared ----
 
-/// A path or query value addressing a task, or 404.
+/// A path, query or body value addressing a task, or 404.
 ///
 /// [`TaskRef`]'s own rejection is 400 — it is a model rejecting malformed
 /// input — but a URL segment that is neither a UUID nor a number addresses no
 /// task, and `SPEC.md` answers an address that names nothing with 404.
-fn task_ref(raw: &str) -> Result<TaskRef> {
+///
+/// `pub(crate)` for the `task_id` of `POST /projects/{pid}/sessions`, which
+/// takes the same two forms and answers them the same way
+/// ([`crate::routes::sessions`]): one parser, one refusal.
+pub(crate) fn task_ref(raw: &str) -> Result<TaskRef> {
     TaskRef::from_str(raw).map_err(|_| Error::NotFound)
 }
 

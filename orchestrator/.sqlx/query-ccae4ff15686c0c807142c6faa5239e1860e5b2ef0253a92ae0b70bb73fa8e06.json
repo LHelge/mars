@@ -1,0 +1,101 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT c.id, c.task_id, c.author_user_id, c.author_session_id, c.system, c.body,\n                   c.created_at\n            FROM task_comments AS c\n            JOIN tasks AS t ON t.id = c.task_id\n            WHERE c.id = $1 AND t.project_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_comments",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "task_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_comments",
+            "name": "task_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "author_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_comments",
+            "name": "author_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "author_session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_comments",
+            "name": "author_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "system",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "task_comments",
+            "name": "system"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "body",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_comments",
+            "name": "body"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_comments",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ccae4ff15686c0c807142c6faa5239e1860e5b2ef0253a92ae0b70bb73fa8e06"
+}

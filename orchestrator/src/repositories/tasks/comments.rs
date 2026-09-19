@@ -70,6 +70,39 @@ impl TaskRepository<'_> {
         Ok(inserted)
     }
 
+    /// One comment of this project, read on the mutation's connection.
+    ///
+    /// What a launch for a task needs and nothing more: the body of the
+    /// comment a hand-off was published with, read under the same lock the
+    /// hand-off was selected under, so the generated task message quotes the
+    /// text the session is actually starting from (`SPEC.md`, "Sessions").
+    /// The project scope is the join, as everywhere else here.
+    ///
+    /// Nothing about the body is logged (rule 3).
+    pub async fn find_comment_in(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<TaskComment>> {
+        let comment = sqlx::query_as!(
+            TaskComment,
+            r#"
+            SELECT c.id, c.task_id, c.author_user_id, c.author_session_id, c.system, c.body,
+                   c.created_at
+            FROM task_comments AS c
+            JOIN tasks AS t ON t.id = c.task_id
+            WHERE c.id = $1 AND t.project_id = $2
+            "#,
+            id,
+            project_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        Ok(comment)
+    }
+
     /// A task's comments, oldest first.
     ///
     /// `TaskDetail.comments` (`SPEC.md`, "Tasks"), in the order

@@ -174,6 +174,42 @@ impl TaskRepository<'_> {
         Ok(handoff)
     }
 
+    /// [`TaskRepository::find_handoff`] on the mutation's connection.
+    ///
+    /// A launch for a task selects the hand-off `tasks.current_handoff_id`
+    /// names under the same locked task row it claims, so that the session
+    /// cannot start from a superseded revision (`ARCHITECTURE.md`, "Task
+    /// tracker" → "Launching a session for a task"). That read has to be the
+    /// transaction's: the pool would answer from outside the lock.
+    ///
+    /// No write, and therefore no token beyond the one it borrows: the row is
+    /// immutable once inserted (`docs/data-model.md`, `task_handoffs`).
+    pub async fn find_handoff_in(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<TaskHandoff>> {
+        let handoff = sqlx::query_as!(
+            TaskHandoff,
+            r#"
+            SELECT h.id, h.task_id, h.source_session_id, h.source_branch, h.commit, h.comment_id,
+                   h.review_status AS "review_status: ReviewStatus", h.reviewed_by_user_id,
+                   h.reviewed_by_session_id, h.reviewed_at, h.created_by_user_id,
+                   h.created_by_session_id, h.created_at
+            FROM task_handoffs AS h
+            JOIN tasks AS t ON t.id = h.task_id
+            WHERE h.id = $1 AND t.project_id = $2
+            "#,
+            id,
+            project_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        Ok(handoff)
+    }
+
     /// A task's hand-offs, oldest first.
     ///
     /// `TaskDetail.handoffs`, which "are ordered oldest first" (`SPEC.md`,

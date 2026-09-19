@@ -35,16 +35,23 @@
 
 mod common;
 
+use std::time::Duration;
+
 use axum::http::StatusCode;
 use axum_test::TestResponse;
+use chrono::Utc;
 use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::events::TaskActor;
-use mars_orchestrator::models::{NewSession, ProfileKind, TaskRef};
+use mars_orchestrator::models::{
+    NewSession, NewTaskComment, NewTaskHandoff, ProfileKind, ReviewStatus, TaskRef,
+};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::projects::{NewProjectRequest, create_project};
+use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{ProjectRepository, SessionRepository, TaskRepository};
 use mars_orchestrator::tracker::{TrackerMutation, claim_for_launch};
 use serde_json::{Value, json};
+use tokio::time::sleep;
 use uuid::Uuid;
 
 /// Not a real remote: `.invalid` can never resolve (rule 3).
@@ -1714,4 +1721,239 @@ async fn deleting_needs_a_token_a_project_and_a_task_that_exist() {
 
     let unresolvable = app.delete_as(&user, &task_path(pid, "not-a-task")).await;
     unresolvable.assert_status(StatusCode::NOT_FOUND);
+}
+
+// ---- hand-offs ----
+//
+// `Task.handoff` and `TaskDetail.handoffs` (`SPEC.md`, "Tasks"; `SPEC.md`,
+// "Code hand-offs and review"). Publishing one through `PUT` is the hand-off
+// epic's; what is asserted here is what the read side makes of the rows: that
+// the embedded record is the one `tasks.current_handoff_id` names rather than
+// the newest, that the history is oldest first, that the list endpoint carries
+// the same field on every task, and that a deleted actor leaves the branch,
+// the commit and the review timestamp behind.
+
+/// An obviously fake but well-formed SHA-1 object id (rule 3).
+const HANDOFF_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// Long enough that two mutations get distinct `NOW()` transaction times,
+/// short enough not to drag the suite out.
+const BETWEEN_HANDOFFS: Duration = Duration::from_millis(50);
+
+/// Publish one hand-off record on `task_id`, with its comment, in one
+/// mutation — the shape the hand-off path itself writes.
+///
+/// `reviewed_by` makes it an approved record attributed to that user, which is
+/// what a forward carrying a decision leaves behind.
+async fn publish_handoff(
+    app: &TestApp,
+    pid: Uuid,
+    task_id: Uuid,
+    source_session_id: Uuid,
+    branch: &str,
+    reviewed_by: Option<Uuid>,
+) -> Uuid {
+    let repository = TaskRepository::new(&app.pool);
+    let mut mutation = TrackerMutation::begin(&app.pool, pid, TaskActor::System)
+        .await
+        .expect("the mutation opens");
+
+    let comment = NewTaskComment::from_session(task_id, source_session_id, format!("on {branch}"));
+    repository
+        .insert_comment(mutation.conn(), pid, &comment)
+        .await
+        .expect("the comment inserts");
+
+    let mut handoff = NewTaskHandoff::new(task_id, branch, HANDOFF_COMMIT, comment.id);
+    handoff.source_session_id = Some(source_session_id);
+    handoff.created_by_session_id = Some(source_session_id);
+    if let Some(user_id) = reviewed_by {
+        handoff.review_status = ReviewStatus::Approved;
+        handoff.reviewed_by_user_id = Some(user_id);
+        handoff.reviewed_at = Some(Utc::now());
+    }
+
+    let inserted = repository
+        .insert_handoff(mutation.conn(), pid, &handoff)
+        .await
+        .expect("the hand-off inserts");
+    mutation.commit().await.expect("the mutation commits");
+
+    inserted.id
+}
+
+/// Point `tasks.current_handoff_id` at this record.
+async fn set_current_handoff(app: &TestApp, pid: Uuid, task_id: Uuid, handoff_id: Uuid) {
+    let mut mutation = TrackerMutation::begin(&app.pool, pid, TaskActor::System)
+        .await
+        .expect("the mutation opens");
+
+    TaskRepository::new(&app.pool)
+        .set_task_state_fields(
+            mutation.conn(),
+            pid,
+            task_id,
+            &StateFields {
+                current_handoff_id: Some(Some(handoff_id)),
+                ..StateFields::default()
+            },
+        )
+        .await
+        .expect("the current hand-off is set");
+    mutation.commit().await.expect("the mutation commits");
+}
+
+#[tokio::test]
+async fn the_detail_lists_hand_offs_oldest_first_beside_the_one_the_column_names() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "reviewer").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Wire the tracker" })).await;
+    let id = id_of(&task);
+    let session_id = session(&app, pid).await;
+
+    let mut published = Vec::new();
+    for branch in ["session/one", "session/two", "session/three"] {
+        published.push(publish_handoff(&app, pid, id, session_id, branch, None).await);
+        sleep(BETWEEN_HANDOFFS).await;
+    }
+
+    // The *current* record is the pointer's, "never by timestamp"
+    // (`docs/data-model.md`): here the middle one, as a forward onto an older
+    // revision would leave it.
+    set_current_handoff(&app, pid, id, published[1]).await;
+
+    let detail = read_task(&app, &user, pid, id).await;
+
+    let listed = detail["handoffs"].as_array().expect("a list");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|handoff| handoff["source_branch"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            json!("session/one"),
+            json!("session/two"),
+            json!("session/three"),
+        ],
+        "oldest first",
+    );
+    assert_eq!(
+        listed
+            .iter()
+            .map(|handoff| handoff["id"].clone())
+            .collect::<Vec<_>>(),
+        published.iter().map(|id| json!(id)).collect::<Vec<_>>(),
+    );
+
+    assert_eq!(detail["handoff"]["id"], json!(published[1]));
+    assert_eq!(detail["handoff"]["task_id"], json!(id));
+    assert_eq!(detail["handoff"]["source_branch"], json!("session/two"));
+    assert_eq!(detail["handoff"]["commit"], json!(HANDOFF_COMMIT));
+    assert_eq!(detail["handoff"]["source_session_id"], json!(session_id));
+    assert_eq!(detail["handoff"]["review_status"], json!("unreviewed"));
+    assert_eq!(detail["handoff"]["reviewed_at"], json!(null));
+    assert_eq!(detail["handoff"]["reviewed_by_user_id"], json!(null));
+    assert_eq!(detail["handoff"]["reviewed_by_session_id"], json!(null));
+    assert_eq!(detail["handoff"]["created_by_user_id"], json!(null));
+    assert_eq!(
+        detail["handoff"]["created_by_session_id"],
+        json!(session_id)
+    );
+    assert!(detail["handoff"]["comment_id"].is_string());
+    assert!(detail["handoff"]["created_at"].is_string());
+}
+
+#[tokio::test]
+async fn the_project_list_embeds_the_current_hand_off_on_every_task_that_has_one() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "reviewer").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let handed_off = create_task(&app, &user, pid, json!({ "title": "Handed off" })).await;
+    let plain = create_task(&app, &user, pid, json!({ "title": "Plain" })).await;
+    let session_id = session(&app, pid).await;
+
+    let handoff_id = publish_handoff(
+        &app,
+        pid,
+        id_of(&handed_off),
+        session_id,
+        "session/one",
+        None,
+    )
+    .await;
+    set_current_handoff(&app, pid, id_of(&handed_off), handoff_id).await;
+
+    let response = app.get_as(&user, &tasks_path(pid)).await;
+    response.assert_status_ok();
+    let list = response.json::<Value>();
+    assert_eq!(numbers(&list), vec![1, 2]);
+
+    assert_eq!(list[0]["id"], handed_off["id"]);
+    assert_eq!(list[0]["handoff"]["id"], json!(handoff_id));
+    assert_eq!(list[0]["handoff"]["source_branch"], json!("session/one"));
+    assert_eq!(list[1]["id"], plain["id"]);
+    assert_eq!(list[1]["handoff"], json!(null));
+}
+
+#[tokio::test]
+async fn a_hand_off_keeps_its_branch_commit_and_review_when_its_actors_are_deleted() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "owner").await;
+    let approver = signed_in(&app, "approver").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Wire the tracker" })).await;
+    let id = id_of(&task);
+    let session_id = session(&app, pid).await;
+
+    let handoff_id = publish_handoff(
+        &app,
+        pid,
+        id,
+        session_id,
+        "session/one",
+        Some(approver.user.id),
+    )
+    .await;
+    set_current_handoff(&app, pid, id, handoff_id).await;
+
+    let before = read_task(&app, &user, pid, id).await;
+    assert_eq!(before["handoff"]["review_status"], json!("approved"));
+    assert_eq!(
+        before["handoff"]["reviewed_by_user_id"],
+        json!(approver.user.id)
+    );
+    let reviewed_at = before["handoff"]["reviewed_at"].clone();
+    assert!(reviewed_at.is_string());
+
+    // No interface deletes a session row or a user here, and the fact under
+    // test is the `ON DELETE SET NULL` those columns carry.
+    sqlx::query("DELETE FROM sessions WHERE id = $1")
+        .bind(session_id)
+        .execute(&app.pool)
+        .await
+        .expect("the session row is deleted");
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(approver.user.id)
+        .execute(&app.pool)
+        .await
+        .expect("the reviewing user is deleted");
+
+    let after = read_task(&app, &user, pid, id).await;
+
+    assert_eq!(after["handoff"]["id"], json!(handoff_id));
+    assert_eq!(after["handoff"]["source_session_id"], json!(null));
+    assert_eq!(after["handoff"]["created_by_session_id"], json!(null));
+    assert_eq!(after["handoff"]["reviewed_by_user_id"], json!(null));
+    // What deletion never takes away.
+    assert_eq!(after["handoff"]["source_branch"], json!("session/one"));
+    assert_eq!(after["handoff"]["commit"], json!(HANDOFF_COMMIT));
+    assert_eq!(after["handoff"]["review_status"], json!("approved"));
+    assert_eq!(after["handoff"]["reviewed_at"], reviewed_at);
+
+    assert_eq!(after["handoffs"].as_array().expect("a list").len(), 1);
+    assert_eq!(after["handoffs"][0]["id"], json!(handoff_id));
 }

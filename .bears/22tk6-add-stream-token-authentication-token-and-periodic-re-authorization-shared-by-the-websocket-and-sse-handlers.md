@@ -1,10 +1,10 @@
 ---
 id: "22tk6"
 title: Add stream token authentication (?token=) and periodic re-authorization shared by the WebSocket and SSE handlers
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:44:23.709611292Z"
-updated: "2026-09-16T20:51:52.036638938Z"
+updated: "2026-09-19T20:19:45.701564765Z"
 tags:
   - orchestrator
   - realtime
@@ -13,6 +13,7 @@ depends_on:
   - s52qg
   - "5h3y4"
 parent: h8kw9
+attempts: 1
 ---
 
 ## Summary

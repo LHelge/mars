@@ -10,6 +10,7 @@ import { Route, Routes } from "react-router";
 import { AdminRoute } from "./components/AdminRoute";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { ChangePasswordPage } from "./pages/ChangePasswordPage";
+import { AcceptInvitePage } from "./pages/AcceptInvitePage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -22,7 +23,7 @@ export function App() {
     <Routes>
       {/* Reached without a session. */}
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/invite/:token" element={<PlaceholderPage title="Accept invitation" layout="auth" />} />
+      <Route path="/invite/:token" element={<AcceptInvitePage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 

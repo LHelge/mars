@@ -138,6 +138,15 @@ async fn a_signal_reaches_the_containers_main_process() {
         .await;
 }
 
+/// `ARCHITECTURE.md`: dropping the stdin writer leaves the container's process
+/// running, and a later attach is accepted (ADR 0034).
+#[tokio::test]
+async fn a_dropped_stdin_writer_leaves_the_container_running() {
+    contract()
+        .a_dropped_stdin_writer_leaves_the_container_running()
+        .await;
+}
+
 /// `ARCHITECTURE.md`: a stdin write after the container exited returns an error,
 /// never a silent success.
 #[tokio::test]

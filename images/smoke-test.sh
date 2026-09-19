@@ -18,6 +18,8 @@
 #     CLI does, writes nothing at all before the first stdin line in the
 #     interactive mode (ADR 0032), and reports the MCP server from
 #     --mcp-config as connected;
+#   - the CLI reads the FIFO /tmp/mars-stdin its entrypoint made, and a writer
+#     of that FIFO going away is not an EOF for it (ADR 0034);
 #   - the agent CLI is PID 1, SIGINT ends the turn with the real CLI's
 #     interrupt shape (a `user` line `[Request interrupted by user]` and a
 #     `result` with `subtype: "error_during_execution"`, `is_error: true`,
@@ -101,7 +103,6 @@ USAGE
 cleanup() {
     local status=$?
     local pid name
-    exec 3>&-
     for pid in ${BG_PIDS[@]+"${BG_PIDS[@]}"}; do
         kill "$pid" 2>/dev/null || true
     done
@@ -190,34 +191,40 @@ run_once() {
 }
 
 # start_interactive_stub <dir> <delay_ms> <cmd...> — the stub in the
-# background with stdin on a FIFO, as the orchestrator attaches it. Sets
-# BG_NAME and BG_PID and leaves the FIFO's write end on fd 3.
+# background, reading the FIFO its entrypoint made (ADR 0034). The container's
+# own stdin is not opened, as the launcher leaves it. Sets BG_NAME and BG_PID.
 start_interactive_stub() {
     local dir=$1 delay=$2
     shift 2
     local name
     name="$(container_name stub)"
     CONTAINERS+=("$name")
-    mkfifo "$dir/in"
     session_flags "$dir"
-    "$ENGINE" run -i --name "$name" "${RUN_FLAGS[@]}" \
+    "$ENGINE" run --name "$name" "${RUN_FLAGS[@]}" \
         -e "MARS_STUB_LINE_DELAY_MS=$delay" \
-        "$STUB_IMAGE" "$@" <"$dir/in" >>"$dir/engine.out" 2>&1 &
+        "$STUB_IMAGE" "$@" >>"$dir/engine.out" 2>&1 &
     BG_PID=$!
     BG_PIDS+=("$BG_PID")
     BG_NAME="$name"
-    # Read-write so opening never blocks on a container that failed to start;
-    # closing fd 3 still gives the container's stdin an EOF, because this shell
-    # then holds no writer either.
-    exec 3<>"$dir/in"
 }
 
+# The relay the engine adapter's `attach_stdin` runs, one per line here: an
+# exec that waits for the FIFO and `cat`s into it. Each relay ends when its
+# line is written, which is what an orchestrator restart does to the owner's,
+# and the CLI must not take that for an EOF (ADR 0034).
 send_user_line() {
-    printf '%s\n' "$USER_LINE" >&3
-}
-
-close_stdin() {
-    exec 3>&-
+    local deadline
+    # The container is started in the background and may not exist yet.
+    deadline=$(($(date +%s) + 30))
+    until [ "$("$ENGINE" inspect --format '{{.State.Running}}' "$BG_NAME" 2>/dev/null)" = true ]; do
+        [ "$(date +%s)" -lt "$deadline" ] \
+            || { fail "the container was not running within 30s"; return 1; }
+        sleep 0.1
+    done
+    # shellcheck disable=SC2016 # the script is for the container's shell
+    printf '%s\n' "$USER_LINE" | timeout 30 "$ENGINE" exec -i "$BG_NAME" sh -c \
+        'i=0; while [ ! -p /tmp/mars-stdin ]; do i=$((i+1)); [ "$i" -le 100 ] || exit 1; sleep 0.1; done; exec cat >/tmp/mars-stdin' \
+        || { fail "the user line could not be written to /tmp/mars-stdin"; return 1; }
 }
 
 # wait_for_line <file> <pattern> <timeout-secs> [count]
@@ -407,20 +414,28 @@ check_stub_interactive() {
     # Nothing is written before the first stdin line, `init` included, as the
     # real CLI does (ADR 0032; ARCHITECTURE.md, "Launch sequence").
     expect_silent "$stream" 3 "the stream before the first stdin line" || return 1
-    send_user_line
+    send_user_line || return 1
     wait_for_line "$stream" '"subtype":"init"' 30 || return 1
     head -n 1 "$stream" >"$dir/init.txt"
     expect_contains "$dir/init.txt" '{"name":"mars-orchestrator","status":"connected"}' \
         "the mcp_servers of the init line" || return 1
     wait_for_line "$stream" '"type":"result"' 30 1 || return 1
-    send_user_line
+    # A second relay, after the first has ended: the same process answers, so
+    # the fixture's second turn follows its first and both carry one session id.
+    send_user_line || return 1
     wait_for_line "$stream" '"type":"result"' 30 2 || return 1
     expect_eq "$(init_count "$stream")" 2 \
         "init lines after two turns (one opens each turn)" || return 1
-    close_stdin
+    expect_eq "$(grep -F '"subtype":"init"' "$stream" | grep -o '"session_id":"[^"]*"' | sort -u | wc -l)" 1 \
+        "distinct session ids across the two turns (one process)" || return 1
+    # Both relays are gone and the CLI is still there: no writer leaving is an
+    # EOF. It is ended the way Mars ends it, with a signal.
+    expect_eq "$("$ENGINE" inspect --format '{{.State.Running}}' "$BG_NAME")" true \
+        "the container running after both relays ended" || return 1
+    "$ENGINE" kill --signal=SIGINT "$BG_NAME" >/dev/null
     code="$(timeout 30 "$ENGINE" wait "$BG_NAME")" \
-        || { fail "the container did not exit within 30s of stdin closing"; return 1; }
-    expect_eq "$code" 0 "exit code after stdin closed" || return 1
+        || { fail "the container did not exit within 30s of SIGINT"; return 1; }
+    expect_eq "$code" 0 "exit code after SIGINT" || return 1
 }
 
 # start_signal_stub <dir> <stream> — the shared opening of the two signal
@@ -430,7 +445,7 @@ start_signal_stub() {
     write_mcp_config "$dir"
     start_interactive_stub "$dir" 300 "${CONVERSATIONAL_ARGV[@]}"
     # The turn, `init` first, starts only once a line has been written (ADR 0032).
-    send_user_line
+    send_user_line || return 1
     wait_for_line "$stream" '"subtype":"init"' 30 || return 1
     wait_for_lines "$stream" 2 30 || return 1
     cmdline="$("$ENGINE" exec "$BG_NAME" cat /proc/1/cmdline | tr '\0' ' ')"

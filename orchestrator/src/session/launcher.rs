@@ -452,11 +452,21 @@ async fn launch(
         .start(&container_id)
         .await
         .map_err(|err| Failure::new(format!("container start failed: {err}")))?;
-    let stdin = state
-        .engine
-        .attach_stdin(&container_id)
-        .await
-        .map_err(|err| Failure::new(format!("attaching stdin failed: {err}")))?;
+    // An ephemeral session's whole input is its argv, and its owner drops
+    // anything sent to it, so it gets no stdin writer: the attach is an exec
+    // (ADR 0034), and an exec into a run short enough to have ended already
+    // would be refused and fail a launch that in fact succeeded.
+    let stdin = match session.kind {
+        SessionKind::Ephemeral => None,
+        SessionKind::Conversational => Some(
+            state
+                .engine
+                .attach_stdin(&container_id)
+                .await
+                .map_err(|err| Failure::new(format!("attaching stdin failed: {err}")))?
+                as Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
+        ),
+    };
 
     let start_offset = if resuming {
         sessions
@@ -515,7 +525,7 @@ async fn launch(
             credential,
         },
         adopted: false,
-        stdin: Some(stdin as Box<dyn tokio::io::AsyncWrite + Send + Unpin>),
+        stdin,
         container_id: Some(container_id.clone()),
         commands,
         state: state.clone(),

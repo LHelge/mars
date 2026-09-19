@@ -13,14 +13,20 @@
 #     decision is realised as this redirect). stderr is appended to
 #     /session/log/stderr.log. Both are opened in append mode, so a relaunch
 #     against the same session volume extends the logs instead of truncating.
-#   - stdin is left untouched: the orchestrator attaches it and writes one
-#     JSON line per user message.
+#   - stdin is the FIFO /tmp/mars-stdin, which this script makes and opens
+#     read-write for the CLI (ADR 0034). The orchestrator writes one JSON line
+#     per user message into it through an exec, and because the CLI itself
+#     holds a write end, that exec ending — an orchestrator restart — is never
+#     an EOF for the CLI, which exits on one. The container's own stdin is
+#     unused: a rootless Podman turns a closed attach into EOF on it. The path
+#     is `engine::STDIN_FIFO` in the orchestrator; it lives in the container's
+#     filesystem because a bind mount need not support FIFOs.
 #   - The working directory is /session/work and HOME defaults to
 #     /session/home (ARCHITECTURE.md, "Session container specification").
 #   - The mounts arrive writable by uid 1000 already (ARCHITECTURE.md,
 #     "Uid contract"), so this script never chowns or chmods /session/*.
 #   - PATH belongs to the Dockerfile; this script does not touch it.
-#   - Nothing but the two error messages below is ever written by this script:
+#   - Nothing but the error messages below is ever written by this script:
 #     the arguments and the environment may hold secrets (CLAUDE.md, rule 3).
 
 set -eu
@@ -39,4 +45,7 @@ export HOME="${HOME:-/session/home}"
 # live only in the CLI process's environment. Not implemented in v1, which
 # injects secrets as container environment variables.
 
-exec "$@" >>/session/log/stream.jsonl 2>>/session/log/stderr.log
+[ -p /tmp/mars-stdin ] || mkfifo -m 600 /tmp/mars-stdin \
+    || { echo "mars-entrypoint: cannot make /tmp/mars-stdin" >&2; exit 1; }
+
+exec "$@" <>/tmp/mars-stdin >>/session/log/stream.jsonl 2>>/session/log/stderr.log

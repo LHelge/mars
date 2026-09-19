@@ -39,3 +39,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0031](0031-local-task-board-search.md) | Filter the task board locally by title or number | accepted |
 | [0032](0032-run-state-on-stdin-attach.md) | A session is `running` when stdin is attached, not when `init` arrives | accepted |
 | [0033](0033-no-interactive-prompts-in-v1.md) | No interactive prompts: the agent never asks the host a question | accepted |
+| [0034](0034-cli-stdin-is-a-fifo-fed-by-an-exec.md) | The CLI's stdin is a FIFO it holds open itself, fed through an exec | accepted |

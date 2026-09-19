@@ -1,4 +1,4 @@
-//! The two streaming halves of the bollard adapter: the stdin of an attached
+//! The two streaming halves of the bollard adapter: the stdin attachment of a
 //! container, and a running exec with a PTY.
 //!
 //! Both are implementation details of [`super::bollard`], which is the only
@@ -9,7 +9,10 @@
 //! The two carry very different things. The attachment carries *only* stdin:
 //! the CLI's output is a file on the session volume that the owner tails, and
 //! the socket is a pipe for input and a liveness signal, nothing more
-//! (ADR 0010; `ARCHITECTURE.md`, "Durability and recovery"). The exec carries
+//! (ADR 0010; `ARCHITECTURE.md`, "Durability and recovery"). It is the
+//! connection of an exec that relays into the FIFO the CLI reads, not an
+//! attach to the container itself, so that its end is never an EOF for the
+//! CLI (ADR 0034). The terminal exec carries
 //! a terminal's bytes in both directions, and nothing it carries is recorded
 //! as an event (`SPEC.md`, "WebSocket: session stream").
 //!
@@ -72,15 +75,17 @@ const EXIT_CODE_DELAY: Duration = Duration::from_millis(50);
 /// session stream" gives `terminal_closed` an `exit_code` either way.
 const UNKNOWN_EXIT_CODE: i64 = -1;
 
-/// The write half of a container's attached stdin.
+/// The write half of a container's stdin attachment: the connection of the
+/// relay exec `BollardEngine::attach_stdin` starts (ADR 0034).
 ///
 /// It is an [`AsyncWrite`] that delegates to the hijacked connection's input
-/// half, plus the task that drains the output half. The drain exists only to
-/// keep the connection open: with `stdout` and `stderr` unattached the engine
-/// sends almost nothing, but a reader that never reads is a connection the
-/// engine may stop writing to, and the session owner ignores output entirely.
+/// half, plus the task that drains the output half. The relay says nothing
+/// after its `ready`, which the adapter has already read, but a reader that
+/// never reads is a connection the engine may stop writing to, and the session
+/// owner ignores output entirely.
 ///
-/// When the container exits the engine closes the connection, and the next
+/// When the container exits the relay goes with it and the engine closes the
+/// connection, and the next
 /// write answers with an [`io::Error`] rather than buffering forever. That is
 /// the contract the session owner needs: a failed write is an input it records
 /// as failed (`ARCHITECTURE.md`, "Session owner task").
@@ -104,8 +109,8 @@ pub(super) struct BollardStdin {
 }
 
 impl BollardStdin {
-    /// Wrap both halves of a container attach, draining the output half in a
-    /// task of its own.
+    /// Wrap both halves of the relay exec's connection, draining the output
+    /// half in a task of its own.
     pub(super) fn attached(container: ContainerId, input: InputSink, output: OutputStream) -> Self {
         let closed = Arc::new(AtomicBool::new(false));
         let drain = drain_attach_output(container.clone(), output, Arc::clone(&closed));
@@ -185,9 +190,9 @@ impl Drop for BollardStdin {
 /// Read the attach stream to its end, throw every byte away, and mark the
 /// attachment closed when it ends.
 ///
-/// Nothing is attached to the container's stdout or stderr, so there is
-/// normally nothing here at all; what arrives is counted and dropped. The
-/// stream ending is the container having gone, which is what `closed` tells
+/// The relay writes nothing once it is ready, so there is normally nothing
+/// here at all; what arrives is counted and dropped. The stream ending is the
+/// relay, and so the container, having gone, which is what `closed` tells
 /// the writer, and it is how this task ends on its own; [`BollardStdin`]'s
 /// [`Drop`] is how it ends early.
 fn drain_attach_output(

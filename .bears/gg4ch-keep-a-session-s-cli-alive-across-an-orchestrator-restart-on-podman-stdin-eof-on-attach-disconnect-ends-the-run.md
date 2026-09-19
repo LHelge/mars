@@ -1,16 +1,17 @@
 ---
 id: gg4ch
 title: "Keep a session's CLI alive across an orchestrator restart on Podman: stdin EOF on attach disconnect ends the run"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-19T02:48:11.192398643Z"
-updated: "2026-09-19T02:48:11.192398643Z"
+updated: "2026-09-19T07:08:26.919115763Z"
 tags:
   - orchestrator
   - sessions
   - engine
   - architecture
 parent: s52qg
+attempts: 1
 ---
 
 ## Summary

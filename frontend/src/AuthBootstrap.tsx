@@ -106,24 +106,20 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
         if (cancelled) {
           return;
         }
-        if (error instanceof ApiError) {
-          // 401 here is already past `apiClient`'s single refresh attempt, so
-          // the session is gone for good — a refresh that answered 401 has
-          // signed out on its own, hence the guard against a second round.
-          if (error.status === 401) {
-            if (getAccessToken() !== null) {
-              signOut("refresh_failed");
-            }
-            setPhase("ready");
-            return;
+        // 401 here is already past `apiClient`'s single refresh attempt, so the
+        // session is gone for good — a refresh that answered 401 has signed out
+        // on its own, hence the guard against a second round.
+        if (error instanceof ApiError && error.status === 401) {
+          if (getAccessToken() !== null) {
+            signOut("refresh_failed");
           }
-          // Any other status is an answer, not an outage: let the routes render
-          // and let the individual views report their own failures.
           setPhase("ready");
           return;
         }
-        // A `TypeError` from `fetch`: the orchestrator is unreachable. Only a
-        // 401 signs out, so keep the token and offer a retry.
+        // A `TypeError` from `fetch` or a 5xx: the orchestrator is unreachable
+        // or unwell. Only a 401 signs out, so keep the token and offer a retry;
+        // rendering the routes without a user would leave `ProtectedRoute`
+        // waiting forever.
         setPhase("unreachable");
       });
 

@@ -1,4 +1,4 @@
- With `StdinOnce: false`, Docker keeps the container's stdin open when the attach client disconnects, while Podman passes the close on as EOF; nothing in Mars relies on EOF reaching the CLI, and the engine tests end their stdin scenario with a sentinel line for that reason.# Architecture
+# Architecture
 
 Mars runs coding-agent sessions in isolated containers and exposes them to a browser. This document describes the components, the trust boundaries between them, and the designs that hold the system together: session lifecycle, durability and recovery, the git model, secrets, the MCP surface, and the task tracker. The functional contract (endpoints, schemas, tool signatures) is in `SPEC.md`; the database schema is in `docs/data-model.md`; the reasoning behind the non-obvious choices is in `docs/decisions/`.
 
@@ -429,6 +429,8 @@ Recovery runs after the engine's startup probe and before either listener accept
 
 Because parked sessions need nothing running, a restart with a hundred parked sessions and two running ones costs two reattaches.
 
+**What the CLI makes of the restart is the engine's decision, not Mars's.** Losing the last process's owners closes the attach it held, and the engines differ on what a container's stdin does then (see the attach row of the engine-adapter table): Docker keeps it open with `StdinOnce: false`, so the adopted CLI is still reading stdin afterwards and the adoption above is a reattach to a live conversation; rootless Podman passes the close on as EOF, so the pinned CLI — which exits 0 on stdin EOF ("Claude Code invocation") — has usually exited by the time recovery lists the containers, and what is adopted is an exited container whose owner drains the transcript and parks the session. Adoption is therefore lossless in both cases and reconnecting is only possible in the first: on Podman a conversational session comes back `parked`, and the next message to it relaunches it with `--resume <cli_session_id>` in the checkout it left behind. `orchestrator/tests/session_e2e.rs` asserts the part that holds either way — an owner is re-created, the MCP token is not rotated, and the transcript keeps its sequence and its offsets — and then that the session replays a turn for the next message however its state got there.
+
 ### Event delivery
 
 ```mermaid
@@ -607,7 +609,7 @@ Nothing in v1 launches a session by itself. Two additions are planned and the mo
 | Operation | Docker | Podman compat API | Notes |
 | --- | --- | --- | --- |
 | create / start / stop / kill / remove | yes | yes | `kill` with a named signal is used for SIGINT/SIGTERM. Verified to reach a handler-installing PID 1 without `Init` on both engines (`tests/engine.rs`; see "Session image"). Removing a running container without `force` is refused with 409 by Docker and with 500 by Podman; the adapter reports both as a conflict, as it does for the exec below. |
-| attach (stdin, TTY off) | yes | yes | Used for stdin only. The adapter drains the unused output half and treats its end as the attachment closing, because a rootless Podman accepts and discards writes to a container that has already exited; a write after that fails rather than being silently lost. |
+| attach (stdin, TTY off) | yes | yes | Used for stdin only. The adapter drains the unused output half and treats its end as the attachment closing, because a rootless Podman accepts and discards writes to a container that has already exited; a write after that fails rather than being silently lost. With `StdinOnce: false`, Docker keeps the container's stdin open when the attach client disconnects, while Podman passes the close on as EOF; nothing in Mars relies on EOF reaching the CLI, and the engine tests end their stdin scenario with a sentinel line for that reason. What a restart makes of that difference is in "Restart procedure". |
 | exec + resize (TTY on) | yes | yes | Used by the optional terminal view. An exec on a container that is not running is refused with 409 by Docker and with 500 by Podman; the adapter reports both as a conflict, so the terminal answers the same on either engine. |
 | list with label filter | yes | yes | Recovery lists `mars.session_id`. |
 | bind mounts (`Binds`) | yes | yes | Sources are host paths (`DATA_DIR_HOST`). |

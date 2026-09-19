@@ -11,9 +11,15 @@
 //! listener is bound, no cron job runs and no session owner is started. The
 //! epics that own those start them explicitly.
 //!
-//! Every configuration value is obviously fake (rule 3). The only one that
-//! points at anything real is `DATABASE_URL`, and what it points at is the
-//! database this `TestApp` created and drops again when it drops.
+//! [`TestApp::spawn_with_engine`] is the same app over the engine
+//! `DOCKER_HOST` names instead of the mock, for the one suite that runs
+//! sessions in real containers (`tests/session_e2e.rs`). It is the only spawn
+//! that creates anything outside the database and the temporary data
+//! directory, and [`TestApp::cleanup_engine`] is what removes it again.
+//!
+//! Every configuration value is obviously fake (rule 3). The only ones that
+//! point at anything real are `DATABASE_URL`, and — with the real engine —
+//! `DOCKER_HOST` and the data directory the containers bind.
 //!
 //! Needs a container engine (`DOCKER_HOST`); see `tests/common/db.rs`.
 
@@ -29,8 +35,8 @@ use chrono::{TimeDelta, Utc};
 use mars_orchestrator::build_api_router;
 use mars_orchestrator::email::EmailClient;
 use mars_orchestrator::email::mock::MockEmailClient;
-use mars_orchestrator::engine::ContainerEngine;
 use mars_orchestrator::engine::mock::MockEngine;
+use mars_orchestrator::engine::{ContainerEngine, EngineKind, LABEL_SESSION_ID, bootstrap_engine};
 use mars_orchestrator::git::GitCredentialProvider;
 use mars_orchestrator::git::mock::MockGitCredentialProvider;
 use mars_orchestrator::models::user::hash_password;
@@ -38,7 +44,7 @@ use mars_orchestrator::models::{Email, NewUser, User, Username};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;
 use mars_orchestrator::secrets::SecretsKeyring;
-use mars_orchestrator::session::{RecoveryReport, SessionRegistry};
+use mars_orchestrator::session::{RecoveryReport, SessionRegistry, TAIL_POLL_INTERVAL};
 use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -65,7 +71,9 @@ const FAKE_PASSWORD_HASH: &str = "$argon2id$fake$hash";
 const DELETE_SEEDED_ADMIN: &str =
     "DELETE FROM users WHERE id = '00000000-0000-0000-0000-000000000001'";
 
-/// A running orchestrator with every collaborator mocked.
+/// A running orchestrator with every collaborator mocked — or, from
+/// [`TestApp::spawn_with_engine`], with the real container engine in the mock's
+/// place.
 ///
 /// Field order is drop order: the server, the pool and the mocks go first and
 /// the database guard `_db` last, so the database is still there while
@@ -88,6 +96,10 @@ pub struct TestApp {
     /// `DATA_DIR` and `DATA_DIR_HOST`. Held here because it has to outlive the
     /// app: dropping it removes the directory.
     pub data_dir: TempDir,
+    /// The two session networks [`TestApp::spawn_with_engine`] had the real
+    /// engine create, and [`TestApp::cleanup_engine`] removes again; `None` for
+    /// a [`TestApp::spawn`], which creates no network.
+    networks: Option<(String, String)>,
     /// This app's database on the shared Postgres. Never read; it drops the
     /// database on drop.
     _db: db::TestDatabase,
@@ -101,6 +113,55 @@ impl TestApp {
     /// isolate or clean up. Only the first `spawn` in a binary pays a
     /// container start (`tests/common/db.rs`).
     pub async fn spawn() -> TestApp {
+        Self::build(None).await
+    }
+
+    /// Start a fresh app over the **real** engine `DOCKER_HOST` names, with
+    /// `image` as `SESSION_IMAGE_DEFAULT` (`tests/session_e2e.rs`).
+    ///
+    /// Everything else is [`TestApp::spawn`]'s: the same throw-away database,
+    /// the same mock email client and git credential provider, the same fixed
+    /// test master key. What differs is everything a container needs to exist:
+    ///
+    /// - `DATA_DIR` and `DATA_DIR_HOST` are the same temporary directory, as
+    ///   they are for an orchestrator running on the host (`ARCHITECTURE.md`,
+    ///   "Development on the host");
+    /// - `MCP_URL` points at the host gateway under the name this engine uses
+    ///   (`host.containers.internal` on Podman, `host.docker.internal` on
+    ///   Docker) and `SESSION_EXTRA_HOSTS` maps that name to `host-gateway`,
+    ///   so a session container's `mcp.json` names a reachable host even
+    ///   though nothing in the end-to-end scenarios calls MCP;
+    /// - the two session networks are this app's alone, so parallel scenarios
+    ///   never remove each other's, and [`TestApp::cleanup_engine`] removes
+    ///   them;
+    /// - `STOP_GRACE_SECS` is 5 rather than 1: a real container has to be able
+    ///   to handle its `SIGINT` before the owner escalates, or the recorded
+    ///   signal would be `SIGTERM` (`ARCHITECTURE.md`, "Stop semantics").
+    ///
+    /// The whole of [`bootstrap_engine`] runs, startup probe included, so a
+    /// host that does not honour the uid contract fails here with the probe's
+    /// own message rather than later as a session that cannot write its
+    /// checkout (`ARCHITECTURE.md`, "Uid contract").
+    ///
+    /// Panics when `DOCKER_HOST` is unset: a caller reaches this only after its
+    /// own guard has established that there is an engine to talk to.
+    pub async fn spawn_with_engine(image: &str) -> TestApp {
+        let docker_host = super::engine::docker_host().expect("DOCKER_HOST is set");
+        let kind = real_engine_kind(&docker_host).await;
+        let suffix = Uuid::new_v4().simple().to_string()[..8].to_string();
+
+        Self::build(Some(RealEngineSetup {
+            docker_host,
+            image: image.to_string(),
+            network_internal: format!("mars-e2e-int-{suffix}"),
+            network_egress: format!("mars-e2e-egress-{suffix}"),
+            gateway_host: gateway_host(kind).to_string(),
+        }))
+        .await
+    }
+
+    /// The body of both spawns: `None` is the mock engine, `Some` the real one.
+    async fn build(real: Option<RealEngineSetup>) -> TestApp {
         let (database, pool) = db::test_pool().await;
         let database_url = database.url().to_string();
 
@@ -113,7 +174,7 @@ impl TestApp {
 
         let data_dir = tempfile::tempdir().expect("a temporary data directory");
         let keyring = SecretsKeyring::test_key();
-        let config = test_config(&database_url, data_dir.path(), &keyring);
+        let config = test_config(&database_url, data_dir.path(), &keyring, real.as_ref());
 
         // Built as concrete mocks first and coerced afterwards, so the
         // `Arc<dyn Trait>` in the state and the `Arc<Mock…>` on `TestApp` are
@@ -121,6 +182,19 @@ impl TestApp {
         let engine = Arc::new(MockEngine::default());
         let email = Arc::new(MockEmailClient::new());
         let git = Arc::new(MockGitCredentialProvider::new());
+
+        // The networks and the startup probe, exactly as the binary runs them.
+        // Held as `Arc<dyn ContainerEngine>` because that is what the state
+        // takes; `app.engine` keeps the mock nothing then calls.
+        let (state_engine, networks): (Arc<dyn ContainerEngine>, _) = match &real {
+            Some(setup) => (
+                bootstrap_engine(&config)
+                    .await
+                    .expect("the engine DOCKER_HOST names bootstraps"),
+                Some((setup.network_internal.clone(), setup.network_egress.clone())),
+            ),
+            None => (Arc::clone(&engine) as Arc<dyn ContainerEngine>, None),
+        };
 
         // `AppState::new` takes everything the state holds today, including
         // the empty `SessionRegistry`. The fields later epics add in place —
@@ -131,7 +205,7 @@ impl TestApp {
         let state = AppState::new(
             Arc::new(config),
             pool.clone(),
-            Arc::clone(&engine) as Arc<dyn ContainerEngine>,
+            state_engine,
             Arc::clone(&email) as Arc<dyn EmailClient>,
             Arc::clone(&git) as Arc<dyn GitCredentialProvider>,
             keyring,
@@ -151,13 +225,23 @@ impl TestApp {
             email,
             git,
             data_dir,
+            networks,
             _db: database,
         }
     }
 
     /// The engine the router calls. Also reachable from an
     /// `Arc<dyn ContainerEngine>` through `ContainerEngine::as_any`.
+    ///
+    /// Only meaningful for a [`TestApp::spawn`]: an app built by
+    /// [`TestApp::spawn_with_engine`] serves the real engine and this mock is
+    /// then an allocation nothing calls, so asking for it is a mistake worth
+    /// failing on.
     pub fn engine(&self) -> &MockEngine {
+        assert!(
+            self.networks.is_none(),
+            "this app was spawned with the real engine; use state.engine",
+        );
         &self.engine
     }
 
@@ -199,6 +283,79 @@ impl TestApp {
         mars_orchestrator::session::recover(&self.state)
             .await
             .expect("startup recovery runs")
+    }
+
+    /// Lose every session owner without touching a container, the way a killed
+    /// process does (`ARCHITECTURE.md`, "Restart procedure").
+    ///
+    /// Clearing the registry drops the sender half of each owner's command
+    /// channel, and an owner whose channel has closed leaves its loop and
+    /// deliberately touches neither the registry nor the container — it is the
+    /// same stand-down `OwnerCommand::Shutdown` asks for, without needing a
+    /// handle to a live owner that a restarted process would not have either.
+    ///
+    /// The short settle is for the owner *task*, not for any state a test
+    /// asserts: a closed channel wakes it on its next poll, and giving it that
+    /// moment means the adopting owner is not committing a line while the old
+    /// one still is. Correctness does not depend on it — the offset recheck
+    /// under the session row lock is what prevents a double append — only the
+    /// tidiness of the logs does.
+    pub async fn simulate_restart(&self) {
+        self.state.session_registry.clear();
+        tokio::time::sleep(3 * TAIL_POLL_INTERVAL).await;
+    }
+
+    /// Remove what a real-engine app left on the engine, and report what could
+    /// not be removed.
+    ///
+    /// The containers of *this app's* sessions — matched on the
+    /// `mars.session_id` label against the `sessions` table, so a scenario
+    /// running beside this one is never touched — and then this app's two
+    /// networks, which cannot be removed while a container is still attached.
+    /// Idempotent and safe to call on a [`TestApp::spawn`], where there is
+    /// nothing to do.
+    pub async fn cleanup_engine(&self) -> Vec<String> {
+        let Some((internal, egress)) = self.networks.clone() else {
+            return Vec::new();
+        };
+        let mut failures = Vec::new();
+
+        let mine: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM sessions")
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+
+        match self.state.engine.list_by_label(LABEL_SESSION_ID).await {
+            Ok(listed) => {
+                for summary in listed.iter().filter(|summary| {
+                    summary
+                        .labels
+                        .get(LABEL_SESSION_ID)
+                        .and_then(|label| label.parse::<Uuid>().ok())
+                        .is_some_and(|id| mine.contains(&id))
+                }) {
+                    if let Err(error) = self.state.engine.remove(&summary.id, true).await {
+                        failures.push(format!(
+                            "container {} was not removed: {error}",
+                            summary.name
+                        ));
+                    }
+                }
+            }
+            Err(error) => failures.push(format!("the containers could not be listed: {error}")),
+        }
+
+        // The adapter does not remove networks — Mars never does — so this goes
+        // through a client of the suite's own, as `tests/common/engine.rs`
+        // does.
+        let docker = super::engine::raw_docker();
+        for network in [internal, egress] {
+            if let Err(error) = docker.remove_network(&network).await {
+                failures.push(format!("network {network} was not removed: {error}"));
+            }
+        }
+
+        failures
     }
 
     /// Forget every failed login and password-reset request counted so far.
@@ -526,6 +683,45 @@ pub struct TokenPair {
     pub access_token: String,
 }
 
+/// What [`TestApp::spawn_with_engine`] changes about the harness
+/// configuration: the socket, the image and everything a container needs to
+/// exist.
+struct RealEngineSetup {
+    /// `DOCKER_HOST`, as the process environment has it.
+    docker_host: String,
+    /// `SESSION_IMAGE_DEFAULT`, which is also the image the startup probe runs
+    /// and the image a new project's default profile gets.
+    image: String,
+    /// `SESSION_NETWORK_INTERNAL`, this app's alone.
+    network_internal: String,
+    /// `SESSION_NETWORK_EGRESS`, this app's alone.
+    network_egress: String,
+    /// The name this engine gives the host gateway, used by both `MCP_URL` and
+    /// `SESSION_EXTRA_HOSTS`.
+    gateway_host: String,
+}
+
+/// The engine kind behind `docker_host`, which decides the gateway name.
+///
+/// A connection of its own, before [`bootstrap_engine`] opens the one the app
+/// keeps: the kind comes from the engine's `/version`, and the name has to be
+/// in the configuration `bootstrap_engine` is then handed.
+async fn real_engine_kind(docker_host: &str) -> EngineKind {
+    mars_orchestrator::engine::bollard::BollardEngine::connect(docker_host)
+        .await
+        .expect("the engine named by DOCKER_HOST answers")
+        .kind()
+}
+
+/// The host gateway's name on this engine (`ARCHITECTURE.md`, "Development on
+/// the host").
+fn gateway_host(kind: EngineKind) -> &'static str {
+    match kind {
+        EngineKind::Podman => "host.containers.internal",
+        EngineKind::Docker => "host.docker.internal",
+    }
+}
+
 /// The configuration `spawn` builds, from values in code rather than from the
 /// process environment: tests never depend on the developer's `.env` and never
 /// mutate process-global state.
@@ -533,14 +729,23 @@ pub struct TokenPair {
 /// Everything here is obviously fake (rule 3). `SECRETS_MASTER_KEYS` is
 /// rendered from `keyring` rather than pasted, so the string and the
 /// [`SecretsKeyring`] injected beside it can never drift apart.
-fn test_config(database_url: &str, data_dir: &Path, keyring: &SecretsKeyring) -> Config {
+///
+/// `real` is `None` for the mock engine and carries the overrides of
+/// [`TestApp::spawn_with_engine`] otherwise; the values it replaces are the
+/// only ones in this table that a container would ever resolve.
+fn test_config(
+    database_url: &str,
+    data_dir: &Path,
+    keyring: &SecretsKeyring,
+    real: Option<&RealEngineSetup>,
+) -> Config {
     let version = keyring.current_version();
     let key = keyring
         .key(version)
         .expect("the test keyring carries its current key");
     let data_dir = data_dir.display().to_string();
 
-    let vars: HashMap<&str, String> = [
+    let mut vars: HashMap<&str, String> = [
         ("PUBLIC_URL", "http://localhost".to_string()),
         (
             "JWT_SECRET",
@@ -582,6 +787,24 @@ fn test_config(database_url: &str, data_dir: &Path, keyring: &SecretsKeyring) ->
     ]
     .into_iter()
     .collect();
+
+    if let Some(real) = real {
+        vars.insert("DOCKER_HOST", real.docker_host.clone());
+        vars.insert("SESSION_IMAGE_DEFAULT", real.image.clone());
+        vars.insert("SESSION_NETWORK_INTERNAL", real.network_internal.clone());
+        vars.insert("SESSION_NETWORK_EGRESS", real.network_egress.clone());
+        vars.insert(
+            "SESSION_EXTRA_HOSTS",
+            format!("{}:host-gateway", real.gateway_host),
+        );
+        // The default `MCP_PORT`, because nothing here binds one: what the file
+        // in the container has to be is a URL that resolves, not one that
+        // answers (the stub never calls MCP).
+        vars.insert("MCP_URL", format!("http://{}:7001/mcp", real.gateway_host));
+        // Long enough for a real container to act on its `SIGINT` before the
+        // owner escalates to `SIGTERM`.
+        vars.insert("STOP_GRACE_SECS", "5".to_string());
+    }
 
     Config::from_vars(|name| vars.get(name).cloned()).expect("test config")
 }

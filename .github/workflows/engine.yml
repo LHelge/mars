@@ -1,18 +1,26 @@
-# The live engine suite (`orchestrator/tests/engine.rs`) against both supported
-# engines. ADR 0004 makes rootless Podman the target engine and Docker the one
-# that must keep working, with `DOCKER_HOST` as the only deployment difference,
-# so the suite runs twice with nothing but that variable changed.
+# The live engine suite (`orchestrator/tests/engine.rs`) and the session
+# lifecycle end to end on real containers (`orchestrator/tests/session_e2e.rs`)
+# against both supported engines. ADR 0004 makes rootless Podman the target
+# engine and Docker the one that must keep working, with `DOCKER_HOST` as the
+# only deployment difference, so both suites run twice with nothing but that
+# variable changed.
 #
-# The suite needs no Postgres — nothing in it touches the database — so, unlike
-# Orchestrator CI, this workflow starts no service container.
+# `tests/engine.rs` needs no Postgres — nothing in it touches the database — and
+# `tests/session_e2e.rs` starts its own through testcontainers on the engine
+# under test, so, unlike Orchestrator CI, this workflow starts no service
+# container. It does build the stub session image, which is what the end-to-end
+# binary runs (`ARCHITECTURE.md`, "Session image").
+#
+# The end-to-end binary is watched by `images/**` too: a change to the stub CLI
+# or its fixture changes what these scenarios replay.
 name: Engine
 
 on:
   push:
     branches: [main]
-    paths: ["orchestrator/**", ".github/workflows/engine.yml"]
+    paths: ["orchestrator/**", "images/**", ".github/workflows/engine.yml"]
   pull_request:
-    paths: ["orchestrator/**", ".github/workflows/engine.yml"]
+    paths: ["orchestrator/**", "images/**", ".github/workflows/engine.yml"]
 
 concurrency:
   group: engine-${{ github.ref }}
@@ -52,8 +60,10 @@ jobs:
         include:
           - engine: docker
             docker_host: unix:///var/run/docker.sock
+            stub_image: mars-session-stub:ci
           - engine: podman
             docker_host: unix:///tmp/podman.sock
+            stub_image: localhost/mars-session-stub:ci
     defaults:
       run:
         working-directory: orchestrator
@@ -182,15 +192,39 @@ jobs:
         env:
           DOCKER_HOST: ${{ matrix.docker_host }}
 
-      # Diagnostics only: the suite cleans up after itself, so anything left
-      # labelled `mars.test` is a scenario that died mid-flight.
+      # The image the session end-to-end scenarios run, built with the engine
+      # under test so the tag exists on the socket the orchestrator will use.
+      # Each engine tags it its own way: Podman stores an unqualified name under
+      # `localhost/`, and naming it in full here is what makes `image_exists`
+      # find it without a registry lookup.
+      - name: Build the stub session image
+        working-directory: .
+        run: ${{ matrix.engine }} build -t mars-session-stub:ci images/stub
+
+      # A session on a real container, end to end. It brings up its own Postgres
+      # through testcontainers on the same engine, and on Docker — where a
+      # GitHub-hosted runner is uid 1001 and the uid contract therefore does not
+      # hold — it reports that on stderr and returns, as `tests/engine.rs` does
+      # for the same reason.
+      - name: Session end-to-end tests
+        run: cargo test --features integration-tests --test session_e2e -- --nocapture
+        env:
+          DOCKER_HOST: ${{ matrix.docker_host }}
+          MARS_STUB_IMAGE: ${{ matrix.stub_image }}
+
+      # Diagnostics only: both suites clean up after themselves, so anything
+      # left labelled `mars.test` or `mars.session_id` is a scenario that died
+      # mid-flight.
       - name: Leftover test containers
         if: always() && matrix.engine == 'docker'
-        run: docker ps -a --filter label=mars.test
+        run: |
+          docker ps -a --filter label=mars.test
+          docker ps -a --filter label=mars.session_id
 
       - name: Leftover test containers and the service log
         if: always() && matrix.engine == 'podman'
         run: |
           podman ps -a --filter label=mars.test
+          podman ps -a --filter label=mars.session_id
           podman network ls
           cat /tmp/podman-service.log

@@ -1,10 +1,10 @@
 ---
 id: ea6xs
 title: Build the shared UI kit, AuthLayout, PageLayout and useFormSubmit() in the operator-console visual language
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:40:28.452915170Z"
-updated: "2026-09-19T10:47:58.894608632Z"
+updated: "2026-09-19T10:55:36.663211223Z"
 tags:
   - frontend
 depends_on:

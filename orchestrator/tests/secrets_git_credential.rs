@@ -30,7 +30,9 @@ use mars_orchestrator::models::{
     SecretUsePurpose, User,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::{ProjectRepository, SecretRepository, SessionRepository};
+use mars_orchestrator::repositories::{
+    ProjectRepository, SecretListFilter, SecretRepository, SessionRepository, UserFilter,
+};
 use mars_orchestrator::secrets::{
     GIT_CREDENTIAL_NAME, GitUseContext, has_project_git_credential, project_git_credential,
     set_project_git_credential,
@@ -122,6 +124,14 @@ async fn credential_id(pool: &PgPool, project_id: Uuid) -> Uuid {
         .expect("the lookup runs")
         .expect("the credential row exists")
         .id
+}
+
+/// The listing `GET /api/secrets?scope=project&scope_id=<pid>` resolves to.
+fn project_scope(project_id: Uuid) -> SecretListFilter {
+    SecretListFilter {
+        scope: Some(ScopeRef::project(project_id)),
+        user_ids: UserFilter::All,
+    }
 }
 
 #[tokio::test]
@@ -284,7 +294,7 @@ async fn storing_twice_replaces_the_value_in_place() {
     assert_eq!(after.id, before.id, "the replacement is the same row");
     assert_eq!(
         repository
-            .list_meta(&ScopeRef::project(project_id))
+            .list_meta_filtered(&project_scope(project_id))
             .await
             .expect("the scope lists")
             .len(),
@@ -350,7 +360,7 @@ async fn the_row_is_an_ordinary_orchestrator_only_secret() {
     // any other, which a user may rotate or delete, and which the resolver
     // never injects because of the flag.
     let listed = SecretRepository::new(&app.pool)
-        .list_meta(&ScopeRef::project(project_id))
+        .list_meta_filtered(&project_scope(project_id))
         .await
         .expect("the scope lists");
 

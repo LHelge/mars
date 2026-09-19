@@ -8,8 +8,8 @@
 //! - the unique index is `NULLS NOT DISTINCT`, so two `global` secrets of the
 //!   same name collide even though both have a NULL `scope_id`;
 //! - rotation touches the wrapping and never the ciphertext;
-//! - `scope_id` has no foreign key, so a deleted user leaves orphans behind
-//!   rather than cascading, and the reaper has to be able to find them.
+//! - `scope_id` has no foreign key, so a deleted user leaves its secrets
+//!   behind rather than cascading them away.
 //!
 //! Every byte value here is obviously fake (`CLAUDE.md`, rule 3); nothing in
 //! this file is, or resembles, key material.
@@ -20,10 +20,10 @@ mod common;
 
 use axum::http::StatusCode;
 use mars_orchestrator::models::{
-    NewSecret, ScopeRef, Secret, SecretName, SecretScope, SecretUsePurpose,
+    NewSecret, ScopeRef, Secret, SecretMeta, SecretName, SecretScope, SecretUsePurpose,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::SecretRepository;
+use mars_orchestrator::repositories::{SecretListFilter, SecretRepository, UserFilter};
 use mars_orchestrator::secrets::{SealedSecret, SecretIdentity, WrappedKey};
 use uuid::Uuid;
 
@@ -101,6 +101,32 @@ async fn seed_project(pool: &PgPool, name: &str) -> Uuid {
         .expect("the seeded project inserts");
 
     id
+}
+
+/// One scope's secrets as the API shape, by name.
+///
+/// `list_meta_filtered` is the only listing query; a scope's own listing is
+/// that filter with every user visible.
+async fn scope_listing(repository: &SecretRepository<'_>, scope: ScopeRef) -> Vec<SecretMeta> {
+    repository
+        .list_meta_filtered(&SecretListFilter {
+            scope: Some(scope),
+            user_ids: UserFilter::All,
+        })
+        .await
+        .expect("the listing reads")
+}
+
+/// The distinct `key_version`s present, ascending: what the startup check
+/// samples.
+async fn stored_versions(repository: &SecretRepository<'_>) -> Vec<i32> {
+    repository
+        .sample_per_key_version()
+        .await
+        .expect("the samples read")
+        .iter()
+        .map(|sealed| sealed.wrapped.version)
+        .collect()
 }
 
 #[tokio::test]
@@ -393,7 +419,7 @@ async fn renaming_to_the_same_name_writes_exactly_what_it_is_given() {
 }
 
 #[tokio::test]
-async fn list_meta_is_by_name_and_carries_the_last_use() {
+async fn a_scoped_listing_is_by_name_and_carries_the_last_use() {
     let (_postgres, pool) = common::db::test_pool().await;
     let repository = SecretRepository::new(&pool);
 
@@ -401,12 +427,10 @@ async fn list_meta_is_by_name_and_carries_the_last_use() {
     let scope = ScopeRef::project(project_id);
 
     // An empty scope is an empty vector, not a 404.
-    assert!(repository.list_meta(&scope).await.unwrap().is_empty());
+    assert!(scope_listing(&repository, scope).await.is_empty());
     assert!(
-        repository
-            .list_meta(&ScopeRef::global())
+        scope_listing(&repository, ScopeRef::global())
             .await
-            .unwrap()
             .is_empty()
     );
 
@@ -418,7 +442,7 @@ async fn list_meta_is_by_name_and_carries_the_last_use() {
     // A secret in another scope must not appear in this listing.
     insert(&pool, &new_secret(ScopeRef::global(), "ALPHA", "three")).await;
 
-    let listed = repository.list_meta(&scope).await.unwrap();
+    let listed = scope_listing(&repository, scope).await;
     assert_eq!(
         listed
             .iter()
@@ -462,7 +486,7 @@ async fn list_meta_is_by_name_and_carries_the_last_use() {
 
     assert!(newer.at >= older.at);
 
-    let listed = repository.list_meta(&scope).await.unwrap();
+    let listed = scope_listing(&repository, scope).await;
     assert_eq!(listed[0].last_used_at, None, "ALPHA was never used");
     assert_eq!(listed[1].last_used_at, Some(newer.at));
 }
@@ -542,12 +566,60 @@ async fn uses_are_newest_first_and_accept_every_documented_shape() {
 }
 
 #[tokio::test]
+async fn one_sample_per_key_version_is_the_same_row_on_every_read() {
+    // What the startup check reads: one sealed row per distinct version, and
+    // the same one each time, so a failure names the same row on a restart
+    // (`ARCHITECTURE.md`, "Secrets", Keyring).
+    let (_postgres, pool) = common::db::test_pool().await;
+    let repository = SecretRepository::new(&pool);
+    let scope = ScopeRef::global();
+
+    assert!(
+        repository
+            .sample_per_key_version()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let mut first = new_secret(scope, "ONE", "one");
+    first.sealed.wrapped.version = 1;
+    insert(&pool, &first).await;
+
+    let mut second = new_secret(scope, "TWO", "two");
+    second.sealed.wrapped.version = 1;
+    insert(&pool, &second).await;
+
+    let mut newer = new_secret(scope, "THREE", "three");
+    newer.sealed.wrapped.version = 2;
+    insert(&pool, &newer).await;
+
+    let samples = repository.sample_per_key_version().await.unwrap();
+    assert_eq!(
+        samples
+            .iter()
+            .map(|sealed| sealed.wrapped.version)
+            .collect::<Vec<_>>(),
+        [1, 2],
+        "one row per version, ascending"
+    );
+    // The sample carries the row's wrapping, which is what the check unwraps.
+    assert_eq!(samples[1].wrapped.wrapped, newer.sealed.wrapped.wrapped);
+    assert_eq!(samples[1].wrapped.nonce, newer.sealed.wrapped.nonce);
+    assert_eq!(samples[1].identity, newer.sealed.identity);
+
+    // Stable: the lowest id per version, whichever order the rows were read
+    // in.
+    assert_eq!(repository.sample_per_key_version().await.unwrap(), samples);
+}
+
+#[tokio::test]
 async fn rotation_selects_only_older_rows_and_rewraps_without_touching_the_ciphertext() {
     let (_postgres, pool) = common::db::test_pool().await;
     let repository = SecretRepository::new(&pool);
     let scope = ScopeRef::global();
 
-    assert!(repository.distinct_key_versions().await.unwrap().is_empty());
+    assert!(stored_versions(&repository).await.is_empty());
 
     let mut old_one = new_secret(scope, "OLD_ONE", "one");
     old_one.sealed.wrapped.version = 1;
@@ -564,7 +636,7 @@ async fn rotation_selects_only_older_rows_and_rewraps_without_touching_the_ciphe
     // The wrapping a rotation sweep would write: fake bytes under version 3.
     let rewrapped = fake_sealed(scope, "OLD_ONE", "rewrapped", 3);
 
-    assert_eq!(repository.distinct_key_versions().await.unwrap(), [1, 2, 3]);
+    assert_eq!(stored_versions(&repository).await, [1, 2, 3]);
 
     // Only rows below the newest version, oldest key first.
     let batch = repository.list_for_rotation(3, 100).await.unwrap();
@@ -622,7 +694,7 @@ async fn rotation_selects_only_older_rows_and_rewraps_without_touching_the_ciphe
             .unwrap()
             .is_empty()
     );
-    assert_eq!(repository.distinct_key_versions().await.unwrap(), [3]);
+    assert_eq!(stored_versions(&repository).await, [3]);
     assert_eq!(
         repository
             .find(newest.id)
@@ -632,51 +704,4 @@ async fn rotation_selects_only_older_rows_and_rewraps_without_touching_the_ciphe
             .key_version,
         3
     );
-}
-
-#[tokio::test]
-async fn orphans_are_the_scoped_rows_whose_target_is_gone() {
-    // `scope_id` has no foreign key, so deleting a user or a project leaves
-    // its secrets behind for the reaper (`docs/data-model.md`, `secrets`).
-    let (_postgres, pool) = common::db::test_pool().await;
-    let repository = SecretRepository::new(&pool);
-
-    let user_id = seed_user(&pool, "ada").await;
-    let project_id = seed_project(&pool, "mars").await;
-
-    let global = insert(&pool, &new_secret(ScopeRef::global(), "TOKEN", "one")).await;
-    let owned = insert(&pool, &new_secret(ScopeRef::user(user_id), "TOKEN", "two")).await;
-    let project = insert(
-        &pool,
-        &new_secret(ScopeRef::project(project_id), "TOKEN", "three"),
-    )
-    .await;
-
-    assert!(repository.list_orphans().await.unwrap().is_empty());
-
-    sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user_id)
-        .execute(&pool)
-        .await
-        .expect("the user deletes");
-
-    // The secret survived its user, with `created_by` nulled out by its own
-    // foreign key.
-    let survivor = repository.find(owned.id).await.unwrap().unwrap();
-    assert_eq!(survivor.scope_id, Some(user_id));
-    assert_eq!(repository.list_orphans().await.unwrap(), [owned.id]);
-
-    sqlx::query("DELETE FROM projects WHERE id = $1")
-        .bind(project_id)
-        .execute(&pool)
-        .await
-        .expect("the project deletes");
-
-    let mut orphans = repository.list_orphans().await.unwrap();
-    orphans.sort();
-    let mut expected = vec![owned.id, project.id];
-    expected.sort();
-    assert_eq!(orphans, expected);
-    // A global secret has no target and is never an orphan.
-    assert!(!orphans.contains(&global.id));
 }

@@ -176,8 +176,8 @@ impl std::fmt::Display for SecretScope {
 ///
 /// Deliberately not a foreign key in either direction — the scope decides
 /// which table `scope_id` points at — so existence is the caller's to check
-/// and [`crate::repositories::SecretRepository::list_orphans`] is what cleans
-/// up after a deleted user or project.
+/// and the orphan reaper (`ARCHITECTURE.md`, "Background jobs") is what
+/// cleans up after a deleted user or project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct ScopeRef {
     scope: SecretScope,

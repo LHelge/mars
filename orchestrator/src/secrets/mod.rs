@@ -1,8 +1,10 @@
 //! Envelope crypto, secret resolution and injection into sessions.
 //!
-//! The master keyring ([`keyring`]) holds the versioned keys, wraps and
-//! unwraps per-row data keys and verifies at startup that every `key_version`
-//! present in the table can still be unwrapped (`ARCHITECTURE.md`, "Secrets").
+//! The master keyring ([`keyring`]) holds the versioned keys and wraps and
+//! unwraps per-row data keys; [`startup`] is what checks at boot that every
+//! `key_version` present in the table can still be unwrapped
+//! (`ARCHITECTURE.md`, "Secrets"), which is the one part of that sentence that
+//! needs a database rather than a cipher.
 //! [`envelope`] is the layer above it, and the only one: a [`SealedSecret`] is
 //! one row's encrypted identity, and sealing a value, opening it, re-sealing it
 //! when the row is renamed and re-wrapping its data key when the master key
@@ -15,8 +17,9 @@ pub mod keyring;
 pub mod resolve;
 pub mod rotation;
 pub mod service;
+pub mod startup;
 
-pub use envelope::{KeyVersionSample, SealedSecret, SecretIdentity, VALUE_NONCE_LEN};
+pub use envelope::{SealedSecret, SecretIdentity, VALUE_NONCE_LEN};
 pub use git_credential::{
     GIT_CREDENTIAL_NAME, GitUseContext, has_project_git_credential, insert_project_git_credential,
     project_git_credential, set_project_git_credential,
@@ -29,6 +32,7 @@ pub use rotation::{ROTATION_BATCH, RotationReport, rewrap_outdated};
 pub use service::{
     Actor, CreateSecret, DEFAULT_USES_LIMIT, MAX_USES_LIMIT, PatchSecret, SecretsService,
 };
+pub use startup::verify_keyring_at_startup;
 
 use crate::prelude::*;
 

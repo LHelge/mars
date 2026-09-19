@@ -29,8 +29,8 @@
 //! `project_id` of their own. Secrets are the one exception, because
 //! `secrets.scope_id` carries no foreign key to cascade through; they are
 //! deleted explicitly here rather than left for the orphan reaper
-//! ([`SecretRepository::list_orphans`](crate::repositories::SecretRepository::list_orphans)),
-//! and their `secret_uses` audit rows cascade with them.
+//! (`ARCHITECTURE.md`, "Background jobs"), and their `secret_uses` audit rows
+//! cascade with them.
 //!
 //! **After the commit the filesystem is best effort.** The rows are gone; a
 //! directory that will not go is logged with the project and the path and the

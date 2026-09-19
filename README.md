@@ -163,7 +163,7 @@ mars/
 ├── .github/workflows/  CI: orchestrator, frontend, e2e, images
 ├── .env.example
 ├── images/             session container images (claude/, stub/)
-├── nginx/              nginx.conf and default.conf.template; (planned) Dockerfile for the frontend image
+├── nginx/              nginx.conf, default.conf.template and Dockerfile for the frontend image
 └── compose.yml         (planned)
 ```
 
@@ -222,7 +222,15 @@ The claude image's version tag is the CLI version pinned in `images/claude/Docke
 podman build -t mars-orchestrator:dev orchestrator
 ```
 
-The builder stage's `rust:<version>-bookworm` tag and `orchestrator/rust-toolchain.toml` must move together; the Dockerfile says so at the `FROM` line. With Docker, run the same command with `docker build`. The nginx image that serves the frontend is planned, and once `compose.yml` exists `compose build` builds both.
+The builder stage's `rust:<version>-bookworm` tag and `orchestrator/rust-toolchain.toml` must move together; the Dockerfile says so at the `FROM` line.
+
+The nginx image builds the frontend with `npm ci && npm run build` on `node:22-alpine` and serves the result from `nginx:1.27-alpine`, with `nginx/nginx.conf` and `nginx/default.conf.template` installed so the official entrypoint renders the server block from `ORCHESTRATOR_HOST` and `API_PORT`. Its build context is the repository root, because it needs both `frontend/` and `nginx/`:
+
+```bash
+podman build -f nginx/Dockerfile -t mars-nginx:dev .
+```
+
+With Docker, run either command with `docker build`. Once `compose.yml` exists, `compose build` builds both images.
 
 **Frontend**:
 

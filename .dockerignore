@@ -1,0 +1,20 @@
+# Build context for nginx/Dockerfile, whose context is the repository root
+# (it needs both `frontend/` and `nginx/`). Only what bloats the context or
+# leaks a secret is excluded; `orchestrator/.dockerignore` covers the
+# orchestrator image, which is built with `orchestrator/` as its context and so
+# never reads this file.
+.git/
+.bears/
+data/
+.env
+.env.*
+
+# Build outputs. `frontend/node_modules` in particular must not be copied in:
+# the builder stage installs its own with `npm ci`, and a host tree would both
+# dwarf the context and carry the host platform's native binaries.
+orchestrator/target/
+orchestrator/target-main/
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/

@@ -1,10 +1,10 @@
 ---
 id: gv4j2
 title: "Implement hand-off git preparation under the project git lock: pre-validation, source sync, tip-equals-commit check and refs/handoffs pinning"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:41:10.624148345Z"
-updated: "2026-09-16T20:41:10.624148345Z"
+updated: "2026-09-19T21:02:11.449069876Z"
 tags:
   - orchestrator
   - tracker
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - tjhbr
 parent: xjaah
+attempts: 1
 ---
 
 ## Summary

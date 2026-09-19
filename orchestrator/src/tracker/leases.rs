@@ -146,8 +146,10 @@ pub async fn claim_for_launch(
     task: &Task,
     session_id: Uuid,
 ) -> Result<TaskDto> {
+    let project_id = m.project_id();
+
     let state_ids = TaskRepository::new(m.pool())
-        .list_states(m.project_id())
+        .list_states_in(m.conn(), project_id)
         .await?
         .into_iter()
         .filter(|state| state.kind != TaskStateKind::Terminal)
@@ -651,7 +653,7 @@ async fn human_state(m: &mut TrackerMutation<'_>) -> Result<TaskState> {
     let project_id = m.project_id();
 
     TaskRepository::new(m.pool())
-        .list_states(project_id)
+        .list_states_in(m.conn(), project_id)
         .await?
         .into_iter()
         .find(|state| state.kind == TaskStateKind::Human)

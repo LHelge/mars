@@ -162,12 +162,17 @@ pub async fn change_state(
 
 /// The state with this id in this project.
 ///
-/// Read on the pool, which is safe for exactly one reason: `task_states` is
-/// only ever written by a tracker mutation, and this one holds the project
-/// lock, so no committed row can change underneath it while the read runs.
+/// Read through the mutation's own connection. The row cannot change
+/// underneath this call either way — `task_states` is only ever written by a
+/// tracker mutation and this one holds the project lock — but a pool read here
+/// would make the mutation hold two pooled connections at once, so enough
+/// concurrent mutations on distinct projects would each hold one and wait for
+/// a second (`docs/data-model.md`, "Tracker mutation transactions").
 async fn state_of(m: &mut TrackerMutation<'_>, state_id: Uuid) -> Result<TaskState> {
+    let project_id = m.project_id();
+
     TaskRepository::new(m.pool())
-        .find_state(m.project_id(), state_id)
+        .find_state_in(m.conn(), project_id, state_id)
         .await?
         .ok_or_else(|| {
             error!(
@@ -320,10 +325,10 @@ async fn lowest_terminal_state(m: &mut TrackerMutation<'_>) -> Result<TaskState>
     let project_id = m.project_id();
 
     TaskRepository::new(m.pool())
-        .list_states(project_id)
+        .list_states_in(m.conn(), project_id)
         .await?
         .into_iter()
-        // `list_states` is already ordered by position, then name.
+        // `list_states_in` is already ordered by position, then name.
         .find(|state| state.kind == TaskStateKind::Terminal)
         .ok_or_else(|| {
             // Unreachable by construction: a project keeps at least one
@@ -339,45 +344,58 @@ async fn lowest_terminal_state(m: &mut TrackerMutation<'_>) -> Result<TaskState>
 /// unknown one always answers the same way: [`Error::BadRequest`] — 400 over
 /// REST, `invalid_argument` over MCP — naming the valid states in board order,
 /// as `SPEC.md`, `update_task` requires.
+///
+/// Both reads go through the mutation's connection: it already holds one
+/// pooled connection with the project locked, and a second acquired here is
+/// what makes concurrent mutations on distinct projects queue for the pool
+/// instead of for their own project's lock.
 pub async fn resolve_state(m: &mut TrackerMutation<'_>, name: &str) -> Result<TaskState> {
     let project_id = m.project_id();
+    let repository = TaskRepository::new(m.pool());
 
-    resolve(&TaskRepository::new(m.pool()), project_id, name).await
+    if let Some(state) = repository
+        .find_state_by_name_in(m.conn(), project_id, name)
+        .await?
+    {
+        return Ok(state);
+    }
+
+    let states = repository.list_states_in(m.conn(), project_id).await?;
+
+    Err(unknown_state(name, &states))
 }
 
 /// The same question, without a mutation.
 ///
 /// A board filter (`GET /projects/{pid}/tasks?state=...`) translates a state
-/// name to an id and changes nothing, so it has no lock to ask under — but it
-/// owes the caller the identical message, which is why both forms share
-/// [`resolve`].
+/// name to an id and changes nothing, so it has no lock to ask under — and it
+/// reads the pool for that reason. It owes the caller the identical message,
+/// which is why both forms build it with [`unknown_state`].
 pub async fn resolve_state_in_pool(
     pool: &PgPool,
     project_id: Uuid,
     name: &str,
 ) -> Result<TaskState> {
-    resolve(&TaskRepository::new(pool), project_id, name).await
-}
+    let repository = TaskRepository::new(pool);
 
-/// The shared resolution, and the one place the message is built.
-async fn resolve(
-    repository: &TaskRepository<'_>,
-    project_id: Uuid,
-    name: &str,
-) -> Result<TaskState> {
     if let Some(state) = repository.find_state_by_name(project_id, name).await? {
         return Ok(state);
     }
 
-    let valid = repository
-        .list_states(project_id)
-        .await?
-        .into_iter()
-        .map(|state| state.name)
+    let states = repository.list_states(project_id).await?;
+
+    Err(unknown_state(name, &states))
+}
+
+/// The one place the unknown-state message is built, for both resolutions.
+fn unknown_state(name: &str, states: &[TaskState]) -> Error {
+    let valid = states
+        .iter()
+        .map(|state| state.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
 
-    Err(Error::BadRequest(format!(
+    Error::BadRequest(format!(
         "unknown state \"{name}\"; valid states are: {valid}"
-    )))
+    ))
 }

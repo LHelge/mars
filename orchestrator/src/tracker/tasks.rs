@@ -30,13 +30,12 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::events::TaskEventKind;
-use crate::models::{
-    Label, NewTask, Priority, TaskDependencyKind, TaskRef, TaskState, TaskStateKind,
-};
+use crate::models::{Label, NewTask, Priority, TaskDependencyKind, TaskRef, TaskStateKind};
 use crate::prelude::*;
 use crate::repositories::TaskRepository;
 use crate::repositories::tasks::StateFields;
 use crate::tracker::graph::{check_no_cycle, recompute_blocked};
+use crate::tracker::state::resolve_state;
 use crate::tracker::{TaskDto, TrackerMutation};
 
 /// What a `depends_on` entry naming nothing in this project is told (400).
@@ -218,48 +217,4 @@ pub async fn create_task(m: &mut TrackerMutation<'_>, input: CreateTaskInput) ->
         .load_task_dto_in(m.conn(), project_id, inserted.id)
         .await?
         .ok_or(Error::NotFound)
-}
-
-/// The state of this project with this name, or 400 listing the valid names.
-///
-/// `SPEC.md`, "Tasks" gives an unknown state 400 and nothing more; the names
-/// are in the message because the valid set is per project — a project may
-/// have renamed, added or removed columns — and a caller cannot be expected to
-/// guess it.
-///
-/// The lookup itself is an ordinary read; what makes it safe inside a mutation
-/// is that the insert re-checks the state against this project under the lock
-/// ([`TaskRepository::insert_task`]), so a state deleted between this read and
-/// the insert is refused there rather than written.
-async fn resolve_state(m: &mut TrackerMutation<'_>, name: &str) -> Result<TaskState> {
-    resolve_state_in_project(m.pool(), m.project_id(), name).await
-}
-
-/// [`resolve_state`] for a caller that has no mutation to resolve under.
-///
-/// The `?state=` filter of `GET /projects/{pid}/tasks` is a read: it takes no
-/// lock (ADR 0021) and still has to answer an unknown name with the same 400
-/// as a creation does, so the message is written once, here.
-pub(crate) async fn resolve_state_in_project(
-    pool: &PgPool,
-    project_id: Uuid,
-    name: &str,
-) -> Result<TaskState> {
-    let repository = TaskRepository::new(pool);
-
-    if let Some(state) = repository.find_state_by_name(project_id, name).await? {
-        return Ok(state);
-    }
-
-    let valid = repository
-        .list_states(project_id)
-        .await?
-        .into_iter()
-        .map(|state| state.name)
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    Err(Error::BadRequest(format!(
-        "unknown state \"{name}\"; valid states are: {valid}"
-    )))
 }

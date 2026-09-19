@@ -17,6 +17,7 @@ pub mod projects;
 pub mod secrets;
 pub mod sessions;
 pub mod shared_dirs;
+pub mod stream_auth;
 pub mod task_states;
 pub mod tasks;
 pub mod throttle;
@@ -29,6 +30,10 @@ pub mod users;
 pub mod test;
 
 pub use extractors::{AdminUser, CurrentUser, UngatedUser, authenticate_access_token};
+pub use stream_auth::{
+    AUTH_REQUIRED, StreamAuthFailure, StreamPrincipal, StreamToken, authenticate_stream,
+    reauthorize,
+};
 
 /// Transitional: [`Path`](crate::prelude::Path) and
 /// [`Query`](crate::prelude::Query) now live in the prelude beside `Json`, and

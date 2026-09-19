@@ -1,11 +1,15 @@
 //! Test-only routes, compiled only with the `integration-tests` feature and
 //! never into a release build (`SPEC.md`, "Test-only routes").
 //!
-//! One route: `POST /test/users`, the way Playwright and the backend
-//! integration tests get a signed-in user without the invite flow. It is the
-//! only fixture endpoint the specification lists, and nothing else belongs
-//! here — a test that needs a row the API cannot produce writes it through a
-//! repository from the test process, which reaches the same database.
+//! Two routes. `POST /test/users` is the way Playwright and the backend
+//! integration tests get a signed-in user without the invite flow. `GET
+//! /test/stream-whoami` is the probe the stream-authentication tests drive
+//! [`crate::routes::stream_auth`] through, because the real `?token=` endpoints
+//! are WebSocket and SSE streams and an authentication contract should be
+//! asserted on a plain request. They are the fixture endpoints the
+//! specification lists, and nothing else belongs here — a test that needs a
+//! row the API cannot produce writes it through a repository from the test
+//! process, which reaches the same database.
 //!
 //! The route takes no authentication of any kind and creates administrators on
 //! request, which is exactly why the whole module is behind the feature gate:
@@ -21,17 +25,21 @@
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum_extra::extract::CookieJar;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::auth::{Credentials, IssuedPair};
 use crate::models::{Email, Password, Username};
 use crate::prelude::*;
 use crate::routes::auth::TokenPairResponse;
+use crate::routes::stream_auth::{StreamToken, authenticate_stream};
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/users", post(create_user))
+    Router::new()
+        .route("/users", post(create_user))
+        .route("/stream-whoami", get(stream_whoami))
 }
 
 /// `POST /test/users` (`{ username, email, password, admin? }`).
@@ -83,4 +91,27 @@ async fn create_user(
         jar.add(refresh_cookie),
         Json(TokenPairResponse { user, access_token }),
     ))
+}
+
+/// `GET /test/stream-whoami?token=<jwt>` → `{ user_id }` (200).
+///
+/// The stream endpoints authenticate with [`StreamToken`] and
+/// [`authenticate_stream`], and both of them are streams, so there is no
+/// ordinary request that exercises the one contract they share — signature,
+/// expiry, the user row, `auth_version` and the password-change gate, read off
+/// `?token=`. This route is that request and nothing more: it authenticates
+/// and reports the id it authenticated as, so a test asserts 200, 401 or 403
+/// the way it does on any other route.
+#[derive(Debug, Serialize)]
+struct StreamWhoamiResponse {
+    user_id: Uuid,
+}
+
+async fn stream_whoami(
+    State(state): State<AppState>,
+    token: StreamToken,
+) -> Result<Json<StreamWhoamiResponse>> {
+    let user = authenticate_stream(&state, &token.0).await?;
+
+    Ok(Json(StreamWhoamiResponse { user_id: user.id }))
 }

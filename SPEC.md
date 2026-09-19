@@ -254,6 +254,7 @@ Compiled only with the `integration-tests` cargo feature, never into a release b
 | Method | Path | Auth | Body → Response |
 | --- | --- | --- | --- |
 | POST | `/test/users` | — | `{username, email, password, admin?}` → `{user, access_token}` (201; sets the refresh cookie; `must_change_password` false) |
+| GET | `/test/stream-whoami` | `?token=` | → `{user_id}` (200). The stream `?token=` check on an ordinary request, so the shared authentication contract of the WebSocket and SSE endpoints can be asserted without opening a stream: 401 `authentication required`, 403 `password change required` and 200 exactly as they answer. |
 
 Playwright creates its users through this route; sessions in end-to-end tests use the stub image (`ARCHITECTURE.md`, "Session image").
 

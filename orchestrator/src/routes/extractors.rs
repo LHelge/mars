@@ -139,7 +139,10 @@ impl FromRequestParts<AppState> for AdminUser {
 /// that is missing, not ASCII, carries another scheme or carries an empty
 /// token is the same 401 as a token that does not verify. The token itself is
 /// never logged (rule 3).
-fn bearer_token(headers: &HeaderMap) -> Result<String> {
+/// Visible to the crate because [`crate::routes::stream_auth`] accepts the
+/// header as the fallback for a `?token=` that is not there, and has to read
+/// it the same way.
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Result<String> {
     let unauthorized = || Error::Unauthorized(AUTHENTICATION_REQUIRED.to_string());
 
     let value = headers

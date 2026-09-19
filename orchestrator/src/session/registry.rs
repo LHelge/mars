@@ -24,7 +24,9 @@
 //! The registry decides deliverability only. Whether a session may take input
 //! at all is the session model's rule — [`crate::models::Session::accepts_input`],
 //! which is what refuses an ephemeral session and a `done` or `failed` one —
-//! and the service applies it before calling [`SessionRegistry::submit`].
+//! and the service applies it before calling [`SessionRegistry::submit`], or
+//! [`SessionRegistry::submit_parked`] for a row that says `parked`, which a
+//! restart may have left with no entry at all.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, MutexGuard};
@@ -298,55 +300,44 @@ impl SessionRegistry {
     /// [`SubmitResult::ParkedNeedsRelaunch`] the input is already queued and
     /// the caller resumes the session, which drains it.
     pub fn submit(&self, session_id: Uuid, input: QueuedInput) -> SubmitResult {
+        submit_to(&mut self.state(), session_id, input)
+    }
+
+    /// Offer one input to a session whose row says `parked`, registering it
+    /// parked first if the registry has forgotten it.
+    ///
+    /// Nothing is durable here, so a restart leaves every `parked` row without
+    /// an entry (ADR 0020) and [`SessionRegistry::submit`] would answer
+    /// `Rejected("session has no owner")` for a session that is perfectly
+    /// resumable. The service calls this instead when the row it read says
+    /// `parked`: registering, queueing and deciding whether a relaunch is
+    /// needed happen under one acquisition of the mutex, so two messages
+    /// arriving at once cannot both be told to relaunch. The entry is created
+    /// with no channel and [`Phase::Parked`], which is exactly the state
+    /// [`SessionRegistry::mark_parked`] would have left it in; the resume's
+    /// [`SessionRegistry::register`] then keeps the queue this call filled.
+    ///
+    /// A session that *is* registered keeps its phase: a row that says `parked`
+    /// while an owner is attached is a stale read, and the live entry is the
+    /// truth about where the input goes.
+    pub fn submit_parked(
+        &self,
+        session_id: Uuid,
+        kind: SessionKind,
+        input: QueuedInput,
+    ) -> SubmitResult {
         let mut state = self.state();
-        let relaunching = state.launching.contains(&session_id);
-        let Some(entry) = state.sessions.get_mut(&session_id) else {
-            return SubmitResult::Rejected("session has no owner".to_string());
-        };
-
-        match entry.phase {
-            Phase::Running => {
-                let Some(tx) = entry.tx.as_ref() else {
-                    // Running without a channel cannot happen — `register` is
-                    // the only way into this phase — but treat it like a
-                    // closed one rather than trusting the invariant.
-                    return park_and_queue(session_id, entry, input, relaunching);
-                };
-
-                match tx.try_send(OwnerCommand::Input(input)) {
-                    Ok(()) => {
-                        debug!(session_id = %session_id, "input forwarded to the session owner");
-                        SubmitResult::Forwarded
-                    }
-                    // The owner exited between the phase check and the send.
-                    // Park the entry so the next input queues too, and tell
-                    // the caller to relaunch.
-                    Err(mpsc::error::TrySendError::Closed(OwnerCommand::Input(input))) => {
-                        park_and_queue(session_id, entry, input, relaunching)
-                    }
-                    // `try_send` hands back exactly what it was given, so this
-                    // arm is never taken; it answers rather than panics under
-                    // the registry's lock.
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        SubmitResult::Rejected("session has no owner".to_string())
-                    }
-                    // The owner is alive but behind. Queueing here would
-                    // reorder this input behind the next one that fits, so
-                    // refuse it instead and let the user resend.
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        warn!(
-                            session_id = %session_id,
-                            "the session owner's channel is full; input refused"
-                        );
-                        SubmitResult::Rejected("input queue full".to_string())
-                    }
-                }
+        state.sessions.entry(session_id).or_insert_with(|| {
+            debug!(session_id = %session_id, "registering a parked session the registry had lost");
+            Entry {
+                kind,
+                phase: Phase::Parked,
+                tx: None,
+                queue: VecDeque::new(),
             }
-            Phase::Creating => push(session_id, entry, input, SubmitResult::Queued),
-            // A relaunch already under way will drain the queue; asking the
-            // caller for a second one would race it.
-            Phase::Parked => push(session_id, entry, input, queued_answer(relaunching)),
-        }
+        });
+
+        submit_to(&mut state, session_id, input)
     }
 
     /// Ask a session's owner to stop: SIGINT now, SIGTERM after the grace
@@ -453,6 +444,62 @@ impl SessionRegistry {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Where one input goes, with the registry's state already locked.
+///
+/// The body of [`SessionRegistry::submit`], factored out so that
+/// [`SessionRegistry::submit_parked`] can register an entry and submit into it
+/// without releasing the mutex in between.
+fn submit_to(state: &mut State, session_id: Uuid, input: QueuedInput) -> SubmitResult {
+    let relaunching = state.launching.contains(&session_id);
+    let Some(entry) = state.sessions.get_mut(&session_id) else {
+        return SubmitResult::Rejected("session has no owner".to_string());
+    };
+
+    match entry.phase {
+        Phase::Running => {
+            let Some(tx) = entry.tx.as_ref() else {
+                // Running without a channel cannot happen — `register` is the
+                // only way into this phase — but treat it like a closed one
+                // rather than trusting the invariant.
+                return park_and_queue(session_id, entry, input, relaunching);
+            };
+
+            match tx.try_send(OwnerCommand::Input(input)) {
+                Ok(()) => {
+                    debug!(session_id = %session_id, "input forwarded to the session owner");
+                    SubmitResult::Forwarded
+                }
+                // The owner exited between the phase check and the send. Park
+                // the entry so the next input queues too, and tell the caller
+                // to relaunch.
+                Err(mpsc::error::TrySendError::Closed(OwnerCommand::Input(input))) => {
+                    park_and_queue(session_id, entry, input, relaunching)
+                }
+                // `try_send` hands back exactly what it was given, so this arm
+                // is never taken; it answers rather than panics under the
+                // registry's lock.
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    SubmitResult::Rejected("session has no owner".to_string())
+                }
+                // The owner is alive but behind. Queueing here would reorder
+                // this input behind the next one that fits, so refuse it
+                // instead and let the user resend.
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!(
+                        session_id = %session_id,
+                        "the session owner's channel is full; input refused"
+                    );
+                    SubmitResult::Rejected("input queue full".to_string())
+                }
+            }
+        }
+        Phase::Creating => push(session_id, entry, input, SubmitResult::Queued),
+        // A relaunch already under way will drain the queue; asking the caller
+        // for a second one would race it.
+        Phase::Parked => push(session_id, entry, input, queued_answer(relaunching)),
     }
 }
 
@@ -675,6 +722,65 @@ mod tests {
         );
         assert_eq!(registry.phase(session), Some(Phase::Parked));
         assert_eq!(registry.queued(session), 1, "the input is not lost");
+    }
+
+    /// The restart case: the row says `parked`, the registry knows nothing, and
+    /// the input must queue and ask for a relaunch rather than be refused
+    /// (ADR 0020).
+    #[tokio::test]
+    async fn an_input_to_a_parked_session_the_registry_lost_registers_it_and_asks_for_a_relaunch() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+
+        assert_eq!(
+            registry.submit(session, message("one")),
+            SubmitResult::Rejected("session has no owner".to_string()),
+            "without the row's state there is nothing to register",
+        );
+
+        assert_eq!(
+            registry.submit_parked(session, SessionKind::Conversational, message("one")),
+            SubmitResult::ParkedNeedsRelaunch,
+        );
+        assert_eq!(registry.phase(session), Some(Phase::Parked));
+        assert_eq!(registry.kind(session), Some(SessionKind::Conversational));
+        assert!(!registry.is_live(session));
+
+        // The second message finds the entry this one made; only the resume
+        // that is already claimed keeps it from asking for another.
+        let guard = registry
+            .try_begin_launch(session)
+            .expect("no other launch is in progress");
+        assert_eq!(
+            registry.submit_parked(session, SessionKind::Conversational, message("two")),
+            SubmitResult::Queued,
+        );
+
+        let _rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        let drained = registry.mark_running(session);
+        drop(guard);
+
+        let texts: Vec<&str> = drained.iter().map(|input| input.input.text()).collect();
+        assert_eq!(texts, vec!["one", "two"], "the queue survived the resume");
+    }
+
+    /// A live owner wins over a row that says `parked`: the read was stale.
+    #[tokio::test]
+    async fn submit_parked_leaves_a_registered_session_alone() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let mut rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        registry.mark_running(session);
+
+        assert_eq!(
+            registry.submit_parked(session, SessionKind::Conversational, message("hello")),
+            SubmitResult::Forwarded,
+        );
+        assert_eq!(registry.phase(session), Some(Phase::Running));
+        assert_eq!(
+            received_text(rx.recv().await.expect("the owner receives the input")),
+            "hello",
+        );
     }
 
     #[tokio::test]

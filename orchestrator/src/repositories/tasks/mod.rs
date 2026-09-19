@@ -75,6 +75,9 @@ use uuid::Uuid;
 pub use events::MAX_TASK_EVENT_PAGE;
 pub use graph::BlockedState;
 pub use rows::TaskFilter;
+// Crate-private on purpose: composing these columns is `tracker::state`'s, and
+// `rows` is a private module, so this is how its one caller reaches the type.
+pub(crate) use rows::StateFields;
 
 use crate::prelude::*;
 use crate::repositories::ProjectRepository;

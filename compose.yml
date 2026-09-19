@@ -7,13 +7,15 @@
 # creates them on demand (ARCHITECTURE.md, "Components").
 #
 # The engine is chosen by an override file, because rootless Podman and Docker
-# differ in exactly one line on one service (ADR 0035):
+# differ in exactly one line on one service (ADR 0035). Name both files:
 #
-#   COMPOSE_FILE=compose.yml:compose.podman.yml   # rootless Podman
-#   COMPOSE_FILE=compose.yml:compose.docker.yml   # Docker
+#   -f compose.yml -f compose.podman.yml   # rootless Podman
+#   -f compose.yml -f compose.docker.yml   # Docker
 #
-# in `.env`, or `-f compose.yml -f compose.podman.yml` on the command line if a
-# compose implementation ignores COMPOSE_FILE from `.env`.
+# COMPOSE_FILE in `.env` does the same for `docker compose`, but podman-compose
+# 1.6.0 reads that variable only from the process environment and would start
+# this file alone — without an override the orchestrator cannot open the engine
+# socket (README.md, "Start").
 
 services:
   postgres:

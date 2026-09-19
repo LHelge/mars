@@ -50,12 +50,12 @@ Rootless Podman is the target engine, reached through its Docker-compatible sock
 
 ## Running it
 
-These are the intended steps once the implementation exists.
+These steps have been walked through end to end on rootless Podman 6.1.2 with `podman-compose` 1.6.0: the stack comes up, the login page is reached through nginx, the forced first-login password change completes, and a session on the stub image runs and replays its transcript.
 
 ### Prerequisites
 
 - A Linux host with rootless Podman 4.9+ (or Docker 24+); the engine tests run on Podman 4.9.3 and 6.1.2 and on Docker 28.0.4.
-- `podman-compose` or `docker compose`.
+- `podman-compose` or `docker compose`. They differ in one place that matters here — whether `COMPOSE_FILE` is read from `.env` — so "Start" gives the command that works on both.
 - A directory for persistent data, for example `/srv/mars/data`, owned by the service user (uid 1000 under Docker). It is `DATA_DIR_HOST` and must exist before the first start: compose bind-mounts it, and the orchestrator's startup probe fails if it is missing or not writable.
 - `git` is **not** needed on the host: the orchestrator image ships it, and it is the only thing that runs `git`.
 - For private repositories: a fine-grained GitHub personal access token scoped to the repository.
@@ -64,17 +64,35 @@ These are the intended steps once the implementation exists.
 ### Podman setup (once, as the service user)
 
 ```bash
-# Let the user's services run without an active login session
-sudo loginctl enable-linger "$USER"
+# Let the user's services run without an active login session.
+# No sudo when it is your own account: systemd's polkit rule lets an active
+# session enable linger for itself. Use `sudo loginctl enable-linger <user>`
+# to enable it for a service account you are not logged in as.
+loginctl enable-linger "$USER"
 
 # Start the Docker-compatible API socket with socket activation
 systemctl --user enable --now podman.socket
 
-# The socket the orchestrator will use
+# The socket the orchestrator will use: this is what ENGINE_SOCKET_HOST (the
+# path) and DOCKER_HOST (the unix:// URL) get. Do not assume /run/user/1000;
+# the socket lives under the service user's own XDG_RUNTIME_DIR.
 echo "unix://$XDG_RUNTIME_DIR/podman/podman.sock"
 ```
 
+`systemctl --user` and `$XDG_RUNTIME_DIR` need a real session for that user. `sudo -u <user> …` does not give you one, so run the block from a login shell of the service user (`machinectl shell <user>@` or `ssh <user>@localhost`).
+
 The compose file runs the orchestrator with `userns_mode: keep-id` and mounts that socket, so the orchestrator's uid inside the container matches the service user on the host. Session containers run with `keep-id:uid=1000,gid=1000`, which maps the service user to the image's `agent` user (uid 1000) whatever the service user's uid is; the orchestrator verifies this at startup with a probe container and refuses to start if Podman does not honour it. That form of `keep-id` needs Podman 4.3 or newer, and the engine tests have verified it through the compatibility API on Podman 4.9.3 and 6.1.2. Podman resolves `keep-id` through the non-thread-safe `libsubid`, so it cannot do it for two containers at once: with twenty creates in flight on Podman 6.1.2 about one container in fourteen comes out with a broken uid mapping and then fails to start (`doesn't map UID 0`, `write to uid_map: Operation not permitted`), and the API service occasionally crashes in that call and is restarted by its socket unit. No fixed version is known, so the orchestrator creates containers one at a time per host: its engine adapter holds a lock across each container creation and releases it again before starting the container, so two sessions launched at once simply take turns creating their containers. The `podman` CLI is unaffected, because each invocation is its own process. If the compatibility API cannot apply `keep-id` to the orchestrator container, it can run as a plain user systemd service. Session containers still require `keep-id:uid=1000,gid=1000` support and must pass the startup probe.
+
+`podman-compose` 1.6.0 does apply `userns_mode: keep-id` to the orchestrator container. To check it on your own host, note that `podman inspect` does not echo the word back — it reports the namespace Podman ended up creating:
+
+```bash
+podman inspect <project>_orchestrator_1 --format '{{.HostConfig.UsernsMode}} {{json .HostConfig.IDMappings}}'
+# keep-id applied:  private {"UidMap":["0:1:1000","1000:0:1","1001:1001:64536"],…}
+# override missing: <empty> null
+podman exec <project>_orchestrator_1 id   # uid must equal the service user's uid
+```
+
+The `1000:0:1` entry is the mapping that matters: container uid 1000 is the service user. Without it the container runs as a sub-uid, cannot open the bind-mounted engine socket, and the orchestrator exits with `the container engine is unreachable; refusing to start`.
 
 For Docker, use the daemon's socket (`unix:///var/run/docker.sock`) and a user in the `docker` group. The supported Docker deployment uses the default uid mapping, so the orchestrator service runs as uid 1000 (`user: "1000:1000"` in the compose file) and the data directory must be owned by uid 1000. The session uid and data-directory ownership requirements still apply.
 
@@ -88,8 +106,8 @@ Copy `.env.example` to `.env` and set:
 | `JWT_SECRET` | Secret for signing access tokens. |
 | `DATABASE_URL` | Postgres connection string (compose sets it for the orchestrator). |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Database bootstrap. Compose interpolates all three into the `DATABASE_URL` it gives the orchestrator, so `POSTGRES_PASSWORD` must use URL-safe characters (letters, digits, `-`, `_`, `.`, `~`); setting `DATABASE_URL` in `.env` does not help, because compose's `environment:` overrides it. |
-| `DOCKER_HOST` | Engine socket, `unix:///run/user/1000/podman/podman.sock` for rootless Podman. Compose overrides it inside the orchestrator container to the mounted socket path (`unix:///run/engine.sock`), so the value here is what `podman-compose`/`docker compose` itself and a host-run orchestrator use. |
-| `ENGINE_SOCKET_HOST` | **Compose only.** Host path of the engine socket, bind-mounted into the orchestrator at `/run/engine.sock`; `/run/user/1000/podman/podman.sock` for rootless Podman, `/var/run/docker.sock` for Docker. A path, not a `unix://` URL. |
+| `DOCKER_HOST` | Engine socket, `unix://$XDG_RUNTIME_DIR/podman/podman.sock` for rootless Podman — the path "Podman setup" printed, which is `/run/user/<uid>/…` for the service user's own uid and not necessarily 1000. Compose overrides it inside the orchestrator container to the mounted socket path (`unix:///run/engine.sock`), so the value here is what `podman-compose`/`docker compose` itself and a host-run orchestrator use. |
+| `ENGINE_SOCKET_HOST` | **Compose only.** Host path of the engine socket, bind-mounted into the orchestrator at `/run/engine.sock`; `$XDG_RUNTIME_DIR/podman/podman.sock` for rootless Podman (again the service user's own uid, not necessarily 1000), `/var/run/docker.sock` for Docker. A path, not a `unix://` URL, and compose does not expand `$XDG_RUNTIME_DIR` for you: write the resolved path. |
 | `DATA_DIR_HOST` | Host path of the data directory; mounted at `/data` in the orchestrator and used as the source of session bind mounts. A bind-mount source must be absolute, so a relative path is resolved against the orchestrator's working directory at startup. |
 | `DATA_DIR` | Path at which the orchestrator itself sees the data directory: `/data` in compose, the same as `DATA_DIR_HOST` when running on the host. |
 | `MCP_URL` | URL written into each session's MCP config; default `http://orchestrator:7001/mcp`. On a development host: `http://host.containers.internal:7001/mcp`. |
@@ -105,34 +123,32 @@ Copy `.env.example` to `.env` and set:
 | `SESSION_IMAGE_DEFAULT` | Image used by the default profile of new projects and by the startup probe (default `mars-session-claude:latest`). Both pull it, so it has to exist on the engine before the first start; build it as described under "Session image". |
 | `RESEND_API_KEY`, `MAIL_FROM` | Email delivery through Resend, used for invites, password resets and task escalations. `MAIL_FROM` is required once `RESEND_API_KEY` is set. Without an API key, full usable links including their tokens are intentionally written to the orchestrator log at `info` instead of sent. This supports local development without email configuration; no extra flag is required (ADR 0026). |
 | `RUST_LOG` | Log filter, `info` by default and whenever the given filter is unusable, such as the bare non-level word `verbose`. |
-| `COMPOSE_FILE` | **Compose only.** Which compose files make up the deployment, and so which engine it runs on: `compose.yml:compose.podman.yml` or `compose.yml:compose.docker.yml` (ADR 0035). |
+| `COMPOSE_FILE` | **Compose only.** Which compose files make up the deployment, and so which engine it runs on: `compose.yml:compose.podman.yml` or `compose.yml:compose.docker.yml` (ADR 0035). `docker compose` reads it from `.env`; `podman-compose` 1.6.0 does **not** — see "Start". |
 
 Generate a master key with `openssl rand -base64 32`.
 
 ### Start
 
-The deployment is one `compose.yml` plus a one-line override file per engine (ADR 0035). Choose the engine with `COMPOSE_FILE` in `.env`:
+The deployment is one `compose.yml` plus a one-line override file per engine (ADR 0035). Name both files on the command line:
 
 ```bash
-COMPOSE_FILE=compose.yml:compose.podman.yml   # rootless Podman
-COMPOSE_FILE=compose.yml:compose.docker.yml   # Docker
+podman-compose -f compose.yml -f compose.podman.yml up -d   # rootless Podman
+docker compose  -f compose.yml -f compose.docker.yml up -d  # Docker
 ```
 
-Then:
+Pass the same `-f` pair to every later `ps`, `logs`, `build`, `exec` and `down`; `export COMPOSE_FILE=compose.yml:compose.podman.yml` in the shell instead if you would rather not repeat them.
 
-```bash
-podman-compose up -d        # or: docker compose up -d
-```
+`COMPOSE_FILE` in `.env` also selects the engine, but only for `docker compose`: **`podman-compose` 1.6.0 reads `COMPOSE_FILE` from the process environment and not from `.env`**, so with the variable set only in `.env` it silently starts `compose.yml` alone. The orchestrator then has no `userns_mode: keep-id`, runs as a sub-uid, cannot open the bind-mounted engine socket, and restart-loops on `the container engine is unreachable; refusing to start`. The `-f` form above avoids the difference, which is why it is the documented one. `.env.example` still carries `COMPOSE_FILE`, and it is what a `docker compose` deployment uses.
 
-If a compose implementation ignores `COMPOSE_FILE` from `.env`, pass the files instead: `-f compose.yml -f compose.podman.yml`.
+After `up -d`, `scripts/verify-deployment.sh` checks health, network isolation and log hygiene against the running stack: it prints one `ok`/`warn`/`FAIL` line per check and exits non-zero on any failure. It finds the compose command itself; set `COMPOSE_CMD` when yours needs the `-f` pair.
 
-After `up -d`, `scripts/verify-deployment.sh` checks health, network isolation and log hygiene against the running stack: it prints one `ok`/`FAIL` line per check and exits non-zero on any failure.
+The first start builds both images, the orchestrator and nginx, which takes a while; a build failure leaves nothing running. After pulling changes, rebuild explicitly with `compose build` — and then recreate, because `up -d --build` rebuilds the image but leaves an already-running container on the old one (`up -d --force-recreate orchestrator`). nginx then listens on `HTTP_PORT` (default 8080) and nothing else is published: neither the API (`API_PORT`) nor the MCP listener (`MCP_PORT`) is reachable from the host.
 
-The first start builds both images, the orchestrator and nginx, which takes a while; a build failure leaves nothing running. After pulling changes, rebuild explicitly with `compose build`. nginx then listens on `HTTP_PORT` (default 8080) and nothing else is published: neither the API (`API_PORT`) nor the MCP listener (`MCP_PORT`) is reachable from the host.
+`compose ps` reports a health state for postgres and the orchestrator. nginx has no healthcheck, so it shows none; `Up` is all you get for it, and `scripts/verify-deployment.sh` is what actually proves it serves.
 
 TLS is terminated in front of nginx by the operator — a host reverse proxy or a load balancer — and `PUBLIC_URL` must be the `https://` URL users actually open, because the session cookie is marked `Secure` exactly when `PUBLIC_URL` is https.
 
-If the orchestrator restarts in a loop, check `compose logs orchestrator`: `startup probe failed; refusing to start` means `DATA_DIR_HOST` is missing or not owned by the right user (the service user under Podman, uid 1000 under Docker).
+If the orchestrator restarts in a loop, check `compose logs orchestrator`. `startup probe failed; refusing to start` means `DATA_DIR_HOST` is missing or not owned by the right user (the service user under Podman, uid 1000 under Docker). `the container engine is unreachable; refusing to start` means it cannot use the socket at `/run/engine.sock`: either `ENGINE_SOCKET_HOST` does not point at a live socket, or — on Podman — the engine override was not applied and the container is not running as the service user (see "Podman setup").
 
 The orchestrator applies database migrations on startup; the first migration seeds an administrator:
 
@@ -153,7 +169,8 @@ Code hand-offs keep the producing session, branch, exact commit and a comment to
 ### Operating notes
 
 - **Known v1 vulnerability:** git commands run by the orchestrator against an agent-controlled checkout can execute helpers configured by that agent, with the orchestrator's access to secrets, project data and the engine socket. This risk is explicitly accepted for v1; isolating those git operations is deferred. See [ADR 0019](docs/decisions/0019-defer-isolation-of-git-checkout-operations.md). Session containers are not a complete containment guarantee while this remains unresolved.
-- `compose down` while sessions are running cannot remove `mars-sessions`, because session containers are still attached to it: the services are gone but the network removal reports an error. Stop or delete the sessions first, or ignore that one warning.
+- `compose down` while sessions are running cannot remove `mars-sessions`, because session containers are still attached to it: the services are gone but the network removal reports an error, and the session containers themselves are left running. Stop or delete the sessions first, or remove them and the network by hand afterwards.
+- `mars-egress` is not declared in `compose.yml` — the orchestrator creates it at startup — so `compose down` never removes it. Removing it by hand is safe once no session container is attached.
 - Session working copies, project mirrors and transcripts live under `DATA_DIR_HOST`. Back it up with the database.
 - v1 does not automatically redact secrets from agent/tool output or user messages. Transcripts, event history and their backups may contain credentials printed by commands or pasted into messages; encryption of stored secrets does not cover these copies (ADR 0027).
 - Git fetches refresh the project's upstream-tracking branches (`origin/main`, for example). Mars keeps its integration branches (`main`) separately, so a background fetch cannot discard a merge waiting to be pushed. Merge `origin/main` into `main` explicitly to incorporate upstream changes, then push when ready. A push rejected because upstream changed leaves local work intact. Session reference clones still share history through the read-only project repository.

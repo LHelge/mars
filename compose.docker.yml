@@ -5,7 +5,10 @@
 # contract"). The image's own USER is already 1000:1000; this states it, so the
 # contract does not depend on the image default.
 #
-#   COMPOSE_FILE=compose.yml:compose.docker.yml
+#   -f compose.yml -f compose.docker.yml
+#
+# (or COMPOSE_FILE=compose.yml:compose.docker.yml in `.env`, which
+# `docker compose` reads)
 #
 # This is the only line that differs from the Podman deployment.
 services:

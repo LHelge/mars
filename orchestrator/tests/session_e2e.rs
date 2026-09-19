@@ -587,14 +587,30 @@ async fn reload(app: &TestApp, id: Uuid) -> Session {
 /// command and the binds are not among them, so the two assertions that are
 /// about the *specification* go through a raw client, as
 /// `tests/common/engine.rs` does for the operations Mars never performs.
+///
+/// Asked again for a short while when the answer cannot be decoded: the Podman
+/// 4 series reports a container between running and exited as `stopped`, which
+/// the typed response refuses, and an ephemeral session's container is in that
+/// window for a moment (the adapter's own listing retries for the same reason).
 async fn inspect(id: Uuid) -> bollard::models::ContainerInspectResponse {
-    common::engine::raw_docker()
-        .inspect_container(
-            &format!("mars-session-{id}"),
-            None::<InspectContainerOptions>,
-        )
-        .await
-        .unwrap_or_else(|err| panic!("the session container of {id} is inspectable: {err}"))
+    let docker = common::engine::raw_docker();
+    let name = format!("mars-session-{id}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+
+    loop {
+        match docker
+            .inspect_container(&name, None::<InspectContainerOptions>)
+            .await
+        {
+            Ok(container) => return container,
+            Err(bollard::errors::Error::JsonDataError { .. })
+                if tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(err) => panic!("the session container of {id} is inspectable: {err}"),
+        }
+    }
 }
 
 /// Whether the engine still has a container for this session.

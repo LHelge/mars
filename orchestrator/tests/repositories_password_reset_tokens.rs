@@ -308,9 +308,10 @@ async fn deleting_a_user_takes_their_tokens_with_them() {
     let user = insert_user(&pool, "ada", "ada@example.com").await;
     insert_token(&pool, user.id, FAKE_TOKEN_HASH, soon()).await;
 
-    let mut tx = pool.begin().await.unwrap();
-    assert!(users.delete(&mut tx, user.id).await.unwrap());
-    tx.commit().await.unwrap();
+    // Any acting id but the target's: `delete` reads it only to refuse a
+    // self-deletion, and `ada` is no administrator, so no count stands in the
+    // way either.
+    users.delete(user.id, Uuid::new_v4()).await.unwrap();
 
     // `ON DELETE CASCADE` (`docs/data-model.md`): no orphaned live link.
     assert!(

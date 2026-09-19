@@ -23,10 +23,11 @@ use axum::http::header::SET_COOKIE;
 use chrono::{TimeDelta, Utc};
 use common::TestApp;
 use mars_orchestrator::auth::REFRESH_COOKIE;
-use mars_orchestrator::models::{OpaqueToken, User, UserUpdate};
+use mars_orchestrator::models::{OpaqueToken, User};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 const REFRESH: &str = "/api/auth/refresh";
 
@@ -183,14 +184,12 @@ async fn a_cookie_for_a_deleted_user_is_401() {
         .await;
     let (_pair, cookie) = app.login("ada", PASSWORD).await;
 
-    let mut tx = app.pool.begin().await.expect("a transaction begins");
-    assert!(
-        UserRepository::new(&app.pool)
-            .delete(&mut tx, user.id)
-            .await
-            .expect("the delete runs")
-    );
-    tx.commit().await.expect("the transaction commits");
+    // Any acting id but the target's: `UserRepository::delete` reads it only
+    // to refuse a self-deletion.
+    UserRepository::new(&app.pool)
+        .delete(user.id, Uuid::new_v4())
+        .await
+        .expect("the delete runs");
 
     assert_rejected_and_cleared(&app.refresh(&cookie).await);
 }
@@ -244,21 +243,14 @@ async fn the_refreshed_token_carries_the_current_admin_flag() {
     assert!(claims.admin);
 
     // Straight in the database: a demotion does not touch `auth_version` and
-    // revokes nothing (ADR 0025), so the cookie stays usable.
-    let mut tx = app.pool.begin().await.expect("a transaction begins");
-    UserRepository::new(&app.pool)
-        .update(
-            &mut tx,
-            user.id,
-            &UserUpdate {
-                admin: Some(false),
-                ..UserUpdate::default()
-            },
-        )
+    // revokes nothing (ADR 0025), so the cookie stays usable. Not through
+    // `UserRepository::replace`, which would refuse it — `ada` is the only
+    // administrator this test app has.
+    sqlx::query("UPDATE users SET admin = FALSE, updated_at = NOW() WHERE id = $1")
+        .bind(user.id)
+        .execute(&app.pool)
         .await
-        .expect("the update runs")
-        .expect("the user is there");
-    tx.commit().await.expect("the transaction commits");
+        .expect("the demotion runs");
 
     let response = app.refresh(&cookie).await;
     response.assert_status(StatusCode::OK);

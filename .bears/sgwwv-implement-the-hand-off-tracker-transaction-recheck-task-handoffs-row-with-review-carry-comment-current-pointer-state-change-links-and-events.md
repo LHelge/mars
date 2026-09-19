@@ -1,16 +1,17 @@
 ---
 id: sgwwv
 title: "Implement the hand-off tracker transaction: recheck, task_handoffs row with review carry, comment, current pointer, state change, links and events"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:41:54.042318861Z"
-updated: "2026-09-16T20:41:54.042318861Z"
+updated: "2026-09-19T21:02:12.905713019Z"
 tags:
   - orchestrator
   - tracker
 depends_on:
   - gv4j2
 parent: xjaah
+attempts: 1
 ---
 
 ## Summary

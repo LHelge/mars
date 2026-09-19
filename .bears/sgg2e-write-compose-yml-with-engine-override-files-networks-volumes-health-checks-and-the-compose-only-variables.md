@@ -1,10 +1,10 @@
 ---
 id: sgg2e
 title: Write compose.yml with engine override files, networks, volumes, health checks and the compose-only variables
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:43:28.463856293Z"
-updated: "2026-09-16T20:43:28.463856293Z"
+updated: "2026-09-19T16:24:54.994364360Z"
 tags:
   - infra
   - docs
@@ -13,6 +13,7 @@ depends_on:
   - c9u6c
   - h7479
 parent: "5czwa"
+attempts: 1
 ---
 
 ## Summary

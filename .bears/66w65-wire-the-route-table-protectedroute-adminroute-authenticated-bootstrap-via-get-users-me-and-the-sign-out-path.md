@@ -1,10 +1,10 @@
 ---
 id: "66w65"
 title: Wire the route table, ProtectedRoute, AdminRoute, authenticated bootstrap via GET /users/me and the sign-out path
-status: open
+status: in_progress
 priority: P0
 created: "2026-09-16T20:41:12.006070444Z"
-updated: "2026-09-16T20:41:12.006070444Z"
+updated: "2026-09-19T10:55:37.735424320Z"
 tags:
   - frontend
   - auth
@@ -12,6 +12,7 @@ depends_on:
   - t85sb
   - ea6xs
 parent: "2f5u2"
+attempts: 1
 ---
 
 ## Summary

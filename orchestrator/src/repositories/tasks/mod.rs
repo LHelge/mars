@@ -47,7 +47,14 @@
 //! are one `impl TaskRepository` between them, so a caller sees one repository
 //! and the files stay the size of the table they are about.
 //!
-//! The one file that is not about a table is `dto`: the read-only loaders that
+//! Two files are not about a table. `graph` holds the SQL the dependency graph
+//! is made of — what `blocked` evaluates to, the write that stores it, the
+//! `blocks`-only reachability the cycle check asks about, and the reads a
+//! deletion takes before the cascades erase them — because each of those spans
+//! `tasks`, `task_dependencies` and `task_states` at once; the compositions on
+//! top of them are `tracker::graph`'s.
+//!
+//! The other is `dto`: the read-only loaders that
 //! assemble `SPEC.md`'s `Task` and `TaskDetail` out of several of them at
 //! once, without an N+1 per task.
 
@@ -55,6 +62,7 @@ mod comments;
 mod dependencies;
 mod dto;
 mod events;
+mod graph;
 mod handoffs;
 mod links;
 mod rows;
@@ -65,6 +73,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 pub use events::MAX_TASK_EVENT_PAGE;
+pub use graph::BlockedState;
 pub use rows::TaskFilter;
 
 use crate::prelude::*;

@@ -434,14 +434,15 @@ async fn a_diff_takes_exactly_one_selector() {
 }
 
 #[tokio::test]
-async fn a_diff_of_a_handoff_this_project_does_not_have_is_400() {
+async fn a_diff_of_a_handoff_this_project_does_not_have_is_404() {
     let fixture = Fixture::create("diff-handoff").await;
     let handoff_id = Uuid::new_v4();
 
-    // `refs/handoffs/<id>` is what a hand-off would be retained under (ADR
-    // 0018); with no such ref the diff cannot be taken. The 404 for a hand-off
-    // that exists but belongs to another project needs `task_handoffs`, which
-    // the "Code hand-offs and review" epic brings.
+    // The selector is looked up in `task_handoffs` scoped to the URL project
+    // before any ref is resolved, so an id this project does not have is a
+    // missing resource rather than an unresolvable ref (`SPEC.md`, "Git").
+    // `tests/handoffs_diff.rs` covers the same answer for an id that exists in
+    // another project.
     let response = fixture
         .app
         .get_as(
@@ -450,8 +451,8 @@ async fn a_diff_of_a_handoff_this_project_does_not_have_is_400() {
         )
         .await;
 
-    response.assert_status(StatusCode::BAD_REQUEST);
-    assert_error_body(&response.json::<Value>(), StatusCode::BAD_REQUEST);
+    response.assert_status(StatusCode::NOT_FOUND);
+    assert_error_body(&response.json::<Value>(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

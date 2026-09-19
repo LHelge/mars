@@ -80,7 +80,7 @@ use crate::models::{
     ProjectStatus, SessionBranch, SyncOutcome,
 };
 use crate::prelude::*;
-use crate::repositories::{ProjectRepository, SessionRepository};
+use crate::repositories::{ProjectRepository, SessionRepository, TaskRepository};
 
 /// The `kind` column every outcome event is written under (`SPEC.md`,
 /// "AgentEvent").
@@ -410,8 +410,9 @@ impl GitService {
     ///
     /// A [`DiffSelector::Head`] naming a session is synced silently first, so
     /// the panel shows what the agent has committed; a
-    /// [`DiffSelector::Handoff`] resolves `refs/handoffs/<id>` in this
-    /// project's own repository and never syncs anything
+    /// [`DiffSelector::Handoff`] is checked against `task_handoffs` for this
+    /// project (404 otherwise) and then resolves `refs/handoffs/<id>` in this
+    /// project's own repository, never syncing anything
     /// (`ARCHITECTURE.md`, "Git model", Diff). `base` defaults to the
     /// project's default branch. Both refs are resolved under the lock and the
     /// diff itself runs without it, on the fixed commits.
@@ -429,7 +430,17 @@ impl GitService {
                 require_kind(is_diff_head(&parsed), &parsed)?;
                 parsed
             }
-            DiffSelector::Handoff(id) => GitRef::Handoff(*id),
+            DiffSelector::Handoff(id) => {
+                // A hand-off is the URL project's or it does not exist
+                // (`SPEC.md`, "Git"). The scope comes through the task the
+                // record belongs to, as a plain read outside any transaction
+                // and before the lock: the lock is taken only to resolve.
+                TaskRepository::new(&self.pool)
+                    .find_handoff(project_id, *id)
+                    .await?
+                    .ok_or(Error::NotFound)?;
+                GitRef::Handoff(*id)
+            }
         };
         let base_ref = match base {
             Some(name) => {

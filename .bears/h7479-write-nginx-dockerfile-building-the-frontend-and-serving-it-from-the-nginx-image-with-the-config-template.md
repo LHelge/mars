@@ -1,16 +1,17 @@
 ---
 id: h7479
 title: Write nginx/Dockerfile building the frontend and serving it from the nginx image with the config template
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:42:28.761293207Z"
-updated: "2026-09-16T20:42:28.761293207Z"
+updated: "2026-09-19T15:58:20.763959378Z"
 tags:
   - infra
   - frontend
 depends_on:
   - uhp3q
 parent: "5czwa"
+attempts: 1
 ---
 
 ## Summary

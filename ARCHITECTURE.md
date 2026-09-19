@@ -174,6 +174,7 @@ orchestrator/
 | Container engine | `bollard` |
 | MCP server | `rmcp` (`server`, `transport-streamable-http-server`) |
 | Async runtime | `tokio` (`full`), `tokio-stream`, `futures-util`, `bytes` (the buffer type the engine's attach and exec streams hand back) |
+| Cancellation | `tokio-util` (`rt`), for the `CancellationToken` the shared Postgres listener is stopped by |
 | Auth | `jsonwebtoken` (`rust_crypto`, which selects its pure-Rust signing backend; the crate ships no provider by default and panics on the first signature without one), `argon2`, `sha2` |
 | Secrets | `aes-gcm`, `rand`, `zeroize`, `base64` |
 | Serialisation | `serde`, `serde_json` |
@@ -461,6 +462,8 @@ sequenceDiagram
 ```
 
 Writers issue `pg_notify` on the same database transaction as the event rows and related state updates. PostgreSQL delivers it only on successful commit and discards it on rollback. A shared Postgres listener forwards delivered notifications to the in-process broadcast channels; writers do not broadcast before commit or send a second notification afterwards. Batches may notify once per affected stream with the highest committed sequence. Notifications remain wake signals, not event payloads (ADR 0028).
+
+That listener is one `PgListener` for the whole process (`events::listener`), started by `run` before either server accepts a request and stopped once they have; it holds one pooled connection permanently, which the pool size of 20 accounts for. A notification whose channel or payload it cannot read is logged and dropped — the rows are the truth. When its connection is lost it reconnects with exponential backoff (500 ms doubling to a 10 s cap) and then broadcasts a `Resync` to every live subscriber, because the notifications issued while it was away are gone (ADR 0005) and a subscriber must read from its cursor at once rather than wait out the safety read.
 
 The handler subscribes before it replays, so a row committed during the replay is either included in the replay or triggers a read afterwards; the client dedupes on `seq`. Older history (before `after`) is fetched over paginated REST with `seq` as the cursor. A periodic safety read (every 30 seconds) covers a lost notification. The same pattern, keyed by project, serves `TaskEvent`s over SSE with `Last-Event-ID` as the cursor. The SSE handler establishes its notification subscription before opening the response. The task board then loads REST data and uses events as refresh signals, following ADR 0022; task event identities survive task deletion.
 

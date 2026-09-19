@@ -36,6 +36,7 @@ use axum::Router;
 use axum::extract::Request;
 use futures_util::FutureExt;
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
 
 use crate::prelude::*;
@@ -72,12 +73,28 @@ pub fn build_api_router(state: AppState) -> Router {
 /// back before anything is served. The single `shutdown` future drives both
 /// graceful shutdowns; `run` returns once both have stopped accepting and
 /// their in-flight requests have finished.
+///
+/// The shared Postgres listener is started here, before either server accepts
+/// a request, because a stream opened immediately after startup must not be
+/// missing notices (`ARCHITECTURE.md`, "Event delivery"). Its own cancellation
+/// token is derived from the servers stopping rather than from `shutdown`
+/// directly: the listener outlives the drain, so a request still being served
+/// still gets its notices, and the connection is dropped once nothing is left
+/// to deliver to.
 pub async fn run(
     state: AppState,
     api: TcpListener,
     mcp: TcpListener,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
+    let listener_shutdown = CancellationToken::new();
+    let listener = events::spawn_listener(
+        state.pool.clone(),
+        state.fanout.clone(),
+        listener_shutdown.clone(),
+    )
+    .await;
+
     let shutdown = shutdown.shared();
     let api_shutdown = shutdown.clone();
 
@@ -93,6 +110,13 @@ pub async fn run(
     let mcp_server = axum::serve(mcp, mcp::placeholder_router()).with_graceful_shutdown(shutdown);
 
     let (api_result, mcp_result) = tokio::join!(api_server, mcp_server);
+
+    // Before the error checks, so a listener that failed to stop is reported
+    // and its connection released whichever way the servers ended.
+    listener_shutdown.cancel();
+    if let Err(err) = listener.await {
+        error!(error = %err, "the postgres listener task did not stop cleanly");
+    }
 
     if let Err(err) = api_result {
         error!(listener = "api", error = %err, "listener stopped with an error");

@@ -859,6 +859,44 @@ impl TaskRepository<'_> {
         Ok(tasks)
     }
 
+    /// The same list, read inside a tracker mutation and scoped to its
+    /// project.
+    ///
+    /// Discovery provenance is decided from what the calling session holds
+    /// *at the moment of the creation*, under the project lock, before any row
+    /// is inserted (`ARCHITECTURE.md`, "Task tracker" → "Discovery
+    /// provenance"), so it cannot read a list taken on the pool: a release
+    /// committed between that read and the lock would make the inference name
+    /// a task the session no longer holds. The `project_id` filter is
+    /// redundant for a well-formed session — a session belongs to exactly one
+    /// project — and is in the `WHERE` clause anyway, so a holder from
+    /// elsewhere can never widen a mutation's scope.
+    pub async fn list_by_lease_holder_in(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Vec<Task>> {
+        let tasks = sqlx::query_as!(
+            Task,
+            r#"
+            SELECT id, project_id, number, title, description, state_id, priority, blocked,
+                   labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
+                   attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                   created_by_session_id, created_at, updated_at, closed_at
+            FROM tasks
+            WHERE lease_holder_session_id = $1 AND project_id = $2
+            ORDER BY priority, number
+            "#,
+            session_id,
+            project_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        Ok(tasks)
+    }
+
     /// Delete a task; `false` when this project has no such task.
     ///
     /// **Read what the deletion will destroy before calling.** The cascades

@@ -163,6 +163,9 @@ async fn create(
         labels: body.labels.unwrap_or_default(),
         parent: body.parent_id,
         depends_on,
+        // REST has no provenance input: a user's creation was discovered by a
+        // person, not while working a task (`SPEC.md`, "Tasks").
+        discovered_from: None,
         created_by: CreatedBy::User(user.id),
     };
 

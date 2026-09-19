@@ -33,6 +33,7 @@ pub mod handoffs;
 pub mod hooks;
 pub mod leases;
 pub mod mutation;
+pub mod provenance;
 pub mod state;
 pub mod states;
 pub mod tasks;
@@ -52,6 +53,7 @@ pub use leases::{
     release_by_agent, release_by_user, release_leases_for_session,
 };
 pub use mutation::{Locked, MutationOutcome, TrackerMutation};
+pub use provenance::resolve_origin;
 pub use state::{StateChangeOptions, StateChangeResult, StateEventKind};
 pub use states::{NewStateInput, StateUpdate, create_state, delete_state, update_state};
 pub use tasks::{CreateTaskInput, CreatedBy, create_task};

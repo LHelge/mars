@@ -83,6 +83,27 @@ pub async fn hold_admin_membership_lock(pool: &PgPool) -> Transaction<'static, P
     tx
 }
 
+/// Begin a transaction and hold `project_id`'s `projects` row with `SELECT
+/// ... FOR UPDATE`.
+///
+/// The lock `TrackerMutation::begin` takes, so every tracker mutation of that
+/// project — a creation, a state change, a dependency edge, a comment — waits
+/// behind this transaction (`ARCHITECTURE.md`, "Task tracker" → "One mutation
+/// at a time per project"; ADR 0021). The starting gate for the tracker races,
+/// used with [`release_after_in_flight`].
+pub async fn hold_project_lock(pool: &PgPool, project_id: Uuid) -> Transaction<'static, Postgres> {
+    let mut tx = pool.begin().await.expect("a transaction begins");
+
+    let locked: Uuid = sqlx::query_scalar("SELECT id FROM projects WHERE id = $1 FOR UPDATE")
+        .bind(project_id)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("the project row exists and is locked");
+    assert_eq!(locked, project_id);
+
+    tx
+}
+
 /// Let go of a lock once the requests racing behind it have certainly reached
 /// it.
 ///

@@ -191,7 +191,7 @@ pub async fn create_work_clone(
     let branch = session_branch(session_id);
     // The revision before a trailing `--` rather than after
     // `--end-of-options`: `git checkout` does not understand that option on
-    // the git the orchestrator image ships (see the module docs). `base.commit`
+    // git 2.39, the minimum supported (see the module docs). `base.commit`
     // is a full object id `resolve_base` obtained from git itself, so it cannot
     // start with `-`.
     GitCommand::new()

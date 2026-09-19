@@ -133,21 +133,37 @@ jobs:
   # The job above runs on the runner's git, which is far newer than the one the
   # orchestrator image ships, so an argv only newer git accepts passed every
   # check and still failed every session launch on the packaged image
-  # (n3kps). This job runs the git tests on the image's git instead: the
-  # container is the Dockerfile's builder base, so its git is bookworm's 2.39.5
-  # — the same binary `debian:bookworm-slim` installs in the runtime stage.
+  # (n3kps). This job runs the git tests on two older gits instead:
+  #
+  #   * `rust:1.98.1-trixie`, the Dockerfile's builder base — the same Debian
+  #     release as its `debian:trixie-slim` runtime stage, so this is the git
+  #     the packaged image ships (2.47.x). Move this tag with the Dockerfile.
+  #   * `rust:1.98.1-bookworm`, which carries git 2.39.5 — the documented
+  #     minimum supported git for a host run (`README.md`, "Development";
+  #     `ARCHITECTURE.md`, "Git model", Supported git). Without this leg that
+  #     floor would be a claim nothing checks, which is exactly how the
+  #     `checkout --end-of-options` breakage survived CI.
   #
   # Only the test binaries that need neither Postgres nor a container engine
   # are selected, which is every git test that is not a `TestApp` test (each
   # one says so in its own module docs); the git unit tests beside the modules
   # come along through `--lib git::`. So this job needs no service container
   # and no Docker socket.
-  git-on-the-image-s-git:
-    name: Git tests on the image's git (2.39.5)
+  git-versions:
+    name: Git tests on ${{ matrix.label }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # The tag the Dockerfile's builder stage uses; move the two together.
-    container: rust:1.98.1-bookworm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: rust:1.98.1-trixie
+            label: the image's git (trixie)
+            cache-key: git-trixie
+          - image: rust:1.98.1-bookworm
+            label: the minimum supported git (bookworm, 2.39)
+            cache-key: git-bookworm
+    container: ${{ matrix.image }}
     defaults:
       run:
         working-directory: orchestrator
@@ -172,14 +188,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: orchestrator
-          # Its own entry: this container's glibc and rustc fingerprints differ
-          # from the runner's, so it must never restore the other jobs' target
-          # directory.
-          key: bookworm-git
+          # Its own entry per container: each one's glibc and rustc
+          # fingerprints differ from the runner's and from each other's, so
+          # none may restore another job's target directory.
+          key: ${{ matrix.cache-key }}
           cache-on-failure: true
 
       # `--no-fail-fast` so one bad argv does not hide the others: the point of
-      # this job is to report every call site 2.39.5 rejects in one run.
+      # this job is to report every call site the older git rejects in one run.
       - name: Git unit tests
         run: |
           cargo test --features integration-tests --lib --no-fail-fast 'git::'

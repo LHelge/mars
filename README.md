@@ -257,7 +257,7 @@ Working conventions, code-quality commands and test expectations are in `CLAUDE.
 
 The orchestrator, the frontend, the session images, the deployment images, `.env.example` and the compose files are all in the repository; these steps are for developing on the host instead of running the compose stack. The socket commands assume Linux.
 
-Unlike the packaged stack, a host run and the git tests use the host's `git`. The supported floor is **git 2.39**, the version the orchestrator image ships (`ARCHITECTURE.md`, "Git model", Supported git); newer is fine, but a newer host git accepts argv forms 2.39 does not, so Orchestrator CI reruns the git tests on 2.39.5 as well.
+Unlike the packaged stack, a host run and the git tests use the host's `git`. The minimum supported version is **git 2.39**, Debian bookworm's (`ARCHITECTURE.md`, "Git model", Supported git); newer is fine, but a newer git accepts argv forms 2.39 does not, so Orchestrator CI reruns the git tests on 2.39.5 as well as on the git the orchestrator image ships.
 
 **Postgres**:
 
@@ -302,13 +302,13 @@ The claude image's version tag is the CLI version pinned in `images/claude/Docke
 
 `orchestrator/tests/session_e2e.rs` runs the session lifecycle on real containers and needs the stub image; it takes the tag from `MARS_STUB_IMAGE` and defaults to `localhost/mars-session-stub:dev`, so either build it under that tag (`podman build -t localhost/mars-session-stub:dev images/stub`) or point the variable at the tag you have. Like the rest of the engine suite it runs only with `DOCKER_HOST` set. The test suite starts its own Postgres through testcontainers; on an engine that cannot publish a port to it, set `MARS_TEST_POSTGRES_URL` (`postgres://user:password@host:port`, no database name) to a throw-away server and the suite uses that instead, rebuilding its template database there.
 
-**Deployment images**, built from the repository root. The orchestrator image is a multi-stage build that compiles the crate offline (`SQLX_OFFLINE=true`, from the committed `.sqlx/`, so no `DATABASE_URL` is needed) and ships the binary, `git` and CA certificates on `debian:bookworm-slim`, running as uid 1000 under a read-only root filesystem with a tmpfs at `/tmp` (`ARCHITECTURE.md`, "Trust boundaries"; ADR 0012):
+**Deployment images**, built from the repository root. The orchestrator image is a multi-stage build that compiles the crate offline (`SQLX_OFFLINE=true`, from the committed `.sqlx/`, so no `DATABASE_URL` is needed) and ships the binary, `git` and CA certificates on `debian:trixie-slim`, running as uid 1000 under a read-only root filesystem with a tmpfs at `/tmp` (`ARCHITECTURE.md`, "Trust boundaries"; ADR 0012):
 
 ```bash
 podman build -t mars-orchestrator:dev orchestrator
 ```
 
-The builder stage's `rust:<version>-bookworm` tag and `orchestrator/rust-toolchain.toml` must move together; the Dockerfile says so at the `FROM` line.
+The builder stage's `rust:<version>-trixie` tag and `orchestrator/rust-toolchain.toml` must move together, and the builder's Debian release must stay the same as the runtime stage's, because Orchestrator CI runs the git tests in that builder image to check the git the runtime ships; the Dockerfile says both at the `FROM` line.
 
 The nginx image builds the frontend with `npm ci && npm run build` on `node:22-alpine` and serves the result from `nginx:1.27-alpine`, with `nginx/nginx.conf` and `nginx/default.conf.template` installed so the official entrypoint renders the server block from `ORCHESTRATOR_HOST` and `API_PORT`. Its build context is the repository root, because it needs both `frontend/` and `nginx/`:
 
@@ -341,7 +341,7 @@ npm run test:e2e             # starts the dev server itself, or reuses a running
 
 | Workflow | Triggers on | Checks |
 | --- | --- | --- |
-| Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests with `SQLX_OFFLINE=true`; a second job reruns the git tests that need no database or engine inside `rust:1.98.1-bookworm`, the Dockerfile's builder base, so they run on the git 2.39.5 the orchestrator image ships rather than the runner's newer one; a third job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
+| Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests with `SQLX_OFFLINE=true`; a second job reruns the git tests that need no database or engine inside two older gits rather than the runner's — `rust:1.98.1-trixie`, the Dockerfile's builder base and so the git the orchestrator image ships, and `rust:1.98.1-bookworm`, which carries the documented minimum, git 2.39.5; a third job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
 | Engine | `orchestrator/**` or `images/**` | `tests/engine.rs` against the runner's Docker daemon and against rootless Podman via its compatible socket; then the stub session image is built with that engine and `tests/session_e2e.rs` runs the session lifecycle on real containers, with a `postgres:18` service container as its database through `MARS_TEST_POSTGRES_URL` (on Docker the runner's uid is not 1000, so that binary reports the uid contract and returns) |
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright; the real orchestrator, Postgres and stub session image are added by their own epics |

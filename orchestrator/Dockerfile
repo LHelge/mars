@@ -20,7 +20,11 @@
 # deliberately *not* copied into the builder: `stable` is not an installed
 # toolchain name in the `rust` image, so rustup would download a second
 # toolchain on every build.
-FROM rust:1.98.1-bookworm AS builder
+#
+# The Debian release in this tag must match the runtime stage's: the builder is
+# where the git tests run in CI, and that is only a guard on the shipped git if
+# the two stages are the same release. Both are trixie.
+FROM rust:1.98.1-trixie AS builder
 
 # No DATABASE_URL at build time: every `sqlx::query!` is resolved from the
 # committed `.sqlx/` cache (CLAUDE.md, "Backend conventions").
@@ -59,7 +63,7 @@ RUN strip --strip-all target/release/mars-orchestrator
 # ---------------------------------------------------------------------------
 # Runtime
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 LABEL org.opencontainers.image.title="mars-orchestrator" \
       org.opencontainers.image.description="Mars orchestrator: API, MCP server and session owners" \
@@ -67,8 +71,10 @@ LABEL org.opencontainers.image.title="mars-orchestrator" \
 
 # `git` is the binary Mars shells out to (ADR 0011) and CA certificates are for
 # https remotes and the email API. Nothing else: no curl, wget, procps or
-# editors. apt pulls git's own dependencies transitively (notably
-# libcurl3-gnutls); the lists go in the same layer. `tzdata` is not installed:
+# editors. apt pulls git's own dependencies transitively (on trixie that is
+# `libcurl3t64-gnutls`, the time_t-64 rename of bookworm's `libcurl3-gnutls`;
+# the package is never named here, so the rename costs nothing); the lists go
+# in the same layer. `tzdata` is not installed:
 # timestamps are RFC 3339 in UTC. Versions are unpinned for the same reason as
 # the session images (hadolint DL3008): the image is rebuilt on every change and
 # pinning would rot faster than it protects.

@@ -10,8 +10,9 @@
 //! **`--end-of-options`, and the two commands that cannot take it.** Every
 //! invocation here puts `--end-of-options` after its flags so that a revision,
 //! a remote name or a refspec can never be read as an option, however it was
-//! validated. `git checkout` and `git reset` are the exceptions, because the
-//! git the orchestrator image ships — Debian bookworm's 2.39.5 — does not
+//! validated. `git checkout` and `git reset` are the exceptions, because git
+//! 2.39 — the minimum this crate supports, since the orchestrator is also run
+//! directly on a host with whatever git the distribution ships — does not
 //! support the option on either: `checkout` treats `--end-of-options` and
 //! everything after it as pathspecs, so `checkout -b <branch>
 //! --end-of-options <commit>` dies with "Cannot update paths and switch to
@@ -22,9 +23,9 @@
 //! as the pathspec. A trailing `--` does not stop a leading `-` from being
 //! read as an option, so those four call sites pass only a revision this
 //! crate already knows is a full object id (validated by [`refs`]) or a ref it
-//! wrote itself. Newer git accepts `--end-of-options` on both forms, so the
-//! image's git is the floor rather than a divergence
-//! (`ARCHITECTURE.md`, "Git model").
+//! wrote itself. Newer git accepts `--end-of-options` on both forms, so this
+//! is one argv that works everywhere rather than a version fork
+//! (`ARCHITECTURE.md`, "Git model", Supported git).
 //!
 //! [`credentials`] is the other half of that contract: where a command's
 //! credential comes from ([`GitCredentialProvider`], ADR 0002) and how it

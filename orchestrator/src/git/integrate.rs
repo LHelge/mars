@@ -196,8 +196,8 @@ pub async fn merge(
     // is what a merge needs an index and a work tree for.
     //
     // The revision before a trailing `--` rather than after
-    // `--end-of-options`: `git checkout` does not understand that option on the
-    // git the orchestrator image ships (see the module docs). `TMP_TARGET` is a
+    // `--end-of-options`: `git checkout` does not understand that option on
+    // git 2.39, the minimum supported (see the module docs). `TMP_TARGET` is a
     // constant ref this function just wrote.
     GitCommand::new()
         .args(["checkout", "--quiet", "-B", WORK_BRANCH])
@@ -386,8 +386,8 @@ pub async fn rebase(
     // `--no-checkout` left no work tree; the rebase needs one.
     //
     // The revision before a trailing `--` rather than after
-    // `--end-of-options`: `git checkout` does not understand that option on the
-    // git the orchestrator image ships (see the module docs). `TMP_BRANCH` is a
+    // `--end-of-options`: `git checkout` does not understand that option on
+    // git 2.39, the minimum supported (see the module docs). `TMP_BRANCH` is a
     // constant ref the fetch above just wrote.
     GitCommand::new()
         .args(["checkout", "--quiet", "-B", WORK_BRANCH])
@@ -536,8 +536,8 @@ async fn reconcile(
     }
 
     // The revision before a trailing `--` rather than after
-    // `--end-of-options`: `git reset` rejects that option outright on the git
-    // the orchestrator image ships (see the module docs). `session_full` is
+    // `--end-of-options`: `git reset` rejects that option outright on git
+    // 2.39, the minimum supported (see the module docs). `session_full` is
     // `refs/sessions/<uuid>`, built here from the session id.
     GitCommand::new()
         .args(["reset", "--hard", "--quiet"])

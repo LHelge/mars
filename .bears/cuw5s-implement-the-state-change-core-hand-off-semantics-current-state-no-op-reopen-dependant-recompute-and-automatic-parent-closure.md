@@ -1,10 +1,10 @@
 ---
 id: cuw5s
 title: "Implement the state-change core: hand-off semantics, current-state no-op, reopen, dependant recompute and automatic parent closure"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:42:19.808273182Z"
-updated: "2026-09-19T10:33:55.344497344Z"
+updated: "2026-09-19T11:33:01.153598718Z"
 tags:
   - orchestrator
   - tracker

@@ -1,0 +1,639 @@
+//! `/api/projects/{pid}/sessions` and `/api/sessions` (`SPEC.md`, "Sessions").
+//!
+//! The resource half of the table: the two lists, the create, the read, the
+//! retitle and the event page. The action verbs — `input`, `stop`, `end`,
+//! `retry`, `sync`, `tasks` — and `DELETE` are their own routes and live with
+//! the code that performs them; everything here is a row read, a row write or
+//! one launch handed to [`crate::session::Launcher`].
+//!
+//! **What `POST` decides**, in this order, because the cheap refusals come
+//! first and nothing irreversible happens before the last of them
+//! (`SPEC.md`, "Sessions", `POST /projects/{pid}/sessions`;
+//! `ARCHITECTURE.md`, "Launch sequence"):
+//!
+//! 1. the project exists (404) and is `ready` (409) — a project without a
+//!    `default_branch` is answered with the same 409, because a session has no
+//!    base to start from and a `ready` project always has one;
+//! 2. the profile is one of *this* project's (400), which is also what makes
+//!    `kind` the profile's kind at launch (`docs/data-model.md`, `sessions`);
+//! 3. an ephemeral profile was given a prompt (400), since an ephemeral
+//!    session accepts no input after launch (ADR 0003);
+//! 4. an explicitly given `title` is 1 to 200 characters (400), and an omitted
+//!    one is derived by [`default_title`];
+//! 5. the base ref resolves in the project repository (400), checked under the
+//!    project git lock. The launcher resolves it again when it clones — the
+//!    mirror may have been fetched in between — so this check exists only to
+//!    answer 400 now instead of producing a session that fails a moment later;
+//! 6. a fresh MCP token is generated **before** the insert, so the row's hash
+//!    and the only copy of the value come into existence together (ADR 0029;
+//!    `ARCHITECTURE.md`, "MCP design"): the raw token goes to the launcher,
+//!    which writes it into the session's `mcp.json`, and never back to the UI.
+//!
+//! The row is then inserted and committed, the response is 201 with the
+//! `creating` session, and the launch runs on its own task.
+//!
+//! **How the first message is delivered.** It is not a column: `message` is the
+//! first thing said to this session, and where it goes depends on the kind. An
+//! ephemeral session has no stdin to say it on, so it becomes the `-p` prompt
+//! the launcher passes ([`LaunchMode::Fresh`]). A conversational session reads
+//! its messages from stdin, so the message is submitted to the registry as a
+//! [`QueuedInput`] carrying the caller's `user_id`, and the owner records it as
+//! the session's first `user_message` exactly as it records any other input
+//! (`ARCHITECTURE.md`, "Session owner task").
+//!
+//! That submission has to be race-free against the launch, which is why the
+//! *route* registers the session entry: [`SessionRegistry::submit`] rejects an
+//! id it has never seen, and the launch task only registers once it starts. So
+//! the order here is: commit the row, `register(.., Phase::Creating)`, submit
+//! the input, launch. The launch task's own `register` keeps the queue of an id
+//! it already knows — that is what makes a message to a parked session survive
+//! the resume it triggers — so the queued input is picked up by the owner when
+//! stdin attaches, whichever of the two `register` calls ran first. Nothing in
+//! the launcher or the registry had to change for that.
+//!
+//! **The token hash never leaves.** The response type is the
+//! [`Session`] model, whose `mcp_token_hash` is `#[serde(skip)]`, so there is
+//! no DTO here to forget to strip it from, and the raw token exists only as the
+//! value moved into [`LaunchMode::Fresh`] (`CLAUDE.md`, rule 3).
+
+use axum::Router;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::routing::get;
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::events::{SessionEvent, SessionInput};
+use crate::git::{DataPaths, resolve_base};
+use crate::models::{
+    NewSession, ProjectStatus, Session, SessionKind, SessionState, SessionTitle, default_title,
+    validate_launch_prompt, validate_title,
+};
+use crate::prelude::*;
+use crate::repositories::{MAX_EVENT_PAGE, ProjectRepository, SessionRepository};
+use crate::routes::{CurrentUser, Path, Query};
+use crate::session::{LaunchMode, McpToken, Phase, QueuedInput, SessionRegistry, SubmitResult};
+
+/// What a create against a project that has no repository to clone is told
+/// (409).
+///
+/// The same words `routes::projects` answers a fetch or a branch listing with,
+/// because it is the same condition: the project is not `ready`.
+const NOT_READY: &str = "project is not ready";
+
+/// What a create naming a profile of another project — or of no project — is
+/// told (400).
+///
+/// One message for "no such profile" and "not this project's profile" alike:
+/// the lookup is scoped in the `WHERE` clause (`CLAUDE.md`, "Backend
+/// conventions"), so which of the two it was is not something a caller learns.
+const UNKNOWN_PROFILE: &str = "unknown profile";
+
+/// What a create whose base ref is not in the mirror is told (400).
+const UNRESOLVED_BASE: &str = "base_ref does not resolve";
+
+/// What a `?state=` outside the five lifecycle values is told (400).
+const UNKNOWN_STATE: &str = "unknown state";
+
+/// What an event page outside `1..=`[`MAX_EVENT_PAGE`] is told (400).
+const BAD_LIMIT: &str = "limit must be between 1 and 500";
+
+/// What an event page whose cursor cannot name a sequence is told (400).
+const BAD_BEFORE: &str = "before must be 1 or greater";
+
+/// How many events one page carries when the caller names no `limit`
+/// (`SPEC.md`, "Sessions").
+const DEFAULT_EVENT_PAGE: u32 = 100;
+
+/// The router nested under `/api/sessions`.
+///
+/// The project-scoped half is [`project_routes`]. `DELETE` and the action
+/// verbs are added by the routes that own them.
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list))
+        .route("/{id}", get(fetch).put(update))
+        .route("/{id}/events", get(events))
+}
+
+/// The router merged onto `/api/projects`.
+///
+/// The `{pid}` capture is part of these paths rather than of the `nest`, for
+/// the reason `routes::git` gives: axum takes one `nest` per prefix, so every
+/// project-scoped router carries its own `{pid}/…` (`routes::mod`).
+pub fn project_routes() -> Router<AppState> {
+    Router::new().route("/{pid}/sessions", get(list_in_project).post(create))
+}
+
+// ---- lists ----
+
+/// `?state=` on both list endpoints (`SPEC.md`, "Sessions").
+///
+/// A `String` rather than a [`SessionState`], because an unrecognised value is
+/// the documented 400 `unknown state` and a typed field would instead answer
+/// serde's own message about a variant name.
+#[derive(Debug, Deserialize)]
+struct StateQuery {
+    state: Option<String>,
+}
+
+impl StateQuery {
+    /// The state to filter by, `None` for "every state", or 400.
+    fn resolve(&self) -> Result<Option<SessionState>> {
+        let Some(raw) = self.state.as_deref() else {
+            return Ok(None);
+        };
+
+        let state = [
+            SessionState::Creating,
+            SessionState::Running,
+            SessionState::Parked,
+            SessionState::Done,
+            SessionState::Failed,
+        ]
+        .into_iter()
+        .find(|state| state.as_str() == raw)
+        .ok_or_else(|| Error::BadRequest(UNKNOWN_STATE.to_string()))?;
+
+        Ok(Some(state))
+    }
+}
+
+/// `GET /projects/{pid}/sessions?state=` → this project's sessions, newest
+/// first (404 unknown project, 400 unknown state).
+///
+/// The project is read first so that an unknown one is a 404 rather than an
+/// empty list, which is the difference between "no sessions" and "no project".
+async fn list_in_project(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(pid): Path<Uuid>,
+    Query(query): Query<StateQuery>,
+) -> Result<Json<Vec<Session>>> {
+    let filter = query.resolve()?;
+
+    ProjectRepository::new(&state.pool)
+        .find(pid)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    let sessions = SessionRepository::new(&state.pool)
+        .list_by_project(pid, filter)
+        .await?;
+
+    Ok(Json(sessions))
+}
+
+/// `GET /sessions?state=` → every session of every project, newest first (400
+/// unknown state).
+///
+/// The dashboard's list: sessions are visible to every authenticated user, so
+/// there is nothing to scope it by (`SPEC.md`, "Sessions").
+async fn list(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Query(query): Query<StateQuery>,
+) -> Result<Json<Vec<Session>>> {
+    let filter = query.resolve()?;
+
+    let sessions = SessionRepository::new(&state.pool).list_all(filter).await?;
+
+    Ok(Json(sessions))
+}
+
+// ---- create ----
+
+/// `POST /projects/{pid}/sessions` (`{ profile_id, base_ref?, title?,
+/// message? }`).
+///
+/// `deny_unknown_fields` for the reason the other route modules give: a client
+/// that sends `state`, `branch` or `kind` here has misunderstood the endpoint —
+/// they are the server's — and is told so rather than silently ignored.
+///
+/// `task_id`, which `SPEC.md` lists, is the launch-for-task route's and is
+/// added with it; until then a body carrying one is refused rather than
+/// creating a session that quietly holds no task.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateSessionInput {
+    profile_id: Uuid,
+    /// Absent means the project's `default_branch` (`SPEC.md`, "Projects":
+    /// "the default session base is the integration head named by
+    /// `default_branch`").
+    base_ref: Option<String>,
+    title: Option<String>,
+    /// The first thing said to this session. Not a column: it is delivered as
+    /// the launch prompt or as the first queued input, never stored on the row.
+    message: Option<String>,
+}
+
+impl CreateSessionInput {
+    /// The message, or `None` when there is nothing to say.
+    ///
+    /// A message of whitespace is no message: it would derive no title, and
+    /// [`validate_launch_prompt`] does not count it as an ephemeral session's
+    /// prompt either, so it is not sent as input either.
+    fn message(&self) -> Option<&str> {
+        self.message
+            .as_deref()
+            .filter(|message| !message.trim().is_empty())
+    }
+}
+
+/// `POST /projects/{pid}/sessions` → the `creating` session (201; 400, 404 and
+/// 409 as the module documentation lists them).
+///
+/// The launch is spawned after the transaction committed, for the reason every
+/// other job in this crate is: the launch task re-reads the row it is about to
+/// work on (`ARCHITECTURE.md`, "Launch sequence").
+async fn create(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(pid): Path<Uuid>,
+    Json(body): Json<CreateSessionInput>,
+) -> Result<(StatusCode, Json<Session>)> {
+    let projects = ProjectRepository::new(&state.pool);
+    let project = projects.find(pid).await?.ok_or(Error::NotFound)?;
+
+    // A project with no repository has no base to clone, and one with no
+    // `default_branch` has no base to default to. The second cannot happen on a
+    // `ready` project — the clone job will not promote one — and is guarded
+    // rather than unwrapped.
+    if project.status != ProjectStatus::Ready {
+        return Err(Error::Conflict(NOT_READY.to_string()));
+    }
+    let Some(default_branch) = project.default_branch.as_deref() else {
+        error!(project_id = %pid, "a ready project has no default branch");
+        return Err(Error::Conflict(NOT_READY.to_string()));
+    };
+
+    let profile = projects
+        .find_profile(pid, body.profile_id)
+        .await?
+        .ok_or_else(|| Error::BadRequest(UNKNOWN_PROFILE.to_string()))?;
+
+    let message = body.message();
+    // No task yet: the launch-for-task route is what passes one, and an
+    // ephemeral session without either is refused here.
+    validate_launch_prompt(profile.kind, None, message)?;
+
+    let title = match body.title.as_deref() {
+        Some(raw) => Some(validate_title(raw)?),
+        None => default_title(None, message),
+    };
+
+    let base_ref = body
+        .base_ref
+        .as_deref()
+        .unwrap_or(default_branch)
+        .to_string();
+
+    // Validation only, and under the project git lock like every other read of
+    // the repository (ADR 0021): no transaction is open here, and the launcher
+    // resolves the same name again when it clones.
+    {
+        let guard = state.git_locks.lock(pid).await;
+        resolve_base(
+            &guard,
+            &DataPaths::from_config(&state.config),
+            Some(&base_ref),
+            default_branch,
+        )
+        .await
+        .map_err(|err| {
+            debug!(
+                project_id = %pid,
+                git.base = %base_ref,
+                error = %err,
+                "a requested session base ref does not resolve",
+            );
+            Error::BadRequest(UNRESOLVED_BASE.to_string())
+        })?;
+    }
+
+    // Before the insert, so the hash the row stores and the only copy of the
+    // value are created together (ADR 0029). The row records the name the
+    // caller gave, not the commit it resolved to.
+    let token = McpToken::generate();
+    let mut new_session = NewSession::new(pid, profile.id, profile.kind, base_ref, token.hash());
+    new_session.created_by = Some(user.id);
+    let new_session = new_session.with_title(title.as_deref())?;
+
+    let mut tx = state.pool.begin().await?;
+    let session = SessionRepository::new(&state.pool)
+        .insert(&mut tx, &new_session)
+        .await?;
+    tx.commit().await?;
+
+    info!(
+        session_id = %session.id,
+        project_id = %pid,
+        profile_id = %profile.id,
+        kind = ?profile.kind,
+        "session created",
+    );
+
+    let prompt = first_message(&state, &session, user.id, message);
+    state
+        .launcher()
+        .launch(session.id, LaunchMode::Fresh { token, prompt });
+
+    Ok((StatusCode::CREATED, Json(session)))
+}
+
+/// Deliver the first message, and answer with the ephemeral launch prompt.
+///
+/// The two kinds differ in *where* the message goes, not in whether it is
+/// delivered: an ephemeral session gets it as the `-p` prompt the returned
+/// value carries, a conversational one gets it as an input queued for the owner
+/// that is about to attach. See the module documentation for why the registry
+/// entry is created here.
+///
+/// A refused submission is logged and not returned: the session exists and is
+/// launching, and the caller can send the message again over the socket. The
+/// text is never logged (rule 3).
+fn first_message(
+    state: &AppState,
+    session: &Session,
+    user_id: Uuid,
+    message: Option<&str>,
+) -> Option<String> {
+    let message = message?;
+
+    if session.kind == SessionKind::Ephemeral {
+        return Some(message.to_string());
+    }
+
+    let registry: &SessionRegistry = &state.session_registry;
+    // The receiver is dropped: the launch task's own `register` installs the
+    // channel the owner reads, and keeps the queue this submission fills.
+    let _owner = registry.register(session.id, session.kind, Phase::Creating);
+
+    match registry.submit(
+        session.id,
+        QueuedInput {
+            input: SessionInput::Message {
+                text: message.to_string(),
+            },
+            user_id: Some(user_id),
+            client_id: None,
+            accepted_at: Utc::now(),
+        },
+    ) {
+        SubmitResult::Rejected(reason) => warn!(
+            session_id = %session.id,
+            reason = %reason,
+            "the first message of a new session was not queued",
+        ),
+        result => debug!(
+            session_id = %session.id,
+            result = ?result,
+            "the first message of a new session was queued",
+        ),
+    }
+
+    None
+}
+
+// ---- read and retitle ----
+
+/// `GET /sessions/{id}` → the session, or 404.
+async fn fetch(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Session>> {
+    let session = SessionRepository::new(&state.pool).get(id).await?;
+
+    Ok(Json(session))
+}
+
+/// `PUT /sessions/{id}` (`{ title }`).
+///
+/// One required field: the endpoint exists to name a session, so an empty body
+/// is a 400 from serde rather than a 200 that changed nothing. Clearing a
+/// title back to null is not part of the documented contract.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateSessionInput {
+    title: String,
+}
+
+/// `PUT /sessions/{id}` → the retitled session (400 an invalid title, 404
+/// unknown).
+async fn update(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateSessionInput>,
+) -> Result<Json<Session>> {
+    let title = SessionTitle::parse(&body.title)?;
+
+    let mut tx = state.pool.begin().await?;
+    let updated = SessionRepository::new(&state.pool)
+        .update_title(&mut tx, id, Some(&title))
+        .await?
+        .ok_or(Error::NotFound)?;
+    tx.commit().await?;
+
+    debug!(session_id = %id, "session retitled");
+
+    Ok(Json(updated))
+}
+
+// ---- events ----
+
+/// `?before=<seq>&limit=<n≤500>` (`SPEC.md`, "Sessions").
+#[derive(Debug, Deserialize)]
+struct EventsQuery {
+    before: Option<i64>,
+    limit: Option<u32>,
+}
+
+impl EventsQuery {
+    /// The cursor, or 400.
+    ///
+    /// Sequences start at 1, so `before=1` is the legal "nothing before the
+    /// first event" and `before=0` — or a negative one — names no page at all
+    /// and is a caller mistake rather than an empty answer.
+    fn before(&self) -> Result<Option<i64>> {
+        match self.before {
+            Some(before) if before < 1 => Err(Error::BadRequest(BAD_BEFORE.to_string())),
+            other => Ok(other),
+        }
+    }
+
+    /// The page size, or 400.
+    ///
+    /// Checked rather than clamped: a caller asking for 501 events is told the
+    /// limit instead of being handed 500 and left to believe it was all of
+    /// them.
+    fn limit(&self) -> Result<u32> {
+        match self.limit {
+            None => Ok(DEFAULT_EVENT_PAGE),
+            Some(limit) if (1..=MAX_EVENT_PAGE).contains(&limit) => Ok(limit),
+            Some(_) => Err(Error::BadRequest(BAD_LIMIT.to_string())),
+        }
+    }
+}
+
+/// `{ events, has_more }` (`SPEC.md`, "Sessions").
+///
+/// `events` are [`SessionEvent`]s, which is the shape with the internal
+/// `_`-prefixed payload fields already dropped (`SPEC.md`, "AgentEvent"), so
+/// `_offset` cannot reach a client through this endpoint.
+#[derive(Debug, Serialize)]
+struct EventPage {
+    events: Vec<SessionEvent>,
+    has_more: bool,
+}
+
+/// `GET /sessions/{id}/events` → one page, oldest last (400 a bad cursor or
+/// limit, 404 unknown session).
+///
+/// The session is read first, so an unknown id is a 404 rather than an empty
+/// page.
+async fn events(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<EventsQuery>,
+) -> Result<Json<EventPage>> {
+    let before = query.before()?;
+    let limit = query.limit()?;
+
+    let sessions = SessionRepository::new(&state.pool);
+    sessions.get(id).await?;
+
+    let (events, has_more) = sessions.events_page(id, before, limit).await?;
+
+    Ok(Json(EventPage { events, has_more }))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// Every documented `state` value parses, and nothing else does.
+    #[test]
+    fn the_state_filter_takes_the_five_lifecycle_values() {
+        for (raw, expected) in [
+            ("creating", SessionState::Creating),
+            ("running", SessionState::Running),
+            ("parked", SessionState::Parked),
+            ("done", SessionState::Done),
+            ("failed", SessionState::Failed),
+        ] {
+            let query = StateQuery {
+                state: Some(raw.to_string()),
+            };
+
+            assert_eq!(query.resolve().expect("{raw} is a state"), Some(expected));
+        }
+
+        assert_eq!(
+            StateQuery { state: None }
+                .resolve()
+                .expect("no filter is legal"),
+            None,
+        );
+
+        for raw in ["", "Running", "stopped", "creating "] {
+            let error = StateQuery {
+                state: Some(raw.to_string()),
+            }
+            .resolve()
+            .expect_err("{raw} is not a state");
+
+            assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{raw}");
+            assert_eq!(error.to_string(), UNKNOWN_STATE);
+        }
+    }
+
+    /// The documented body, with and without its optional halves.
+    #[test]
+    fn a_create_body_takes_the_documented_shape() {
+        let profile_id = Uuid::from_u128(7);
+
+        let minimal: CreateSessionInput = serde_json::from_value(json!({
+            "profile_id": profile_id,
+        }))
+        .expect("the minimal body parses");
+
+        assert_eq!(minimal.profile_id, profile_id);
+        assert_eq!(minimal.base_ref, None);
+        assert_eq!(minimal.title, None);
+        assert_eq!(minimal.message(), None);
+
+        let full: CreateSessionInput = serde_json::from_value(json!({
+            "profile_id": profile_id,
+            "base_ref": "origin/main",
+            "title": "Fix the login form",
+            "message": "Fix login\nand the rest",
+        }))
+        .expect("the full body parses");
+
+        assert_eq!(full.base_ref.as_deref(), Some("origin/main"));
+        assert_eq!(full.title.as_deref(), Some("Fix the login form"));
+        assert_eq!(full.message(), Some("Fix login\nand the rest"));
+
+        // A message of whitespace is no message at all.
+        let blank: CreateSessionInput = serde_json::from_value(json!({
+            "profile_id": profile_id,
+            "message": "   \n ",
+        }))
+        .expect("the body parses");
+        assert_eq!(blank.message(), None);
+
+        // The fields that are the server's.
+        serde_json::from_value::<CreateSessionInput>(json!({
+            "profile_id": profile_id,
+            "state": "running",
+        }))
+        .expect_err("a server-owned field is refused");
+    }
+
+    /// `limit` defaults to 100 and is bounded by the documented 500; `before`
+    /// has to be able to name a sequence.
+    #[test]
+    fn an_event_page_is_bounded() {
+        let page = |before: Option<i64>, limit: Option<u32>| EventsQuery { before, limit };
+
+        assert_eq!(page(None, None).limit().expect("the default"), 100);
+        assert_eq!(page(None, Some(1)).limit().expect("one event"), 1);
+        assert_eq!(page(None, Some(500)).limit().expect("the maximum"), 500);
+        assert_eq!(page(None, None).before().expect("no cursor"), None);
+        assert_eq!(page(Some(1), None).before().expect("the first"), Some(1));
+
+        for limit in [0, 501, u32::MAX] {
+            let error = page(None, Some(limit))
+                .limit()
+                .expect_err("the limit is refused");
+            assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{limit}");
+            assert_eq!(error.to_string(), BAD_LIMIT);
+        }
+
+        for before in [0, -1, i64::MIN] {
+            let error = page(Some(before), None)
+                .before()
+                .expect_err("the cursor is refused");
+            assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{before}");
+            assert_eq!(error.to_string(), BAD_BEFORE);
+        }
+    }
+
+    /// `PUT` takes exactly the one documented field.
+    #[test]
+    fn a_retitle_body_takes_exactly_a_title() {
+        let body: UpdateSessionInput =
+            serde_json::from_value(json!({ "title": "A better name" })).expect("the body parses");
+        assert_eq!(body.title, "A better name");
+
+        serde_json::from_value::<UpdateSessionInput>(json!({})).expect_err("a title is required");
+        serde_json::from_value::<UpdateSessionInput>(json!({ "title": "x", "state": "done" }))
+            .expect_err("a server-owned field is refused");
+    }
+}

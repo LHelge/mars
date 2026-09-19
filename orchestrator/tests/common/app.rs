@@ -7,9 +7,14 @@
 //! [`AppState`] out of the mock
 //! engine, the mock email client, the mock git credential provider and the
 //! fixed test master key, and serves the library's router through
-//! `axum-test`. Tests then drive the real middleware stack in-process: no
+//! `axum-test`. Tests then drive the real middleware stack in-process: no TCP
 //! listener is bound, no cron job runs and no session owner is started. The
 //! epics that own those start them explicitly.
+//!
+//! The one background task that *is* started is the shared Postgres listener
+//! (`mars_orchestrator::events::spawn_listener`), because without it
+//! `state.fanout` would stay silent and every stream test would be asserting
+//! on a fan-out nothing publishes to. It stops when the `TestApp` drops.
 //!
 //! [`TestApp::spawn_with_engine`] is the same app over the engine
 //! `DOCKER_HOST` names instead of the mock, for the one suite that runs
@@ -49,6 +54,8 @@ use mars_orchestrator::session::{RecoveryReport, SessionRegistry, TAIL_POLL_INTE
 use serde::Deserialize;
 use serde_json::Value;
 use tempfile::TempDir;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::db;
@@ -104,6 +111,10 @@ pub struct TestApp {
     /// `DATA_DIR` and `DATA_DIR_HOST`. Held here because it has to outlive the
     /// app: dropping it removes the directory.
     pub data_dir: TempDir,
+    /// The shared Postgres listener `run` starts, started here too so that a
+    /// test subscribing to `state.fanout` sees live notifications from the
+    /// rows it writes (`ARCHITECTURE.md`, "Event delivery").
+    pub listener: ListenerHandle,
     /// The two session networks [`TestApp::spawn_with_engine`] had the real
     /// engine create, and [`TestApp::cleanup_engine`] removes again; `None` for
     /// a [`TestApp::spawn`], which creates no network.
@@ -111,6 +122,31 @@ pub struct TestApp {
     /// This app's database on the shared Postgres. Never read; it drops the
     /// database on drop.
     _db: db::TestDatabase,
+}
+
+/// The shared Postgres listener task and the token that stops it.
+///
+/// A test that wants to watch the listener reconnect cancels nothing and just
+/// kills the backend; [`TestApp`]'s `Drop` is what stops it at the end of a
+/// scenario, the way `run` does at shutdown.
+pub struct ListenerHandle {
+    /// The task `spawn_listener` returned. Never awaited by `Drop`, which is
+    /// not async; cancelling it is enough, because the connection goes away
+    /// with the database.
+    pub handle: JoinHandle<()>,
+    /// Cancelling this makes the task drop its connection and return.
+    pub shutdown: CancellationToken,
+}
+
+impl Drop for TestApp {
+    /// Stop the listener, the way `run` does once the servers have stopped.
+    ///
+    /// Nothing is awaited: `Drop` is not async and the test's runtime is
+    /// already going away. The task's connection is closed by the pool and the
+    /// database it was on is dropped `WITH (FORCE)` (`tests/common/db.rs`).
+    fn drop(&mut self) {
+        self.listener.shutdown.cancel();
+    }
 }
 
 impl TestApp {
@@ -170,7 +206,10 @@ impl TestApp {
 
     /// The body of both spawns: `None` is the mock engine, `Some` the real one.
     async fn build(real: Option<RealEngineSetup>) -> TestApp {
-        let (database, pool) = db::test_pool().await;
+        // One connection more than the default, because the shared listener
+        // below holds one of them permanently — the same allowance the
+        // production pool of 20 makes (`main.rs`).
+        let (database, pool) = db::test_pool_with(db::DEFAULT_MAX_CONNECTIONS + 1).await;
         let database_url = database.url().to_string();
 
         // After the migrations and before the router: the first request must
@@ -233,6 +272,20 @@ impl TestApp {
         // part of `build_api_router` and reachable from here for free.
         let server = TestServer::new(build_api_router(state.clone()));
 
+        // The shared listener `run` starts, started here for the same reason:
+        // a test that subscribes to `state.fanout` is subscribing to the very
+        // channels a committed write wakes, over a real `LISTEN`.
+        let listener_shutdown = CancellationToken::new();
+        let listener = ListenerHandle {
+            handle: mars_orchestrator::events::spawn_listener(
+                pool.clone(),
+                state.fanout.clone(),
+                listener_shutdown.clone(),
+            )
+            .await,
+            shutdown: listener_shutdown,
+        };
+
         TestApp {
             server,
             pool,
@@ -241,6 +294,7 @@ impl TestApp {
             email,
             git,
             data_dir,
+            listener,
             networks,
             _db: database,
         }

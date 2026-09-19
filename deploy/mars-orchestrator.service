@@ -1,0 +1,78 @@
+# Mars orchestrator as a rootless user service
+# (README.md, "Podman setup" -> "Running the orchestrator on the host").
+#
+# The fallback for a host whose compose implementation does not apply
+# `userns_mode: keep-id` to the orchestrator container: the orchestrator runs on
+# the host instead, and compose starts postgres and nginx around it with
+# `compose.hostrun.yml`.
+#
+# Install as the service user -- a *user* unit, never a system one; the process
+# must keep that user's uid so it owns the engine socket and the data directory:
+#
+#   mkdir -p ~/mars/bin ~/mars/data
+#   install -m 0755 orchestrator/target/release/mars-orchestrator ~/mars/bin/
+#   install -m 0600 .env ~/mars/.env
+#   install -Dm 0644 deploy/mars-orchestrator.service \
+#       ~/.config/systemd/user/mars-orchestrator.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now mars-orchestrator
+#
+# `loginctl enable-linger` (README.md, "Podman setup") is what keeps it running
+# without an active login session.
+#
+# This unit carries no secrets and no configuration: everything comes from
+# ~/mars/.env, which is mode 0600 and owned by the service user. That file is
+# the same one the compose deployment uses (README.md, "Configuration"), with
+# the four values this mode needs:
+#
+#   DATA_DIR      and DATA_DIR_HOST: the same absolute host path, because the
+#                 orchestrator and the engine now see the directory at the same
+#                 place. Both must be ~/mars/data, or ReadWritePaths= below has
+#                 to name whatever path they do use.
+#   DOCKER_HOST   unix:///run/user/<uid>/podman/podman.sock -- the `Environment=`
+#                 line below sets it from %U, so it can be left out of .env; a
+#                 value in .env wins, because EnvironmentFile= is read after it.
+#   MCP_URL       http://host.containers.internal:7001/mcp -- session containers
+#                 reach the listener through the host gateway, not through the
+#                 compose network (ARCHITECTURE.md, "Networks").
+#   SESSION_EXTRA_HOSTS
+#                 host.containers.internal:host-gateway, because the internal
+#                 session network has no gateway of its own to name it from.
+#
+# DATABASE_URL points at 127.0.0.1:5432, which is where compose.hostrun.yml
+# publishes postgres.
+
+[Unit]
+Description=Mars orchestrator
+Documentation=https://github.com/LHelge/mars
+# Socket-activated, so it does not have to be running already; the Wants= is
+# simply ignored on a Docker host, where the unit does not exist.
+Wants=network-online.target podman.socket
+After=network-online.target podman.socket
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mars
+Environment=DOCKER_HOST=unix:///run/user/%U/podman/podman.sock
+EnvironmentFile=%h/mars/.env
+ExecStart=%h/mars/bin/mars-orchestrator
+Restart=on-failure
+RestartSec=5
+# The orchestrator stops sessions on SIGTERM. TimeoutStopSec must stay above
+# STOP_GRACE_SECS (default 20) plus margin, or systemd SIGKILLs it mid-shutdown.
+KillSignal=SIGTERM
+TimeoutStopSec=40
+
+# Hardening. It replaces part -- not all -- of what the container gave: the
+# process is no longer on a read-only minimal image (README.md).
+NoNewPrivileges=yes
+# The whole hierarchy is read-only except the data directory. /run stays
+# readable, which is all that connecting to the engine socket needs.
+ProtectSystem=strict
+ReadWritePaths=%h/mars/data
+# The git wrapper writes a temporary 0600 config file under /tmp, which
+# ProtectSystem=strict would otherwise refuse (orchestrator/src/git/).
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

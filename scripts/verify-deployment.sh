@@ -29,9 +29,13 @@
 #                          check reads the stack that was started
 #   COMPOSE_CMD            override the compose command (e.g. "podman-compose")
 #   ENV_FILE               alternative to ./.env
-#   HOSTRUN=1              orchestrator runs on the host instead of in compose:
-#                          check 2 is inverted (the ports are expected open) and
-#                          check 4 is skipped
+#   HOSTRUN=1              orchestrator runs on the host instead of in compose
+#                          (README.md, "Podman setup" -> "Running the
+#                          orchestrator on the host"): check 2 is inverted (the
+#                          ports are expected open on the loopback address),
+#                          check 3 probes the host gateway instead of the
+#                          `orchestrator` compose alias, and check 4 is skipped
+#                          because no orchestrator sits on mars-sessions
 #
 # No real credential is used or printed; the canary below is a fixed fake string.
 
@@ -172,10 +176,20 @@ network_exists() {
     "$ENGINE" network inspect "$1" >/dev/null 2>&1
 }
 
+# Where a container on mars-frontend finds the orchestrator: the compose service
+# alias normally, the host gateway when the orchestrator runs on the host — the
+# same name and the same `--add-host` nginx gets from compose.hostrun.yml.
+PROBE_HOST=orchestrator
+PROBE_ARGS=()
+if [[ $HOSTRUN == 1 ]]; then
+    PROBE_HOST=host.containers.internal
+    PROBE_ARGS=(--add-host "host.containers.internal:host-gateway")
+fi
+
 # Prints the HTTP status code, or the empty string when the request failed.
 probe() {
     local network=$1 url=$2
-    "$ENGINE" run --rm --network "$network" "$CURL_IMAGE" \
+    "$ENGINE" run --rm --network "$network" "${PROBE_ARGS[@]}" "$CURL_IMAGE" \
         -s -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null || true
 }
 
@@ -217,10 +231,12 @@ check_frontend_network() {
     # networks (ARCHITECTURE.md, "Components"), so TCP reachability from
     # mars-frontend is expected. What must hold is that nothing there can *use*
     # it: no session token, so a bearer challenge (ARCHITECTURE.md, "Networks").
-    judge_mcp "frontend" "$(probe mars-frontend "http://orchestrator:${MCP_PORT}/mcp")"
+    # With HOSTRUN=1 the listener is on the host gateway instead, where it is
+    # even more exposed — so this is the check that matters most in that mode.
+    judge_mcp "frontend" "$(probe mars-frontend "http://${PROBE_HOST}:${MCP_PORT}/mcp")"
 
     local code
-    code=$(probe mars-frontend "http://orchestrator:${API_PORT}/api/health")
+    code=$(probe mars-frontend "http://${PROBE_HOST}:${API_PORT}/api/health")
     if [[ $code == 200 ]]; then
         ok "frontend: /api/health answers 200 on mars-frontend"
     else

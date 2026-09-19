@@ -2,6 +2,7 @@
 
 export { ChangePasswordPage } from "./ChangePasswordPage";
 export { AcceptInvitePage } from "./AcceptInvitePage";
+export { AdminPage } from "./AdminPage";
 
 export { DashboardPage } from "./DashboardPage";
 export { ForgotPasswordPage } from "./ForgotPasswordPage";

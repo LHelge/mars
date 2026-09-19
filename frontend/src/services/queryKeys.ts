@@ -29,4 +29,10 @@ export const queryKeys = {
     /** The signed-in user; refreshed in place after a self-service password change. */
     me: () => ["users", "me"] as const,
   },
+
+  invites: {
+    all: ["invites"] as const,
+    /** Admin only; the open invitations of the administration page. */
+    list: () => ["invites", "list"] as const,
+  },
 };

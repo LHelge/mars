@@ -8,6 +8,7 @@
 
 import { Route, Routes } from "react-router";
 import { AdminRoute } from "./components/AdminRoute";
+import { AdminPage } from "./pages/AdminPage";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { ChangePasswordPage } from "./pages/ChangePasswordPage";
 import { AcceptInvitePage } from "./pages/AcceptInvitePage";
@@ -38,7 +39,7 @@ export function App() {
         <Route path="/settings" element={<PlaceholderPage title="Settings" />} />
 
         <Route element={<AdminRoute />}>
-          <Route path="/admin" element={<PlaceholderPage title="Administration" />} />
+          <Route path="/admin" element={<AdminPage />} />
         </Route>
 
         <Route path="*" element={<NotFoundPage />} />

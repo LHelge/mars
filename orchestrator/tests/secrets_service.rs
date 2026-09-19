@@ -31,15 +31,15 @@ mod common;
 use axum::http::StatusCode;
 use common::TestApp;
 use mars_orchestrator::models::{
-    EncryptedValue, MAX_SECRET_VALUE_BYTES, NewProject, Secret, SecretMeta, SecretName,
-    SecretScope, SecretUsePurpose, User,
+    MAX_SECRET_VALUE_BYTES, NewProject, Secret, SecretMeta, SecretName, SecretScope,
+    SecretUsePurpose, User,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{ProjectRepository, SecretRepository};
+use mars_orchestrator::secrets::SealedSecret;
 use mars_orchestrator::secrets::service::{
     Actor, CreateSecret, DEFAULT_USES_LIMIT, MAX_USES_LIMIT, PatchSecret, SecretsService,
 };
-use mars_orchestrator::secrets::{aad, open};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -101,25 +101,12 @@ async fn row(app: &TestApp, id: Uuid) -> Secret {
         .expect("the row is still there")
 }
 
-/// The four encrypted columns of a row, as the crypto layer takes them.
-fn encrypted(row: &Secret) -> EncryptedValue {
-    EncryptedValue {
-        ciphertext: row.ciphertext.clone(),
-        nonce: row.nonce.clone(),
-        data_key_wrapped: row.data_key_wrapped.clone(),
-        data_key_nonce: row.data_key_nonce.clone(),
-        key_version: row.key_version,
-    }
-}
-
 /// The plaintext of a stored row under its own identity.
 fn opened(app: &TestApp, row: &Secret) -> String {
-    let plaintext = open(
-        &app.state.keyring,
-        &aad(row.scope, row.scope_id, &row.name),
-        &encrypted(row),
-    )
-    .expect("the stored row opens under its own AAD");
+    let plaintext = row
+        .sealed()
+        .open(&app.state.keyring)
+        .expect("the stored row opens under its own identity");
 
     String::from_utf8(plaintext.to_vec()).expect("the test value is UTF-8")
 }
@@ -488,13 +475,12 @@ async fn an_unknown_secret_is_not_found() {
 // ---- patch ----
 
 #[tokio::test]
-async fn a_rename_re_encrypts_under_the_new_aad_and_keeps_the_data_key() {
+async fn a_rename_re_encrypts_under_the_new_identity_and_keeps_the_data_key() {
     let app = TestApp::spawn().await;
     let ada = seed_user(&app, "ada", false).await;
 
     let meta = user_secret(&app, &ada, "DEPLOY_TOKEN").await;
     let before = row(&app, meta.id).await;
-    let old_aad = aad(before.scope, before.scope_id, &before.name);
 
     let renamed = service(&app)
         .patch(
@@ -515,9 +501,13 @@ async fn a_rename_re_encrypts_under_the_new_aad_and_keeps_the_data_key() {
 
     // The value opens under the new identity and no longer under the old one.
     assert_eq!(opened(&app, &after), FAKE_VALUE);
+    let stale = SealedSecret {
+        identity: before.sealed().identity,
+        ..after.sealed()
+    };
     assert!(
-        open(&app.state.keyring, &old_aad, &encrypted(&after)).is_err(),
-        "the old AAD must no longer open the row"
+        stale.open(&app.state.keyring).is_err(),
+        "the old identity must no longer open the row"
     );
 
     // Renaming re-encrypts; it does not re-key (`docs/data-model.md`).

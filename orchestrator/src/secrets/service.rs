@@ -37,7 +37,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use super::crypto;
+use super::envelope::{SealedSecret, SecretIdentity};
 use super::keyring::{SecretsError, SecretsKeyring};
 use crate::models::{
     NewSecret, ScopeRef, Secret, SecretMeta, SecretName, SecretScope, SecretUse,
@@ -175,8 +175,7 @@ impl<'a> SecretsService<'a> {
     ///    encrypted,
     /// 4. check the scope target exists, because `scope_id` has no foreign key
     ///    (`docs/data-model.md`, `secrets`),
-    /// 5. seal under `<scope>:<scope_id>:<name>` and insert, in one
-    ///    transaction.
+    /// 5. seal under the row's own identity and insert, in one transaction.
     ///
     /// `created_by` is the caller. The value is sealed under a fresh data key
     /// and the plaintext is dropped here.
@@ -207,9 +206,9 @@ impl<'a> SecretsService<'a> {
             return Err(Error::BadRequest(UNKNOWN_SCOPE_ID.into()));
         }
 
-        let value = crypto::seal(
+        let sealed = SealedSecret::seal(
             self.keyring,
-            &crypto::aad_for(&scope, &name),
+            SecretIdentity::new(&scope, &name),
             request.value.as_bytes(),
         )?;
 
@@ -219,9 +218,7 @@ impl<'a> SecretsService<'a> {
                 &mut tx,
                 &NewSecret {
                     id: Uuid::new_v4(),
-                    scope,
-                    name,
-                    value,
+                    sealed,
                     orchestrator_only: request.orchestrator_only,
                     created_by: Some(actor.user_id),
                 },
@@ -238,10 +235,10 @@ impl<'a> SecretsService<'a> {
 
     /// `PUT /secrets/{id}` → the stored metadata, with a new value.
     ///
-    /// The scope and the name do not move, so the additional authenticated
-    /// data is the one the row already had; what is new is the value, and with
-    /// it a fresh data key and nonce under the newest master key
-    /// ([`crypto::seal`]). Nothing is decrypted: replacing a value never needs
+    /// The scope and the name do not move, so the identity is the one the row
+    /// already had; what is new is the value, and with it a fresh data key and
+    /// nonce under the newest master key
+    /// ([`SealedSecret::seal`]). Nothing is decrypted: replacing a value never needs
     /// to read the old one, so a row whose master key is missing can still be
     /// overwritten.
     #[instrument(skip_all, fields(secret_id = %id))]
@@ -261,11 +258,7 @@ impl<'a> SecretsService<'a> {
         authorize(actor, row.scope, row.scope_id)?;
         validate_secret_value(&value)?;
 
-        let sealed = crypto::seal(
-            self.keyring,
-            &crypto::aad(row.scope, row.scope_id, &row.name),
-            value.as_bytes(),
-        )?;
+        let sealed = SealedSecret::seal(self.keyring, SecretIdentity::of(&row), value.as_bytes())?;
 
         repository
             .update_value(&mut tx, id, &sealed)
@@ -326,13 +319,13 @@ impl<'a> SecretsService<'a> {
         }
 
         if let Some(name) = &rename {
-            let old_aad = crypto::aad(row.scope, row.scope_id, &row.name);
-            let new_aad = crypto::aad(row.scope, row.scope_id, name.as_str());
-            let resealed = crypto::reseal(self.keyring, &old_aad, &new_aad, &row.encrypted_value())
+            let resealed = row
+                .sealed()
+                .reseal(self.keyring, SecretIdentity::of(&row).renamed(name))
                 .map_err(|err| unreadable(&row, err))?;
 
             repository
-                .rename(&mut tx, id, name, &resealed)
+                .rename(&mut tx, id, &resealed)
                 .await?
                 .ok_or(Error::NotFound)?;
         }

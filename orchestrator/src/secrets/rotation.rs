@@ -4,11 +4,13 @@
 //! rotate-secrets` or by the hourly `secret rotation` cron job
 //! (`ARCHITECTURE.md`, "Secrets", Rotation, and "Background jobs"). It selects
 //! rows whose `key_version` is behind the newest configured master key in
-//! batches of [`ROTATION_BATCH`], unwraps each row's data key under the key
-//! that wrapped it, wraps it again under the newest one and writes the three
-//! wrapping columns back. `ciphertext` and `nonce` are never read and never
-//! written: rotation changes which master key protects a data key, not the
-//! data key and not the encryption of the value. An operator can therefore
+//! batches of [`ROTATION_BATCH`] and calls
+//! [`SealedSecret::rewrap`](crate::secrets::SealedSecret::rewrap) on each,
+//! which unwraps the row's data key under the key that wrapped it and wraps it
+//! again under the newest one; the sweep writes the three wrapping columns
+//! back. `ciphertext` and `nonce` are never decrypted and never written:
+//! rotation changes which master key protects a data key, not the data key and
+//! not the encryption of the value. An operator can therefore
 //! drop an old master key from the environment as soon as no row references it
 //! any more, which is what `remaining` in the report answers.
 //!
@@ -44,8 +46,16 @@ use uuid::Uuid;
 
 use crate::prelude::*;
 use crate::repositories::SecretRepository;
-use crate::repositories::secrets::ROTATION_BATCH;
-use crate::secrets::{SecretsError, SecretsKeyring, WrappedKey};
+use crate::secrets::{SecretsError, SecretsKeyring};
+
+/// How many rows one sweep takes at a time (`ARCHITECTURE.md`, "Secrets",
+/// Rotation: "in batches of 100").
+///
+/// The batch size is a policy of the sweep rather than of the statement, so it
+/// lives here and is passed to
+/// [`SecretRepository::list_for_rotation`](crate::repositories::SecretRepository::list_for_rotation);
+/// tests pass a smaller one to exercise the bound.
+pub const ROTATION_BATCH: i64 = 100;
 
 /// What one sweep did.
 ///
@@ -98,38 +108,41 @@ pub async fn rewrap_outdated(pool: &PgPool, keyring: &SecretsKeyring) -> Result<
 
         let mut rewrapped_in_batch = 0;
         for secret in &batch {
-            // Only the three wrapping columns and the id are read from the
-            // row; `ciphertext` and `nonce` travel with it and are not touched.
-            let Some(wrapped) = rewrap_data_key(
-                keyring,
-                &secret.data_key_wrapped,
-                &secret.data_key_nonce,
-                secret.key_version,
-            )?
-            else {
-                if reported.insert(secret.key_version) {
-                    error!(
-                        key_version = secret.key_version,
-                        "no master key is configured for this key version; its rows cannot be \
-                         rotated until it is added back to SECRETS_MASTER_KEYS"
-                    );
+            // The envelope moves its own wrapping; `ciphertext` and `nonce`
+            // travel with it and are never touched, here or in the statement.
+            let rewrapped = match secret.sealed().rewrap(keyring) {
+                Ok(Some(rewrapped)) => rewrapped,
+                // Already on the newest key. The selection excludes such rows,
+                // so this is a row another writer moved between the batch and
+                // here; either way there is nothing to write.
+                Ok(None) => {
+                    skipped.insert(secret.id);
+                    continue;
                 }
-                skipped.insert(secret.id);
-                continue;
+                // No configured key for this row's version: logged once per
+                // version and skipped, so one un-rotatable row cannot hold up
+                // the rest.
+                Err(SecretsError::UnknownKeyVersion(version)) => {
+                    if reported.insert(version) {
+                        error!(
+                            key_version = version,
+                            "no master key is configured for this key version; its rows cannot be \
+                             rotated until it is added back to SECRETS_MASTER_KEYS"
+                        );
+                    }
+                    skipped.insert(secret.id);
+                    continue;
+                }
+                // A wrapping that does not verify under the configured key is a
+                // different fault, and it belongs to the operator undiluted.
+                Err(err) => return Err(err.into()),
             };
 
             // One statement, one connection, no transaction: the row is
             // committed before the next one is read.
             let mut connection = pool.acquire().await?;
             let written = repository
-                .rewrap(
-                    &mut connection,
-                    secret.id,
-                    secret.key_version,
-                    &wrapped.wrapped,
-                    &wrapped.nonce,
-                    wrapped.version,
-                )
+                .rewrap(&mut connection, secret.id, secret.key_version, &rewrapped)
                 .await?;
 
             if written {
@@ -162,34 +175,6 @@ pub async fn rewrap_outdated(pool: &PgPool, keyring: &SecretsKeyring) -> Result<
     Ok(report)
 }
 
-/// Re-wrap one row's data key under the newest master key, or report that its
-/// version has no key.
-///
-/// `Ok(None)` is the skip the sweep counts and the reason it can stop: a row
-/// the keyring cannot unwrap will be selected by every batch, so the caller
-/// treats a batch of nothing but `None` as the end of the sweep. The data key
-/// exists only inside this function, in a [`Zeroizing`](zeroize::Zeroizing)
-/// buffer that wipes itself when the row is done.
-fn rewrap_data_key(
-    keyring: &SecretsKeyring,
-    data_key_wrapped: &[u8],
-    data_key_nonce: &[u8],
-    key_version: i32,
-) -> std::result::Result<Option<WrappedKey>, SecretsError> {
-    let data_key = match keyring.unwrap_data_key(data_key_wrapped, data_key_nonce, key_version) {
-        Ok(data_key) => data_key,
-        Err(SecretsError::UnknownKeyVersion(_)) => return Ok(None),
-        // A wrapping that does not verify under the configured key is a
-        // different fault, and it belongs to the operator undiluted.
-        Err(err) => return Err(err),
-    };
-
-    let wrapped = keyring.wrap_data_key(&data_key)?;
-    drop(data_key);
-
-    Ok(Some(wrapped))
-}
-
 /// The newest version as `key_version` stores it.
 ///
 /// [`SecretsKeyring`] refuses to build with a version the column could not
@@ -205,17 +190,13 @@ fn newest_version(keyring: &SecretsKeyring) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secrets::{DATA_KEY_LEN, MASTER_KEY_LEN};
+    use crate::models::{ScopeRef, SecretName};
+    use crate::secrets::{MASTER_KEY_LEN, SealedSecret, SecretIdentity};
 
     /// Obviously not a real master key: one repeated byte, per version
     /// (`CLAUDE.md`, rule 3).
     fn fake_master_key(byte: u8) -> [u8; MASTER_KEY_LEN] {
         [byte; MASTER_KEY_LEN]
-    }
-
-    /// Equally fake stand-in for a per-row data key.
-    fn fake_data_key() -> [u8; DATA_KEY_LEN] {
-        [0xAB; DATA_KEY_LEN]
     }
 
     fn keyring(versions: &[u32]) -> SecretsKeyring {
@@ -227,60 +208,32 @@ mod tests {
         SecretsKeyring::from_entries(entries).expect("the test keyring is valid")
     }
 
-    #[test]
-    fn a_row_moves_to_the_newest_key_and_its_data_key_survives() {
-        let old = keyring(&[1]);
-        let both = keyring(&[1, 2]);
-        let wrapped = old
-            .wrap_data_key(&fake_data_key())
-            .expect("the data key wraps");
+    /// One global row, sealed under `keyring` with an obviously fake value.
+    fn row(keyring: &SecretsKeyring) -> SealedSecret {
+        let name = SecretName::parse("ROTATED").expect("a valid name");
+        let identity = SecretIdentity::new(&ScopeRef::global(), &name);
 
-        let rotated = rewrap_data_key(&both, &wrapped.wrapped, &wrapped.nonce, wrapped.version)
-            .expect("the version has a key")
-            .expect("the row is re-wrapped");
-
-        assert_eq!(rotated.version, 2, "the row moves onto the newest key");
-        assert_ne!(
-            rotated.wrapped, wrapped.wrapped,
-            "a different key and a fresh nonce produce a different wrapping"
-        );
-
-        let recovered = both
-            .unwrap_data_key(&rotated.wrapped, &rotated.nonce, rotated.version)
-            .expect("the new wrapping opens under the newest key");
-        assert_eq!(
-            *recovered,
-            fake_data_key(),
-            "the data key itself is unchanged, so the ciphertext never has to move"
-        );
+        SealedSecret::seal(keyring, identity, b"not-a-real-token").expect("the test value seals")
     }
 
     #[test]
     fn a_batch_under_a_version_with_no_key_makes_no_progress_and_stops_the_sweep() {
         // The rows were wrapped under version 1; the operator dropped it from
-        // the environment and left versions 2 and 3 behind.
+        // the environment and left versions 2 and 3 behind. Every row is a
+        // skip, so the sweep's per-batch counter stays at zero and the loop
+        // stops instead of selecting the same rows forever.
         let gone = keyring(&[1]);
         let current = keyring(&[2, 3]);
-        let batch: Vec<_> = (0..4)
-            .map(|_| {
-                gone.wrap_data_key(&fake_data_key())
-                    .expect("the data key wraps")
-            })
-            .collect();
 
-        let rewrapped = batch
-            .iter()
-            .filter_map(|wrapped| {
-                rewrap_data_key(&current, &wrapped.wrapped, &wrapped.nonce, wrapped.version)
-                    .expect("a missing key version is a skip, not an error")
-            })
-            .count();
-
-        assert_eq!(
-            rewrapped, 0,
-            "every row is skipped, so the sweep's per-batch counter stays at zero and the loop \
-             stops instead of selecting the same rows forever"
-        );
+        for _ in 0..4 {
+            assert!(
+                matches!(
+                    row(&gone).rewrap(&current),
+                    Err(SecretsError::UnknownKeyVersion(1))
+                ),
+                "a missing key version is the sweep's skip, not an abort"
+            );
+        }
     }
 
     #[test]
@@ -289,13 +242,17 @@ mod tests {
         let wrong =
             SecretsKeyring::from_entries(vec![(1, fake_master_key(0x99)), (2, fake_master_key(2))])
                 .expect("the test keyring is valid");
-        let wrapped = keyring(&[1])
-            .wrap_data_key(&fake_data_key())
-            .expect("the data key wraps");
 
-        let err = rewrap_data_key(&wrong, &wrapped.wrapped, &wrapped.nonce, wrapped.version)
-            .expect_err("a wrapping that does not verify aborts the sweep");
-        assert!(matches!(err, SecretsError::Decrypt));
+        assert!(matches!(
+            row(&keyring(&[1])).rewrap(&wrong),
+            Err(SecretsError::Decrypt)
+        ));
+    }
+
+    #[test]
+    fn the_rotation_batch_is_the_documented_hundred() {
+        // `ARCHITECTURE.md`, "Secrets": "in batches of 100".
+        assert_eq!(ROTATION_BATCH, 100);
     }
 
     #[test]

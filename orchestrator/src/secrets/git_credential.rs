@@ -32,7 +32,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use super::crypto::{aad, aad_for, open, seal};
+use super::envelope::{SealedSecret, SecretIdentity};
 use super::keyring::SecretsKeyring;
 use crate::models::{
     NewSecret, ScopeRef, Secret, SecretName, SecretUsePurpose, validate_secret_value,
@@ -258,8 +258,12 @@ fn seal_credential(
     let scope = ScopeRef::project(project_id);
     let name = credential_name();
 
-    let sealed = seal(keyring, &aad_for(&scope, &name), value.as_bytes())?;
-    let mut new = NewSecret::new(scope, name, sealed);
+    let sealed = SealedSecret::seal(
+        keyring,
+        SecretIdentity::new(&scope, &name),
+        value.as_bytes(),
+    )?;
+    let mut new = NewSecret::new(sealed);
     new.orchestrator_only = true;
     new.created_by = created_by;
 
@@ -285,17 +289,15 @@ pub async fn has_project_git_credential(pool: &PgPool, project_id: Uuid) -> Resu
 
 /// Open one `GIT_CREDENTIAL` row, under its own row identity.
 ///
-/// The AAD is built from the stored columns rather than from the scope the
+/// The envelope comes from the stored row rather than from the scope the
 /// caller asked with, so the value is bound to the row it actually came out of
 /// (ADR 0006).
 fn decrypt(keyring: &SecretsKeyring, project_id: Uuid, row: &Secret) -> Result<Zeroizing<String>> {
-    let aad = aad(row.scope, row.scope_id, &row.name);
-    let value = row.encrypted_value();
-
-    let plaintext = open(keyring, &aad, &value).map_err(|_| {
+    let plaintext = row.sealed().open(keyring).map_err(|err| {
         error!(
             project_id = %project_id,
             key_version = row.key_version,
+            error = %err,
             "the project's git credential could not be decrypted"
         );
         Error::Internal("the git credential could not be read".into())
@@ -339,11 +341,7 @@ async fn replace_value(
         return Ok(false);
     };
 
-    let sealed = seal(
-        keyring,
-        &aad(row.scope, row.scope_id, &row.name),
-        value.as_bytes(),
-    )?;
+    let sealed = SealedSecret::seal(keyring, SecretIdentity::of(&row), value.as_bytes())?;
     repository.update_value(&mut tx, row.id, &sealed).await?;
     tx.commit().await?;
 

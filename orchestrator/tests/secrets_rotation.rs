@@ -24,11 +24,12 @@
 mod common;
 
 use common::TestApp;
-use mars_orchestrator::models::{EncryptedValue, NewSecret, ScopeRef, Secret, SecretName};
+use mars_orchestrator::models::{NewSecret, ScopeRef, Secret, SecretName};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::SecretRepository;
 use mars_orchestrator::secrets::{
-    MASTER_KEY_LEN, RotationReport, SecretsKeyring, aad_for, open, rewrap_outdated, seal,
+    MASTER_KEY_LEN, RotationReport, SealedSecret, SecretIdentity, SecretsKeyring, WrappedKey,
+    rewrap_outdated,
 };
 use uuid::Uuid;
 
@@ -48,15 +49,21 @@ fn keyring(versions: &[u32]) -> SecretsKeyring {
     SecretsKeyring::from_entries(entries).expect("the test keyring is valid")
 }
 
-/// Not key material: an obviously fake stand-in for the four encrypted columns,
-/// for a row no test ever opens.
-fn fake_value(tag: &str, key_version: i32) -> EncryptedValue {
-    EncryptedValue {
+/// Not key material and not a real envelope: an obviously fake stand-in for
+/// the encrypted columns of a row no test ever opens, under a version no
+/// keyring here carries (`CLAUDE.md`, rule 3).
+fn fake_sealed(raw_name: &str, tag: &str, key_version: i32) -> SealedSecret {
+    let secret_name = SecretName::parse(raw_name).expect("the test secret name is valid");
+
+    SealedSecret {
+        identity: SecretIdentity::new(&ScopeRef::global(), &secret_name),
         ciphertext: format!("fake-ciphertext-{tag}").into_bytes(),
         nonce: format!("fake-nonce-{tag}").into_bytes(),
-        data_key_wrapped: format!("fake-wrapped-data-key-{tag}").into_bytes(),
-        data_key_nonce: format!("fake-wrap-nonce-{tag}").into_bytes(),
-        key_version,
+        wrapped: WrappedKey {
+            wrapped: format!("fake-wrapped-data-key-{tag}").into_bytes(),
+            nonce: format!("fake-wrap-nonce-{tag}").into_bytes(),
+            version: key_version,
+        },
     }
 }
 
@@ -79,11 +86,14 @@ async fn seed(pool: &PgPool, keyring: &SecretsKeyring, prefix: &str, count: usiz
     for index in 0..count {
         let scope = ScopeRef::global();
         let secret_name = name(prefix, index);
-        let aad = aad_for(&scope, &secret_name);
-        let sealed =
-            seal(keyring, &aad, plaintext(prefix, index).as_bytes()).expect("the test value seals");
+        let sealed = SealedSecret::seal(
+            keyring,
+            SecretIdentity::new(&scope, &secret_name),
+            plaintext(prefix, index).as_bytes(),
+        )
+        .expect("the test value seals");
 
-        let new = NewSecret::new(scope, secret_name, sealed);
+        let new = NewSecret::new(sealed);
         rows.push(
             repository
                 .insert(&mut tx, &new)
@@ -98,13 +108,9 @@ async fn seed(pool: &PgPool, keyring: &SecretsKeyring, prefix: &str, count: usiz
 }
 
 /// Insert one row whose columns are given verbatim.
-async fn insert_raw(pool: &PgPool, raw_name: &str, value: EncryptedValue) -> Secret {
+async fn insert_raw(pool: &PgPool, sealed: SealedSecret) -> Secret {
     let repository = SecretRepository::new(pool);
-    let new = NewSecret::new(
-        ScopeRef::global(),
-        SecretName::parse(raw_name).expect("the test secret name is valid"),
-        value,
-    );
+    let new = NewSecret::new(sealed);
 
     let mut tx = pool.begin().await.expect("a transaction begins");
     let inserted = repository
@@ -124,15 +130,12 @@ async fn reread(pool: &PgPool, id: Uuid) -> Secret {
         .expect("the row is still there")
 }
 
-/// The four encrypted columns of a stored row, as `crypto::open` wants them.
-fn value_of(row: &Secret) -> EncryptedValue {
-    EncryptedValue {
-        ciphertext: row.ciphertext.clone(),
-        nonce: row.nonce.clone(),
-        data_key_wrapped: row.data_key_wrapped.clone(),
-        data_key_nonce: row.data_key_nonce.clone(),
-        key_version: row.key_version,
-    }
+/// The plaintext of a stored row, opened under its own identity.
+fn opened(keyring: &SecretsKeyring, row: &Secret) -> Vec<u8> {
+    row.sealed()
+        .open(keyring)
+        .expect("the stored row opens under its own identity")
+        .to_vec()
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -179,13 +182,11 @@ async fn a_sweep_moves_every_row_onto_the_newest_key_and_leaves_the_values_alone
         );
         assert_eq!(after.nonce, row.nonce, "the value's nonce is untouched");
 
-        let opened = open(
-            &current,
-            &aad_for(&after.scope_ref(), &name("ROT", index)),
-            &value_of(&after),
-        )
-        .expect("the value still opens after the rotation");
-        assert_eq!(opened.as_slice(), plaintext("ROT", index).as_bytes());
+        assert_eq!(
+            opened(&current, &after),
+            plaintext("ROT", index).as_bytes(),
+            "the value still opens after the rotation"
+        );
     }
 
     // Idempotent: there is nothing left to select.
@@ -332,13 +333,11 @@ async fn a_row_re_wrapped_by_someone_else_mid_sweep_is_skipped_and_keeps_its_wra
         .iter()
         .position(|row| row.id == target.id)
         .expect("the target is one of the seeded rows");
-    let opened = open(
-        &current,
-        &aad_for(&after.scope_ref(), &name("RACE", index)),
-        &value_of(&after),
-    )
-    .expect("the value opens under the concurrent writer's wrapping");
-    assert_eq!(opened.as_slice(), plaintext("RACE", index).as_bytes());
+    assert_eq!(
+        opened(&current, &after),
+        plaintext("RACE", index).as_bytes(),
+        "the value opens under the concurrent writer's wrapping"
+    );
 }
 
 #[tokio::test]
@@ -350,7 +349,7 @@ async fn a_row_under_a_version_with_no_key_is_skipped_and_is_what_remains() {
     let current = keyring(&[1, 8]);
 
     let rows = seed(&app.pool, &old, "STUCK", 3).await;
-    let stranded = insert_raw(&app.pool, "ORPHANED_KEY", fake_value("stranded", 7)).await;
+    let stranded = insert_raw(&app.pool, fake_sealed("ORPHANED_KEY", "stranded", 7)).await;
 
     let report = rewrap_outdated(&app.pool, &current)
         .await
@@ -368,13 +367,11 @@ async fn a_row_under_a_version_with_no_key_is_skipped_and_is_what_remains() {
     for (index, row) in rows.iter().enumerate() {
         let after = reread(&app.pool, row.id).await;
         assert_eq!(after.key_version, 8);
-        let opened = open(
-            &current,
-            &aad_for(&after.scope_ref(), &name("STUCK", index)),
-            &value_of(&after),
-        )
-        .expect("the value still opens");
-        assert_eq!(opened.as_slice(), plaintext("STUCK", index).as_bytes());
+        assert_eq!(
+            opened(&current, &after),
+            plaintext("STUCK", index).as_bytes(),
+            "the value still opens"
+        );
     }
 
     let after = reread(&app.pool, stranded.id).await;

@@ -12,6 +12,11 @@
 //! bearer token from [`token`] and the `mcp.json` that carries it, written
 //! atomically after the matching hash has committed (ADR 0029).
 //!
+//! [`launcher`] is the sequence around those: the mirror fetch, the session
+//! clone, the secrets resolution, the container specification, the engine calls
+//! and the owner spawn, with every failure routed to `failed` and
+//! `sessions.error` (`ARCHITECTURE.md`, "Launch sequence").
+//!
 //! [`owner`] is the loop itself: the one reader of `log/stream.jsonl` and the
 //! one writer of the CLI's stdin, committing each complete native line's
 //! events, offset and counters together (`ARCHITECTURE.md`, "Session owner
@@ -22,12 +27,17 @@
 //! gone and fails the ones the restart caught mid-creation
 //! (`ARCHITECTURE.md`, "Restart procedure").
 
+pub mod launcher;
 pub mod owner;
 pub mod prepare;
 pub mod recovery;
 pub mod registry;
 pub mod token;
 
+pub use launcher::{
+    BOTH_CREDENTIALS_ERROR, FRESH_FETCH_MAX_AGE, LAUNCH_FAILED_REASON, LAUNCHED_REASON, LaunchMode,
+    Launcher,
+};
 pub use owner::{
     COST_ACCOUNTING, CostAccounting, MARS_MCP_SERVER, OwnerContext, ResultSummary, SessionOwner,
     TAIL_POLL_INTERVAL,

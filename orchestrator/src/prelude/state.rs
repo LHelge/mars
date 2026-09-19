@@ -136,6 +136,19 @@ impl AppState {
         self
     }
 
+    /// The session launcher over this state (`ARCHITECTURE.md`, "Launch
+    /// sequence").
+    ///
+    /// A constructor rather than a field, for the reason
+    /// [`GitService::from_state`](crate::git::GitService::from_state) is one:
+    /// the launcher needs every collaborator the state already holds, so a
+    /// field pointing back at a type that holds the state would be a reference
+    /// cycle. One call, so the routes, the session service and recovery all
+    /// launch through the same implementation.
+    pub fn launcher(&self) -> crate::session::Launcher {
+        crate::session::Launcher::from_state(self)
+    }
+
     /// Run the end-of-session hook, if one is installed.
     ///
     /// Here rather than at each call site so that "no hook" is one branch in

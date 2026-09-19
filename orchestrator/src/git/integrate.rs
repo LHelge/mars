@@ -194,9 +194,14 @@ pub async fn merge(
 
     // `--no-checkout` left no work tree; this creates one at the target, which
     // is what a merge needs an index and a work tree for.
+    //
+    // The revision before a trailing `--` rather than after
+    // `--end-of-options`: `git checkout` does not understand that option on the
+    // git the orchestrator image ships (see the module docs). `TMP_TARGET` is a
+    // constant ref this function just wrote.
     GitCommand::new()
         .args(["checkout", "--quiet", "-B", WORK_BRANCH])
-        .args(["--end-of-options", TMP_TARGET])
+        .args([TMP_TARGET, "--"])
         .cwd(work)
         .run_ok()
         .await?;
@@ -379,9 +384,14 @@ pub async fn rebase(
         .await?;
 
     // `--no-checkout` left no work tree; the rebase needs one.
+    //
+    // The revision before a trailing `--` rather than after
+    // `--end-of-options`: `git checkout` does not understand that option on the
+    // git the orchestrator image ships (see the module docs). `TMP_BRANCH` is a
+    // constant ref the fetch above just wrote.
     GitCommand::new()
         .args(["checkout", "--quiet", "-B", WORK_BRANCH])
-        .args(["--end-of-options", TMP_BRANCH])
+        .args([TMP_BRANCH, "--"])
         .cwd(work)
         .run_ok()
         .await?;
@@ -525,9 +535,14 @@ async fn reconcile(
         return Ok(WorkTreeOutcome::ReconciliationRequired);
     }
 
+    // The revision before a trailing `--` rather than after
+    // `--end-of-options`: `git reset` rejects that option outright on the git
+    // the orchestrator image ships (see the module docs). `session_full` is
+    // `refs/sessions/<uuid>`, built here from the session id.
     GitCommand::new()
-        .args(["reset", "--hard", "--quiet", "--end-of-options"])
+        .args(["reset", "--hard", "--quiet"])
         .arg(&session_full)
+        .arg("--")
         .cwd(work)
         .run_ok()
         .await?;

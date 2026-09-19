@@ -411,6 +411,25 @@ fn says_needs_force(message: &str) -> bool {
     message.contains("without force") || message.contains("force remove")
 }
 
+/// Whether an engine's refusal of a create says the container name is taken.
+///
+/// The fourth message the adapter reads rather than only reports, for the
+/// reason [`says_already`] gives. Docker and Podman 6 refuse with 409 — already
+/// an [`EngineError::Conflict`] — but the Podman 4 series answers 500 with
+/// `creating container storage: the container name "<name>" is already in use
+/// by <id>. You have to remove that container to be able to reuse that name`
+/// (seen on the Engine workflow's runner), and a 500 would reach the launcher
+/// as an internal fault rather than as the conflict it is (`ARCHITECTURE.md`,
+/// "Engine adapter", Normalised semantics). Docker's wording — `The container
+/// name "/<name>" is already in use by container "<id>"` — shares the phrase
+/// that is matched, so an engine that numbers it differently is still
+/// normalised.
+fn says_name_in_use(message: &str) -> bool {
+    let message = message.to_lowercase();
+
+    message.contains("container name") && message.contains("already in use")
+}
+
 /// The failure a pull stream reported inside an otherwise successful response,
 /// if it reported one.
 fn pull_error_of(info: &CreateImageInfo) -> Option<String> {
@@ -709,8 +728,15 @@ impl ContainerEngine for BollardEngine {
                 EngineError::NotFound(message) => {
                     EngineError::NotFound(format!("image {}: {message}", spec.image))
                 }
-                // A name already in use arrives as `Conflict`, which is how a
-                // second launch of the same session is refused.
+                // A name already in use is a `Conflict`, which is how a second
+                // launch of the same session is refused. Docker and Podman 6
+                // number it 409; an older Podman numbers it 500 (see
+                // `says_name_in_use`), and the caller sees the same `Conflict`
+                // on either.
+                EngineError::Api { status, message } if says_name_in_use(&message) => {
+                    debug!(name = %spec.name, status, "the container name is already in use");
+                    EngineError::Conflict(message)
+                }
                 other => other,
             }),
         }
@@ -1306,6 +1332,29 @@ mod tests {
         assert!(!says_needs_force(
             "can only create exec sessions on running containers: container state improper"
         ));
+    }
+
+    /// Both engines refuse a create whose name is taken, and not every Podman
+    /// uses a status that already says so. The wordings are the ones they were
+    /// seen to answer with.
+    #[test]
+    fn both_engines_refusals_of_a_name_in_use_are_recognised() {
+        assert!(says_name_in_use(
+            "Conflict. The container name \"/mars-session-1\" is already in use by container \
+             \"0123456789ab\". You have to remove (or rename) that container to be able to reuse \
+             that name."
+        ));
+        assert!(says_name_in_use(
+            "container create: creating container storage: the container name \
+             \"mars-session-1\" is already in use by 0123456789ab. You have to remove that \
+             container to be able to reuse that name: that name is already in use"
+        ));
+
+        assert!(!says_name_in_use(
+            "No such image: mars-session-claude:latest"
+        ));
+        // A network that is already in use is another refusal altogether.
+        assert!(!says_name_in_use("network mars-sessions is already in use"));
     }
 
     #[test]

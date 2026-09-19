@@ -4,7 +4,7 @@ title: Verify the README "Running it" walkthrough on a fresh Docker host with th
 status: open
 priority: P1
 created: "2026-09-16T20:46:30.244077570Z"
-updated: "2026-09-16T20:46:30.244077570Z"
+updated: "2026-09-19T17:06:14.076394164Z"
 tags:
   - infra
   - docs
@@ -13,6 +13,7 @@ depends_on:
   - sgg2e
   - t93cj
   - rmu9n
+  - n3kps
 parent: "5czwa"
 ---
 

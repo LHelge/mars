@@ -1,10 +1,10 @@
 ---
 id: rmu9n
 title: Verify the README "Running it" walkthrough on a fresh rootless Podman host and write back drift
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:45:51.896648547Z"
-updated: "2026-09-16T20:45:51.896648547Z"
+updated: "2026-09-19T17:06:23.672687043Z"
 tags:
   - infra
   - docs
@@ -13,6 +13,7 @@ depends_on:
   - sgg2e
   - t93cj
 parent: "5czwa"
+attempts: 1
 ---
 
 ## Summary

@@ -51,7 +51,7 @@ uuid = { version = "1.26.1", features = ["v4", "serde"] }
 zeroize = "1.9.0"
 
 [dev-dependencies]
-axum-test = "21.1.0"
+axum-test = { version = "21.1.0", features = ["ws"] }
 # Only for `atexit`, which is how `tests/common/db.rs` removes the test
 # Postgres container: the test harness exits with `std::process::exit`, so no
 # destructor runs.

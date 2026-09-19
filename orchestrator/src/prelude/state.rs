@@ -5,6 +5,8 @@
 //! `OnceLock<AppState>` and no other way to reach the pool or the
 //! configuration.
 
+use std::time::Duration;
+
 use axum::extract::FromRef;
 use futures_util::future::BoxFuture;
 use uuid::Uuid;
@@ -28,6 +30,39 @@ use crate::session::SessionRegistry;
 /// [`AppState::with_session_ended_hook`]; everywhere else the field is `None`
 /// and the ending paths do nothing extra.
 pub type SessionEndedHook = Arc<dyn Fn(Uuid) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// The three periods the real-time streams run on (`SPEC.md`, "WebSocket:
+/// session stream"; `ARCHITECTURE.md`, "Event delivery").
+///
+/// Deliberately *not* configuration: `README.md`, "Configuration" is the
+/// variable contract and none of these is in it. They are constants of the
+/// protocol — the ping interval the frontend and nginx are written against,
+/// the safety read that covers a lost notification, the SSE keepalive comment
+/// — and the only reason they are a value rather than three `const`s is that
+/// an integration test cannot wait out thirty seconds per scenario.
+/// [`TestApp`](../../tests/common/app.rs) sets them short; everything else
+/// takes [`StreamTimings::default`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamTimings {
+    /// How often a session WebSocket pings; two unanswered pings close it.
+    pub ping: Duration,
+    /// How often a stream reads from its cursor without having been notified.
+    pub safety_read: Duration,
+    /// How often an idle SSE stream writes its `: keepalive` comment.
+    pub sse_keepalive: Duration,
+}
+
+impl Default for StreamTimings {
+    /// The documented periods: 30 s pings, a 30 s safety read and a 15 s SSE
+    /// keepalive.
+    fn default() -> Self {
+        Self {
+            ping: Duration::from_secs(30),
+            safety_read: Duration::from_secs(30),
+            sse_keepalive: Duration::from_secs(15),
+        }
+    }
+}
 
 /// The state cloned into every handler.
 ///
@@ -88,6 +123,10 @@ pub struct AppState {
     ///
     /// [`Notice`]: crate::events::Notice
     pub fanout: EventFanout,
+    /// The periods the WebSocket and SSE streams run on. See
+    /// [`StreamTimings`]: the documented values everywhere but in the tests,
+    /// which shorten them.
+    pub realtime_timings: StreamTimings,
     /// What to run when a session reaches `done` or `failed`, or `None` when
     /// nothing is installed. See [`SessionEndedHook`].
     pub on_session_ended: Option<SessionEndedHook>,
@@ -128,8 +167,20 @@ impl AppState {
             git_locks: Arc::new(ProjectGitLocks::new()),
             session_registry: SessionRegistry::new(),
             fanout: EventFanout::new(),
+            realtime_timings: StreamTimings::default(),
             on_session_ended: None,
         }
+    }
+
+    /// The same state with the stream periods replaced.
+    ///
+    /// Installed once, before the router is built, so every clone carries it.
+    /// Only the integration harness calls it; the binary keeps the documented
+    /// defaults.
+    #[must_use]
+    pub fn with_realtime_timings(mut self, timings: StreamTimings) -> Self {
+        self.realtime_timings = timings;
+        self
     }
 
     /// The same state with `hook` run whenever a session ends.
@@ -359,6 +410,28 @@ mod tests {
         let extracted = EventFanout::from_ref(&state);
         extracted.publish_session(session, Notice::Resync);
         assert_eq!(receiver.try_recv(), Ok(Notice::Resync));
+    }
+
+    #[tokio::test]
+    async fn the_stream_timings_are_the_documented_periods_and_are_carried_by_a_clone() {
+        let state = test_state();
+
+        assert_eq!(state.realtime_timings, StreamTimings::default());
+        assert_eq!(state.realtime_timings.ping, Duration::from_secs(30));
+        assert_eq!(state.realtime_timings.safety_read, Duration::from_secs(30));
+        assert_eq!(
+            state.realtime_timings.sse_keepalive,
+            Duration::from_secs(15)
+        );
+
+        let shortened = StreamTimings {
+            ping: Duration::from_millis(200),
+            safety_read: Duration::from_millis(300),
+            sse_keepalive: Duration::from_millis(100),
+        };
+        let state = state.with_realtime_timings(shortened);
+
+        assert_eq!(state.clone().realtime_timings, shortened);
     }
 
     #[tokio::test]

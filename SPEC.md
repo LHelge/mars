@@ -276,6 +276,8 @@ Server to client:
 | terminal_closed | `{ "type": "terminal_closed", "exit_code": number }` |
 | error | `{ "type": "error", "message": string }` followed by close |
 
+The server also sends one `session` message immediately after the upgrade, before replay, so the client has the current state.
+
 Client to server:
 
 | Message | Shape |

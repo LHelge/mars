@@ -1,10 +1,10 @@
 ---
 id: nq4su
 title: Implement the shared Postgres LISTEN task forwarding session_events, task_events and session_state to the fanout, with reconnect, Resync and startup wiring
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:44:55.417253048Z"
-updated: "2026-09-16T20:44:55.417253048Z"
+updated: "2026-09-19T21:01:08.321619256Z"
 tags:
   - orchestrator
   - realtime
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - "4sptg"
 parent: h8kw9
+attempts: 1
 ---
 
 ## Summary

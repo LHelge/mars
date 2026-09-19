@@ -1,10 +1,10 @@
 ---
 id: h8qkt
 title: "Implement graph rules: blocked recomputation from blocks edges and open children, blocks-only cycle check, and dependant capture for deletion"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:41:10.506405006Z"
-updated: "2026-09-19T10:10:25.664900980Z"
+updated: "2026-09-19T10:43:50.007431651Z"
 tags:
   - orchestrator
   - tracker

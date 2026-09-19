@@ -1,10 +1,25 @@
 //! `/api/projects/{pid}/sessions` and `/api/sessions` (`SPEC.md`, "Sessions").
 //!
-//! The resource half of the table: the two lists, the create, the read, the
-//! retitle and the event page. The action verbs — `input`, `stop`, `end`,
-//! `retry`, `sync`, `tasks` — and `DELETE` are their own routes and live with
-//! the code that performs them; everything here is a row read, a row write or
-//! one launch handed to [`crate::session::Launcher`].
+//! The two lists, the create, the read, the retitle, the event page, the five
+//! action verbs and the delete. `GET /sessions/{id}/tasks` is the task
+//! tracker's and lives with it; everything else in the table is here.
+//!
+//! **The resource half** is a row read, a row write or one launch handed to
+//! [`crate::session::Launcher`].
+//!
+//! **The action half** — `input`, `stop`, `end`, `retry`, `sync` and `DELETE` —
+//! is [`SessionService`]: every lifecycle rule, every state check and every
+//! refusal is that module's, so the same action asked for over the WebSocket
+//! behaves identically (`ARCHITECTURE.md`, "Session lifecycle", "Stop
+//! semantics"). A handler here decides only what HTTP owns: the shape of the
+//! body, the size of the text in it and which status a success answers with.
+//!
+//! The two 202s are ADR 0020's: `input` and `stop` are accepted by the
+//! orchestrator, not delivered to the CLI, and they carry no body at all —
+//! a client learns the new state from the WebSocket `session` message or from a
+//! `GET` (`SPEC.md`, "REST API"; "WebSocket: session stream", the restart
+//! limitation). `end` and `retry` answer the `Session` they produced, and
+//! `sync` the `{ref, commit}` of the ref it published.
 //!
 //! **What `POST` decides**, in this order, because the cheap refusals come
 //! first and nothing irreversible happens before the last of them
@@ -57,23 +72,26 @@
 //! value moved into [`LaunchMode::Fresh`] (`CLAUDE.md`, rule 3).
 
 use axum::Router;
-use axum::extract::State;
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, post};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::events::{SessionEvent, SessionInput};
+use crate::events::{MAX_TEXT_BYTES, SessionEvent, SessionInput};
 use crate::git::{DataPaths, resolve_base};
 use crate::models::{
-    NewSession, ProjectStatus, Session, SessionKind, SessionState, SessionTitle, default_title,
-    validate_launch_prompt, validate_title,
+    NewSession, ProjectStatus, Session, SessionKind, SessionState, SessionTitle, SyncOutcome,
+    default_title, validate_launch_prompt, validate_title,
 };
 use crate::prelude::*;
 use crate::repositories::{MAX_EVENT_PAGE, ProjectRepository, SessionRepository};
 use crate::routes::{CurrentUser, Path, Query};
-use crate::session::{LaunchMode, McpToken, Phase, QueuedInput, SessionRegistry, SubmitResult};
+use crate::session::{
+    LaunchMode, McpToken, Phase, QueuedInput, SessionRegistry, SessionService, SubmitResult,
+};
 
 /// What a create against a project that has no repository to clone is told
 /// (409).
@@ -106,15 +124,32 @@ const BAD_BEFORE: &str = "before must be 1 or greater";
 /// (`SPEC.md`, "Sessions").
 const DEFAULT_EVENT_PAGE: u32 = 100;
 
+/// How much of an `input` request axum buffers before it refuses to read more.
+///
+/// Above [`MAX_TEXT_BYTES`] by the room a JSON envelope and its escaping need,
+/// so a text just over the cap reaches the handler and is answered with the
+/// documented 400 [`SessionInput::validate`] gives rather than with a body-limit
+/// rejection; far above it nothing is buffered at all, which is the point of
+/// having a limit.
+const MAX_INPUT_BODY: usize = 2 * MAX_TEXT_BYTES;
+
 /// The router nested under `/api/sessions`.
 ///
-/// The project-scoped half is [`project_routes`]. `DELETE` and the action
-/// verbs are added by the routes that own them.
+/// The project-scoped half is [`project_routes`]. `GET /{id}/tasks` is the task
+/// tracker's and is added with it.
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/", get(list))
-        .route("/{id}", get(fetch).put(update))
+        .route("/{id}", get(fetch).put(update).delete(remove))
         .route("/{id}/events", get(events))
+        .route(
+            "/{id}/input",
+            post(input).layer(DefaultBodyLimit::max(MAX_INPUT_BODY)),
+        )
+        .route("/{id}/stop", post(stop))
+        .route("/{id}/end", post(end))
+        .route("/{id}/retry", post(retry))
+        .route("/{id}/sync", post(sync))
 }
 
 /// The router merged onto `/api/projects`.
@@ -511,6 +546,161 @@ async fn events(
     Ok(Json(EventPage { events, has_more }))
 }
 
+// ---- actions ----
+
+/// The service for this request, built as every other caller builds it.
+fn service(state: &AppState) -> SessionService {
+    SessionService::new(state)
+}
+
+/// `POST /sessions/{id}/input` (`SessionInput`) → 202 with no body.
+///
+/// The acknowledgement is acceptance by the orchestrator and not delivery to
+/// the CLI, which is why it is a 202 and why it carries nothing: a parked
+/// session is being relaunched as this returns, and the state it ends up in
+/// arrives over the socket (ADR 0020; `SPEC.md`, "Sessions").
+///
+/// An unknown `kind` and a malformed body are both 400 from the [`Json`]
+/// extractor. The text is never logged (rule 3).
+async fn input(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SessionInput>,
+) -> Result<StatusCode> {
+    body.validate()?;
+
+    // No `client_id`: that is the socket's echo key, and a REST caller has the
+    // response instead (`SPEC.md`, "WebSocket: session stream").
+    service(&state)
+        .send_input(id, body, Some(user.id), None)
+        .await?;
+
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// `POST /sessions/{id}/stop` → 202 with no body (409 unless `running`, 404
+/// unknown).
+///
+/// `SIGINT`, then `SIGTERM` after the grace period, then `parked` — all of it
+/// after this response (`ARCHITECTURE.md`, "Stop semantics").
+async fn stop(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    service(&state).stop(id).await?;
+
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// `POST /sessions/{id}/end` → the ended session (409 from `creating`, `done`
+/// and `failed`, 404 unknown).
+///
+/// Not a 202: unlike a stop, this one waits — for the run to end, for the
+/// fetch-back and for the container to go — and answers the row it produced.
+/// That row is `done` for a conversational session; a run that ended badly while
+/// the stop was in flight comes back `failed`, because the lifecycle has no
+/// `failed → done` edge (`SPEC.md`, "Sessions"; [`SessionService::end`]).
+async fn end(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Session>> {
+    Ok(Json(service(&state).end(id).await?))
+}
+
+/// `POST /sessions/{id}/retry` (`{ message? }`).
+///
+/// `deny_unknown_fields` for the reason the other bodies in this module carry
+/// it: a client that sends `state` or `text` here has misunderstood the
+/// endpoint and is told so.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetryInput {
+    message: Option<String>,
+}
+
+impl RetryInput {
+    /// The optional body, from the bytes of the request.
+    ///
+    /// A retry needs nothing said to it, so no body at all — and an empty one,
+    /// which is what a client that posts without a payload sends — is the
+    /// documented "absent" case and parses as the default. Anything that is
+    /// there is JSON or a 400, as on every other route.
+    fn parse(body: &Bytes) -> Result<Self> {
+        if body.iter().all(u8::is_ascii_whitespace) {
+            return Ok(Self::default());
+        }
+
+        serde_json::from_slice(body).map_err(|err| Error::BadRequest(err.to_string()))
+    }
+
+    /// The message to relaunch with, or `None` when there is nothing to say.
+    ///
+    /// Whitespace is no message, exactly as on `POST
+    /// /projects/{pid}/sessions`: it would be refused by the backend's encoder
+    /// a moment later, and a retry is worth doing without one.
+    fn message(self) -> Option<String> {
+        self.message.filter(|message| !message.trim().is_empty())
+    }
+}
+
+/// `POST /sessions/{id}/retry` → the `parked` session (409 for an ephemeral
+/// session and for one that is not `failed`, 404 unknown).
+///
+/// With a `message` the session is relaunched at once and may already be
+/// `running` by the time a client reads this body; the row answered here is the
+/// `parked` one the transition produced, which is the documented response
+/// (`SPEC.md`, "Sessions").
+async fn retry(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<Uuid>,
+    body: Bytes,
+) -> Result<Json<Session>> {
+    let message = RetryInput::parse(&body)?.message();
+    if let Some(text) = &message {
+        // The same cap the input route applies: the message goes to
+        // `send_input` a moment later and is one for every purpose.
+        SessionInput::Message { text: text.clone() }.validate()?;
+    }
+
+    let parked = service(&state).retry(id, message, Some(user.id)).await?;
+
+    Ok(Json(parked))
+}
+
+/// `POST /sessions/{id}/sync` → `{ ref, commit }` (409 while `creating`, 404
+/// unknown, 500 for an internal git failure).
+///
+/// The lock, the fetch and the `git { op: "sync" }` event — success or failure —
+/// are [`crate::git::GitService::sync_session`]'s, which is where the error
+/// mapping lives too (`ARCHITECTURE.md`, "Git model", Fetch-back).
+async fn sync(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SyncOutcome>> {
+    Ok(Json(service(&state).sync(id).await?))
+}
+
+/// `DELETE /sessions/{id}` → 204 (409 unless `done` or `failed`, 404 unknown).
+///
+/// Named `remove` because `delete` is the routing method it is registered with,
+/// as in the other modules. The session directory, the CLI transcript, the row
+/// and everything that cascades with it are [`SessionService::delete`]'s
+/// (`ARCHITECTURE.md`, "Storage").
+async fn remove(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    service(&state).delete(id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -622,6 +812,31 @@ mod tests {
                 .expect_err("the cursor is refused");
             assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{before}");
             assert_eq!(error.to_string(), BAD_BEFORE);
+        }
+    }
+
+    /// A retry body is optional in every form a client can leave it out in, and
+    /// a message of whitespace is no message.
+    #[test]
+    fn a_retry_body_is_optional() {
+        for raw in ["", "   ", "\n", "{}"] {
+            let body = RetryInput::parse(&Bytes::from_static(raw.as_bytes()))
+                .unwrap_or_else(|err| panic!("{raw:?} is an accepted retry body: {err}"));
+            assert_eq!(body.message(), None, "{raw:?}");
+        }
+
+        let body = RetryInput::parse(&Bytes::from_static(br#"{"message":"try again"}"#))
+            .expect("a message parses");
+        assert_eq!(body.message().as_deref(), Some("try again"));
+
+        let blank = RetryInput::parse(&Bytes::from_static(br#"{"message":"  "}"#))
+            .expect("a blank message parses");
+        assert_eq!(blank.message(), None);
+
+        for raw in [r#"{"text":"try again"}"#, "not json", "[]"] {
+            let error =
+                RetryInput::parse(&Bytes::from(raw)).expect_err("{raw} is not a retry body");
+            assert_eq!(error.status(), StatusCode::BAD_REQUEST, "{raw}");
         }
     }
 

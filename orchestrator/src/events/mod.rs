@@ -12,4 +12,4 @@ pub use agent_event::{
     AgentEvent, AgentEventBody, GitOp, McpServerStatus, SessionEvent, StopSignal,
     TOOL_RESULT_MAX_BYTES,
 };
-pub use input::SessionInput;
+pub use input::{EMPTY_TEXT, LONG_TEXT, MAX_TEXT_BYTES, SessionInput};

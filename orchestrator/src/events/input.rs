@@ -7,10 +7,21 @@
 
 use serde::{Deserialize, Serialize};
 
-// The crate convention (`CLAUDE.md`, "Backend conventions"); this module needs
-// nothing from the prelude yet.
-#[allow(unused_imports)]
 use crate::prelude::*;
+
+/// What an input whose `text` is blank is refused with (400).
+pub const EMPTY_TEXT: &str = "text must not be empty";
+
+/// What an input whose `text` is over [`MAX_TEXT_BYTES`] is refused with (400).
+pub const LONG_TEXT: &str = "text too long";
+
+/// The longest `text` one input may carry (`SPEC.md`, "Sessions").
+///
+/// A mebibyte is far more than anything typed and far more than a pasted log or
+/// stack trace needs, and it is a bound: without one, a single request decides
+/// how much memory the orchestrator buffers and how long a line the owner
+/// writes to the CLI's stdin.
+pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 
 /// One input from a client.
 ///
@@ -33,6 +44,30 @@ impl SessionInput {
         match self {
             Self::Message { text } => text,
         }
+    }
+
+    /// What is wrong with this input before anything is asked of the session
+    /// (`SPEC.md`, "Sessions", `POST /sessions/{id}/input`).
+    ///
+    /// Blank text and text over [`MAX_TEXT_BYTES`] are the two things a caller
+    /// can get wrong about a well-formed input; which states accept one at all
+    /// is the session model's and is checked in
+    /// [`crate::session::SessionService`]. Both answers are 400, on the REST
+    /// route and over the socket, which is why the check lives with the type
+    /// rather than in either caller. The length is counted in bytes, because
+    /// that is what the cap protects — the memory the request occupies and the
+    /// line written to the CLI's stdin — and not in characters.
+    pub fn validate(&self) -> Result<()> {
+        let text = self.text();
+
+        if text.trim().is_empty() {
+            return Err(Error::BadRequest(EMPTY_TEXT.to_string()));
+        }
+        if text.len() > MAX_TEXT_BYTES {
+            return Err(Error::BadRequest(LONG_TEXT.to_string()));
+        }
+
+        Ok(())
     }
 }
 
@@ -63,6 +98,39 @@ mod tests {
     fn an_unknown_kind_is_rejected() {
         assert!(serde_json::from_str::<SessionInput>(r#"{"kind":"shout","text":"hi"}"#).is_err());
         assert!(serde_json::from_str::<SessionInput>(r#"{"text":"hi"}"#).is_err());
+    }
+
+    /// Blank text and text over the documented cap are 400s; everything
+    /// between is accepted.
+    #[test]
+    fn a_text_is_bounded_and_not_blank() {
+        let message = |text: &str| SessionInput::Message {
+            text: text.to_string(),
+        };
+
+        message("hello").validate().expect("ordinary text");
+        message(&"x".repeat(MAX_TEXT_BYTES))
+            .validate()
+            .expect("the cap itself");
+
+        for blank in ["", " ", "\n\t "] {
+            let error = message(blank)
+                .validate()
+                .expect_err("blank text is refused");
+            assert_eq!(error.to_string(), EMPTY_TEXT);
+        }
+
+        let error = message(&"x".repeat(MAX_TEXT_BYTES + 1))
+            .validate()
+            .expect_err("a text over the cap is refused");
+        assert_eq!(error.to_string(), LONG_TEXT);
+
+        // Bytes, not characters: two-byte characters reach the cap twice as
+        // fast, which is what the memory bound means.
+        let error = message(&"é".repeat(MAX_TEXT_BYTES / 2 + 1))
+            .validate()
+            .expect_err("the cap counts bytes");
+        assert_eq!(error.to_string(), LONG_TEXT);
     }
 
     /// `answer` was a kind until the probe showed nothing can ask (ADR 0033).

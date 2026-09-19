@@ -20,8 +20,13 @@
 //! [`SessionRepository`] rather than posted, so that a list, a retitle or an
 //! event page costs no launch. The `POST` scenarios launch for real.
 //!
-//! `DELETE /api/sessions/{id}` is not here: it is mounted by the session-action
-//! routes, with its own tests.
+//! The action verbs — `input`, `stop`, `end`, `retry`, `sync` — and `DELETE`
+//! are here too, asserted the same way: what the *rules* are is asserted
+//! against the real [`SessionService`] in `tests/session_service.rs`, and what
+//! is asserted here is the adapter — the path, the token, the status, the body
+//! and each documented refusal. The scenarios that need a live session or a
+//! work tree launch one for real through `POST`, so the fetch-back and the
+//! resume have the git objects they need.
 //!
 //! Every credential-shaped value is an obviously fake stand-in (rule 3).
 //!
@@ -31,18 +36,21 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
 use axum_test::TestResponse;
 use common::{AuthenticatedUser, TestApp};
+use mars_orchestrator::engine::{ContainerId, Signal};
+use mars_orchestrator::git::DataPaths;
 use mars_orchestrator::git::testutil::{TestUpstream, run_git};
 use mars_orchestrator::models::{
     NewEvent, NewSession, ProfileKind, ProjectStatus, Session, SessionState, StateChange,
 };
 use mars_orchestrator::projects::clone_job;
 use mars_orchestrator::repositories::SessionRepository;
-use mars_orchestrator::session::McpToken;
+use mars_orchestrator::session::{McpToken, Phase, SessionDirs};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -97,6 +105,11 @@ fn session_path(id: Uuid) -> String {
 /// `/api/sessions/{id}/events`.
 fn events_path(id: Uuid) -> String {
     format!("/api/sessions/{id}/events")
+}
+
+/// `/api/sessions/{id}/<verb>`, one of the five action routes.
+fn action_path(id: Uuid, verb: &str) -> String {
+    format!("/api/sessions/{id}/{verb}")
 }
 
 /// A project cloned from `upstream` and waited on until it is `ready`, with the
@@ -224,10 +237,25 @@ async fn seed_session(
     state: SessionState,
     title: Option<&str>,
 ) -> Session {
+    seed_session_of_kind(app, fixture, ProfileKind::Conversational, state, title).await
+}
+
+/// The same for a session of either kind.
+///
+/// `kind` is the session row's, which is what every lifecycle rule reads; the
+/// profile it points at stays the fixture's, because nothing under test here
+/// looks the profile up (`docs/data-model.md`, `sessions.kind`).
+async fn seed_session_of_kind(
+    app: &TestApp,
+    fixture: &Fixture,
+    kind: ProfileKind,
+    state: SessionState,
+    title: Option<&str>,
+) -> Session {
     let mut new_session = NewSession::new(
         fixture.project_id,
         fixture.profile_id,
-        ProfileKind::Conversational,
+        kind,
         "main",
         McpToken::generate().hash(),
     );
@@ -260,9 +288,17 @@ async fn seed_session(
 
     let mut current = inserted;
     for target in path {
+        // A `failed` fixture carries an error, so that a retry clearing it is
+        // something a scenario can see (`docs/data-model.md`, `sessions.error`).
+        let change = if *target == SessionState::Failed {
+            StateChange::failed("arranged by the test")
+        } else {
+            StateChange::plain()
+        };
+
         let mut tx = app.pool.begin().await.expect("a transaction begins");
         current = sessions
-            .set_state(&mut tx, current.id, *target, &StateChange::plain())
+            .set_state(&mut tx, current.id, *target, &change)
             .await
             .expect("the fixture transition is legal");
         tx.commit().await.expect("the transaction commits");
@@ -339,6 +375,92 @@ async fn wait_for_event(app: &TestApp, session_id: Uuid, kind: &str) -> Value {
         );
         tokio::time::sleep(POLL).await;
     }
+}
+
+/// A session launched for real through `POST`, waited on until it is `running`,
+/// with the container the launch created.
+///
+/// What every scenario that needs a live session, a work tree or a branch to
+/// publish uses: the launcher's own clone and container, over `MockEngine`.
+async fn launched_session(app: &TestApp, fixture: &Fixture) -> (Uuid, ContainerId) {
+    let body = fixture
+        .create_session(app, &json!({ "profile_id": fixture.profile_id }))
+        .await;
+    let id = id_of(&body);
+
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        let session = reload(app, id).await;
+        if session.state == SessionState::Running {
+            let container_id = session
+                .container_id
+                .clone()
+                .expect("a running session records its container");
+            return (id, ContainerId(container_id));
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the session did not reach running within {PATIENCE:?}: {:?} {:?}",
+            session.state,
+            session.error,
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// Record a `cli_session_id`, the way the owner's first `init` event does.
+///
+/// A resume only passes `--resume` for a session that has one (ADR 0032), so a
+/// scenario asserting the relaunch arranges it.
+async fn record_cli_session_id(app: &TestApp, session_id: Uuid, cli_session_id: &str) {
+    let mut tx = app.pool.begin().await.expect("a transaction begins");
+    SessionRepository::new(&app.pool)
+        .set_cli_session_id(&mut tx, session_id, cli_session_id)
+        .await
+        .expect("the CLI session id is recorded");
+    tx.commit().await.expect("the transaction commits");
+}
+
+/// Let the container exit 0 as soon as the stop reaches it as a `SIGINT`.
+///
+/// The mock container runs no CLI, so nothing would answer the stop and `end`
+/// would wait out its whole grace period. The handle answers whether the signal
+/// arrived, which is the assertion the stop scenarios make
+/// (`ARCHITECTURE.md`, "Stop semantics").
+fn exit_on_sigint(app: &TestApp, container_id: &ContainerId) -> tokio::task::JoinHandle<bool> {
+    let engine = Arc::clone(&app.engine);
+    let container_id = container_id.clone();
+
+    tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+        while tokio::time::Instant::now() < deadline {
+            if engine.signals(&container_id).contains(&Signal::Sigint) {
+                engine.exit(&container_id, 0);
+                return true;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        false
+    })
+}
+
+/// The commit `refs/sessions/<sid>` points at in the project repository, or
+/// `None` when the mirror has no such ref.
+async fn mirror_session_ref(app: &TestApp, fixture: &Fixture, session_id: Uuid) -> Option<String> {
+    let repo = DataPaths::from_config(&app.state.config).project_repo(fixture.project_id);
+    let listed = run_git(
+        &repo,
+        &[
+            "for-each-ref",
+            "--format=%(objectname)",
+            &format!("refs/sessions/{session_id}"),
+        ],
+    )
+    .await;
+
+    let commit = listed.trim().to_string();
+    (!commit.is_empty()).then_some(commit)
 }
 
 // ---- create ----
@@ -870,6 +992,525 @@ async fn an_event_page_refuses_a_limit_or_cursor_it_cannot_serve() {
     response.assert_json(&unauthorized());
 }
 
+// ---- input ----
+
+#[tokio::test]
+async fn input_to_a_creating_session_is_accepted_and_queued() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let session = seed_session(&app, &fixture, SessionState::Creating, None).await;
+
+    // The entry a launch would have made, with the receiver held so the queue
+    // is the owner's to drain (`ARCHITECTURE.md`, "Session owner task").
+    let _owner =
+        app.session_registry()
+            .register(session.id, ProfileKind::Conversational, Phase::Creating);
+
+    let response = app
+        .post_as(&fixture.user, &action_path(session.id, "input"))
+        .json(&json!({ "kind": "message", "text": "start with the login form" }))
+        .await;
+    response.assert_status(StatusCode::ACCEPTED);
+    response.assert_text("");
+
+    assert_eq!(
+        app.session_registry().queued(session.id),
+        1,
+        "the accepted input was not queued for the owner",
+    );
+}
+
+#[tokio::test]
+async fn input_to_a_running_session_reaches_the_transcript() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let (id, _container_id) = launched_session(&app, &fixture).await;
+
+    let response = app
+        .post_as(&fixture.user, &action_path(id, "input"))
+        .json(&json!({ "kind": "message", "text": "have a look at the login form" }))
+        .await;
+    response.assert_status(StatusCode::ACCEPTED);
+    response.assert_text("");
+
+    // Drained once stdin is attached and recorded by the owner, attributed to
+    // the caller of this route (ADR 0032).
+    let payload = wait_for_event(&app, id, "user_message").await;
+    assert_eq!(payload["text"], json!("have a look at the login form"));
+    assert_eq!(payload["user_id"], json!(fixture.user.user.id));
+}
+
+#[tokio::test]
+async fn input_to_a_parked_session_resumes_it() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let session = seed_session(&app, &fixture, SessionState::Parked, None).await;
+    record_cli_session_id(&app, session.id, "fake-cli-session-id").await;
+
+    let response = app
+        .post_as(&fixture.user, &action_path(session.id, "input"))
+        .json(&json!({ "kind": "message", "text": "carry on" }))
+        .await;
+    response.assert_status(StatusCode::ACCEPTED);
+    response.assert_text("");
+
+    // The registry knew nothing of this session — a restart's `parked` row —
+    // and the relaunch resumes the conversation the queued input belongs to.
+    wait_for("the relaunch to create a container", || {
+        !app.engine().specs().is_empty()
+    })
+    .await;
+    let spec = app.engine().specs().remove(0);
+    assert!(
+        spec.cmd
+            .windows(2)
+            .any(|pair| pair == ["--resume".to_string(), "fake-cli-session-id".to_string()]),
+        "the relaunch did not resume the conversation: {:?}",
+        spec.cmd,
+    );
+}
+
+#[tokio::test]
+async fn input_answers_the_documented_refusals() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let session = seed_session(&app, &fixture, SessionState::Creating, None).await;
+    let message = json!({ "kind": "message", "text": "anything" });
+
+    // An ephemeral session takes only its launch prompt (ADR 0003).
+    let ephemeral = seed_session_of_kind(
+        &app,
+        &fixture,
+        ProfileKind::Ephemeral,
+        SessionState::Running,
+        None,
+    )
+    .await;
+    let response = app
+        .post_as(&fixture.user, &action_path(ephemeral.id, "input"))
+        .json(&message)
+        .await;
+    assert_error(
+        &response,
+        StatusCode::CONFLICT,
+        "ephemeral sessions accept no input",
+    );
+
+    // A session that has ended.
+    for state in [SessionState::Done, SessionState::Failed] {
+        let ended = seed_session(&app, &fixture, state, None).await;
+        let response = app
+            .post_as(&fixture.user, &action_path(ended.id, "input"))
+            .json(&message)
+            .await;
+        assert_error(
+            &response,
+            StatusCode::CONFLICT,
+            &format!("session is {state}"),
+        );
+    }
+
+    // Blank text, and text over the documented 1 MiB cap.
+    for text in ["", "   \n"] {
+        let response = app
+            .post_as(&fixture.user, &action_path(session.id, "input"))
+            .json(&json!({ "kind": "message", "text": text }))
+            .await;
+        assert_error(&response, StatusCode::BAD_REQUEST, "text must not be empty");
+    }
+    let response = app
+        .post_as(&fixture.user, &action_path(session.id, "input"))
+        .json(&json!({ "kind": "message", "text": "x".repeat(1024 * 1024 + 1) }))
+        .await;
+    assert_error(&response, StatusCode::BAD_REQUEST, "text too long");
+
+    // A kind that is not `message` — `answer` included, which was a kind until
+    // the probe showed nothing can ask (ADR 0033) — and a body that is not a
+    // `SessionInput` at all.
+    for body in [
+        json!({ "kind": "answer", "reply_to": 7, "text": "yes" }),
+        json!({ "kind": "shout", "text": "hi" }),
+        json!({ "text": "no kind at all" }),
+        json!({ "kind": "message" }),
+        json!("not an object"),
+    ] {
+        let response = app
+            .post_as(&fixture.user, &action_path(session.id, "input"))
+            .json(&body)
+            .await;
+        response.assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    // An unknown session, and no token at all.
+    let response = app
+        .post_as(&fixture.user, &action_path(Uuid::new_v4(), "input"))
+        .json(&message)
+        .await;
+    assert_error(&response, StatusCode::NOT_FOUND, "not found");
+
+    let response = app
+        .server
+        .post(&action_path(session.id, "input"))
+        .json(&message)
+        .await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_json(&unauthorized());
+}
+
+// ---- stop ----
+
+#[tokio::test]
+async fn a_stop_reaches_the_running_container_as_a_sigint() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let (id, container_id) = launched_session(&app, &fixture).await;
+
+    let response = app.post_as(&fixture.user, &action_path(id, "stop")).await;
+    response.assert_status(StatusCode::ACCEPTED);
+    response.assert_text("");
+
+    let engine = Arc::clone(&app.engine);
+    wait_for("the stop to reach the container", || {
+        engine.signals(&container_id).contains(&Signal::Sigint)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stop_refuses_a_session_that_is_not_running() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let parked = seed_session(&app, &fixture, SessionState::Parked, None).await;
+
+    let response = app
+        .post_as(&fixture.user, &action_path(parked.id, "stop"))
+        .await;
+    assert_error(&response, StatusCode::CONFLICT, "session is parked");
+
+    let response = app
+        .post_as(&fixture.user, &action_path(Uuid::new_v4(), "stop"))
+        .await;
+    assert_error(&response, StatusCode::NOT_FOUND, "not found");
+
+    let response = app.server.post(&action_path(parked.id, "stop")).await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_json(&unauthorized());
+}
+
+// ---- end ----
+
+#[tokio::test]
+async fn an_end_closes_a_running_session_and_publishes_its_branch() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let (id, container_id) = launched_session(&app, &fixture).await;
+    let stopped = exit_on_sigint(&app, &container_id);
+
+    let response = app.post_as(&fixture.user, &action_path(id, "end")).await;
+    response.assert_status_ok();
+    assert!(
+        stopped.await.expect("the exit helper does not panic"),
+        "the end did not stop the container",
+    );
+
+    let body = response.json::<Value>();
+    assert_eq!(id_of(&body), id);
+    assert_eq!(body["state"], json!("done"));
+    assert_eq!(body["container_id"], Value::Null);
+    assert_ne!(body["ended_at"], Value::Null);
+
+    let row = reload(&app, id).await;
+    assert_eq!(row.state, SessionState::Done);
+    assert_eq!(row.container_id, None);
+    assert_eq!(
+        app.engine().state_of(&container_id),
+        None,
+        "the container was not removed",
+    );
+
+    // The fetch-back, and the transcript entry that records it.
+    let published = mirror_session_ref(&app, &fixture, id)
+        .await
+        .expect("the mirror has the session ref");
+    let sync = wait_for_event(&app, id, "git").await;
+    assert_eq!(sync["op"], json!("sync"));
+    assert_eq!(sync["ok"], json!(true), "{sync}");
+    assert_eq!(sync["detail"]["ref"], json!(format!("refs/sessions/{id}")));
+    assert_eq!(sync["detail"]["commit"], json!(published));
+}
+
+#[tokio::test]
+async fn an_end_refuses_a_session_that_has_nothing_to_end() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+
+    for state in [
+        SessionState::Creating,
+        SessionState::Done,
+        SessionState::Failed,
+    ] {
+        let session = seed_session(&app, &fixture, state, None).await;
+        let response = app
+            .post_as(&fixture.user, &action_path(session.id, "end"))
+            .await;
+        assert_error(
+            &response,
+            StatusCode::CONFLICT,
+            &format!("session is {state}"),
+        );
+    }
+
+    let response = app
+        .post_as(&fixture.user, &action_path(Uuid::new_v4(), "end"))
+        .await;
+    assert_error(&response, StatusCode::NOT_FOUND, "not found");
+
+    let session = seed_session(&app, &fixture, SessionState::Parked, None).await;
+    let response = app.server.post(&action_path(session.id, "end")).await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_json(&unauthorized());
+}
+
+// ---- retry ----
+
+#[tokio::test]
+async fn a_retry_parks_a_failed_session_and_clears_its_error() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let failed = seed_session(&app, &fixture, SessionState::Failed, None).await;
+    assert!(failed.error.is_some(), "the fixture records no error");
+
+    // No body at all, which is the documented "absent" case.
+    let response = app
+        .post_as(&fixture.user, &action_path(failed.id, "retry"))
+        .await;
+    response.assert_status_ok();
+
+    let body = response.json::<Value>();
+    assert_eq!(body["state"], json!("parked"));
+    assert_eq!(body["error"], Value::Null);
+    assert_eq!(reload(&app, failed.id).await.state, SessionState::Parked);
+    assert!(
+        app.engine().specs().is_empty(),
+        "a retry with no message launched a container",
+    );
+
+    // An empty object is the same thing said in JSON.
+    let other = seed_session(&app, &fixture, SessionState::Failed, None).await;
+    let response = app
+        .post_as(&fixture.user, &action_path(other.id, "retry"))
+        .json(&json!({}))
+        .await;
+    response.assert_status_ok();
+    assert_eq!(response.json::<Value>()["state"], json!("parked"));
+}
+
+#[tokio::test]
+async fn a_retry_with_a_message_relaunches_the_session() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let failed = seed_session(&app, &fixture, SessionState::Failed, None).await;
+    record_cli_session_id(&app, failed.id, "fake-cli-session-id").await;
+
+    let response = app
+        .post_as(&fixture.user, &action_path(failed.id, "retry"))
+        .json(&json!({ "message": "try that again" }))
+        .await;
+    response.assert_status_ok();
+    // The documented response is the row the transition produced, even though
+    // the relaunch is already under way.
+    assert_eq!(response.json::<Value>()["state"], json!("parked"));
+
+    wait_for("the retry to create a container", || {
+        !app.engine().specs().is_empty()
+    })
+    .await;
+    let payload = wait_for_event(&app, failed.id, "user_message").await;
+    assert_eq!(payload["text"], json!("try that again"));
+}
+
+#[tokio::test]
+async fn a_retry_answers_the_documented_refusals() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+
+    // An ephemeral session is never retried; a new one is launched instead.
+    let ephemeral = seed_session_of_kind(
+        &app,
+        &fixture,
+        ProfileKind::Ephemeral,
+        SessionState::Failed,
+        None,
+    )
+    .await;
+    let response = app
+        .post_as(&fixture.user, &action_path(ephemeral.id, "retry"))
+        .await;
+    assert_error(
+        &response,
+        StatusCode::CONFLICT,
+        "ephemeral sessions are not retried; launch a new one",
+    );
+
+    // Only `failed` has an edge back into the lifecycle.
+    let parked = seed_session(&app, &fixture, SessionState::Parked, None).await;
+    let response = app
+        .post_as(&fixture.user, &action_path(parked.id, "retry"))
+        .await;
+    assert_error(
+        &response,
+        StatusCode::CONFLICT,
+        "session is parked, only a failed session can be retried",
+    );
+
+    // A body that is not the documented shape.
+    let failed = seed_session(&app, &fixture, SessionState::Failed, None).await;
+    for body in [json!({ "text": "try again" }), json!({ "message": 7 })] {
+        let response = app
+            .post_as(&fixture.user, &action_path(failed.id, "retry"))
+            .json(&body)
+            .await;
+        response.assert_status(StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(reload(&app, failed.id).await.state, SessionState::Failed);
+
+    let response = app
+        .post_as(&fixture.user, &action_path(Uuid::new_v4(), "retry"))
+        .await;
+    assert_error(&response, StatusCode::NOT_FOUND, "not found");
+
+    let response = app.server.post(&action_path(failed.id, "retry")).await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_json(&unauthorized());
+}
+
+// ---- sync ----
+
+#[tokio::test]
+async fn a_sync_answers_the_ref_and_commit_it_published() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let (id, _container_id) = launched_session(&app, &fixture).await;
+
+    let response = app.post_as(&fixture.user, &action_path(id, "sync")).await;
+    response.assert_status_ok();
+
+    let work = DataPaths::from_config(&app.state.config).session_work(id);
+    let head = run_git(&work, &["rev-parse", "HEAD"])
+        .await
+        .trim()
+        .to_string();
+    response.assert_json(&json!({
+        "ref": format!("refs/sessions/{id}"),
+        "commit": head,
+    }));
+    assert_eq!(
+        mirror_session_ref(&app, &fixture, id).await,
+        Some(head),
+        "the mirror does not point at the commit the sync reported",
+    );
+}
+
+#[tokio::test]
+async fn a_sync_refuses_a_session_with_no_work_tree_yet() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let creating = seed_session(&app, &fixture, SessionState::Creating, None).await;
+
+    let response = app
+        .post_as(&fixture.user, &action_path(creating.id, "sync"))
+        .await;
+    assert_error(&response, StatusCode::CONFLICT, "session is creating");
+
+    let response = app
+        .post_as(&fixture.user, &action_path(Uuid::new_v4(), "sync"))
+        .await;
+    assert_error(&response, StatusCode::NOT_FOUND, "not found");
+
+    let response = app.server.post(&action_path(creating.id, "sync")).await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_json(&unauthorized());
+}
+
+// ---- delete ----
+
+#[tokio::test]
+async fn a_delete_removes_a_failed_session_with_its_directory_and_its_events() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let failed = seed_session(&app, &fixture, SessionState::Failed, None).await;
+    seed_events(&app, failed.id, 3).await;
+
+    let directory = SessionDirs::from_config(&app.state.config, failed.id);
+    directory
+        .ensure()
+        .await
+        .expect("the session directories are made");
+    let session_dir = DataPaths::from_config(&app.state.config).session_dir(failed.id);
+    assert!(session_dir.is_dir(), "the fixture has no directory");
+
+    let response = app.delete_as(&fixture.user, &session_path(failed.id)).await;
+    response.assert_status(StatusCode::NO_CONTENT);
+    response.assert_text("");
+
+    assert!(!session_dir.exists(), "the session directory is left");
+    assert!(
+        SessionRepository::new(&app.pool)
+            .find(failed.id)
+            .await
+            .expect("the lookup runs")
+            .is_none(),
+        "the session row is left",
+    );
+    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE session_id = $1")
+        .bind(failed.id)
+        .fetch_one(&app.pool)
+        .await
+        .expect("the events are countable");
+    assert_eq!(events, 0, "the session's events did not cascade");
+}
+
+#[tokio::test]
+async fn a_delete_refuses_a_session_that_has_not_stopped() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+
+    for state in [
+        SessionState::Creating,
+        SessionState::Running,
+        SessionState::Parked,
+    ] {
+        let session = seed_session(&app, &fixture, state, None).await;
+        let response = app
+            .delete_as(&fixture.user, &session_path(session.id))
+            .await;
+        assert_error(
+            &response,
+            StatusCode::CONFLICT,
+            "session must be done or failed",
+        );
+        assert_eq!(reload(&app, session.id).await.state, state);
+    }
+
+    let response = app
+        .delete_as(&fixture.user, &session_path(Uuid::new_v4()))
+        .await;
+    assert_error(&response, StatusCode::NOT_FOUND, "not found");
+
+    let done = seed_session(&app, &fixture, SessionState::Done, None).await;
+    let response = app.server.delete(&session_path(done.id)).await;
+    response.assert_status(StatusCode::UNAUTHORIZED);
+    response.assert_json(&unauthorized());
+    assert!(
+        SessionRepository::new(&app.pool)
+            .find(done.id)
+            .await
+            .expect("the lookup runs")
+            .is_some(),
+        "an unauthenticated delete removed the row",
+    );
+}
+
 // ---- the password-change gate ----
 
 #[tokio::test]
@@ -892,7 +1533,15 @@ async fn every_session_route_is_behind_the_password_change_gate() {
         app.put_as(&gated, &session_path(session.id))
             .json(&json!({ "title": "nope" }))
             .await,
+        app.delete_as(&gated, &session_path(session.id)).await,
         app.get_as(&gated, &events_path(session.id)).await,
+        app.post_as(&gated, &action_path(session.id, "input"))
+            .json(&json!({ "kind": "message", "text": "nope" }))
+            .await,
+        app.post_as(&gated, &action_path(session.id, "stop")).await,
+        app.post_as(&gated, &action_path(session.id, "end")).await,
+        app.post_as(&gated, &action_path(session.id, "retry")).await,
+        app.post_as(&gated, &action_path(session.id, "sync")).await,
     ];
 
     for response in responses {

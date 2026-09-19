@@ -5,11 +5,11 @@
 # only deployment difference, so both suites run twice with nothing but that
 # variable changed.
 #
-# `tests/engine.rs` needs no Postgres — nothing in it touches the database — and
-# `tests/session_e2e.rs` starts its own through testcontainers on the engine
-# under test, so, unlike Orchestrator CI, this workflow starts no service
-# container. It does build the stub session image, which is what the end-to-end
-# binary runs (`ARCHITECTURE.md`, "Session image").
+# `tests/engine.rs` needs no Postgres — nothing in it touches the database — but
+# `tests/session_e2e.rs` does, and gets it from the job's service container
+# rather than through testcontainers on the engine under test (see `services`
+# below). The job also builds the stub session image, which is what the
+# end-to-end binary runs (`ARCHITECTURE.md`, "Session image").
 #
 # The end-to-end binary is watched by `images/**` too: a change to the stub CLI
 # or its fixture changes what these scenarios replay.
@@ -64,6 +64,27 @@ jobs:
           - engine: podman
             docker_host: unix:///tmp/podman.sock
             stub_image: localhost/mars-session-stub:ci
+    # The database of the session end-to-end binary. A service container runs
+    # on the runner's Docker daemon whatever the matrix engine is, which is the
+    # point: the rootless Podman this job installs does not report a published
+    # port to `testcontainers` (`PortNotExposed`), so the suite cannot start a
+    # server of its own there and is pointed at this one instead
+    # (`MARS_TEST_POSTGRES_URL`, `orchestrator/tests/common/db.rs`). Same image
+    # and credentials as Orchestrator CI's; they exist for the length of the job.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: orchestrator
@@ -201,8 +222,8 @@ jobs:
         working-directory: .
         run: ${{ matrix.engine }} build -t mars-session-stub:ci images/stub
 
-      # A session on a real container, end to end. It brings up its own Postgres
-      # through testcontainers on the same engine, and on Docker — where a
+      # A session on a real container, end to end. Its database is the job's
+      # service container, and on Docker — where a
       # GitHub-hosted runner is uid 1001 and the uid contract therefore does not
       # hold — it reports that on stderr and returns, as `tests/engine.rs` does
       # for the same reason.
@@ -211,6 +232,7 @@ jobs:
         env:
           DOCKER_HOST: ${{ matrix.docker_host }}
           MARS_STUB_IMAGE: ${{ matrix.stub_image }}
+          MARS_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432
 
       # Diagnostics only: both suites clean up after themselves, so anything
       # left labelled `mars.test` or `mars.session_id` is a scenario that died

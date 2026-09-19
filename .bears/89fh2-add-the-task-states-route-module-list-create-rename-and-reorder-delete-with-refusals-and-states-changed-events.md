@@ -1,10 +1,10 @@
 ---
 id: "89fh2"
 title: "Add the task-states route module: list, create, rename and reorder, delete with refusals, and states_changed events"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:41:39.156347309Z"
-updated: "2026-09-19T16:47:43.714827630Z"
+updated: "2026-09-19T17:49:47.496532232Z"
 tags:
   - orchestrator
   - tracker

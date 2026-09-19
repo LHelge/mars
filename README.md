@@ -285,6 +285,7 @@ npm run test:e2e             # starts the dev server itself, or reuses a running
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright; the real orchestrator, Postgres and stub session image are added by their own epics |
 | Images | `images/**` | Lint the entrypoint, Dockerfiles and stub; build both session images on Docker and Podman; run `images/smoke-test.sh` |
+| Deploy | Dockerfiles, `nginx/`, compose files | Build orchestrator and nginx images on Docker and Podman; `nginx -t`; compose config for both overrides |
 
 ## Roadmap after v1
 

@@ -13,10 +13,10 @@
 mod common;
 
 use axum::http::StatusCode;
-use axum::http::header::SET_COOKIE;
 use axum_extra::extract::cookie::Cookie;
 use chrono::{DateTime, Utc};
 use common::TestApp;
+use common::app::assert_refresh_cookie_cleared;
 use mars_orchestrator::auth::REFRESH_COOKIE;
 use mars_orchestrator::models::OpaqueToken;
 
@@ -24,9 +24,6 @@ const LOGOUT: &str = "/api/auth/logout";
 
 /// Obviously fake (`CLAUDE.md`, rule 3).
 const PASSWORD: &str = "correct-horse-battery-staple";
-
-/// The `Set-Cookie` that tells a browser to drop the refresh cookie.
-const CLEARING_SET_COOKIE: &str = "refresh_token=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
 
 /// `POST /api/auth/logout` carrying `cookie` as the refresh cookie.
 async fn logout_with(app: &TestApp, cookie: &str) -> axum_test::TestResponse {
@@ -37,6 +34,10 @@ async fn logout_with(app: &TestApp, cookie: &str) -> axum_test::TestResponse {
 }
 
 /// `revoked_at` of the row behind `raw`, if the row is still there.
+///
+/// A row-level fact with no interface: no route answers *when* a token was
+/// revoked, and a second logout not moving that moment is what these tests are
+/// about.
 async fn revoked_at(app: &TestApp, raw: &str) -> Option<DateTime<Utc>> {
     sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
         "SELECT revoked_at FROM refresh_tokens WHERE token_hash = $1",
@@ -59,15 +60,7 @@ async fn logout_revokes_the_presented_token_and_clears_the_cookie() {
     let response = logout_with(&app, &cookie).await;
 
     response.assert_status(StatusCode::NO_CONTENT);
-    assert_eq!(
-        response
-            .headers()
-            .get(SET_COOKIE)
-            .expect("logout clears the cookie")
-            .to_str()
-            .expect("an ASCII header"),
-        CLEARING_SET_COOKIE
-    );
+    assert_refresh_cookie_cleared(&response);
 
     assert!(
         revoked_at(&app, &cookie).await.is_some(),
@@ -87,15 +80,7 @@ async fn logout_without_a_cookie_is_still_204() {
     let response = app.server.post(LOGOUT).await;
 
     response.assert_status(StatusCode::NO_CONTENT);
-    assert_eq!(
-        response
-            .headers()
-            .get(SET_COOKIE)
-            .expect("logout always clears the cookie")
-            .to_str()
-            .expect("an ASCII header"),
-        CLEARING_SET_COOKIE
-    );
+    assert_refresh_cookie_cleared(&response);
 }
 
 /// A cookie that names no row, and a second logout with an already revoked

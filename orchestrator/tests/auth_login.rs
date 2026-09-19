@@ -2,10 +2,15 @@
 //! (`/api/auth`)"; "Authentication").
 //!
 //! What is asserted here is the whole documented contract of one endpoint: the
-//! body shape, the access token's claims and lifetime, the exact `Set-Cookie`
-//! attributes for the harness `PUBLIC_URL`, the single indistinguishable 401
-//! for a wrong password and an unknown name, and the throttle — including that
-//! it keys on the client address as well as on the username.
+//! body shape, the access token's claims and lifetime, the refresh cookie the
+//! response sets, the single indistinguishable 401 for a wrong password and an
+//! unknown name, and the throttle — including that it keys on the client
+//! address as well as on the username.
+//!
+//! The cookie's documented *attributes* are asserted once, in
+//! `tests/auth_credentials.rs`, against the cookie `auth::cookies` builds; what
+//! this file asserts is that the route sets one and that the raw token travels
+//! nowhere else.
 //!
 //! Every password in this file is obviously fake (`CLAUDE.md`, rule 3).
 //!
@@ -16,7 +21,6 @@
 mod common;
 
 use axum::http::StatusCode;
-use axum::http::header::SET_COOKIE;
 use chrono::Utc;
 use common::TestApp;
 use mars_orchestrator::auth::REFRESH_COOKIE;
@@ -36,12 +40,6 @@ const PASSWORD: &str = "correct-horse-battery-staple";
 /// The documented 401 body for a failed login.
 fn invalid_credentials() -> Value {
     json!({ "status": 401, "error": "invalid username or password" })
-}
-
-/// The `Set-Cookie` a login must produce for the harness `PUBLIC_URL`
-/// (`http://localhost`, so no `Secure`).
-fn expected_set_cookie(raw: &str) -> String {
-    format!("refresh_token={raw}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000")
 }
 
 #[tokio::test]
@@ -87,14 +85,6 @@ async fn a_correct_password_returns_a_user_an_access_token_and_the_cookie() {
         !response.text().contains(cookie.value()),
         "the refresh token must travel only in the cookie"
     );
-
-    let header = response
-        .headers()
-        .get(SET_COOKIE)
-        .expect("a Set-Cookie header")
-        .to_str()
-        .expect("an ASCII header");
-    assert_eq!(header, expected_set_cookie(cookie.value()));
 }
 
 /// The token a login hands out is one the rest of the API accepts.
@@ -303,6 +293,8 @@ async fn login_stores_one_usable_refresh_token_hashed() {
 
     let (_pair, cookie) = app.login("ada", PASSWORD).await;
 
+    // A row-level fact with no interface: the stored token is the hash of the
+    // emailed one and never the raw value, and it expires in thirty days.
     let row: (
         uuid::Uuid,
         String,

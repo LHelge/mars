@@ -42,13 +42,12 @@ mod common;
 
 use axum::http::StatusCode;
 use axum_test::TestResponse;
-use common::TestApp;
 use common::races::{
     IN_FLIGHT, RACE_ITERATIONS, RACE_TIMEOUT, admin_count, hold_admin_membership_lock,
     release_after_in_flight,
 };
+use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::models::User;
-use mars_orchestrator::repositories::UserRepository;
 use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
@@ -82,12 +81,20 @@ fn demotion_and_rename() -> Value {
     json!({ "username": RENAMED, "admin": false })
 }
 
-/// The row as the database has it now, or `None` if it is gone.
-async fn stored(app: &TestApp, id: Uuid) -> Option<User> {
-    UserRepository::new(&app.pool)
-        .find(id)
-        .await
-        .expect("the lookup succeeds")
+/// The user as `GET /users/{id}` answers it now, or `None` if it is gone.
+///
+/// Read as `reader`, because that is the only way a test sees a row it did not
+/// write: the route is behind `CurrentUser`, so the reader has to be somebody
+/// the race left with working credentials — the administrator who survived it
+/// (`SPEC.md`, "Users (`/api/users`)").
+async fn stored(app: &TestApp, reader: &AuthenticatedUser, id: Uuid) -> Option<Value> {
+    let response = app.get_as(reader, &user_route(id)).await;
+
+    match response.status_code() {
+        StatusCode::OK => Some(response.json::<Value>()),
+        StatusCode::NOT_FOUND => None,
+        other => panic!("unexpected status reading user {id}: {other}"),
+    }
 }
 
 /// Exactly one of two racing removals succeeded and exactly one was refused.
@@ -131,7 +138,9 @@ async fn concurrent_mutual_demotions_leave_one_administrator() {
     for round in 0..RACE_ITERATIONS {
         // The previous round's survivor is still an administrator, and "the
         // final two" is the premise of the whole test, so the board is cleared
-        // before each pair is created.
+        // before each pair is created. A row-level fact with no interface: the
+        // route refuses to demote the last administrator, which is precisely
+        // the rule under test.
         sqlx::query("UPDATE users SET admin = FALSE")
             .execute(&app.pool)
             .await
@@ -200,6 +209,9 @@ async fn a_demotion_that_waits_for_the_last_administrator_is_409() {
     let demote_a = async {
         sleep(IN_FLIGHT).await;
 
+        // A row-level fact with no interface: the demotion has to happen inside
+        // the transaction that holds the membership lock, which no route can
+        // do.
         sqlx::query("UPDATE users SET admin = FALSE WHERE id = $1")
             .bind(a.user.id)
             .execute(&mut *holder)
@@ -218,10 +230,13 @@ async fn a_demotion_that_waits_for_the_last_administrator_is_409() {
         conflict("cannot demote the last administrator")
     );
 
-    // Neither field of the rejected `PUT` was applied.
-    let row = stored(&app, b.user.id).await.expect("bob is still there");
-    assert!(row.admin);
-    assert_eq!(row.username, b.user.username);
+    // Neither field of the rejected `PUT` was applied. Read as `bob`, the one
+    // administrator the holder left standing.
+    let row = stored(&app, &b, b.user.id)
+        .await
+        .expect("bob is still there");
+    assert_eq!(row["admin"], json!(true));
+    assert_eq!(row["username"], json!(b.user.username));
     assert_eq!(admin_count(&app.pool).await, 1);
 }
 
@@ -266,11 +281,14 @@ async fn a_deletion_racing_a_demotion_leaves_an_administrator() {
             demotion.json::<Value>(),
             conflict("cannot demote the last administrator")
         );
-        assert!(stored(&app, b.user.id).await.is_none());
+        // Read as `ada`, the administrator the deletion left standing.
+        assert!(stored(&app, &a, b.user.id).await.is_none());
 
-        let row = stored(&app, a.user.id).await.expect("ada is still there");
-        assert!(row.admin);
-        assert_eq!(row.username, a.user.username);
+        let row = stored(&app, &a, a.user.id)
+            .await
+            .expect("ada is still there");
+        assert_eq!(row["admin"], json!(true));
+        assert_eq!(row["username"], json!(a.user.username));
     } else {
         // The demotion committed first; the deletion then found `bob` to be
         // the only administrator left and refused.
@@ -279,13 +297,18 @@ async fn a_deletion_racing_a_demotion_leaves_an_administrator() {
             conflict("cannot delete the last administrator")
         );
 
-        let row = stored(&app, b.user.id).await.expect("bob is still there");
-        assert!(row.admin);
+        // Read as `bob`, the administrator the demotion left standing.
+        let row = stored(&app, &b, b.user.id)
+            .await
+            .expect("bob is still there");
+        assert_eq!(row["admin"], json!(true));
 
         // The winning `PUT` applied both of its fields.
-        let row = stored(&app, a.user.id).await.expect("ada is still there");
-        assert!(!row.admin);
-        assert_eq!(row.username, RENAMED);
+        let row = stored(&app, &b, a.user.id)
+            .await
+            .expect("ada is still there");
+        assert_eq!(row["admin"], json!(false));
+        assert_eq!(row["username"], json!(RENAMED));
     }
 
     assert_eq!(admin_count(&app.pool).await, 1);

@@ -43,14 +43,18 @@ use axum::http::StatusCode;
 use axum_test::TestResponse;
 use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::engine::{ContainerId, Signal};
+use mars_orchestrator::events::{TaskActor, TaskEvent};
 use mars_orchestrator::git::DataPaths;
 use mars_orchestrator::git::testutil::{TestUpstream, run_git};
 use mars_orchestrator::models::{
-    NewEvent, NewSession, ProfileKind, ProjectStatus, Session, SessionState, StateChange,
+    NewEvent, NewSession, NewTask, NewTaskComment, NewTaskHandoff, ProfileKind, ProjectStatus,
+    Session, SessionState, StateChange, Task, TaskRef,
 };
 use mars_orchestrator::projects::clone_job;
-use mars_orchestrator::repositories::SessionRepository;
+use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
+use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
 use mars_orchestrator::session::{McpToken, Phase, SessionDirs};
+use mars_orchestrator::tracker::{TaskDto, TrackerMutation, claim_for_launch};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -723,6 +727,722 @@ async fn a_create_takes_every_documented_kind_of_base_ref() {
         assert_eq!(body["base_ref"], json!(base_ref), "{base_ref}");
         assert_eq!(body["state"], json!("creating"), "{base_ref}");
     }
+}
+
+// ---- launch for a task ----
+//
+// `POST /projects/{pid}/sessions` with `task_id` (`SPEC.md`, "Sessions";
+// `ARCHITECTURE.md`, "Task tracker" → "Launching a session for a task"). What
+// a claim or a release *is* belongs to `tests/tracker_leases.rs` and
+// `tests/session_tasks_api.rs`; what is asserted here is the launch: the row
+// and the claim committing together, the hand-off the base comes from, the
+// generated message and the container environment.
+
+/// A task of this project in the named state.
+async fn task_in(app: &TestApp, fixture: &Fixture, title: &str, state: &str) -> Task {
+    let tasks = TaskRepository::new(&app.pool);
+    let mut new = NewTask::new(fixture.project_id, title).expect("the title parses");
+    new.state_id = Some(
+        tasks
+            .find_state_by_name(fixture.project_id, state)
+            .await
+            .expect("the state reads")
+            .unwrap_or_else(|| panic!("a project is seeded with a {state} state"))
+            .id,
+    );
+
+    let mut mutation = TrackerMutation::begin(&app.pool, fixture.project_id, TaskActor::System)
+        .await
+        .expect("the mutation opens");
+    let inserted = tasks
+        .insert_task(mutation.conn(), fixture.project_id, &new)
+        .await
+        .expect("the task inserts");
+    mutation.commit().await.expect("the mutation commits");
+
+    inserted
+}
+
+/// A task of this project in its `ready` queue state.
+async fn ready_task(app: &TestApp, fixture: &Fixture, title: &str) -> Task {
+    task_in(app, fixture, title, "ready").await
+}
+
+/// The task as it is committed, as the API sends it.
+async fn read_task(app: &TestApp, fixture: &Fixture, task_id: Uuid) -> TaskDto {
+    TaskRepository::new(&app.pool)
+        .load_task_dto(fixture.project_id, task_id)
+        .await
+        .expect("the task reads")
+        .expect("the task is in this project")
+}
+
+/// This task's events, oldest first.
+async fn task_events(app: &TestApp, fixture: &Fixture, task_id: Uuid) -> Vec<TaskEvent> {
+    TaskRepository::new(&app.pool)
+        .list_task_events_after(fixture.project_id, 0, 200)
+        .await
+        .expect("the events read")
+        .into_iter()
+        .map(|row| TaskEvent::from_row(row).expect("the row is a documented event"))
+        .filter(|event| event.task_id == Some(task_id))
+        .collect()
+}
+
+/// Put another session's lease on the task, so the next claim loses.
+async fn hold(app: &TestApp, fixture: &Fixture, task_id: Uuid, session_id: Uuid) {
+    let mut mutation = TrackerMutation::begin(
+        &app.pool,
+        fixture.project_id,
+        TaskActor::Session { session_id },
+    )
+    .await
+    .expect("the mutation opens");
+    let locked = TaskRepository::new(&app.pool)
+        .find_task_for_update(mutation.conn(), fixture.project_id, TaskRef::Id(task_id))
+        .await
+        .expect("the row reads")
+        .expect("the task is in this project");
+    claim_for_launch(&mut mutation, &locked, session_id)
+        .await
+        .expect("the arranged claim succeeds");
+    mutation.commit().await.expect("the mutation commits");
+}
+
+/// Mark the task blocked, the way an open `blocks` prerequisite does.
+async fn block(app: &TestApp, fixture: &Fixture, task_id: Uuid) {
+    let mut mutation = TrackerMutation::begin(&app.pool, fixture.project_id, TaskActor::System)
+        .await
+        .expect("the mutation opens");
+    TaskRepository::new(&app.pool)
+        .set_task_state_fields(
+            mutation.conn(),
+            fixture.project_id,
+            task_id,
+            &StateFields {
+                blocked: Some(true),
+                ..StateFields::default()
+            },
+        )
+        .await
+        .expect("the task is blocked");
+    mutation.commit().await.expect("the mutation commits");
+}
+
+/// Publish a hand-off of `commit` on this task and make it the current one.
+///
+/// What the code hand-offs epic will write through its own endpoint; here it
+/// is arranged directly, because this suite only ever reads it.
+async fn publish_handoff(
+    app: &TestApp,
+    fixture: &Fixture,
+    task: &Task,
+    source_session_id: Uuid,
+    commit: &str,
+    body: &str,
+) -> Uuid {
+    let tasks = TaskRepository::new(&app.pool);
+    let pid = fixture.project_id;
+
+    let mut mutation = TrackerMutation::begin(&app.pool, pid, TaskActor::System)
+        .await
+        .expect("the mutation opens");
+
+    let comment = NewTaskComment::from_session(task.id, source_session_id, body);
+    tasks
+        .insert_comment(mutation.conn(), pid, &comment)
+        .await
+        .expect("the hand-off comment inserts");
+
+    let mut handoff = NewTaskHandoff::new(task.id, "session/source", commit, comment.id);
+    handoff.source_session_id = Some(source_session_id);
+    handoff.created_by_session_id = Some(source_session_id);
+    let inserted = tasks
+        .insert_handoff(mutation.conn(), pid, &handoff)
+        .await
+        .expect("the hand-off inserts");
+
+    tasks
+        .set_task_state_fields(
+            mutation.conn(),
+            pid,
+            task.id,
+            &StateFields {
+                current_handoff_id: Some(Some(inserted.id)),
+                ..StateFields::default()
+            },
+        )
+        .await
+        .expect("the current hand-off is set");
+    mutation.commit().await.expect("the mutation commits");
+
+    inserted.id
+}
+
+/// The first paragraph of the generated message, for `task`.
+fn generated_for(task: &Task) -> String {
+    format!(
+        "You hold task #{}: {}. Call get_task to read it before starting.",
+        task.number, task.title,
+    )
+}
+
+/// The commit `main` points at in the upstream, which is in the mirror.
+async fn upstream_head(fixture: &Fixture) -> String {
+    run_git(&fixture.upstream.path, &["rev-parse", "refs/heads/main"])
+        .await
+        .trim()
+        .to_string()
+}
+
+/// Wait until the session reaches `state`, and answer the row.
+async fn wait_for_state(app: &TestApp, id: Uuid, state: SessionState) -> Session {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+
+    loop {
+        let session = reload(app, id).await;
+        if session.state == state {
+            return session;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the session did not reach {state} within {PATIENCE:?}: {:?} {:?}",
+            session.state,
+            session.error,
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// The recorded container specification of this session's launch.
+async fn recorded_env(app: &TestApp, id: Uuid) -> Vec<(String, String)> {
+    wait_for("the launch created a container", || {
+        app.engine().container_id_for_session(id).is_some()
+    })
+    .await;
+
+    let container_id = app
+        .engine()
+        .container_id_for_session(id)
+        .expect("the container was recorded");
+
+    app.engine()
+        .spec_of(&container_id)
+        .expect("the specification was recorded")
+        .env
+}
+
+#[tokio::test]
+async fn a_launch_for_a_task_claims_it_with_the_session_row() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let task = ready_task(&app, &fixture, "Fix the login form").await;
+
+    let body = fixture
+        .create_session(
+            &app,
+            &json!({ "profile_id": fixture.profile_id, "task_id": task.id }),
+        )
+        .await;
+    let id = id_of(&body);
+
+    // The row records the task, and the title defaults to the task's.
+    assert_eq!(body["task_id"], json!(task.id));
+    assert_eq!(body["handoff_id"], Value::Null);
+    assert_eq!(body["title"], json!("Fix the login form"));
+    assert_eq!(body["base_ref"], json!("main"));
+    assert_eq!(reload(&app, id).await.task_id, Some(task.id));
+
+    // The claim committed with it: the lease, the attempt, the event and the
+    // link (`docs/data-model.md`, `tasks`, `task_sessions`).
+    let claimed = read_task(&app, &fixture, task.id).await;
+    assert_eq!(claimed.lease_holder_session_id, Some(id));
+    assert_eq!(claimed.attempts, 1);
+
+    let events = task_events(&app, &fixture, task.id).await;
+    let last = events.last().expect("the claim is recorded");
+    assert_eq!(last.kind.as_str(), "claimed");
+    assert_eq!(
+        last.actor,
+        TaskActor::User {
+            user_id: fixture.user.user.id
+        },
+        "a launch is the user's claim, not the session's",
+    );
+
+    // And the session lists it, through the endpoint that reads the link.
+    let response = app
+        .get_as(&fixture.user, &format!("/api/sessions/{id}/tasks"))
+        .await;
+    response.assert_status_ok();
+    let listed = response.json::<Vec<Value>>();
+    assert_eq!(listed.len(), 1, "the session touched one task");
+    assert_eq!(listed[0]["id"], json!(task.id));
+}
+
+#[tokio::test]
+async fn a_task_is_addressed_by_uuid_or_by_its_number() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let as_text = ready_task(&app, &fixture, "by number as a string").await;
+    let as_integer = ready_task(&app, &fixture, "by number as an integer").await;
+
+    let text = fixture
+        .create_session(
+            &app,
+            &json!({
+                "profile_id": fixture.profile_id,
+                "task_id": as_text.number.to_string(),
+            }),
+        )
+        .await;
+    assert_eq!(text["task_id"], json!(as_text.id));
+
+    let integer = fixture
+        .create_session(
+            &app,
+            &json!({ "profile_id": fixture.profile_id, "task_id": as_integer.number }),
+        )
+        .await;
+    assert_eq!(integer["task_id"], json!(as_integer.id));
+
+    // A reference that addresses no task of this project is a 404, whichever
+    // form it takes, and nothing is created.
+    for reference in [json!(Uuid::new_v4()), json!(9_999), json!("not-a-task")] {
+        let response = fixture
+            .post(
+                &app,
+                &json!({ "profile_id": fixture.profile_id, "task_id": reference }),
+            )
+            .await;
+        assert_error(&response, StatusCode::NOT_FOUND, "not found");
+    }
+}
+
+#[tokio::test]
+async fn a_task_that_is_not_claimable_is_a_conflict_and_writes_no_session() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+
+    let held = ready_task(&app, &fixture, "held by somebody else").await;
+    let holder = seed_session(&app, &fixture, SessionState::Running, None).await;
+    hold(&app, &fixture, held.id, holder.id).await;
+
+    let blocked = ready_task(&app, &fixture, "blocked").await;
+    block(&app, &fixture, blocked.id).await;
+
+    let finished = task_in(&app, &fixture, "already done", "done").await;
+
+    let before = SessionRepository::new(&app.pool)
+        .list_by_project(fixture.project_id, None)
+        .await
+        .expect("the list runs")
+        .len();
+
+    for task in [&held, &blocked, &finished] {
+        let response = fixture
+            .post(
+                &app,
+                &json!({ "profile_id": fixture.profile_id, "task_id": task.id }),
+            )
+            .await;
+        assert_error(&response, StatusCode::CONFLICT, "task is not claimable");
+    }
+
+    // The session row is inserted before the claim and rolls back with it.
+    assert_eq!(
+        SessionRepository::new(&app.pool)
+            .list_by_project(fixture.project_id, None)
+            .await
+            .expect("the list runs")
+            .len(),
+        before,
+        "a refused claim left a session behind",
+    );
+}
+
+#[tokio::test]
+async fn a_task_waiting_for_a_person_can_be_launched() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let task = task_in(&app, &fixture, "escalated", "needs_human").await;
+
+    let body = fixture
+        .create_session(
+            &app,
+            &json!({ "profile_id": fixture.profile_id, "task_id": task.id }),
+        )
+        .await;
+
+    assert_eq!(body["task_id"], json!(task.id));
+    let claimed = read_task(&app, &fixture, task.id).await;
+    assert_eq!(
+        claimed.lease_holder_session_id,
+        Some(id_of(&body)),
+        "the human state qualifies for a launch",
+    );
+}
+
+#[tokio::test]
+async fn a_hand_off_pins_the_base_and_the_clone_starts_there() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let task = ready_task(&app, &fixture, "Continue the parser").await;
+    let source = seed_session(&app, &fixture, SessionState::Done, None).await;
+    let commit = upstream_head(&fixture).await;
+    let handoff_id = publish_handoff(
+        &app,
+        &fixture,
+        &task,
+        source.id,
+        &commit,
+        "First pass; the lexer still drops comments.",
+    )
+    .await;
+
+    let body = fixture
+        .create_session(
+            &app,
+            &json!({ "profile_id": fixture.profile_id, "task_id": task.id }),
+        )
+        .await;
+    let id = id_of(&body);
+
+    assert_eq!(body["handoff_id"], json!(handoff_id));
+    assert_eq!(body["base_ref"], json!(commit));
+    assert_eq!(commit.len(), 40, "a hand-off pins a full object id");
+
+    // And the checkout is that exact commit.
+    wait_for_state(&app, id, SessionState::Running).await;
+    let work = SessionDirs::from_config(&app.state.config, id).work();
+    assert_eq!(
+        run_git(&work, &["rev-parse", "HEAD"]).await.trim(),
+        commit,
+        "the clone did not start from the hand-off commit",
+    );
+
+    // The generated message names the revision it was handed.
+    let payload = wait_for_event(&app, id, "user_message").await;
+    let text = payload["text"].as_str().expect("a message").to_string();
+    assert!(text.starts_with(&generated_for(&task)), "{text}");
+    assert!(
+        text.contains(&format!(
+            "Current hand-off {handoff_id} from session {} on branch session/source at commit \
+             {commit} (review: unreviewed). Hand-off comment: First pass; the lexer still drops \
+             comments.",
+            source.id,
+        )),
+        "{text}",
+    );
+    assert!(
+        !text.contains("Your checkout starts from"),
+        "nothing overrode the hand-off: {text}",
+    );
+}
+
+#[tokio::test]
+async fn an_explicit_base_overrides_the_hand_off_and_says_so() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let task = ready_task(&app, &fixture, "Continue the parser").await;
+    let source = seed_session(&app, &fixture, SessionState::Done, None).await;
+    let commit = upstream_head(&fixture).await;
+    let handoff_id = publish_handoff(
+        &app,
+        &fixture,
+        &task,
+        source.id,
+        &commit,
+        "Ready for review.",
+    )
+    .await;
+
+    let body = fixture
+        .create_session(
+            &app,
+            &json!({
+                "profile_id": fixture.profile_id,
+                "task_id": task.id,
+                "base_ref": "main",
+            }),
+        )
+        .await;
+    let id = id_of(&body);
+
+    assert_eq!(body["base_ref"], json!("main"));
+    assert_eq!(
+        body["handoff_id"],
+        Value::Null,
+        "an explicit base records no hand-off",
+    );
+
+    let payload = wait_for_event(&app, id, "user_message").await;
+    let text = payload["text"].as_str().expect("a message").to_string();
+    assert!(
+        text.contains(&format!("Current hand-off {handoff_id}")),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(&format!(
+            "Your checkout starts from main, not from the hand-off commit; fetch \
+             refs/handoffs/{handoff_id} before continuing that work.",
+        )),
+        "{text}",
+    );
+}
+
+#[tokio::test]
+async fn the_generated_message_is_the_first_user_message_and_carries_no_user() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let task = ready_task(&app, &fixture, "Fix the login form").await;
+
+    let body = fixture
+        .create_session(
+            &app,
+            &json!({
+                "profile_id": fixture.profile_id,
+                "task_id": task.id,
+                "message": "Start with the tests",
+            }),
+        )
+        .await;
+    let id = id_of(&body);
+
+    // Two `user_message` events, in the documented order: nobody typed the
+    // first one (`SPEC.md`, "Sessions").
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let messages = loop {
+        let rows = sqlx::query_scalar::<_, Value>(
+            "SELECT payload FROM events WHERE session_id = $1 AND kind = 'user_message' \
+             ORDER BY seq",
+        )
+        .bind(id)
+        .fetch_all(&app.pool)
+        .await
+        .expect("the events are readable");
+
+        if rows.len() >= 2 {
+            break rows;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "only {} user messages within {PATIENCE:?}",
+            rows.len(),
+        );
+        tokio::time::sleep(POLL).await;
+    };
+
+    assert_eq!(messages[0]["text"], json!(generated_for(&task)));
+    assert_eq!(messages[0]["user_id"], Value::Null);
+    assert_eq!(messages[1]["text"], json!("Start with the tests"));
+    assert_eq!(messages[1]["user_id"], json!(fixture.user.user.id));
+
+    // And the CLI read them in that order.
+    let container_id = app
+        .engine()
+        .container_id_for_session(id)
+        .expect("the launch created a container");
+    wait_for("both messages reached the container's stdin", || {
+        app.engine().stdin_lines(&container_id).len() >= 2
+    })
+    .await;
+    let written = app.engine().stdin_lines(&container_id);
+    assert!(written[0].contains("You hold task #"), "{}", written[0]);
+    assert!(
+        written[1].contains("Start with the tests"),
+        "{}",
+        written[1],
+    );
+}
+
+#[tokio::test]
+async fn an_ephemeral_launch_joins_the_generated_message_and_the_message() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let ephemeral = fixture.ephemeral_profile(&app).await;
+    let task = ready_task(&app, &fixture, "Run the tests").await;
+
+    let body = fixture
+        .create_session(
+            &app,
+            &json!({
+                "profile_id": ephemeral,
+                "task_id": task.id,
+                "message": "Start with the tests",
+            }),
+        )
+        .await;
+    let id = id_of(&body);
+
+    wait_for("the launch created a container", || {
+        app.engine().container_id_for_session(id).is_some()
+    })
+    .await;
+    let container_id = app
+        .engine()
+        .container_id_for_session(id)
+        .expect("the container was recorded");
+    let cmd = app
+        .engine()
+        .spec_of(&container_id)
+        .expect("the specification was recorded")
+        .cmd;
+
+    let prompt = cmd
+        .iter()
+        .position(|argument| argument == "-p")
+        .map(|at| cmd[at + 1].clone())
+        .expect("an ephemeral session runs its prompt");
+    assert_eq!(
+        prompt,
+        format!("{}\n\nStart with the tests", generated_for(&task)),
+    );
+}
+
+#[tokio::test]
+async fn an_ephemeral_launch_for_a_task_needs_no_message() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let ephemeral = fixture.ephemeral_profile(&app).await;
+    let task = ready_task(&app, &fixture, "Run the tests").await;
+
+    let body = fixture
+        .create_session(
+            &app,
+            &json!({ "profile_id": ephemeral, "task_id": task.id }),
+        )
+        .await;
+    assert_eq!(body["task_id"], json!(task.id));
+
+    // Neither a task nor a message is still a 400 (ADR 0003).
+    let response = fixture
+        .post(&app, &json!({ "profile_id": ephemeral }))
+        .await;
+    assert_error(
+        &response,
+        StatusCode::BAD_REQUEST,
+        "an ephemeral session needs a task_id or a message",
+    );
+}
+
+#[tokio::test]
+async fn mars_task_id_is_in_the_container_only_for_a_task_launch() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let task = ready_task(&app, &fixture, "Fix the login form").await;
+
+    let without = id_of(
+        &fixture
+            .create_session(&app, &json!({ "profile_id": fixture.profile_id }))
+            .await,
+    );
+    let with = id_of(
+        &fixture
+            .create_session(
+                &app,
+                &json!({ "profile_id": fixture.profile_id, "task_id": task.id }),
+            )
+            .await,
+    );
+
+    let names = |env: &[(String, String)]| {
+        env.iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<String>>()
+    };
+
+    let plain = recorded_env(&app, without).await;
+    assert!(
+        !names(&plain).contains(&"MARS_TASK_ID".to_string()),
+        "a session without a task carries MARS_TASK_ID: {plain:?}",
+    );
+
+    let claiming = recorded_env(&app, with).await;
+    let at = names(&claiming)
+        .iter()
+        .position(|name| name == "MARS_TASK_ID")
+        .expect("a task launch carries MARS_TASK_ID");
+    assert_eq!(claiming[at].1, task.id.to_string());
+    assert_eq!(
+        names(&claiming)[at - 1],
+        "MARS_PROJECT_ID",
+        "MARS_TASK_ID comes after MARS_PROJECT_ID and before the secrets",
+    );
+}
+
+#[tokio::test]
+async fn a_launch_that_fails_while_creating_releases_the_task() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let task = ready_task(&app, &fixture, "Fix the login form").await;
+
+    // The image the project's default profile names, made unpullable.
+    let profiles = app
+        .get_as(
+            &fixture.user,
+            &format!("/api/projects/{}/profiles", fixture.project_id),
+        )
+        .await
+        .json::<Vec<Value>>();
+    let image = profiles
+        .iter()
+        .find(|profile| id_of(profile) == fixture.profile_id)
+        .and_then(|profile| profile["image"].as_str())
+        .expect("a profile names its image")
+        .to_string();
+    app.engine().set_missing_images([image]);
+    app.engine().fail_next_pull("manifest unknown");
+
+    let body = fixture
+        .create_session(
+            &app,
+            &json!({ "profile_id": fixture.profile_id, "task_id": task.id }),
+        )
+        .await;
+    let id = id_of(&body);
+
+    let failed = wait_for_state(&app, id, SessionState::Failed).await;
+    assert_eq!(
+        failed.error.as_deref(),
+        Some("image pull failed: manifest unknown")
+    );
+
+    // The end-of-session hook released the lease: `ARCHITECTURE.md`, "Task
+    // tracker" → "Launching a session for a task".
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let released = loop {
+        let stored = read_task(&app, &fixture, task.id).await;
+        if stored.lease_holder_session_id.is_none() {
+            break stored;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the lease was still held {PATIENCE:?} after the launch failed",
+        );
+        tokio::time::sleep(POLL).await;
+    };
+    assert_eq!(released.state, "ready", "the task left its queue");
+
+    let events = task_events(&app, &fixture, task.id).await;
+    let last = events.last().expect("the release is recorded");
+    assert_eq!(last.kind.as_str(), "released");
+    assert_eq!(last.reason.as_deref(), Some("session_ended"));
+    assert_eq!(last.actor, TaskActor::System);
+
+    let system = TaskRepository::new(&app.pool)
+        .list_comments(fixture.project_id, task.id)
+        .await
+        .expect("the comments read")
+        .into_iter()
+        .filter(|comment| comment.system)
+        .collect::<Vec<_>>();
+    assert_eq!(system.len(), 1, "one system comment for the release");
+    assert_eq!(
+        system[0].body,
+        format!("Lease released by the orchestrator: holder session {id} ended."),
+    );
 }
 
 // ---- lists ----

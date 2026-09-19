@@ -24,6 +24,27 @@ use crate::prelude::*;
 use crate::repositories::tasks::{TaskRepository, task_in_project};
 use crate::tracker::Locked;
 
+/// What [`TaskRepository::handoff_for_merge`] answers: the task's current
+/// hand-off id beside the named record, which is present only when the task
+/// has a hand-off with that id.
+///
+/// Flat and optional per column rather than a nested record, because the join
+/// that reads them is one query and the caller compares the id before it looks
+/// at anything else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandoffMergeCandidate {
+    /// `tasks.current_handoff_id`: the only hand-off a task merge may take.
+    pub current_handoff_id: Option<Uuid>,
+    /// The named hand-off's pinned commit, a full object id (ADR 0018).
+    pub commit: Option<String>,
+    /// The branch it was published from, for the merge message.
+    pub source_branch: Option<String>,
+    /// The session it came from, or `None` once that session was deleted.
+    pub source_session_id: Option<Uuid>,
+    /// Its review status; only `approved` may be merged.
+    pub review_status: Option<ReviewStatus>,
+}
+
 impl TaskRepository<'_> {
     /// Insert a hand-off record.
     ///
@@ -208,6 +229,51 @@ impl TaskRepository<'_> {
         .await?;
 
         Ok(handoff)
+    }
+
+    /// Everything a task merge decides on, in one round trip.
+    ///
+    /// `POST /projects/{pid}/git/merge` in its task form merges a hand-off's
+    /// pinned commit only when that hand-off is the task's *current* one and
+    /// its review is `approved` (`SPEC.md`, "Git"), so the answer needs the
+    /// task's `current_handoff_id` and the named record together. The outer
+    /// join is what keeps the two apart: `None` means this project has no such
+    /// task (404), a row with no `commit` means the task has no hand-off with
+    /// that id (409, stale — a hand-off of another task is indistinguishable
+    /// from one that never existed, and both are the same refusal).
+    ///
+    /// A plain read with no `FOR UPDATE` and no project row lock: the caller
+    /// holds the project git lock, which every publication holds through its
+    /// commit, so the two columns cannot change under it. Locking the project
+    /// row here would take a database lock while holding the git one in the
+    /// *only* order that is allowed, but for no gain (`ARCHITECTURE.md`, "Git
+    /// model" → Serialization; ADR 0021).
+    pub async fn handoff_for_merge(
+        &self,
+        project_id: Uuid,
+        task_id: Uuid,
+        handoff_id: Uuid,
+    ) -> Result<Option<HandoffMergeCandidate>> {
+        let candidate = sqlx::query_as!(
+            HandoffMergeCandidate,
+            r#"
+            SELECT t.current_handoff_id,
+                   h.commit AS "commit?",
+                   h.source_branch AS "source_branch?",
+                   h.source_session_id AS "source_session_id?",
+                   h.review_status AS "review_status?: ReviewStatus"
+            FROM tasks AS t
+            LEFT JOIN task_handoffs AS h ON h.id = $3 AND h.task_id = t.id
+            WHERE t.id = $2 AND t.project_id = $1
+            "#,
+            project_id,
+            task_id,
+            handoff_id,
+        )
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(candidate)
     }
 
     /// A task's hand-offs, oldest first.

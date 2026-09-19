@@ -92,7 +92,9 @@ pub use mirror::{
 pub use paths::DataPaths;
 pub use push::{ComparePage, PushOutcome, github_compare_url, push};
 pub use refs::{GitRef, RefEntry, ResolvedRef};
-pub use service::{ApprovedHandoff, DiffSelector, GitService, HandoffVerifier, NoHandoffs};
+pub use service::{
+    ApprovedHandoff, DiffSelector, GitService, HandoffVerifier, NoHandoffs, PinnedSource,
+};
 pub use session::{create_work_clone, fetch_back, remove_work_clone, resolve_base, session_branch};
 pub use tempclone::TempClone;
 

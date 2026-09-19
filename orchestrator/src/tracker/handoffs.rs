@@ -57,12 +57,16 @@
 //! discarded when that transaction does not commit (`SPEC.md`, "Tasks";
 //! ADR 0021).
 
+use async_trait::async_trait;
 use chrono::Utc;
 use uuid::Uuid;
 
 use crate::events::TaskActor;
 use crate::git::service::NOT_READY;
-use crate::git::{DataPaths, GitError, GitRef, GitService, ProjectGitGuard, refs};
+use crate::git::{
+    ApprovedHandoff, DataPaths, GitError, GitRef, GitService, HandoffVerifier, ProjectGitGuard,
+    refs,
+};
 use crate::models::{
     HandoffCaller, HandoffInput, NewTaskComment, NewTaskHandoff, ProjectStatus, ReviewDecision,
     ReviewStatus, Task, TaskError, TaskHandoff, TaskRef, TaskState, ValidatedHandoff,
@@ -967,4 +971,98 @@ fn reused_handoff_id(error: Error, handoff_id: Uuid) -> Error {
     }
 
     error
+}
+
+/// 409 for a hand-off that is not the task's current one (`SPEC.md`, "Git").
+const NOT_CURRENT: &str = "handoff_id is not the task's current hand-off";
+
+/// 409 for a current hand-off nobody has approved (`SPEC.md`, "Git").
+const NOT_APPROVED: &str = "hand-off is not approved";
+
+/// The real [`HandoffVerifier`]: the task merge's approval check, over
+/// `tasks.current_handoff_id` and `task_handoffs`.
+///
+/// [`GitService::from_state`] installs one on every service it builds, so the
+/// REST task merge and the MCP `merge` tool both go through it. It exists
+/// because `git/` may not read the tracker's tables itself: the check is this
+/// epic's rule, and [`HandoffVerifier`] is the seam the git epic left for it
+/// (`ARCHITECTURE.md`, "Git model" → Merge, rebase, push).
+///
+/// It holds a pool rather than an [`AppState`] because that is all it reads.
+#[derive(Debug, Clone)]
+pub struct TaskHandoffVerifier {
+    pool: PgPool,
+}
+
+impl TaskHandoffVerifier {
+    /// The verifier over the process's pool.
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl HandoffVerifier for TaskHandoffVerifier {
+    /// The pinned commit, if `handoff_id` is `task_id`'s current, approved
+    /// hand-off in this project.
+    ///
+    /// Called with the project git lock already held and immediately before
+    /// the merge, which is the whole point of the ordering: every publication
+    /// holds that same lock through its database commit, so nothing can make
+    /// this answer stale between the read and the ref write
+    /// (`ARCHITECTURE.md`, "Git model"). That is also why it takes no row
+    /// lock — a transaction holding the project row must never wait for the
+    /// git lock, and a plain read needs nothing from it (ADR 0021).
+    ///
+    /// The three refusals, in the order they are decided: [`Error::NotFound`]
+    /// for a task this project does not have, [`Error::Conflict`] for a
+    /// hand-off that is not the current one — a superseded revision, a
+    /// hand-off of another task, an id that names nothing — and
+    /// [`Error::Conflict`] again for a current hand-off whose review status is
+    /// not `approved`.
+    async fn approved_commit(
+        &self,
+        project_id: Uuid,
+        task_id: Uuid,
+        handoff_id: Uuid,
+    ) -> Result<ApprovedHandoff> {
+        let candidate = TaskRepository::new(&self.pool)
+            .handoff_for_merge(project_id, task_id, handoff_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+
+        // The id first, so a hand-off that exists but has been superseded is
+        // refused as stale rather than judged on its own review status: an
+        // approval covers the revision it was given on, not the task.
+        if candidate.current_handoff_id != Some(handoff_id) {
+            return Err(Error::Conflict(NOT_CURRENT.to_string()));
+        }
+
+        // Reached only when the id matched `current_handoff_id`, which is a
+        // foreign key to a row of this very task, so the joined columns are
+        // present. A missing one would mean the pointer outlived its record.
+        let (Some(commit), Some(source_branch), Some(review_status)) = (
+            candidate.commit,
+            candidate.source_branch,
+            candidate.review_status,
+        ) else {
+            error!(
+                project_id = %project_id,
+                task_id = %task_id,
+                handoff_id = %handoff_id,
+                "the task's current hand-off has no record",
+            );
+            return Err(Error::Internal("hand-off could not be read".into()));
+        };
+
+        if review_status != ReviewStatus::Approved {
+            return Err(Error::Conflict(NOT_APPROVED.to_string()));
+        }
+
+        Ok(ApprovedHandoff {
+            commit,
+            source_branch,
+            source_session_id: candidate.source_session_id,
+        })
+    }
 }

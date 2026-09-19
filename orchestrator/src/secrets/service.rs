@@ -33,7 +33,6 @@
 //! `scope_id`, all of which are identity rather than content. No response ever
 //! carries a value, which is why every operation answers a [`SecretMeta`].
 
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -57,12 +56,6 @@ pub const DEFAULT_USES_LIMIT: u32 = 50;
 /// is not making a mistake, it just cannot have the whole table in one
 /// response.
 pub const MAX_USES_LIMIT: u32 = 500;
-
-/// The 400 for a `global` secret given a target.
-const GLOBAL_WITH_SCOPE_ID: &str = "scope_id must be empty for global scope";
-
-/// The 400 for a `project` secret given none.
-const PROJECT_WITHOUT_SCOPE_ID: &str = "scope_id is required for project scope";
 
 /// The 400 for a scope pointing at a user or project that does not exist.
 ///
@@ -167,32 +160,31 @@ impl<'a> SecretsService<'a> {
     /// The order is the one that avoids doing work for a request that will be
     /// refused, and avoids refusing one for the wrong reason:
     ///
-    /// 1. resolve `scope_id` — required for `project`, forbidden for `global`,
-    ///    the caller's own by default for `user`,
+    /// 1. default `scope_id` for a `user` secret to the caller, which is the
+    ///    only scope that has a default and the only defaulting this module
+    ///    does,
     /// 2. [`authorize`], so creating a secret for somebody else is 403 rather
     ///    than a validation error,
-    /// 3. validate the name and the value, which is 400 before anything is
+    /// 3. pair the scope with its target through [`ScopeRef::new`], which is
+    ///    where "a `global` secret has no `scope_id` and a `user` or `project`
+    ///    one needs one" lives — once, for this module, the repository and the
+    ///    table's `CHECK` (`docs/data-model.md`, `secrets`),
+    /// 4. validate the name and the value, which is 400 before anything is
     ///    encrypted,
-    /// 4. check the scope target exists, because `scope_id` has no foreign key
+    /// 5. check the scope target exists, because `scope_id` has no foreign key
     ///    (`docs/data-model.md`, `secrets`),
-    /// 5. seal under the row's own identity and insert, in one transaction.
+    /// 6. seal under the row's own identity and insert, in one transaction.
     ///
     /// `created_by` is the caller. The value is sealed under a fresh data key
     /// and the plaintext is dropped here.
     #[instrument(skip_all, fields(scope = %request.scope, secret_name = %request.name))]
     pub async fn create(&self, actor: &Actor, request: CreateSecret) -> Result<SecretMeta> {
+        // A user creating their own is the common case and needs no id; every
+        // other scope means exactly what the caller sent, and `ScopeRef::new`
+        // decides whether that is a pair at all.
         let scope_id = match request.scope {
-            SecretScope::Global if request.scope_id.is_some() => {
-                return Err(Error::BadRequest(GLOBAL_WITH_SCOPE_ID.into()));
-            }
-            SecretScope::Global => None,
-            SecretScope::Project => Some(
-                request
-                    .scope_id
-                    .ok_or_else(|| Error::BadRequest(PROJECT_WITHOUT_SCOPE_ID.into()))?,
-            ),
-            // A user creating their own is the common case and needs no id.
             SecretScope::User => Some(request.scope_id.unwrap_or(actor.user_id)),
+            _ => request.scope_id,
         };
 
         authorize(actor, request.scope, scope_id)?;
@@ -228,9 +220,9 @@ impl<'a> SecretsService<'a> {
 
         info!(secret_id = %inserted.id, "secret created");
 
-        // A row that was inserted a statement ago has no uses, so this needs
-        // no second read.
-        Ok(meta_of(&inserted, None))
+        // A row that was inserted a statement ago has no uses, which is
+        // exactly what `From<&Secret>` says, so this needs no second read.
+        Ok(SecretMeta::from(&inserted))
     }
 
     /// `PUT /secrets/{id}` → the stored metadata, with a new value.
@@ -260,7 +252,7 @@ impl<'a> SecretsService<'a> {
 
         let sealed = SealedSecret::seal(self.keyring, SecretIdentity::of(&row), value.as_bytes())?;
 
-        repository
+        let updated = repository
             .update_value(&mut tx, id, &sealed)
             .await?
             .ok_or(Error::NotFound)?;
@@ -268,7 +260,7 @@ impl<'a> SecretsService<'a> {
 
         info!(secret_id = %id, "secret value replaced");
 
-        self.meta(id).await
+        Ok(updated)
     }
 
     /// `PATCH /secrets/{id}` → the stored metadata, renamed, re-flagged or
@@ -313,10 +305,15 @@ impl<'a> SecretsService<'a> {
 
         if rename.is_none() && reflag.is_none() {
             // Nothing to write, so nothing to commit; the read lock goes with
-            // the rolled-back transaction.
+            // the rolled-back transaction. The metadata is read rather than
+            // returned by a statement, because no statement ran.
             drop(tx);
-            return self.meta(id).await;
+            return repository.find_meta(id).await?.ok_or(Error::NotFound);
         }
+
+        // Each write answers the row it wrote, so the last one to run is the
+        // stored state and nothing has to be read back afterwards.
+        let mut written = None;
 
         if let Some(name) = &rename {
             let resealed = row
@@ -324,17 +321,21 @@ impl<'a> SecretsService<'a> {
                 .reseal(self.keyring, SecretIdentity::of(&row).renamed(name))
                 .map_err(|err| unreadable(&row, err))?;
 
-            repository
-                .rename(&mut tx, id, &resealed)
-                .await?
-                .ok_or(Error::NotFound)?;
+            written = Some(
+                repository
+                    .rename(&mut tx, id, &resealed)
+                    .await?
+                    .ok_or(Error::NotFound)?,
+            );
         }
 
         if let Some(flag) = reflag {
-            repository
-                .set_orchestrator_only(&mut tx, id, flag)
-                .await?
-                .ok_or(Error::NotFound)?;
+            written = Some(
+                repository
+                    .set_orchestrator_only(&mut tx, id, flag)
+                    .await?
+                    .ok_or(Error::NotFound)?,
+            );
         }
 
         tx.commit().await?;
@@ -346,7 +347,11 @@ impl<'a> SecretsService<'a> {
             "secret patched"
         );
 
-        self.meta(id).await
+        // `None` is unreachable: the early return above covered the patch that
+        // writes nothing, so one of the two statements ran and answered a row.
+        // Answering 404 rather than panicking keeps the `unwrap` out of a
+        // request path (`CLAUDE.md`, "Backend conventions").
+        written.ok_or(Error::NotFound)
     }
 
     /// `DELETE /secrets/{id}` → 204.
@@ -390,6 +395,13 @@ impl<'a> SecretsService<'a> {
     ///   secrets, every project's, and their own user-scoped ones —
     ///   every user's for an administrator.
     ///
+    /// The pair is resolved into one [`ScopeRef`] before it reaches the
+    /// repository, so the impossible combinations are refused by
+    /// [`ScopeRef::new`] — the same rule, in the same place, as a create — and
+    /// the filter cannot ask a question the table's `CHECK` forbids. A
+    /// `scope_id` sent without a `scope` narrows nothing: a target means
+    /// nothing without the population it is in.
+    ///
     /// The visibility rule reaches the database as [`UserFilter`] rather than
     /// as a filter over the result, so a row the caller may not see is never
     /// read (`CLAUDE.md`, "Backend conventions").
@@ -400,22 +412,17 @@ impl<'a> SecretsService<'a> {
         scope: Option<SecretScope>,
         scope_id: Option<Uuid>,
     ) -> Result<Vec<SecretMeta>> {
-        let scope_id = match scope {
-            Some(SecretScope::Global) if scope_id.is_some() => {
-                return Err(Error::BadRequest(GLOBAL_WITH_SCOPE_ID.into()));
-            }
-            Some(SecretScope::Project) if scope_id.is_none() => {
-                return Err(Error::BadRequest(PROJECT_WITHOUT_SCOPE_ID.into()));
-            }
+        let scope = match scope {
             // "user scope returns the caller's; admins may select another user
             // with `scope_id`" — so an absent id means the caller, whoever
             // they are, rather than everybody.
             Some(SecretScope::User) => {
                 let owner = scope_id.unwrap_or(actor.user_id);
                 authorize(actor, SecretScope::User, Some(owner))?;
-                Some(owner)
+                Some(ScopeRef::user(owner))
             }
-            _ => scope_id,
+            Some(other) => Some(ScopeRef::new(other, scope_id)?),
+            None => None,
         };
 
         // An administrator sees every user's; everybody else sees their own,
@@ -427,11 +434,7 @@ impl<'a> SecretsService<'a> {
         };
 
         SecretRepository::new(self.pool)
-            .list_meta_filtered(&SecretListFilter {
-                scope,
-                scope_id,
-                user_ids,
-            })
+            .list_meta_filtered(&SecretListFilter { scope, user_ids })
             .await
     }
 
@@ -460,20 +463,7 @@ impl<'a> SecretsService<'a> {
         let meta = repository.find_meta(id).await?.ok_or(Error::NotFound)?;
         authorize(actor, meta.scope, meta.scope_id)?;
 
-        repository.list_uses(id, i64::from(limit)).await
-    }
-
-    /// The stored metadata of a row a write has just committed.
-    ///
-    /// A second read rather than a projection of the returned row, because
-    /// `last_used_at` is an aggregate over `secret_uses` and not a column
-    /// ([`SecretRepository::find_meta`]). `None` means the row was deleted
-    /// between the commit and this read, which is a 404 like any other.
-    async fn meta(&self, id: Uuid) -> Result<SecretMeta> {
-        SecretRepository::new(self.pool)
-            .find_meta(id)
-            .await?
-            .ok_or(Error::NotFound)
+        repository.list_uses(id, limit).await
     }
 }
 
@@ -493,22 +483,6 @@ pub fn authorize(actor: &Actor, scope: SecretScope, scope_id: Option<Uuid>) -> R
     }
 
     Ok(())
-}
-
-/// The API shape of a row, with `last_used_at` supplied by the caller.
-fn meta_of(row: &Secret, last_used_at: Option<DateTime<Utc>>) -> SecretMeta {
-    SecretMeta {
-        id: row.id,
-        scope: row.scope,
-        scope_id: row.scope_id,
-        name: row.name.clone(),
-        orchestrator_only: row.orchestrator_only,
-        key_version: row.key_version,
-        created_by: row.created_by,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        last_used_at,
-    }
 }
 
 /// Log a stored row that will not open and answer a generic 500.

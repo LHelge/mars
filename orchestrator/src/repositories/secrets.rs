@@ -56,20 +56,18 @@ pub enum UserFilter {
     Only(Vec<Uuid>),
 }
 
-/// The `WHERE` clause of `GET /secrets`, as three independent narrowings.
+/// The `WHERE` clause of `GET /secrets`, as two independent narrowings.
 ///
-/// `scope` and `scope_id` are the query parameters `SPEC.md`, "Secrets" names,
-/// each optional and each `None` meaning "do not narrow on this"; `user_ids`
-/// is the visibility rule above. They compose, and nothing here validates the
-/// pair the way [`ScopeRef`] does — a filter is a question, so asking for
-/// `scope = global` together with a `scope_id` is an empty answer rather than
-/// a rejection.
+/// `scope` is the `?scope=&scope_id=` pair of `SPEC.md`, "Secrets" as the one
+/// validated [`ScopeRef`] the service resolved them into, and `None` is the
+/// unscoped listing; `user_ids` is the visibility rule above. A pair the
+/// table's `CHECK` would reject cannot be asked for here at all, because
+/// [`ScopeRef::new`] is the only way to build one and it is the only place
+/// that rule lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretListFilter {
-    /// Only this population, or every one of them.
-    pub scope: Option<SecretScope>,
-    /// Only this user or project, or every target.
-    pub scope_id: Option<Uuid>,
+    /// Only this scope, or every one of them.
+    pub scope: Option<ScopeRef>,
     /// Whose user-scoped secrets the caller may see.
     pub user_ids: UserFilter,
 }
@@ -378,10 +376,11 @@ impl<'a> SecretRepository<'a> {
 
     /// The secrets one listing request may see, by scope and then by name.
     ///
-    /// The three clauses of [`SecretListFilter`], each of which narrows only
+    /// The two clauses of [`SecretListFilter`], each of which narrows only
     /// when it is set: `GET /secrets?scope=&scope_id=` are the caller's
-    /// question and `user_ids` is the visibility the service resolved from who
-    /// is asking (`SPEC.md`, "Secrets"). The rule stays in the `WHERE` clause
+    /// question, resolved into one [`ScopeRef`], and `user_ids` is the
+    /// visibility the service resolved from who is asking (`SPEC.md`,
+    /// "Secrets"). The rule stays in the `WHERE` clause
     /// rather than in a filter over the result, so a row the caller may not see
     /// is never read (`CLAUDE.md`, "Backend conventions").
     ///
@@ -415,8 +414,8 @@ impl<'a> SecretRepository<'a> {
               AND (s.scope <> 'user' OR $3::bool OR s.scope_id = ANY($4))
             ORDER BY s.scope, s.name
             "#,
-            filter.scope as Option<SecretScope>,
-            filter.scope_id,
+            filter.scope.map(|scope| scope.scope()) as Option<SecretScope>,
+            filter.scope.and_then(|scope| scope.scope_id()),
             all_users,
             visible,
         )
@@ -428,34 +427,42 @@ impl<'a> SecretRepository<'a> {
         Ok(meta)
     }
 
-    /// Replace the encrypted value, returning the stored row or `None` when no
-    /// secret has this id (the route decides whether that is a 404).
+    /// Replace the encrypted value, returning the stored metadata or `None`
+    /// when no secret has this id (the route decides whether that is a 404).
     ///
     /// All five encrypted fields move together (`PUT /secrets/{id}`): a new
     /// value gets a new data key, so leaving `data_key_wrapped` behind would
     /// make the row undecryptable. The name and the scope are untouched, so
     /// the additional authenticated data is unchanged and the caller
     /// re-encrypted under the one it already had.
+    ///
+    /// The answer is a [`SecretMeta`] rather than the row, projected by the
+    /// same `RETURNING` clause that wrote it: the endpoints answer metadata,
+    /// and a write that returns what it stored saves the second read that
+    /// asking for it afterwards would need (`SPEC.md`, "Secrets"). The
+    /// encrypted columns are not in the projection at all, so a caller that
+    /// has just replaced a value is not handed the bytes back.
     pub async fn update_value(
         &self,
         tx: &mut PgConnection,
         id: Uuid,
         sealed: &SealedSecret,
-    ) -> Result<Option<Secret>> {
+    ) -> Result<Option<SecretMeta>> {
         let updated = sqlx::query_as!(
-            Secret,
+            SecretMeta,
             r#"
-            UPDATE secrets
+            UPDATE secrets s
             SET ciphertext = $2,
                 nonce = $3,
                 data_key_wrapped = $4,
                 data_key_nonce = $5,
                 key_version = $6,
                 updated_at = NOW()
-            WHERE id = $1
-            RETURNING id, scope AS "scope: SecretScope", scope_id, name, ciphertext, nonce,
-                      data_key_wrapped, data_key_nonce, key_version, orchestrator_only,
-                      created_by, created_at, updated_at
+            WHERE s.id = $1
+            RETURNING s.id, s.scope AS "scope: SecretScope", s.scope_id, s.name,
+                      s.orchestrator_only, s.key_version, s.created_by, s.created_at, s.updated_at,
+                      (SELECT MAX(u.at) FROM secret_uses u WHERE u.secret_id = s.id)
+                          AS "last_used_at?"
             "#,
             id,
             sealed.ciphertext.as_slice(),
@@ -490,16 +497,19 @@ impl<'a> SecretRepository<'a> {
     ///
     /// A name already taken in the same scope maps to [`Error::Conflict`], the
     /// same way [`SecretRepository::insert`] does.
+    ///
+    /// The answer is the stored [`SecretMeta`], for the reason
+    /// [`SecretRepository::update_value`] gives.
     pub async fn rename(
         &self,
         tx: &mut PgConnection,
         id: Uuid,
         sealed: &SealedSecret,
-    ) -> Result<Option<Secret>> {
+    ) -> Result<Option<SecretMeta>> {
         let renamed = sqlx::query_as!(
-            Secret,
+            SecretMeta,
             r#"
-            UPDATE secrets
+            UPDATE secrets s
             SET name = $2,
                 ciphertext = $3,
                 nonce = $4,
@@ -507,10 +517,11 @@ impl<'a> SecretRepository<'a> {
                 data_key_nonce = $6,
                 key_version = $7,
                 updated_at = NOW()
-            WHERE id = $1
-            RETURNING id, scope AS "scope: SecretScope", scope_id, name, ciphertext, nonce,
-                      data_key_wrapped, data_key_nonce, key_version, orchestrator_only,
-                      created_by, created_at, updated_at
+            WHERE s.id = $1
+            RETURNING s.id, s.scope AS "scope: SecretScope", s.scope_id, s.name,
+                      s.orchestrator_only, s.key_version, s.created_by, s.created_at, s.updated_at,
+                      (SELECT MAX(u.at) FROM secret_uses u WHERE u.secret_id = s.id)
+                          AS "last_used_at?"
             "#,
             id,
             sealed.identity.name(),
@@ -535,26 +546,28 @@ impl<'a> SecretRepository<'a> {
     }
 
     /// Set whether this secret is kept out of containers
-    /// (`PATCH /secrets/{id}`), returning the stored row or `None`.
+    /// (`PATCH /secrets/{id}`), returning the stored metadata or `None`.
     ///
     /// Nothing is re-encrypted: the flag is not part of the additional
-    /// authenticated data.
+    /// authenticated data. The answer is a [`SecretMeta`], for the reason
+    /// [`SecretRepository::update_value`] gives.
     pub async fn set_orchestrator_only(
         &self,
         tx: &mut PgConnection,
         id: Uuid,
         orchestrator_only: bool,
-    ) -> Result<Option<Secret>> {
+    ) -> Result<Option<SecretMeta>> {
         let updated = sqlx::query_as!(
-            Secret,
+            SecretMeta,
             r#"
-            UPDATE secrets
+            UPDATE secrets s
             SET orchestrator_only = $2,
                 updated_at = NOW()
-            WHERE id = $1
-            RETURNING id, scope AS "scope: SecretScope", scope_id, name, ciphertext, nonce,
-                      data_key_wrapped, data_key_nonce, key_version, orchestrator_only,
-                      created_by, created_at, updated_at
+            WHERE s.id = $1
+            RETURNING s.id, s.scope AS "scope: SecretScope", s.scope_id, s.name,
+                      s.orchestrator_only, s.key_version, s.created_by, s.created_at, s.updated_at,
+                      (SELECT MAX(u.at) FROM secret_uses u WHERE u.secret_id = s.id)
+                          AS "last_used_at?"
             "#,
             id,
             orchestrator_only,
@@ -894,12 +907,15 @@ impl<'a> SecretRepository<'a> {
     /// two uses recorded in the same transaction — and therefore sharing
     /// `NOW()` — still come back in a stable order.
     ///
-    /// `limit` is clamped to at least one row. A zero or negative limit is the
-    /// caller's mistake — the route validates `?limit=` before it gets here —
-    /// and `LIMIT 0` would answer an empty list, which reads as a secret that
-    /// has never been used rather than as a bad request.
-    pub async fn list_uses(&self, secret_id: Uuid, limit: i64) -> Result<Vec<SecretUse>> {
-        let limit = limit.max(1);
+    /// `limit` arrives validated and is bound as it is: the range — at least
+    /// one, [`DEFAULT_USES_LIMIT`](crate::secrets::service::DEFAULT_USES_LIMIT)
+    /// when absent and never more than
+    /// [`MAX_USES_LIMIT`](crate::secrets::service::MAX_USES_LIMIT) — is the
+    /// service's one rule (`SPEC.md`, "Secrets"), so this statement neither
+    /// clamps nor re-checks it. A `u32` because the only limit that has no
+    /// meaning here is a negative one, which the type forbids.
+    pub async fn list_uses(&self, secret_id: Uuid, limit: u32) -> Result<Vec<SecretUse>> {
+        let limit = i64::from(limit);
 
         let uses = sqlx::query_as!(
             SecretUse,

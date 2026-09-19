@@ -161,14 +161,19 @@ async fn a_secret_survives_an_insert_find_list_update_delete_round_trip() {
         .expect("the secret exists");
     tx.commit().await.unwrap();
 
-    assert_eq!(updated.ciphertext, b"fake-ciphertext-two");
-    assert_eq!(updated.nonce, b"fake-nonce-two");
-    assert_eq!(updated.data_key_wrapped, b"fake-wrapped-data-key-two");
-    assert_eq!(updated.data_key_nonce, b"fake-wrap-nonce-two");
+    // The write answers the stored metadata, never the bytes it just wrote,
+    // so what moved is asserted against the row read back.
     assert_eq!(updated.key_version, 2);
     assert_eq!(updated.name, "GIT_CREDENTIAL");
     assert_eq!(updated.created_at, inserted.created_at);
     assert!(updated.updated_at >= inserted.updated_at);
+    assert_eq!(updated.last_used_at, None);
+
+    let stored = repository.find(new.id).await.unwrap().expect("the row");
+    assert_eq!(stored.ciphertext, b"fake-ciphertext-two");
+    assert_eq!(stored.nonce, b"fake-nonce-two");
+    assert_eq!(stored.data_key_wrapped, b"fake-wrapped-data-key-two");
+    assert_eq!(stored.data_key_nonce, b"fake-wrap-nonce-two");
 
     // Renaming writes the new name and the re-encrypted value together, and
     // the name comes from the envelope's own identity.
@@ -182,8 +187,9 @@ async fn a_secret_survives_an_insert_find_list_update_delete_round_trip() {
     tx.commit().await.unwrap();
 
     assert_eq!(renamed.name, "FORGE_TOKEN");
-    assert_eq!(renamed.ciphertext, b"fake-ciphertext-three");
-    assert_eq!(renamed.data_key_wrapped, b"fake-wrapped-data-key-three");
+    let stored = repository.find(new.id).await.unwrap().expect("the row");
+    assert_eq!(stored.ciphertext, b"fake-ciphertext-three");
+    assert_eq!(stored.data_key_wrapped, b"fake-wrapped-data-key-three");
     assert!(
         repository
             .find_by_name(&scope, &name("GIT_CREDENTIAL"))
@@ -202,7 +208,16 @@ async fn a_secret_survives_an_insert_find_list_update_delete_round_trip() {
     tx.commit().await.unwrap();
 
     assert!(!flagged.orchestrator_only);
-    assert_eq!(flagged.ciphertext, renamed.ciphertext);
+    assert_eq!(
+        repository
+            .find(new.id)
+            .await
+            .unwrap()
+            .expect("the row")
+            .ciphertext,
+        stored.ciphertext,
+        "the flag re-encrypts nothing"
+    );
 
     let mut tx = pool.begin().await.unwrap();
     assert!(repository.delete(&mut tx, new.id).await.unwrap());
@@ -366,7 +381,15 @@ async fn renaming_to_the_same_name_writes_exactly_what_it_is_given() {
     tx.commit().await.unwrap();
 
     assert_eq!(renamed.name, "TOKEN");
-    assert_eq!(renamed.ciphertext, b"fake-ciphertext-two");
+    assert_eq!(
+        repository
+            .find(secret.id)
+            .await
+            .unwrap()
+            .expect("the row")
+            .ciphertext,
+        b"fake-ciphertext-two"
+    );
 }
 
 #[tokio::test]

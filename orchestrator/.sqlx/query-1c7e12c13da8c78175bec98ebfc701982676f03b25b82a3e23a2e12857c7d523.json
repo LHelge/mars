@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE secrets\n            SET orchestrator_only = $2,\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING id, scope AS \"scope: SecretScope\", scope_id, name, ciphertext, nonce,\n                      data_key_wrapped, data_key_nonce, key_version, orchestrator_only,\n                      created_by, created_at, updated_at\n            ",
+  "query": "\n            UPDATE secrets s\n            SET orchestrator_only = $2,\n                updated_at = NOW()\n            WHERE s.id = $1\n            RETURNING s.id, s.scope AS \"scope: SecretScope\", s.scope_id, s.name,\n                      s.orchestrator_only, s.key_version, s.created_by, s.created_at, s.updated_at,\n                      (SELECT MAX(u.at) FROM secret_uses u WHERE u.secret_id = s.id)\n                          AS \"last_used_at?\"\n            ",
   "describe": {
     "columns": [
       {
@@ -60,61 +60,6 @@
       },
       {
         "ordinal": 4,
-        "name": "ciphertext",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "secrets",
-            "name": "ciphertext"
-          }
-        }
-      },
-      {
-        "ordinal": 5,
-        "name": "nonce",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "secrets",
-            "name": "nonce"
-          }
-        }
-      },
-      {
-        "ordinal": 6,
-        "name": "data_key_wrapped",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "secrets",
-            "name": "data_key_wrapped"
-          }
-        }
-      },
-      {
-        "ordinal": 7,
-        "name": "data_key_nonce",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "secrets",
-            "name": "data_key_nonce"
-          }
-        }
-      },
-      {
-        "ordinal": 8,
-        "name": "key_version",
-        "type_info": "Int4",
-        "origin": {
-          "Table": {
-            "table": "secrets",
-            "name": "key_version"
-          }
-        }
-      },
-      {
-        "ordinal": 9,
         "name": "orchestrator_only",
         "type_info": "Bool",
         "origin": {
@@ -125,7 +70,18 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 5,
+        "name": "key_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "key_version"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "created_by",
         "type_info": "Uuid",
         "origin": {
@@ -136,7 +92,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +103,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -156,6 +112,12 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "last_used_at?",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -171,14 +133,11 @@
       false,
       false,
       false,
-      false,
-      false,
-      false,
-      false,
       true,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "8bd78530901e2a569792711fc692bdde6e8e7c80037cb1d792b331749fae1d39"
+  "hash": "1c7e12c13da8c78175bec98ebfc701982676f03b25b82a3e23a2e12857c7d523"
 }

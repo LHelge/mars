@@ -152,6 +152,12 @@ fn rank(scope: SecretScope) -> u8 {
 /// resolve once and `env` has each key at most once, so a profile listing a
 /// name twice cannot produce two conflicting environment entries.
 ///
+/// `names` are [`SecretName`]s, which the profile that declared them yields
+/// ([`AgentProfile::secret_names`](crate::models::AgentProfile::secret_names)):
+/// the pattern is checked once, where a profile is stored, and not again here.
+/// A name that is not one therefore never reaches this function, and a name
+/// that no row carries is a warning rather than a failure.
+///
 /// The refusal to inject `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`
 /// together is the launcher's rule applied to `env` afterwards, not this
 /// function's, and stays there: it is about what one backend's CLI tolerates,
@@ -177,7 +183,7 @@ pub async fn resolve_for_launch(
     pool: &PgPool,
     keyring: &SecretsKeyring,
     scope: LaunchScope,
-    names: &[String],
+    names: &[SecretName],
 ) -> Result<ResolvedSecrets> {
     let mut resolved = ResolvedSecrets {
         env: Vec::new(),
@@ -187,26 +193,16 @@ pub async fn resolve_for_launch(
     };
 
     // First occurrence wins the position; a repeated name is resolved once.
-    // The malformed ones are dropped here rather than sent to the query: a
-    // profile that passed validation cannot contain one, and a row could not
-    // exist under such a name anyway, so it is reported as missing.
-    let mut seen: Vec<&String> = Vec::with_capacity(names.len());
+    // Nothing is validated here: the names arrive as `SecretName`s from the
+    // profile that declared them, which is where the one name rule is applied
+    // (`AgentProfile::secret_names`).
     let mut wanted: Vec<String> = Vec::with_capacity(names.len());
     for name in names {
-        if seen.contains(&name) {
+        let name = name.as_str();
+        if wanted.iter().any(|seen| seen == name) {
             continue;
         }
-        seen.push(name);
-
-        if SecretName::parse(name).is_err() {
-            warn!(
-                secret_name = %name,
-                "a profile secret name is not a valid secret name"
-            );
-            resolved.warnings.push(undefined_warning(name));
-            continue;
-        }
-        wanted.push(name.clone());
+        wanted.push(name.to_string());
     }
 
     if wanted.is_empty() {

@@ -167,8 +167,16 @@ async fn uses(app: &TestApp, secret: &Secret) -> Vec<mars_orchestrator::models::
         .expect("the uses are read")
 }
 
-fn one(name: &str) -> Vec<String> {
-    vec![name.to_string()]
+/// A profile's name, as the profile model would yield it.
+///
+/// The resolver takes `SecretName`s and validates nothing of its own, so a
+/// test asks for a name the same way a launch does (`AgentProfile::secret_names`).
+fn name(raw: &str) -> SecretName {
+    SecretName::parse(raw).expect("the test name is a valid secret name")
+}
+
+fn one(raw: &str) -> Vec<SecretName> {
+    vec![name(raw)]
 }
 
 #[tokio::test]
@@ -404,7 +412,7 @@ async fn a_name_with_no_row_anywhere_warns_in_the_documented_words() {
         &app.pool,
         &app.state.keyring,
         fixture.scope(),
-        &["DEPLOY_TOKEN".to_string(), "ABSENT_TOKEN".to_string()],
+        &[name("DEPLOY_TOKEN"), name("ABSENT_TOKEN")],
     )
     .await
     .expect("a missing secret does not fail the launch");
@@ -421,33 +429,6 @@ async fn a_name_with_no_row_anywhere_warns_in_the_documented_words() {
         uses(&app, &present).await.len(),
         1,
         "resolution continues past a missing name"
-    );
-}
-
-#[tokio::test]
-async fn a_malformed_name_is_treated_as_missing() {
-    let app = TestApp::spawn().await;
-    let fixture = seed(&app).await;
-
-    // Profile validation refuses these, so this is the defence in depth: a
-    // lowercase name and one with a space, neither of which any row can carry.
-    let resolved = resolve_for_launch(
-        &app.pool,
-        &app.state.keyring,
-        fixture.scope(),
-        &["deploy_token".to_string(), "DEPLOY TOKEN".to_string()],
-    )
-    .await
-    .expect("a malformed name does not fail the launch");
-
-    assert!(resolved.env.is_empty());
-    assert!(resolved.skipped.is_empty());
-    assert_eq!(
-        resolved.warnings,
-        vec![
-            "secret deploy_token is not defined at any scope",
-            "secret DEPLOY TOKEN is not defined at any scope",
-        ]
     );
 }
 
@@ -482,10 +463,10 @@ async fn every_injected_secret_is_audited_once_per_launch() {
     .await;
 
     let names_asked = vec![
-        "DEPLOY_TOKEN".to_string(),
-        "ANTHROPIC_API_KEY".to_string(),
-        "WITHHELD_TOKEN".to_string(),
-        "ABSENT_TOKEN".to_string(),
+        name("DEPLOY_TOKEN"),
+        name("ANTHROPIC_API_KEY"),
+        name("WITHHELD_TOKEN"),
+        name("ABSENT_TOKEN"),
     ];
 
     let resolved = resolve_for_launch(&app.pool, &app.state.keyring, fixture.scope(), &names_asked)
@@ -618,10 +599,10 @@ async fn a_name_listed_twice_resolves_once() {
         &app.state.keyring,
         fixture.scope(),
         &[
-            "DEPLOY_TOKEN".to_string(),
-            "DEPLOY_TOKEN".to_string(),
-            "ABSENT_TOKEN".to_string(),
-            "ABSENT_TOKEN".to_string(),
+            name("DEPLOY_TOKEN"),
+            name("DEPLOY_TOKEN"),
+            name("ABSENT_TOKEN"),
+            name("ABSENT_TOKEN"),
         ],
     )
     .await
@@ -711,7 +692,7 @@ async fn a_row_the_keyring_cannot_open_fails_the_launch_without_an_audit_trail()
         &app.pool,
         &app.state.keyring,
         fixture.scope(),
-        &["DEPLOY_TOKEN".to_string(), "BROKEN_TOKEN".to_string()],
+        &[name("DEPLOY_TOKEN"), name("BROKEN_TOKEN")],
     )
     .await
     .expect_err("a value that will not open fails the launch");

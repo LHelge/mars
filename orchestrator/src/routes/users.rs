@@ -18,26 +18,19 @@
 //! send afterwards — a mail failure is a 500 over a live invite, which
 //! `POST /users/invites/{id}/resend` then recovers.
 //!
-//! The interesting part is the administrator-membership invariant: "At least
-//! one administrator must remain. Both deleting an administrator and changing
-//! `admin` from true to false are rejected with 409 if they would remove the
-//! last administrator" (`SPEC.md`, "Users"). A count read before the
-//! transaction proves nothing — two requests each demoting one of the final
-//! two administrators would both see two — so both mutations follow the
-//! sequence `docs/data-model.md`, "Users and authentication" prescribes:
-//!
-//! 1. `BEGIN`,
-//! 2. [`UserRepository::lock_admin_membership`], the transaction-scoped
-//!    advisory lock, as the *first* statement and before any user-row lock,
-//! 3. [`UserRepository::lock_user`] on the target,
-//! 4. [`UserRepository::count_admins`], read under the lock,
-//! 5. the mutation, and `COMMIT` — or a rejection, which drops `tx` and rolls
-//!    the whole thing back with no field changed.
-//!
-//! The second request to reach the lock therefore re-reads a count of one and
-//! answers 409. Self-demotion is allowed when another administrator remains;
-//! self-deletion is refused outright, before the transaction is even opened,
-//! because no count can make it legal.
+//! The administrator-membership invariant — "At least one administrator must
+//! remain. Both deleting an administrator and changing `admin` from true to
+//! false are rejected with 409 if they would remove the last administrator"
+//! (`SPEC.md`, "Users") — is not assembled here. A count read before the
+//! mutation proves nothing (two requests each demoting one of the final two
+//! administrators would both see two), so the lock, the re-count and the
+//! mutation are one operation in one transaction, and that operation is
+//! [`UserRepository::replace`] and [`UserRepository::delete`]: "this is a
+//! repository invariant" (`docs/data-model.md`, "Users and authentication").
+//! What is left here is the translation — the path parameter, the body, the
+//! caller's id for the self-deletion rule and the status code — and the 409s
+//! the repository returns travel out through [`Error::Conflict`] like any
+//! other.
 //!
 //! Changing `admin` deliberately touches neither `auth_version` nor the
 //! target's refresh tokens: a demotion takes effect through the current-user
@@ -55,23 +48,11 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::auth::{Credentials, IssuedPair};
-use crate::models::{Email, User, UserInvite, UserUpdate, Username};
+use crate::models::{Email, User, UserInvite, Username};
 use crate::prelude::*;
 use crate::repositories::{UserInviteRepository, UserRepository};
 use crate::routes::auth::TokenPairResponse;
 use crate::routes::{AdminUser, CurrentUser, UngatedUser};
-
-/// The 409 an administrator gets for demoting the last one (`SPEC.md`,
-/// "Users").
-const LAST_ADMIN_DEMOTION: &str = "cannot demote the last administrator";
-
-/// The 409 an administrator gets for deleting the last one.
-const LAST_ADMIN_DELETION: &str = "cannot delete the last administrator";
-
-/// The 409 an administrator gets for deleting their own account. Separate from
-/// [`LAST_ADMIN_DELETION`]: self-deletion is refused even when ten other
-/// administrators remain.
-const SELF_DELETION: &str = "cannot delete yourself";
 
 /// The router nested under `/api/users`.
 ///
@@ -229,24 +210,15 @@ async fn update_me(
     CurrentUser(user): CurrentUser,
     Json(body): Json<UpdateMeRequest>,
 ) -> Result<Json<User>> {
-    let update = UserUpdate {
-        notify_email: body.notify_email,
-        ..UserUpdate::default()
+    let Some(notify_email) = body.notify_email else {
+        return Ok(Json(user));
     };
 
-    if update.is_empty() {
-        return Ok(Json(user));
-    }
-
-    let users = UserRepository::new(&state.pool);
-    let mut tx = state.pool.begin().await?;
-    // The row was loaded by the extractor a moment ago, so a `None` here means
-    // the user deleted themselves between the two; 404 is the honest answer.
-    let updated = users
-        .update(&mut tx, user.id, &update)
-        .await?
-        .ok_or(Error::NotFound)?;
-    tx.commit().await?;
+    // The row was loaded by the extractor a moment ago, so a `NotFound` here
+    // means the user was deleted between the two; 404 is the honest answer.
+    let updated = UserRepository::new(&state.pool)
+        .set_notify_email(user.id, notify_email)
+        .await?;
 
     debug!(user_id = %user.id, "profile updated");
 
@@ -292,50 +264,21 @@ struct ReplaceUserRequest {
 
 /// `PUT /users/{id}` → the updated user (administrators only).
 ///
-/// The sequence is the one in the module documentation, and its order is the
-/// contract: the advisory lock first, then the target row, then the count, all
-/// inside the transaction that performs the update. A rejection returns before
-/// `commit`, so `tx` rolls back and the username in the same request is not
-/// applied either.
-///
-/// The count is only consulted for a true → false transition. Promoting,
-/// renaming or writing the same two values back cannot reduce the number of
-/// administrators, so they never fail this check — but they still take the
-/// lock, which is what makes a concurrent demotion wait for them rather than
-/// counting around them.
+/// Two decisions here — that the caller is an administrator, and that the
+/// username is a valid one — and the rest is [`UserRepository::replace`],
+/// which serialises the change against every other role change and deletion
+/// and answers 409 for the last administrator's demotion.
 async fn replace(
     State(state): State<AppState>,
     AdminUser(caller): AdminUser,
     Path(id): Path<Uuid>,
     Json(body): Json<ReplaceUserRequest>,
 ) -> Result<Json<User>> {
-    let users = UserRepository::new(&state.pool);
-    let mut tx = state.pool.begin().await?;
+    let username = Username::parse(&body.username)?;
 
-    users.lock_admin_membership(&mut tx).await?;
-
-    let Some(current) = users.lock_user(&mut tx, id).await? else {
-        return Err(Error::NotFound);
-    };
-
-    if current.admin && !body.admin && users.count_admins(&mut tx).await? <= 1 {
-        debug!(user_id = %id, actor_id = %caller.id, "demotion refused: last administrator");
-        return Err(Error::Conflict(LAST_ADMIN_DEMOTION.to_string()));
-    }
-
-    let update = UserUpdate {
-        username: Some(Username::parse(&body.username)?),
-        admin: Some(body.admin),
-        ..UserUpdate::default()
-    };
-
-    // `lock_user` already proved the row exists and holds it, so `None` is
-    // unreachable; `NotFound` rather than a panic all the same.
-    let updated = users
-        .update(&mut tx, id, &update)
-        .await?
-        .ok_or(Error::NotFound)?;
-    tx.commit().await?;
+    let updated = UserRepository::new(&state.pool)
+        .replace(id, username, body.admin)
+        .await?;
 
     debug!(user_id = %id, actor_id = %caller.id, admin = updated.admin, "user updated");
 
@@ -344,9 +287,9 @@ async fn replace(
 
 /// `DELETE /users/{id}` → 204 (administrators only).
 ///
-/// Self-deletion is refused before the transaction opens: it is not a question
-/// about administrator membership — an ordinary administrator among five may
-/// not delete themselves either — so there is nothing to lock or count.
+/// The caller's id travels into [`UserRepository::delete`] for the
+/// self-deletion rule; the last-administrator rule and the transaction that
+/// enforces both are its own.
 ///
 /// Everything the deleted user owns follows the schema's foreign keys: their
 /// refresh and password-reset tokens cascade away, while their invites,
@@ -360,29 +303,9 @@ async fn remove(
     AdminUser(caller): AdminUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
-    if id == caller.id {
-        debug!(actor_id = %caller.id, "deletion refused: self");
-        return Err(Error::Conflict(SELF_DELETION.to_string()));
-    }
-
-    let users = UserRepository::new(&state.pool);
-    let mut tx = state.pool.begin().await?;
-
-    users.lock_admin_membership(&mut tx).await?;
-
-    let Some(target) = users.lock_user(&mut tx, id).await? else {
-        return Err(Error::NotFound);
-    };
-
-    if target.admin && users.count_admins(&mut tx).await? <= 1 {
-        debug!(user_id = %id, actor_id = %caller.id, "deletion refused: last administrator");
-        return Err(Error::Conflict(LAST_ADMIN_DELETION.to_string()));
-    }
-
-    if !users.delete(&mut tx, id).await? {
-        return Err(Error::NotFound);
-    }
-    tx.commit().await?;
+    UserRepository::new(&state.pool)
+        .delete(id, caller.id)
+        .await?;
 
     debug!(user_id = %id, actor_id = %caller.id, "user deleted");
 

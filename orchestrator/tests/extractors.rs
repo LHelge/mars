@@ -25,10 +25,11 @@ use axum::http::StatusCode;
 use axum::http::header::AUTHORIZATION;
 use chrono::Utc;
 use common::TestApp;
-use mars_orchestrator::models::{User, UserUpdate};
+use mars_orchestrator::models::User;
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 /// The route behind [`mars_orchestrator::routes::CurrentUser`], pointed at
 /// `user`'s own id.
@@ -395,22 +396,16 @@ async fn a_gated_administrator_is_told_about_the_password_not_the_role() {
 
 /// Clear `admin` on `user`'s row.
 ///
-/// Straight through the repository: the administrator-membership invariant is
-/// the routes' composition, and these tests are about what the extractor reads,
-/// not about how the row got that way.
+/// Straight SQL rather than `UserRepository::replace`, which owns the
+/// administrator-membership invariant and would refuse this: `user` is the
+/// only administrator the test app has. These tests are about what the
+/// extractor reads, not about how the row came to say it.
 async fn demote(app: &TestApp, user: &User) {
-    let update = UserUpdate {
-        admin: Some(false),
-        ..UserUpdate::default()
-    };
-
-    let mut tx = app.pool.begin().await.expect("a transaction begins");
-    UserRepository::new(&app.pool)
-        .update(&mut tx, user.id, &update)
+    sqlx::query("UPDATE users SET admin = FALSE, updated_at = NOW() WHERE id = $1")
+        .bind(user.id)
+        .execute(&app.pool)
         .await
-        .expect("the user updates")
-        .expect("the user exists");
-    tx.commit().await.expect("the transaction commits");
+        .expect("the demotion runs");
 }
 
 /// Run the password transaction against `user`, which increments
@@ -430,13 +425,10 @@ async fn change_password(app: &TestApp, user: &User) -> User {
 }
 
 async fn delete_user(app: &TestApp, user: &User) {
-    let mut tx = app.pool.begin().await.expect("a transaction begins");
-    assert!(
-        UserRepository::new(&app.pool)
-            .delete(&mut tx, user.id)
-            .await
-            .expect("the delete runs"),
-        "the test user existed"
-    );
-    tx.commit().await.expect("the transaction commits");
+    // Any acting id but the target's: `UserRepository::delete` reads it only
+    // to refuse a self-deletion, and nothing here is deleting itself.
+    UserRepository::new(&app.pool)
+        .delete(user.id, Uuid::new_v4())
+        .await
+        .expect("the delete runs");
 }

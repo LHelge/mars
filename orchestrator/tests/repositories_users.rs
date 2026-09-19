@@ -2,12 +2,19 @@
 //! expectations").
 //!
 //! The CRUD half is a round trip and the two duplicate paths; the interesting
-//! half is the two locks `docs/data-model.md`, "Users and authentication"
-//! requires. Those are asserted the only way a lock can be: a second
-//! transaction is started while the first still holds the lock, and the test
-//! shows that it does not get through until the first commits. A lock that was
-//! quietly dropped from a statement would pass every functional assertion and
-//! fail here.
+//! half is the administrator-membership invariant and the two locks
+//! `docs/data-model.md`, "Users and authentication" requires. Since `replace`
+//! and `delete` own that invariant, it is asserted here rather than only
+//! through the routes: the single-request refusals, the self-deletion rule,
+//! and the race the paragraph names — two concurrent demotions of the final
+//! two administrators, one of which must lose.
+//!
+//! The locks are asserted the only way a lock can be: a second transaction is
+//! started while the first still holds the lock, and the test shows that it
+//! does not get through until the first commits — and, for the advisory lock,
+//! that the demotion behind it re-counts afterwards rather than before. A lock
+//! that was quietly dropped from a statement would pass every functional
+//! assertion and fail here.
 //!
 //! Needs a container engine; see `tests/common/db.rs`.
 
@@ -17,7 +24,8 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use chrono::{DateTime, SubsecRound, TimeDelta, Utc};
-use mars_orchestrator::models::{Email, NewUser, User, UserUpdate, Username};
+use common::races::{admin_count, hold_admin_membership_lock};
+use mars_orchestrator::models::{Email, NewUser, User, Username};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;
 use uuid::Uuid;
@@ -116,57 +124,55 @@ async fn a_user_survives_an_insert_find_list_update_delete_round_trip() {
         [new.id, SEEDED_ADMIN]
     );
 
-    let update = UserUpdate {
-        username: Some(Username::parse("ada.l").unwrap()),
-        admin: Some(true),
-        notify_email: Some(false),
-    };
-    let mut tx = pool.begin().await.unwrap();
+    // The two administrator-settable fields, in the one call that owns the
+    // administrator-membership transaction.
     let updated = repository
-        .update(&mut tx, new.id, &update)
+        .replace(new.id, Username::parse("ada.l").unwrap(), true)
         .await
-        .unwrap()
-        .expect("the user exists");
-    tx.commit().await.unwrap();
+        .unwrap();
 
     assert_eq!(updated.username, "ada.l");
     assert!(updated.admin);
-    assert!(!updated.notify_email);
     // Untouched fields keep their values, and `updated_at` moved.
+    assert!(updated.notify_email);
     assert_eq!(updated.email, "ada@example.com");
     assert_eq!(updated.auth_version, 0);
     assert_eq!(updated.created_at, inserted.created_at);
     assert!(updated.updated_at > inserted.updated_at);
 
-    // An empty update still refreshes `updated_at` and changes nothing else.
-    let mut tx = pool.begin().await.unwrap();
-    let untouched = repository
-        .update(&mut tx, new.id, &UserUpdate::default())
-        .await
-        .unwrap()
-        .expect("the user exists");
-    tx.commit().await.unwrap();
-    assert_eq!(untouched.username, "ada.l");
-    assert!(untouched.admin);
-    assert!(!untouched.notify_email);
+    // The one field the user owns about themselves, through its own call.
+    let quietened = repository.set_notify_email(new.id, false).await.unwrap();
+    assert!(!quietened.notify_email);
+    assert_eq!(quietened.username, "ada.l");
+    assert!(quietened.admin);
 
-    // Updating a user that does not exist is `None`, not an error.
-    let mut tx = pool.begin().await.unwrap();
-    assert!(
+    // Neither mutation invents a user.
+    assert!(matches!(
         repository
-            .update(&mut tx, Uuid::new_v4(), &update)
+            .replace(Uuid::new_v4(), Username::parse("ghost").unwrap(), false)
             .await
-            .unwrap()
-            .is_none()
-    );
-    tx.commit().await.unwrap();
+            .expect_err("no such user"),
+        Error::NotFound
+    ));
+    assert!(matches!(
+        repository
+            .set_notify_email(Uuid::new_v4(), true)
+            .await
+            .expect_err("no such user"),
+        Error::NotFound
+    ));
 
-    let mut tx = pool.begin().await.unwrap();
-    assert!(repository.delete(&mut tx, new.id).await.unwrap());
-    // A second delete matches no row: `false`, not an error, so the route can
-    // answer 404.
-    assert!(!repository.delete(&mut tx, new.id).await.unwrap());
-    tx.commit().await.unwrap();
+    // `ada.l` is an administrator now, but not the last one: the seeded
+    // `admin` is still there, so the count allows the deletion.
+    repository.delete(new.id, SEEDED_ADMIN).await.unwrap();
+    // A second delete matches no row, which is the route's 404.
+    assert!(matches!(
+        repository
+            .delete(new.id, SEEDED_ADMIN)
+            .await
+            .expect_err("the user is gone"),
+        Error::NotFound
+    ));
 
     assert!(repository.find(new.id).await.unwrap().is_none());
     assert_eq!(repository.list().await.unwrap().len(), 1);
@@ -222,16 +228,8 @@ async fn renaming_a_user_onto_a_taken_username_is_a_conflict() {
     let ada = insert(&pool, &new_user("ada", "ada@example.com")).await;
     insert(&pool, &new_user("grace", "grace@example.com")).await;
 
-    let mut tx = pool.begin().await.unwrap();
     let error = repository
-        .update(
-            &mut tx,
-            ada.id,
-            &UserUpdate {
-                username: Some(Username::parse("grace").unwrap()),
-                ..UserUpdate::default()
-            },
-        )
+        .replace(ada.id, Username::parse("grace").unwrap(), false)
         .await
         .expect_err("the username is taken");
 
@@ -242,30 +240,93 @@ async fn renaming_a_user_onto_a_taken_username_is_a_conflict() {
     );
 }
 
+/// The invariant itself, in the single-request cases: the repository refuses
+/// both ways of removing the last administrator, and refuses a self-deletion
+/// whatever the count says (`docs/data-model.md`, "Users and authentication").
 #[tokio::test]
-async fn count_admins_sees_the_seeded_administrator_and_then_none() {
+async fn the_last_administrator_cannot_be_demoted_or_deleted() {
     let (_postgres, pool) = common::db::test_pool().await;
     let repository = UserRepository::new(&pool);
 
-    let mut tx = pool.begin().await.unwrap();
-    assert_eq!(repository.count_admins(&mut tx).await.unwrap(), 1);
+    // The seeded `admin` is the only one, and an ordinary user does not help.
+    insert(&pool, &new_user("ada", "ada@example.com")).await;
+    assert_eq!(admin_count(&pool).await, 1);
 
-    // An ordinary user does not move the count.
-    repository
-        .insert(&mut tx, &new_user("ada", "ada@example.com"))
+    let demotion = repository
+        .replace(SEEDED_ADMIN, Username::parse("root").unwrap(), false)
         .await
-        .unwrap();
-    assert_eq!(repository.count_admins(&mut tx).await.unwrap(), 1);
+        .expect_err("the last administrator cannot be demoted");
+    assert_eq!(demotion.status(), StatusCode::CONFLICT);
+    assert!(
+        matches!(&demotion, Error::Conflict(message) if message == "cannot demote the last administrator"),
+        "unexpected error: {demotion:?}"
+    );
 
-    // Deleting the last administrator does; the repository allows it, because
-    // the invariant is the caller's composition, not this statement's.
-    assert!(repository.delete(&mut tx, SEEDED_ADMIN).await.unwrap());
-    assert_eq!(repository.count_admins(&mut tx).await.unwrap(), 0);
-    tx.commit().await.unwrap();
+    let deletion = repository
+        .delete(SEEDED_ADMIN, Uuid::new_v4())
+        .await
+        .expect_err("the last administrator cannot be deleted");
+    assert_eq!(deletion.status(), StatusCode::CONFLICT);
+    assert!(
+        matches!(&deletion, Error::Conflict(message) if message == "cannot delete the last administrator"),
+        "unexpected error: {deletion:?}"
+    );
 
-    let mut tx = pool.begin().await.unwrap();
-    assert_eq!(repository.count_admins(&mut tx).await.unwrap(), 0);
-    tx.commit().await.unwrap();
+    // A rejected request changes no fields — including the `username` the
+    // refused `replace` carried (`SPEC.md`, "Users").
+    let admin = repository
+        .find(SEEDED_ADMIN)
+        .await
+        .unwrap()
+        .expect("the seeded administrator is still there");
+    assert!(admin.admin);
+    assert_eq!(admin.username, "admin");
+    assert_eq!(admin_count(&pool).await, 1);
+}
+
+/// Self-deletion is its own rule: refused before anything is locked or
+/// counted, and refused while other administrators remain.
+#[tokio::test]
+async fn deleting_yourself_is_a_conflict_whatever_the_count_says() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let repository = UserRepository::new(&pool);
+
+    let mut second = new_user("grace", "grace@example.com");
+    second.admin = true;
+    let grace = insert(&pool, &second).await;
+    assert_eq!(admin_count(&pool).await, 2);
+
+    let error = repository
+        .delete(grace.id, grace.id)
+        .await
+        .expect_err("nobody deletes themselves");
+    assert_eq!(error.status(), StatusCode::CONFLICT);
+    assert!(
+        matches!(&error, Error::Conflict(message) if message == "cannot delete yourself"),
+        "unexpected error: {error:?}"
+    );
+
+    assert!(repository.find(grace.id).await.unwrap().is_some());
+}
+
+/// The other half of the same rule: demoting yourself is allowed as long as
+/// somebody else is left to administer (`docs/data-model.md`).
+#[tokio::test]
+async fn demoting_yourself_is_allowed_while_another_administrator_remains() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let repository = UserRepository::new(&pool);
+
+    let mut second = new_user("grace", "grace@example.com");
+    second.admin = true;
+    let grace = insert(&pool, &second).await;
+
+    let demoted = repository
+        .replace(grace.id, Username::parse("grace").unwrap(), false)
+        .await
+        .expect("another administrator remains");
+
+    assert!(!demoted.admin);
+    assert_eq!(admin_count(&pool).await, 1);
 }
 
 #[tokio::test]
@@ -287,18 +348,13 @@ async fn lock_user_returns_the_row_and_holds_it_until_commit() {
 
     // Change the row under the lock, so the waiter can prove it read the
     // committed value rather than the one it could have seen before waiting.
-    repository
-        .update(
-            &mut holder,
-            SEEDED_ADMIN,
-            &UserUpdate {
-                username: Some(Username::parse("root").unwrap()),
-                ..UserUpdate::default()
-            },
-        )
+    // Straight SQL: every repository mutation opens its own transaction and
+    // would queue behind this one.
+    sqlx::query("UPDATE users SET username = 'root', updated_at = NOW() WHERE id = $1")
+        .bind(SEEDED_ADMIN)
+        .execute(&mut *holder)
         .await
-        .unwrap()
-        .expect("the seeded administrator exists");
+        .expect("the rename runs");
 
     let waiting_pool = pool.clone();
     let waiter = tokio::spawn(async move {
@@ -343,64 +399,116 @@ async fn lock_user_on_a_missing_user_locks_nothing() {
     tx.commit().await.unwrap();
 }
 
+/// A demotion waits for the administrator-membership lock and re-reads the
+/// count once it has it.
+///
+/// Held from outside through the same key the repository takes
+/// (`common::races::hold_admin_membership_lock`), so the interleaving is
+/// chosen rather than hoped for: the demotion cannot reach its count until the
+/// holder — which demotes the *other* administrator meanwhile — has committed.
+/// A repository that counted before waiting would see two administrators and
+/// let this through.
 #[tokio::test]
-async fn lock_admin_membership_serialises_two_transactions() {
+async fn a_demotion_waits_for_the_lock_and_re_counts_behind_it() {
     let (_postgres, pool) = common::db::test_pool_with(4).await;
     let repository = UserRepository::new(&pool);
 
-    let mut holder = pool.begin().await.unwrap();
-    repository.lock_admin_membership(&mut holder).await.unwrap();
-
-    // The whole point of the lock: this second administrator only becomes
-    // visible to the waiter's re-count after the first transaction commits.
     let mut second_admin = new_user("grace", "grace@example.com");
     second_admin.admin = true;
-    repository.insert(&mut holder, &second_admin).await.unwrap();
+    let grace = insert(&pool, &second_admin).await;
+    assert_eq!(admin_count(&pool).await, 2);
 
-    let waiting_pool = pool.clone();
+    let mut holder = hold_admin_membership_lock(&pool).await;
+
+    let demoting_pool = pool.clone();
     let waiter = tokio::spawn(async move {
-        let repository = UserRepository::new(&waiting_pool);
-        let mut tx = waiting_pool.begin().await.unwrap();
-        repository.lock_admin_membership(&mut tx).await.unwrap();
-        let count = repository.count_admins(&mut tx).await.unwrap();
-        tx.commit().await.unwrap();
-        count
+        UserRepository::new(&demoting_pool)
+            .replace(grace.id, Username::parse("grace").unwrap(), false)
+            .await
     });
 
     tokio::time::sleep(BLOCKED_FOR).await;
     assert!(
         !waiter.is_finished(),
-        "a second pg_advisory_xact_lock on the same key did not wait"
+        "the demotion did not wait for the advisory lock"
     );
 
+    // The other administrator goes inside the holding transaction, so the
+    // waiter's re-count sees one administrator where it would have seen two.
+    sqlx::query("UPDATE users SET admin = FALSE WHERE id = $1")
+        .bind(SEEDED_ADMIN)
+        .execute(&mut *holder)
+        .await
+        .expect("the seeded administrator is demoted");
     holder.commit().await.unwrap();
 
-    let count = tokio::time::timeout(UNBLOCKED_WITHIN, waiter)
+    let error = tokio::time::timeout(UNBLOCKED_WITHIN, waiter)
         .await
         .expect("the advisory lock is released on commit")
-        .expect("the waiting task did not panic");
-    assert_eq!(count, 2, "the re-count did not see the committed work");
+        .expect("the waiting task did not panic")
+        .expect_err("the re-count found the last administrator");
+    assert!(
+        matches!(&error, Error::Conflict(message) if message == "cannot demote the last administrator"),
+        "unexpected error: {error:?}"
+    );
+
+    // The rejection rolled its transaction back whole: neither field moved.
+    let row = repository.find(grace.id).await.unwrap().expect("grace");
+    assert!(row.admin);
+    assert_eq!(admin_count(&pool).await, 1);
 }
 
+/// The race `docs/data-model.md` names, at the repository's own level: two
+/// concurrent demotions of the final two administrators, and one survives.
+///
+/// Whichever transaction takes the advisory lock first commits; the other
+/// waits, re-counts and finds one administrator left. Both orders are
+/// legitimate, so the assertion is on the pair rather than on a fixed winner.
 #[tokio::test]
-async fn the_advisory_lock_is_released_on_rollback() {
-    let (_postgres, pool) = common::db::test_pool_with(4).await;
+async fn two_concurrent_demotions_of_the_last_two_administrators_leave_one() {
+    let (_postgres, pool) = common::db::test_pool_with(6).await;
     let repository = UserRepository::new(&pool);
 
-    let mut rolled_back = pool.begin().await.unwrap();
-    repository
-        .lock_admin_membership(&mut rolled_back)
-        .await
-        .unwrap();
-    rolled_back.rollback().await.unwrap();
+    let mut first = new_user("ada", "ada@example.com");
+    first.admin = true;
+    let ada = insert(&pool, &first).await;
+    let mut second = new_user("grace", "grace@example.com");
+    second.admin = true;
+    let grace = insert(&pool, &second).await;
 
-    // Nothing to unlock by hand: the next transaction takes it immediately.
-    let mut tx = pool.begin().await.unwrap();
-    tokio::time::timeout(UNBLOCKED_WITHIN, repository.lock_admin_membership(&mut tx))
+    // Exactly two administrators: the seeded one steps aside first, which is
+    // legitimate while `ada` and `grace` remain.
+    repository
+        .replace(SEEDED_ADMIN, Username::parse("admin").unwrap(), false)
         .await
-        .expect("a rolled-back transaction does not keep the advisory lock")
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("two administrators remain");
+    assert_eq!(admin_count(&pool).await, 2);
+
+    let demote_ada = repository.replace(ada.id, Username::parse("ada").unwrap(), false);
+    let demote_grace = repository.replace(grace.id, Username::parse("grace").unwrap(), false);
+
+    let (first, second) = tokio::time::timeout(UNBLOCKED_WITHIN, async {
+        tokio::join!(demote_ada, demote_grace)
+    })
+    .await
+    .expect("the two demotions did not deadlock");
+
+    let refused = [&first, &second]
+        .into_iter()
+        .filter_map(|result| result.as_ref().err())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        refused.len(),
+        1,
+        "exactly one demotion should have been refused: {first:?}, {second:?}"
+    );
+    assert!(
+        matches!(refused[0], Error::Conflict(message) if message == "cannot demote the last administrator"),
+        "unexpected error: {:?}",
+        refused[0]
+    );
+
+    assert_eq!(admin_count(&pool).await, 1);
 }
 
 /// Not a credential: a stand-in for the SHA-256 hex of an opaque token

@@ -7,10 +7,16 @@
 //! - *Administrator membership.* "User deletion and changes to `users.admin`
 //!   preserve at least one administrator. Before authoritative reads or
 //!   writes, these operations acquire the same transaction-scoped database
-//!   advisory lock." [`UserRepository::lock_admin_membership`] is that lock.
-//!   The invariant is a composition — lock, re-count, then mutate — and lives
-//!   with the routes; the repository only provides the pieces, so
-//!   [`UserRepository::delete`] deliberately does not check anything.
+//!   advisory lock for administrator membership; after waiting, re-read the
+//!   current administrator count and reject a deletion or demotion that would
+//!   leave none. Hold the lock through commit, and acquire it before any
+//!   user-row or project locks needed by the operation. **This is a repository
+//!   invariant**, not a per-row `CHECK`." So it is held here, whole:
+//!   [`UserRepository::replace`] and [`UserRepository::delete`] own the
+//!   transaction that locks, counts, mutates and commits, and a caller that
+//!   can call either cannot leave the database without an administrator. The
+//!   lock and the count are private for the same reason — a caller holding the
+//!   pieces is a caller that can drop one.
 //! - *The user row.* "Login, refresh, reset-link issuance, password changes
 //!   and reset-token consumption lock the user row before locking or writing
 //!   that user's token rows." [`UserRepository::lock_user`] is that lock, and
@@ -29,9 +35,20 @@ use chrono::Utc;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use crate::models::{Email, NewUser, User, UserUpdate};
+use crate::models::{Email, NewUser, User, UserUpdate, Username};
 use crate::prelude::*;
 use crate::repositories::unique_violation;
+
+/// The 409 for demoting the last administrator (`SPEC.md`, "Users").
+const LAST_ADMIN_DEMOTION: &str = "cannot demote the last administrator";
+
+/// The 409 for deleting the last administrator.
+const LAST_ADMIN_DELETION: &str = "cannot delete the last administrator";
+
+/// The 409 for deleting your own account. Separate from
+/// [`LAST_ADMIN_DELETION`]: self-deletion is refused even when ten other
+/// administrators remain, so no count can make it legal.
+const SELF_DELETION: &str = "cannot delete yourself";
 
 /// The key every administrator-membership lock uses.
 ///
@@ -45,9 +62,12 @@ pub const ADMIN_MEMBERSHIP_LOCK_KEY: i64 = 0x4D41_5253_5553_4552;
 /// All SQL against `users` (`ARCHITECTURE.md`, "Orchestrator internals").
 ///
 /// Reads that need no transaction go straight to the pool; everything that
-/// mutates, locks or has to be read under someone else's lock takes the
-/// caller's `&mut PgConnection`, so one transaction can hold a whole
-/// composition — the administrator lock, a re-count and a delete — together.
+/// has to be read or written under someone else's lock takes the caller's
+/// `&mut PgConnection`, so one transaction — a password change, say — can hold
+/// a whole composition together. The two mutations that carry the
+/// administrator-membership invariant are the other way round: they open their
+/// own transaction, because the lock, the count and the mutation are not
+/// separable.
 pub struct UserRepository<'a> {
     pool: &'a PgPool,
 }
@@ -248,16 +268,18 @@ impl<'a> UserRepository<'a> {
     }
 
     /// Apply the set fields of `update` and return the stored row, or `None`
-    /// when no user has this id (the route decides whether that is a 404).
+    /// when no user has this id (the caller decides whether that is a 404).
     ///
     /// `COALESCE` per column keeps "leave it alone" in the statement rather
     /// than in a query builder, so one prepared statement serves `PUT
     /// /users/{id}` and `PATCH /users/me`. `updated_at` moves on every call.
     ///
-    /// Changing `admin` is only half of the administrator-membership
-    /// invariant: the caller has to hold [`UserRepository::lock_admin_membership`]
-    /// and re-count first (`docs/data-model.md`, "Users and authentication").
-    pub async fn update(
+    /// Private, because it can clear `admin`: the administrator-membership
+    /// invariant is this module's, and a statement that can break it is not
+    /// something a caller gets to hold on its own
+    /// (`docs/data-model.md`, "Users and authentication"). The two public
+    /// mutations below are how it is reached.
+    async fn update(
         &self,
         tx: &mut PgConnection,
         id: Uuid,
@@ -285,6 +307,80 @@ impl<'a> UserRepository<'a> {
         .map_err(map_duplicate)?;
 
         debug!(user_id = %id, updated = updated.is_some(), "user updated");
+
+        Ok(updated)
+    }
+
+    /// Set the two administrator-settable fields of one user and return the
+    /// stored row (`PUT /users/{id}`).
+    ///
+    /// The whole administrator-membership invariant, in one call: `BEGIN`, the
+    /// advisory lock as the first statement, the target row `FOR UPDATE`, the
+    /// count re-read under the lock, the update, `COMMIT`. A rejection returns
+    /// before `commit`, so `tx` rolls back and `username` is not applied
+    /// either — "a rejected request changes no fields" (`SPEC.md`, "Users").
+    ///
+    /// The count is only consulted for a true → false transition. Promoting,
+    /// renaming or writing the same two values back cannot reduce the number
+    /// of administrators, so they never fail the check — but they still take
+    /// the lock, which is what makes a concurrent demotion wait for them
+    /// rather than counting around them.
+    ///
+    /// A missing id is [`Error::NotFound`], a duplicate username the
+    /// [`Error::Conflict`] [`UserRepository::insert`] describes, and the last
+    /// administrator's demotion [`Error::Conflict`] with the message
+    /// `SPEC.md`, "Users" fixes. Demoting *yourself* is allowed while another
+    /// administrator remains: the acting user is not a parameter here, only in
+    /// [`UserRepository::delete`].
+    pub async fn replace(&self, id: Uuid, username: Username, admin: bool) -> Result<User> {
+        let mut tx = self.pool.begin().await?;
+
+        self.lock_admin_membership(&mut tx).await?;
+
+        let Some(current) = self.lock_user(&mut tx, id).await? else {
+            return Err(Error::NotFound);
+        };
+
+        if current.admin && !admin && self.count_admins(&mut tx).await? <= 1 {
+            debug!(user_id = %id, "demotion refused: last administrator");
+            return Err(Error::Conflict(LAST_ADMIN_DEMOTION.to_string()));
+        }
+
+        let update = UserUpdate {
+            username: Some(username),
+            admin: Some(admin),
+            ..UserUpdate::default()
+        };
+
+        // `lock_user` already proved the row exists and holds it, so `None` is
+        // unreachable; `NotFound` rather than a panic all the same.
+        let updated = self
+            .update(&mut tx, id, &update)
+            .await?
+            .ok_or(Error::NotFound)?;
+        tx.commit().await?;
+
+        Ok(updated)
+    }
+
+    /// Set the one field a user owns about themselves and return the stored
+    /// row, or [`Error::NotFound`] (`PATCH /users/me`).
+    ///
+    /// No administrator-membership lock: `notify_email` is not `admin` and
+    /// this cannot change how many administrators exist, so serialising every
+    /// preference change against every role change would buy nothing.
+    pub async fn set_notify_email(&self, id: Uuid, notify_email: bool) -> Result<User> {
+        let update = UserUpdate {
+            notify_email: Some(notify_email),
+            ..UserUpdate::default()
+        };
+
+        let mut tx = self.pool.begin().await?;
+        let updated = self
+            .update(&mut tx, id, &update)
+            .await?
+            .ok_or(Error::NotFound)?;
+        tx.commit().await?;
 
         Ok(updated)
     }
@@ -404,20 +500,53 @@ impl<'a> UserRepository<'a> {
         Ok(user)
     }
 
-    /// Delete a user, reporting whether a row matched.
+    /// Delete a user, or say why not (`DELETE /users/{id}`).
     ///
-    /// `Ok(false)` rather than an error when nothing matched: the route turns
-    /// that into 404. This never checks the administrator invariant — see the
-    /// module documentation — and both token tables cascade.
-    pub async fn delete(&self, tx: &mut PgConnection, id: Uuid) -> Result<bool> {
-        let result = sqlx::query!("DELETE FROM users WHERE id = $1", id)
+    /// The deletion half of the administrator-membership invariant, in the
+    /// same shape as [`UserRepository::replace`]: advisory lock, target row,
+    /// count, delete, commit. `acting_user_id` is here for one rule only —
+    /// "self-deletion is separately prohibited" (`docs/data-model.md`) — and
+    /// that rule is settled before the transaction opens, because it is not a
+    /// question about administrator membership and there is nothing to lock or
+    /// count.
+    ///
+    /// An unknown id is [`Error::NotFound`]; the two refusals are
+    /// [`Error::Conflict`]. Both token tables cascade, and everything else the
+    /// user owns follows the schema's foreign keys (`docs/data-model.md`).
+    pub async fn delete(&self, id: Uuid, acting_user_id: Uuid) -> Result<()> {
+        if id == acting_user_id {
+            debug!(actor_id = %acting_user_id, "deletion refused: self");
+            return Err(Error::Conflict(SELF_DELETION.to_string()));
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        self.lock_admin_membership(&mut tx).await?;
+
+        let Some(target) = self.lock_user(&mut tx, id).await? else {
+            return Err(Error::NotFound);
+        };
+
+        if target.admin && self.count_admins(&mut tx).await? <= 1 {
+            debug!(user_id = %id, "deletion refused: last administrator");
+            return Err(Error::Conflict(LAST_ADMIN_DELETION.to_string()));
+        }
+
+        // `lock_user` holds the row, so this matches it; `NotFound` rather
+        // than an assertion all the same.
+        let deleted = sqlx::query!("DELETE FROM users WHERE id = $1", id)
             .execute(&mut *tx)
-            .await?;
+            .await?
+            .rows_affected()
+            > 0;
+        if !deleted {
+            return Err(Error::NotFound);
+        }
+        tx.commit().await?;
 
-        let deleted = result.rows_affected() > 0;
-        debug!(user_id = %id, deleted, "user deleted");
+        debug!(user_id = %id, "user deleted");
 
-        Ok(deleted)
+        Ok(())
     }
 
     /// How many administrators exist right now.
@@ -425,8 +554,9 @@ impl<'a> UserRepository<'a> {
     /// Takes the caller's connection because the only correct way to use it is
     /// inside the transaction that holds
     /// [`UserRepository::lock_admin_membership`]: a count read outside that
-    /// lock is stale the moment it is returned.
-    pub async fn count_admins(&self, tx: &mut PgConnection) -> Result<i64> {
+    /// lock is stale the moment it is returned. Private with that lock, and
+    /// for the same reason.
+    async fn count_admins(&self, tx: &mut PgConnection) -> Result<i64> {
         let count = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!" FROM users WHERE admin"#)
             .fetch_one(&mut *tx)
             .await?;
@@ -447,8 +577,9 @@ impl<'a> UserRepository<'a> {
     /// value it returned is not authoritative and must be replaced by this one.
     ///
     /// When the same transaction also needs the administrator-membership lock,
-    /// take that one **first** — see
-    /// [`UserRepository::lock_admin_membership`].
+    /// that one is taken **first**; the two mutations that need both,
+    /// [`UserRepository::replace`] and [`UserRepository::delete`], take them in
+    /// that order inside this module.
     pub async fn lock_user(&self, tx: &mut PgConnection, id: Uuid) -> Result<Option<User>> {
         let user = sqlx::query_as!(
             User,
@@ -479,15 +610,21 @@ impl<'a> UserRepository<'a> {
     /// re-read the count under it, then mutate, and hold it through commit
     /// (`docs/data-model.md`, "Users and authentication").
     ///
-    /// **Lock order.** Acquire this before any user-row lock
-    /// ([`UserRepository::lock_user`]) or project lock in the same
+    /// Private: the only two operations that may take it are
+    /// [`UserRepository::replace`] and [`UserRepository::delete`], which take
+    /// it as their first statement. [`ADMIN_MEMBERSHIP_LOCK_KEY`] stays public
+    /// so a test can hold the same lock from outside and prove they wait for
+    /// it.
+    ///
+    /// **Lock order.** Acquired before the user-row lock
+    /// ([`UserRepository::lock_user`]) and before any project lock in the same
     /// transaction. Everything that takes both takes them in this order, which
     /// is what keeps the pair deadlock-free.
     ///
     /// `pg_advisory_xact_lock` releases at commit or rollback; there is
-    /// nothing for the caller to unlock, and a connection returned to the pool
+    /// nothing to unlock by hand, and a connection returned to the pool
     /// mid-transaction cannot leak the lock.
-    pub async fn lock_admin_membership(&self, tx: &mut PgConnection) -> Result<()> {
+    async fn lock_admin_membership(&self, tx: &mut PgConnection) -> Result<()> {
         sqlx::query!(
             "SELECT pg_advisory_xact_lock($1)",
             ADMIN_MEMBERSHIP_LOCK_KEY

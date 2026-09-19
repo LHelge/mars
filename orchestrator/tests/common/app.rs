@@ -948,6 +948,90 @@ impl TestApp {
             .expect("the lookup runs")
             .expect("the created user is there")
     }
+
+    /// The raw response to `GET /api/projects/{pid}/tasks/stream`, over
+    /// `reqwest` on the HTTP transport (`SPEC.md`, "SSE: task stream").
+    ///
+    /// `reqwest` rather than `axum-test`, because an SSE response never ends:
+    /// `TestResponse` buffers the whole body before it hands anything back, so
+    /// a request that succeeds would hang the test. This returns as soon as
+    /// the headers are in, which is what a refused open (401, 403, 404, 400)
+    /// is asserted on and what [`TestApp::sse`] turns into a byte stream.
+    ///
+    /// `None` leaves the parameter out of the request altogether, which is how
+    /// "no token" and "no cursor" are spelled; `last_event_id` goes in the
+    /// header of that name, `after` in the query string.
+    pub async fn sse_response(
+        &self,
+        project_id: Uuid,
+        token: Option<&str>,
+        after: Option<&str>,
+        last_event_id: Option<&str>,
+    ) -> reqwest::Response {
+        let base = self
+            .http_server
+            .server_address()
+            .expect("the HTTP transport has an address");
+
+        let mut url = base
+            .join(&format!("/api/projects/{project_id}/tasks/stream"))
+            .expect("the stream path is a valid URL");
+        {
+            let mut query = url.query_pairs_mut();
+            if let Some(after) = after {
+                query.append_pair("after", after);
+            }
+            if let Some(token) = token {
+                query.append_pair("token", token);
+            }
+        }
+
+        let mut request = reqwest::Client::new().get(url);
+        if let Some(last_event_id) = last_event_id {
+            request = request.header("Last-Event-ID", last_event_id);
+        }
+
+        request
+            .send()
+            .await
+            .expect("the request reaches the server")
+    }
+
+    /// An open task stream: the response bytes of a request that answered
+    /// `200`.
+    ///
+    /// The arrangement step for every scenario about what the stream *sends*;
+    /// `common::sse::SseReader` turns the bytes into frames. A scenario about
+    /// a refused open uses [`TestApp::sse_response`] and asserts on the
+    /// status.
+    pub async fn sse(
+        &self,
+        project_id: Uuid,
+        token: &str,
+        after: Option<i64>,
+        last_event_id: Option<i64>,
+    ) -> impl futures_util::Stream<Item = bytes::Bytes> + use<> {
+        use futures_util::StreamExt;
+
+        let response = self
+            .sse_response(
+                project_id,
+                Some(token),
+                after.map(|after| after.to_string()).as_deref(),
+                last_event_id.map(|id| id.to_string()).as_deref(),
+            )
+            .await;
+
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::OK,
+            "the stream opens",
+        );
+
+        response
+            .bytes_stream()
+            .map(|chunk| chunk.expect("the body streams"))
+    }
 }
 
 /// Assert that `response` tells the browser to drop the refresh cookie.

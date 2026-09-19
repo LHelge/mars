@@ -37,6 +37,11 @@ pub mod git;
 /// crate's advisory-lock key, so it needs no mock and stays ungated.
 pub mod races;
 
+/// The Server-Sent Events wire format, parsed: what `TestApp::sse` hands a
+/// scenario once it has the bytes. Generic over the byte stream, so it stays
+/// ungated like `common::db`.
+pub mod sse;
+
 /// `TestApp` needs the mocks, which exist only behind the `integration-tests`
 /// feature, so the module is gated rather than the items inside it: the test
 /// binaries that only use `common::db` still compile without the feature.

@@ -213,7 +213,6 @@ pub fn test_spec(name: &str, cmd: &[&str]) -> ContainerSpec {
         network: TEST_NETWORK.to_string(),
         extra_hosts: Vec::new(),
         runtime: None,
-        open_stdin: false,
     }
 }
 

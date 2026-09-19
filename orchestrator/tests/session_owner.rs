@@ -342,7 +342,6 @@ async fn start_container(app: &TestApp, fixture: &Fixture) -> ContainerId {
         network: "mars-sessions".to_string(),
         extra_hosts: Vec::new(),
         runtime: None,
-        open_stdin: true,
     };
 
     let engine = app.engine();

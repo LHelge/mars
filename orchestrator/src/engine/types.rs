@@ -166,9 +166,6 @@ pub struct ContainerSpec {
     /// The `HostConfig.Runtime` to use, from the profile; `None` leaves the
     /// engine's default.
     pub runtime: Option<String>,
-    /// Whether stdin is kept open and attachable (`OpenStdin`). The session
-    /// owner writes the CLI's input through it.
-    pub open_stdin: bool,
 }
 
 impl fmt::Debug for ContainerSpec {
@@ -195,7 +192,6 @@ impl fmt::Debug for ContainerSpec {
             .field("network", &self.network)
             .field("extra_hosts", &self.extra_hosts)
             .field("runtime", &self.runtime)
-            .field("open_stdin", &self.open_stdin)
             .finish()
     }
 }
@@ -303,6 +299,15 @@ pub struct ContainerSummary {
     pub running: bool,
 }
 
+/// The FIFO a session image's entrypoint makes and opens read-write as the
+/// CLI's stdin, and the one [`attach_stdin`](super::ContainerEngine::attach_stdin)
+/// relays into (ADR 0034; `ARCHITECTURE.md`, "Session image").
+///
+/// Inside the container's own filesystem and not on a session mount: a bind
+/// mount may be a filesystem that has no FIFOs, and a new container starts
+/// without one. `images/*/mars-entrypoint` carry the same path.
+pub const STDIN_FIFO: &str = "/tmp/mars-stdin";
+
 /// The write half of an attached container's stdin.
 ///
 /// A trait object rather than a concrete type so the bollard implementation
@@ -390,7 +395,6 @@ mod tests {
             network: "mars-sessions".to_string(),
             extra_hosts: vec!["host.containers.internal:host-gateway".to_string()],
             runtime: None,
-            open_stdin: true,
         }
     }
 

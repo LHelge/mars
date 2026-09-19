@@ -49,7 +49,7 @@ use async_trait::async_trait;
 // `bollard` names three types the engine's own vocabulary also names. They are
 // imported under an alias rather than qualified at every use, so a signature
 // below can never be read as the wrong one.
-use bollard::container::AttachContainerResults;
+use bollard::container::LogOutput;
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::models::{
     ContainerInspectResponse, ContainerState as BollardContainerState,
@@ -57,10 +57,10 @@ use bollard::models::{
     NetworkConnectRequest, NetworkCreateRequest, SystemVersion,
 };
 use bollard::query_parameters::{
-    AttachContainerOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder,
-    InspectContainerOptions, InspectNetworkOptions, KillContainerOptionsBuilder,
-    ListContainersOptionsBuilder, RemoveContainerOptionsBuilder, StartContainerOptions,
-    StopContainerOptionsBuilder, WaitContainerOptionsBuilder,
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectContainerOptions,
+    InspectNetworkOptions, KillContainerOptionsBuilder, ListContainersOptionsBuilder,
+    RemoveContainerOptionsBuilder, StartContainerOptions, StopContainerOptionsBuilder,
+    WaitContainerOptionsBuilder,
 };
 use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::StreamExt;
@@ -70,7 +70,7 @@ use super::spec::to_bollard;
 use super::streams::{BollardExec, BollardStdin, resize_exec};
 use super::{
     ContainerEngine, ContainerId, ContainerInfo, ContainerSpec, ContainerState, ContainerSummary,
-    EngineError, EngineKind, ExecSession, ExitStatus, Signal, StdinWriter,
+    EngineError, EngineKind, ExecSession, ExitStatus, STDIN_FIFO, Signal, StdinWriter,
 };
 use crate::prelude::*;
 
@@ -369,6 +369,102 @@ fn names_podman(name: &str) -> bool {
 /// use those statuses for other things too).
 fn says_already(message: &str) -> bool {
     message.to_lowercase().contains("already")
+}
+
+impl BollardEngine {
+    /// Create an exec in a container, without starting it.
+    ///
+    /// A container that is not running refuses, and the refusal is a
+    /// [`EngineError::Conflict`] however the engine numbered it (see
+    /// [`says_not_running`]); a missing container is [`EngineError::NotFound`].
+    async fn create_exec(
+        &self,
+        id: &ContainerId,
+        options: CreateExecOptions<String>,
+    ) -> Result<String, EngineError> {
+        let created =
+            self.docker.create_exec(&id.0, options).await.map_err(
+                |error| match EngineError::from(error) {
+                    EngineError::Api { status, message } if says_not_running(&message) => {
+                        debug!(container = %id, status, "the container is not running");
+                        EngineError::Conflict(message)
+                    }
+                    other => other,
+                },
+            )?;
+
+        Ok(created.id)
+    }
+}
+
+/// What the stdin relay writes on its stdout once the FIFO is there.
+const RELAY_READY: &str = "ready";
+
+/// How long [`await_relay_ready`] waits for [`RELAY_READY`]. Longer than the
+/// ten seconds the relay itself waits for the FIFO, so the relay's own exit is
+/// what normally ends the wait.
+const RELAY_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The command of the exec that relays the owner's writes into [`STDIN_FIFO`]
+/// (ADR 0034).
+///
+/// It waits for the FIFO rather than assuming it, because the launcher attaches
+/// as soon as the container has started and the entrypoint may not have run
+/// `mkfifo` yet — and a `cat >` that got there first would create a regular
+/// file the CLI never reads. Opening the FIFO for writing cannot block for
+/// long: the entrypoint opens it read-write for the CLI straight after making
+/// it. `cat` ends when this connection closes, and the CLI's own read-write
+/// descriptor is why that is not an EOF for the CLI. `sleep 1` is the fallback
+/// for a `sleep` that takes no fractions.
+fn stdin_relay_command() -> Vec<String> {
+    let script = format!(
+        "i=0; while [ ! -p {fifo} ]; do i=$((i+1)); [ \"$i\" -le 100 ] || exit 1; \
+         sleep 0.1 2>/dev/null || sleep 1; done; echo {RELAY_READY}; exec cat >{fifo}",
+        fifo = STDIN_FIFO,
+    );
+
+    vec!["/bin/sh".to_string(), "-c".to_string(), script]
+}
+
+/// Read the relay's output until it has said [`RELAY_READY`].
+///
+/// A relay that ends first found no FIFO — an image whose entrypoint does not
+/// honour the contract (`ARCHITECTURE.md`, "Session image") — or lost its
+/// container, and either way there is no stdin to hand back.
+async fn await_relay_ready(
+    id: &ContainerId,
+    output: &mut (impl futures_util::Stream<Item = Result<LogOutput, bollard::errors::Error>> + Unpin),
+) -> Result<(), EngineError> {
+    let mut seen = Vec::new();
+    let wait = async {
+        while let Some(chunk) = output.next().await {
+            seen.extend_from_slice(&chunk?.into_bytes());
+            if seen
+                .windows(RELAY_READY.len())
+                .any(|window| window == RELAY_READY.as_bytes())
+            {
+                return Ok(true);
+            }
+        }
+        Ok::<bool, EngineError>(false)
+    };
+
+    match tokio::time::timeout(RELAY_READY_TIMEOUT, wait).await {
+        Ok(Ok(true)) => Ok(()),
+        Ok(Ok(false)) => {
+            warn!(container = %id, "the stdin relay ended before it was ready");
+            Err(EngineError::Unsupported(format!(
+                "the container has no stdin FIFO at {STDIN_FIFO}"
+            )))
+        }
+        Ok(Err(error)) => Err(error),
+        Err(_) => {
+            warn!(container = %id, "the stdin relay did not become ready in time");
+            Err(EngineError::Unsupported(format!(
+                "the stdin relay into {STDIN_FIFO} did not become ready"
+            )))
+        }
+    }
 }
 
 /// Whether an engine's refusal of an exec says the container is not running.
@@ -963,27 +1059,55 @@ impl ContainerEngine for BollardEngine {
     }
 
     async fn attach_stdin(&self, id: &ContainerId) -> Result<Box<dyn StdinWriter>, EngineError> {
-        // Stdin and nothing else, with `logs` off so the engine replays
-        // nothing: the CLI's output is the transcript file the owner tails,
-        // and this socket is a pipe for input (ADR 0010; `ARCHITECTURE.md`,
-        // "Session container specification", Stdin row). `Tty` is off on the
-        // container itself, which is what keeps the two directions apart.
-        let options = AttachContainerOptionsBuilder::new()
-            .stdin(true)
-            .stdout(false)
-            .stderr(false)
-            .stream(true)
-            .logs(false)
-            .build();
+        // Not the container's own stdin: an exec that relays into the FIFO the
+        // image's entrypoint gave the CLI as stdin (ADR 0034; `ARCHITECTURE.md`,
+        // "Engine adapter", the stdin row). The CLI holds that FIFO open
+        // read-write, so this connection closing — an owner dropped, an
+        // orchestrator restarted — ends the relay and never reaches the CLI as
+        // EOF, which a rootless Podman makes of a closed container attach
+        // whatever `StdinOnce` says. The user is left unset, so the relay runs
+        // as the container's own user and the FIFO is its own file.
+        let exec_id = self
+            .create_exec(
+                id,
+                CreateExecOptions {
+                    cmd: Some(stdin_relay_command()),
+                    attach_stdin: Some(true),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(false),
+                    tty: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await?;
 
-        let AttachContainerResults { output, input } =
-            self.docker.attach_container(&id.0, Some(options)).await?;
+        let started = self
+            .docker
+            .start_exec(
+                &exec_id,
+                Some(StartExecOptions {
+                    detach: false,
+                    tty: false,
+                    output_capacity: None,
+                }),
+            )
+            .await?;
+
+        let StartExecResults::Attached { input, mut output } = started else {
+            return Err(EngineError::Unsupported(
+                "the engine detached the stdin relay instead of attaching it".to_string(),
+            ));
+        };
+
+        // The relay says `ready` once the FIFO is there, so an image that never
+        // makes one fails the attach here instead of losing the first message.
+        await_relay_ready(id, &mut output).await?;
 
         info!(container = %id, "attached to the container's stdin");
 
         // The output half goes with the writer, drained by a task of its own:
-        // a hijacked connection nobody reads is one the engine may close, and
-        // the session owner never looks at output.
+        // its end is the relay's end — the container exited — and that is what
+        // turns the next write into an error instead of a silent loss.
         Ok(Box::new(BollardStdin::attached(id.clone(), input, output)))
     }
 
@@ -1004,10 +1128,9 @@ impl ContainerEngine for BollardEngine {
         // image's `agent` account is that uid and the engine test image has no
         // account by that name. `env` and `working_dir` stay unset, because
         // `/bin/bash -l` is a login shell and the image decides both.
-        let created = self
-            .docker
+        let exec_id = self
             .create_exec(
-                &id.0,
+                id,
                 CreateExecOptions {
                     cmd: Some(cmd.to_vec()),
                     user: Some(user.to_string()),
@@ -1018,22 +1141,12 @@ impl ContainerEngine for BollardEngine {
                     ..Default::default()
                 },
             )
-            .await
-            .map_err(|error| match EngineError::from(error) {
-                // Podman says the same thing as Docker with a different status
-                // (see `says_not_running`); both mean the terminal was asked
-                // for after the session's container had gone.
-                EngineError::Api { status, message } if says_not_running(&message) => {
-                    debug!(container = %id, status, "the container is not running");
-                    EngineError::Conflict(message)
-                }
-                other => other,
-            })?;
+            .await?;
 
         let started = self
             .docker
             .start_exec(
-                &created.id,
+                &exec_id,
                 Some(StartExecOptions {
                     detach: false,
                     tty: true,
@@ -1056,12 +1169,12 @@ impl ContainerEngine for BollardEngine {
         // The size the client opened with, so the shell's first prompt is
         // already the right width. It has to follow the start: there is no PTY
         // to resize until the process has one.
-        resize_exec(&self.docker, &created.id, cols, rows).await?;
+        resize_exec(&self.docker, &exec_id, cols, rows).await?;
 
         info!(container = %id, cols, rows, "started the terminal exec");
         Ok(Box::new(BollardExec::new(
             self.docker.clone(),
-            created.id,
+            exec_id,
             id.clone(),
             input,
             output,

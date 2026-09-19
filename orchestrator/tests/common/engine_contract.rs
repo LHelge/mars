@@ -52,10 +52,15 @@ use super::engine::{LABEL_TEST, run_id, unique_name};
 /// receives a signal from outside that namespace only if it has installed a
 /// handler for it (`pid_namespaces(7)`), so a bare `sleep` would ignore both
 /// and the container would never exit.
+///
+/// It opens with what a session image's entrypoint does for stdin — the FIFO at
+/// [`STDIN_FIFO`](mars_orchestrator::engine::STDIN_FIFO), held open read-write
+/// — because that is what `attach_stdin` relays into on a real engine (ADR
+/// 0034); the mock needs none of it and ignores the command.
 const TRAPPING_CMD: [&str; 3] = [
     "sh",
     "-c",
-    r#"trap "exit 143" TERM; trap "exit 42" INT; while true; do sleep 1; done"#,
+    r#"mkfifo /tmp/mars-stdin; exec 0<>/tmp/mars-stdin; trap "exit 143" TERM; trap "exit 42" INT; while true; do sleep 1; done"#,
 ];
 
 /// The exit code [`TRAPPING_CMD`] leaves on a `SIGTERM`, which is what
@@ -171,6 +176,8 @@ impl EngineContract {
         self.list_by_label_reports_running_and_exited_containers()
             .await;
         self.a_signal_reaches_the_containers_main_process().await;
+        self.a_dropped_stdin_writer_leaves_the_container_running()
+            .await;
         self.a_stdin_write_after_the_container_exited_fails().await;
         self.exec_pty_on_a_container_that_is_not_running_is_a_conflict()
             .await;
@@ -570,6 +577,46 @@ impl EngineContract {
         );
     }
 
+    /// Dropping the writer is not the end of the process that was reading it,
+    /// and a second attach is accepted: what an orchestrator restart does to a
+    /// running session (`ARCHITECTURE.md`, "Restart procedure"; ADR 0034). That
+    /// both writers reach the *same* process is asserted where there is a
+    /// process to ask, in `tests/engine.rs` and `tests/session_e2e.rs`.
+    pub async fn a_dropped_stdin_writer_leaves_the_container_running(&self) {
+        let (_spec, id) = self.running("contract-stdin-drop").await;
+
+        let mut stdin = self
+            .engine
+            .attach_stdin(&id)
+            .await
+            .expect("a running container's stdin attaches");
+        stdin.write_all(b"before\n").await.expect("the first write");
+        stdin.flush().await.expect("the first flush");
+        drop(stdin);
+
+        // Longer than an EOF took to end the process when a closed attach was
+        // one: about 100 ms on a rootless Podman.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let info = self
+            .engine
+            .inspect(&id)
+            .await
+            .expect("the container inspects");
+        assert_eq!(
+            info.state,
+            ContainerState::Running,
+            "dropping the stdin writer ended the container"
+        );
+
+        let mut again = self
+            .engine
+            .attach_stdin(&id)
+            .await
+            .expect("the stdin of a container that was attached before attaches again");
+        again.write_all(b"after\n").await.expect("the second write");
+        again.flush().await.expect("the second flush");
+    }
+
     /// A write to a container that has exited fails rather than being silently
     /// lost: a rootless Podman accepts and discards such writes, so the
     /// adapter's own detection is what has to turn one into an error.
@@ -642,7 +689,7 @@ impl EngineContract {
     /// `user` is `0:0` rather than the session's `1000:1000`, for the reason
     /// `common::engine::test_spec` gives: the image the suite runs may have no
     /// account at uid 1000, and no scenario here asserts anything about
-    /// ownership. `open_stdin` is on, because one scenario attaches.
+    /// ownership.
     fn spec(&self, scenario: &str) -> ContainerSpec {
         ContainerSpec {
             image: self.image.clone(),
@@ -660,7 +707,6 @@ impl EngineContract {
             network: self.env.network.clone(),
             extra_hosts: Vec::new(),
             runtime: None,
-            open_stdin: true,
         }
     }
 

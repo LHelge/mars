@@ -208,9 +208,20 @@ async fn pull_absent_image() {
     );
 }
 
+/// What a session image's entrypoint does for stdin, for a test command: make
+/// the FIFO and hold it open read-write as stdin, so no writer going away is an
+/// EOF (`ARCHITECTURE.md`, "Session image"; ADR 0034). The loop echoes each line
+/// into the bind mount and ends on a sentinel, because EOF never comes.
+fn fifo_echo_script() -> String {
+    format!(
+        r#"mkfifo {fifo}; exec 0<>{fifo}; while read line; do [ "$line" = END ] && exit 0; echo "$line" >> /mnt/out/echo.txt; done"#,
+        fifo = mars_orchestrator::engine::STDIN_FIFO,
+    )
+}
+
 /// The attach carries stdin and the container receives it, across two writes
 /// separated in time: the session owner's whole use of the socket
-/// (`ARCHITECTURE.md`, "Engine adapter", attach).
+/// (`ARCHITECTURE.md`, "Engine adapter", the stdin row).
 #[tokio::test]
 async fn attach_stdin_delivers_bytes() {
     let Some(engine) = connect_or_skip().await else {
@@ -223,20 +234,8 @@ async fn attach_stdin_delivers_bytes() {
 
     with_cleanup(engine, |cleanup| async move {
         let dir = writable_tempdir();
-        let mut spec = test_spec(
-            &unique_name("attach"),
-            &[
-                "sh",
-                "-c",
-                // A sentinel ends the loop instead of EOF: with `StdinOnce: false`
-                // Docker keeps the container's stdin open when the attach client
-                // disconnects, so a `cat` would never exit there, while Podman
-                // propagates the close as EOF (`ARCHITECTURE.md`, "Engine
-                // adapter", attach).
-                r#"while read line; do [ "$line" = END ] && exit 0; echo "$line" >> /mnt/out/echo.txt; done"#,
-            ],
-        );
-        spec.open_stdin = true;
+        let script = fifo_echo_script();
+        let mut spec = test_spec(&unique_name("attach"), &["sh", "-c", &script]);
         spec.binds = vec![rw_bind(&absolute(dir.path()), "/mnt/out")];
 
         let id = engine
@@ -260,6 +259,102 @@ async fn attach_stdin_delivers_bytes() {
         let written = std::fs::read_to_string(dir.path().join("echo.txt"))
             .expect("the container wrote the file");
         assert_eq!(written, "hello\nworld\n");
+    })
+    .await;
+}
+
+/// An orchestrator restart, as the engine sees it: the attachment is dropped
+/// and another one is made. The container's process must not notice — a
+/// rootless Podman turns a closed *container* attach into EOF on stdin, which
+/// the CLI exits on, and that is why the attachment is an exec relaying into a
+/// FIFO the process holds open itself (ADR 0034; `ARCHITECTURE.md`, "Restart
+/// procedure"). Both writes reach the one process, in order.
+#[tokio::test]
+async fn a_dropped_stdin_attachment_leaves_the_process_running_and_reattachable() {
+    let Some(engine) = connect_or_skip().await else {
+        return;
+    };
+    let engine = &engine;
+    ensure_test_image(engine).await;
+
+    with_cleanup(engine, |cleanup| async move {
+        let dir = writable_tempdir();
+        let script = fifo_echo_script();
+        let mut spec = test_spec(&unique_name("reattach"), &["sh", "-c", &script]);
+        spec.binds = vec![rw_bind(&absolute(dir.path()), "/mnt/out")];
+
+        let id = engine
+            .create(&spec)
+            .await
+            .expect("the container is created");
+        cleanup.container(&id);
+        engine.start(&id).await.expect("the container starts");
+
+        let mut first = engine.attach_stdin(&id).await.expect("stdin attaches");
+        first.write_all(b"before\n").await.expect("the first write");
+        first.flush().await.expect("the first flush");
+        drop(first);
+
+        // Long enough for an EOF to have ended the loop, had one arrived: the
+        // defect this guards against exited within about 100 ms.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let info = engine.inspect(&id).await.expect("the container inspects");
+        assert!(
+            info.state.is_running(),
+            "dropping the attachment ended the process: {:?}",
+            info.state
+        );
+
+        let mut second = engine.attach_stdin(&id).await.expect("stdin reattaches");
+        second
+            .write_all(b"after\n")
+            .await
+            .expect("the second write");
+        second
+            .write_all(b"END\n")
+            .await
+            .expect("the sentinel write");
+        second.flush().await.expect("the second flush");
+
+        assert_eq!(wait_within(engine, &id, WAIT_TIMEOUT).await.code, 0);
+
+        let written = std::fs::read_to_string(dir.path().join("echo.txt"))
+            .expect("the container wrote the file");
+        assert_eq!(
+            written, "before\nafter\n",
+            "one process read both attachments"
+        );
+    })
+    .await;
+}
+
+/// A container with no FIFO — an image whose entrypoint does not honour the
+/// contract — refuses the attach, instead of handing back a writer whose first
+/// message would be lost.
+#[tokio::test]
+async fn attach_stdin_without_the_fifo_is_refused() {
+    let Some(engine) = connect_or_skip().await else {
+        return;
+    };
+    let engine = &engine;
+    ensure_test_image(engine).await;
+
+    with_cleanup(engine, |cleanup| async move {
+        let spec = test_spec(&unique_name("no-fifo"), &["sleep", "300"]);
+        let id = engine
+            .create(&spec)
+            .await
+            .expect("the container is created");
+        cleanup.container(&id);
+        engine.start(&id).await.expect("the container starts");
+
+        let Some(error) = engine.attach_stdin(&id).await.err() else {
+            panic!("an attach with no FIFO to relay into was accepted");
+        };
+        assert!(
+            matches!(error, EngineError::Unsupported(_)),
+            "unexpected: {error:?}"
+        );
     })
     .await;
 }

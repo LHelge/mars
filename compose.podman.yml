@@ -1,0 +1,13 @@
+# Rootless Podman override (README.md, "Podman setup"; ADR 0035).
+#
+# `keep-id` maps the host service user onto the same uid inside the container,
+# so files under /data keep the service user's ownership and the mounted socket
+# stays usable. Podman then sets the container user from the host uid, so no
+# `user:` is given here; the image works under any uid.
+#
+#   COMPOSE_FILE=compose.yml:compose.podman.yml
+#
+# This is the only line that differs from the Docker deployment.
+services:
+  orchestrator:
+    userns_mode: keep-id

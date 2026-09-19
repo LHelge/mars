@@ -1,0 +1,13 @@
+# Docker override (README.md, "Podman setup", final paragraph; ADR 0035).
+#
+# Docker applies no user-namespace mapping, so the orchestrator itself runs as
+# uid 1000 and DATA_DIR_HOST must be owned by uid 1000 (ARCHITECTURE.md, "Uid
+# contract"). The image's own USER is already 1000:1000; this states it, so the
+# contract does not depend on the image default.
+#
+#   COMPOSE_FILE=compose.yml:compose.docker.yml
+#
+# This is the only line that differs from the Podman deployment.
+services:
+  orchestrator:
+    user: "1000:1000"

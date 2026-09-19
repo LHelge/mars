@@ -1,0 +1,145 @@
+# Mars deployment (README.md, "Deployment shape", "Configuration" and "Start";
+# ARCHITECTURE.md, "Components", "Networks" and "Storage").
+#
+# Three services: postgres (the only system of record), the orchestrator (API,
+# MCP listener, session owners, engine socket) and nginx (the built frontend,
+# proxying /api and /ws). Session containers are *not* here: the orchestrator
+# creates them on demand (ARCHITECTURE.md, "Components").
+#
+# The engine is chosen by an override file, because rootless Podman and Docker
+# differ in exactly one line on one service (ADR 0035):
+#
+#   COMPOSE_FILE=compose.yml:compose.podman.yml   # rootless Podman
+#   COMPOSE_FILE=compose.yml:compose.docker.yml   # Docker
+#
+# in `.env`, or `-f compose.yml -f compose.podman.yml` on the command line if a
+# compose implementation ignores COMPOSE_FILE from `.env`.
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # postgres:18 sets PGDATA=/var/lib/postgresql/18/docker and declares its
+    # volume at /var/lib/postgresql, one level up from the /var/lib/postgresql/data
+    # of postgres:17 and earlier. The named volume therefore covers the whole
+    # directory, which is what the image documents; mounting the old path would
+    # leave the actual data inside the container layer.
+    volumes:
+      - pgdata:/var/lib/postgresql
+    # `$$` survives compose interpolation, so the shell inside the container
+    # expands the variables the service itself was given.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Frontend network only: not reachable from session containers
+    # (ARCHITECTURE.md, "Components"). No published port either — nothing on
+    # the host needs to reach the database.
+    networks:
+      - mars-frontend
+    restart: unless-stopped
+
+  orchestrator:
+    build: ./orchestrator
+    image: mars-orchestrator:latest
+    # The whole `.env` (README.md, "Configuration"). The compose-only variables
+    # in it (COMPOSE_FILE, ENGINE_SOCKET_HOST, HTTP_PORT, POSTGRES_*) land in
+    # the container environment as well and are harmless: Config::from_env()
+    # ignores variables it does not know.
+    env_file: .env
+    # What compose knows better than `.env` does.
+    environment:
+      # Inside the compose network the database is `postgres`, whatever the
+      # `.env` value says. POSTGRES_PASSWORD has to be URL-safe for this to
+      # come out as a valid URL (README.md, "Configuration").
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # The path at which the orchestrator itself sees the data volume
+      # (ARCHITECTURE.md, "Storage"). DATA_DIR_HOST stays the host path,
+      # because bind-mount sources given to the engine are host paths.
+      DATA_DIR: /data
+      # Engine-independent inside the container: the host side of the socket
+      # varies through ENGINE_SOCKET_HOST, the container side never does.
+      DOCKER_HOST: unix:///run/engine.sock
+    volumes:
+      - "${DATA_DIR_HOST}:/data"
+      - "${ENGINE_SOCKET_HOST}:/run/engine.sock"
+    # ARCHITECTURE.md, "Trust boundaries": the orchestrator holds the engine
+    # socket, so its root filesystem is read-only. The git wrapper writes a
+    # temporary 0600 config file, so /tmp must be writable (orchestrator/Dockerfile).
+    # The two bind mounts above still work: the engine creates them, the
+    # process does not.
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    # The image carries no curl and no wget, so the probe is a subcommand of
+    # the binary; it asks GET /api/health on the local API_PORT (SPEC.md,
+    # "Health"). start_period covers migrations and the startup probe.
+    healthcheck:
+      test: ["CMD", "mars-orchestrator", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      mars-frontend: {}
+      # Session containers resolve MCP_URL's default host, `orchestrator`,
+      # through this network's DNS (README.md, "Configuration").
+      mars-sessions:
+        aliases:
+          - orchestrator
+    # Comfortably above STOP_GRACE_SECS (default 20). Stopping the
+    # orchestrator does not stop running session containers; they are
+    # re-adopted on the next start (README.md, "Operating notes").
+    stop_grace_period: 30s
+    restart: unless-stopped
+    # No `ports`: neither the API (7000) nor the MCP listener (7001) is
+    # published. Everything from outside arrives through nginx, and the MCP
+    # listener is reachable only from mars-sessions (ARCHITECTURE.md,
+    # "Networks").
+
+  nginx:
+    # The context is the repository root, because the build needs both
+    # `frontend/` and `nginx/`.
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    image: mars-nginx:latest
+    # Substituted into the server block by the official entrypoint.
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      API_PORT: ${API_PORT:-7000}
+    # The only published port. TLS is terminated in front of this by the
+    # operator (README.md, "Start").
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    networks:
+      - mars-frontend
+    restart: unless-stopped
+
+networks:
+  mars-frontend:
+    name: mars-frontend
+  # SESSION_NETWORK_INTERNAL must stay `mars-sessions` while this name is kept:
+  # the orchestrator attaches session containers to the network of that name,
+  # and it has to be this one for MCP to reach the orchestrator. No gateway and
+  # no masquerading (ARCHITECTURE.md, "Networks").
+  mars-sessions:
+    name: mars-sessions
+    internal: true
+  # mars-egress is deliberately NOT declared. The orchestrator creates it at
+  # startup if missing, and only session containers are ever attached to it.
+  # Declaring it here would make `compose down` try to remove a network that
+  # running session containers still use.
+
+volumes:
+  pgdata: {}

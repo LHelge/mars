@@ -40,3 +40,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0032](0032-run-state-on-stdin-attach.md) | A session is `running` when stdin is attached, not when `init` arrives | accepted |
 | [0033](0033-no-interactive-prompts-in-v1.md) | No interactive prompts: the agent never asks the host a question | accepted |
 | [0034](0034-cli-stdin-is-a-fifo-fed-by-an-exec.md) | The CLI's stdin is a FIFO it holds open itself, fed through an exec | accepted |
+| [0035](0035-compose-engine-variants-as-override-files.md) | Carry the Podman/Docker compose difference in one-line override files | accepted |

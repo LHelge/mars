@@ -1,10 +1,10 @@
 ---
 id: thes7
 title: "Add the TrackerMutation context: project-locked transaction, event collection, task_sessions touch and commit with notify"
-status: in_progress
+status: done
 priority: P0
 created: "2026-09-16T20:40:33.723830560Z"
-updated: "2026-09-19T09:01:58.436151356Z"
+updated: "2026-09-19T09:33:18.837382368Z"
 tags:
   - orchestrator
   - tracker

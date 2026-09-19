@@ -1,10 +1,10 @@
 ---
 id: kctj2
 title: "Add dependency and comment routes: POST/DELETE /tasks/{id}/dependencies with kind identity and cycle rejection, and POST /tasks/{id}/comments"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:44:08.521746833Z"
-updated: "2026-09-19T11:22:42.583959233Z"
+updated: "2026-09-19T12:17:49.239387127Z"
 tags:
   - orchestrator
   - tracker

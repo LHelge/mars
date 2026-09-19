@@ -1,10 +1,10 @@
 ---
 id: kunxh
 title: Build the orchestrator and nginx images and validate compose files in CI
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:44:36.994925400Z"
-updated: "2026-09-16T20:44:36.994925400Z"
+updated: "2026-09-19T16:33:34.104831523Z"
 tags:
   - infra
   - tests
@@ -13,6 +13,7 @@ depends_on:
   - h7479
   - sgg2e
 parent: "5czwa"
+attempts: 1
 ---
 
 ## Summary

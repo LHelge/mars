@@ -1,10 +1,10 @@
 ---
 id: "89fh2"
 title: "Add the task-states route module: list, create, rename and reorder, delete with refusals, and states_changed events"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:41:39.156347309Z"
-updated: "2026-09-17T20:04:48.111768247Z"
+updated: "2026-09-19T16:47:43.714827630Z"
 tags:
   - orchestrator
   - tracker
@@ -12,6 +12,7 @@ depends_on:
   - thes7
   - tepsh
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

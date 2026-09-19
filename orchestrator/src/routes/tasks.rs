@@ -521,8 +521,9 @@ struct KindQuery {
 ///
 /// Removes that kind alone: a pair joined by `blocks` and `discovered_from`
 /// keeps the provenance when the blocker goes. 400 for a missing or unknown
-/// `kind`; 404 for an unknown project, an unknown `{id}` or `{dep}`, and for
-/// an edge of that kind that is not there.
+/// `kind`; 404 `not found` for an unknown project, an unknown `{id}` or
+/// `{dep}`, and 404 `dependency not found` for an edge of that kind that is
+/// not there.
 ///
 /// 200 with a body rather than the usual 204 for a delete: `SPEC.md` types the
 /// response `Task`, because removing a blocker can unblock the task and the

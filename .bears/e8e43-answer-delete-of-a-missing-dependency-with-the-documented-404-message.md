@@ -1,14 +1,15 @@
 ---
 id: e8e43
 title: Answer DELETE of a missing dependency with the documented 404 message
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-19T13:44:13.360297134Z"
-updated: "2026-09-19T13:44:13.360297134Z"
+updated: "2026-09-19T16:47:49.423526828Z"
 tags:
   - orchestrator
   - tracker
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

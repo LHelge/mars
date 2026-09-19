@@ -43,6 +43,12 @@ pub mod races;
 #[cfg(feature = "integration-tests")]
 pub mod app;
 
+/// The code hand-off suites' shared arrangement: a ready project with a real
+/// repository, sessions with real work clones and the tracker rows a hand-off
+/// needs. Built on `TestApp`, so it is gated the same way.
+#[cfg(feature = "integration-tests")]
+pub mod handoffs;
+
 /// `use common::TestApp;` for the binaries that want it; the ones that only
 /// use `common::db` leave the re-export unused, which is the same situation
 /// `#![allow(dead_code)]` above covers for items.

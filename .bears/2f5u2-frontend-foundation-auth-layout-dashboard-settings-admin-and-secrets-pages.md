@@ -2,10 +2,10 @@
 id: "2f5u2"
 title: "Frontend foundation: auth, layout, dashboard, settings, admin and secrets pages"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:14:25.683075901Z"
-updated: "2026-09-16T20:15:48.661407247Z"
+updated: "2026-09-19T11:27:36.504409599Z"
 tags:
   - frontend
 depends_on:

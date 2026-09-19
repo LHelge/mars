@@ -1,10 +1,10 @@
 ---
 id: wcpjj
 title: "Implement SecretsPage: write-only manager at global, project and user scope with rename, replace, delete and the uses list"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:44:16.196344291Z"
-updated: "2026-09-19T11:13:54.585837644Z"
+updated: "2026-09-19T11:27:35.166513308Z"
 tags:
   - frontend
   - secrets

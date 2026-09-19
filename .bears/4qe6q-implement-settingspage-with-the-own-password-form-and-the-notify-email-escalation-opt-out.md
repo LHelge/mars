@@ -1,16 +1,17 @@
 ---
 id: "4qe6q"
 title: Implement SettingsPage with the own-password form and the notify_email escalation opt-out
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:44:41.026181343Z"
-updated: "2026-09-16T20:44:41.026181343Z"
+updated: "2026-09-19T11:23:38.032554692Z"
 tags:
   - frontend
   - auth
 depends_on:
   - hwebm
 parent: "2f5u2"
+attempts: 1
 ---
 
 ## Summary

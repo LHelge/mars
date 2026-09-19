@@ -38,9 +38,12 @@ mod common;
 use axum::http::StatusCode;
 use axum_test::TestResponse;
 use common::{AuthenticatedUser, TestApp};
+use mars_orchestrator::events::TaskActor;
+use mars_orchestrator::models::{NewSession, ProfileKind, TaskRef};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::projects::{NewProjectRequest, create_project};
-use mars_orchestrator::repositories::TaskRepository;
+use mars_orchestrator::repositories::{ProjectRepository, SessionRepository, TaskRepository};
+use mars_orchestrator::tracker::{TrackerMutation, claim_for_launch};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -820,4 +823,181 @@ async fn the_dashboard_needs_a_token() {
     let response = app.server.get("/api/tasks?state_kind=human").await;
     response.assert_status(StatusCode::UNAUTHORIZED);
     response.assert_json(&unauthorized());
+}
+
+// ---- release ----
+//
+// `POST /projects/{pid}/tasks/{id}/release` (`SPEC.md`, "Tasks"). What a
+// release *is* — which columns move, which stay, which event it writes — is
+// asserted against the tracker in `tests/tracker_leases.rs`; what is asserted
+// here is the endpoint around it: its status codes, its body and the two ways
+// of addressing the task.
+
+/// A session of this project, so that a lease has something to point at.
+///
+/// Through the project's own `default` profile, which `create_project` seeded
+/// serving `ready`.
+async fn session(app: &TestApp, pid: Uuid) -> Uuid {
+    let profile = ProjectRepository::new(&app.pool)
+        .list_profiles(pid)
+        .await
+        .expect("the profiles read")
+        .into_iter()
+        .next()
+        .expect("a new project has its default profile");
+
+    let new = NewSession::new(
+        pid,
+        profile.id,
+        ProfileKind::Conversational,
+        "main",
+        // Not a credential: a fake stand-in for the hashed MCP token (rule 3).
+        format!("fake-mcp-token-hash-{}", Uuid::new_v4()),
+    );
+
+    let mut tx = app.pool.begin().await.expect("a transaction begins");
+    let inserted = SessionRepository::new(&app.pool)
+        .insert(&mut tx, &new)
+        .await
+        .expect("the session inserts");
+    tx.commit().await.expect("the transaction commits");
+
+    inserted.id
+}
+
+/// Put this session's lease on the task, through the claim a launch makes.
+async fn claim(app: &TestApp, pid: Uuid, task_id: Uuid, session_id: Uuid, user_id: Uuid) {
+    let mut mutation = TrackerMutation::begin(&app.pool, pid, TaskActor::User { user_id })
+        .await
+        .expect("the mutation opens");
+
+    let task = TaskRepository::new(&app.pool)
+        .find_task_for_update(mutation.conn(), pid, TaskRef::Id(task_id))
+        .await
+        .expect("the task reads")
+        .expect("the task is in this project");
+
+    claim_for_launch(&mut mutation, &task, session_id)
+        .await
+        .expect("the claim succeeds");
+    mutation.commit().await.expect("the mutation commits");
+}
+
+/// `/api/projects/{pid}/tasks/{id}/release`.
+fn release_path(pid: Uuid, id: &str) -> String {
+    format!("/api/projects/{pid}/tasks/{id}/release")
+}
+
+#[tokio::test]
+async fn releasing_a_held_task_clears_the_lease_and_keeps_the_state() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "releaser").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(
+        &app,
+        &user,
+        pid,
+        json!({ "title": "Wire the tracker", "state": "ready" }),
+    )
+    .await;
+    let task_id: Uuid = serde_json::from_value(task["id"].clone()).expect("a task id");
+    let session_id = session(&app, pid).await;
+    claim(&app, pid, task_id, session_id, user.user.id).await;
+
+    let response = app
+        .post_as(&user, &release_path(pid, &task_id.to_string()))
+        .await;
+    response.assert_status(StatusCode::OK);
+
+    let released = response.json::<Value>();
+    assert_eq!(released["id"], task["id"]);
+    assert_eq!(released["lease_holder_session_id"], json!(null));
+    assert_eq!(released["lease_since"], json!(null));
+    // The state stays, and the attempt the claim counted stays with it: only a
+    // state change resets `attempts` (`SPEC.md`, "Tasks").
+    assert_eq!(released["state"], json!("ready"));
+    assert_eq!(released["attempts"], json!(1));
+    assert_eq!(released["closed_at"], json!(null));
+
+    let stream = events(&app, pid).await;
+    let (kind, payload) = stream.last().expect("the release is the last event");
+    assert_eq!(kind, "released");
+    assert_eq!(payload["reason"], json!("user"));
+    assert_eq!(
+        payload["actor"],
+        json!({ "kind": "user", "user_id": user.user.id })
+    );
+    assert_eq!(payload["task"]["lease_holder_session_id"], json!(null));
+    // A release is not a state change, so it carries neither end of one.
+    assert_eq!(payload.get("from"), None);
+    assert_eq!(payload.get("to"), None);
+}
+
+#[tokio::test]
+async fn releasing_a_task_by_number_works_like_releasing_it_by_id() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "releaser").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Wire the tracker" })).await;
+    let task_id: Uuid = serde_json::from_value(task["id"].clone()).expect("a task id");
+    let session_id = session(&app, pid).await;
+    claim(&app, pid, task_id, session_id, user.user.id).await;
+
+    let response = app.post_as(&user, &release_path(pid, "1")).await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(
+        response.json::<Value>()["lease_holder_session_id"],
+        json!(null)
+    );
+}
+
+#[tokio::test]
+async fn releasing_a_task_nobody_holds_is_a_conflict_that_writes_nothing() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "releaser").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Nobody has this" })).await;
+    let before = events(&app, pid).await.len();
+
+    let response = app
+        .post_as(
+            &user,
+            &release_path(pid, task["id"].as_str().expect("an id")),
+        )
+        .await;
+    assert_error(&response, StatusCode::CONFLICT, "task is not held");
+
+    assert_eq!(
+        events(&app, pid).await.len(),
+        before,
+        "a refusal emits nothing"
+    );
+}
+
+#[tokio::test]
+async fn releasing_needs_a_token_a_project_and_a_task_that_exist() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "releaser").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let anonymous = app.server.post(&release_path(pid, "1")).await;
+    anonymous.assert_status(StatusCode::UNAUTHORIZED);
+    anonymous.assert_json(&unauthorized());
+
+    // An unknown project: the mutation's own lock refuses before anything else.
+    let elsewhere = app.post_as(&user, &release_path(Uuid::new_v4(), "1")).await;
+    elsewhere.assert_status(StatusCode::NOT_FOUND);
+
+    // A task this project does not have, and a reference that addresses no
+    // task at all: one 404 for both.
+    let missing = app
+        .post_as(&user, &release_path(pid, &Uuid::new_v4().to_string()))
+        .await;
+    missing.assert_status(StatusCode::NOT_FOUND);
+
+    let unresolvable = app.post_as(&user, &release_path(pid, "not-a-task")).await;
+    unresolvable.assert_status(StatusCode::NOT_FOUND);
 }

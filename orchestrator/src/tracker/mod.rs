@@ -28,15 +28,19 @@ pub mod dependencies;
 pub mod dto;
 pub mod escalation;
 pub mod graph;
+pub mod leases;
 pub mod mutation;
 pub mod state;
 pub mod tasks;
 
 pub use comments::{CommentAuthor, add_comment};
 pub use dependencies::{add_dependency, remove_dependency, resolve_dependency};
-pub use dto::{CommentDto, DependencyRef, HandoffDto, TaskDetailDto, TaskDto, TaskSessionLinkDto};
+pub use dto::{
+    CommentDto, DependencyRef, HandoffDto, TaskDetailDto, TaskDto, TaskSessionLinkDto, TaskSummary,
+};
 pub use escalation::Escalation;
 pub use graph::{BlockedFlip, DeletionCapture};
+pub use leases::{claim_for_launch, claim_for_profile, ready_summaries, release_by_user};
 pub use mutation::{Locked, MutationOutcome, TrackerMutation};
 pub use state::{StateChangeOptions, StateChangeResult, StateEventKind};
 pub use tasks::{CreateTaskInput, CreatedBy, create_task};

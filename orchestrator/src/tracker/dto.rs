@@ -244,6 +244,77 @@ pub struct TaskDetailDto {
     pub sessions: Vec<TaskSessionLinkDto>,
 }
 
+/// How many Unicode scalar values a `description_excerpt` keeps.
+const EXCERPT_CHARS: usize = 200;
+
+/// A task as the `ready` tool lists it (`SPEC.md`, "MCP tool contracts" →
+/// `ready`).
+///
+/// `TaskSummary = { id, number, title, state, priority, labels,
+/// description_excerpt, attempts, depends_on_count }` — a menu entry, not a
+/// task: enough for an agent to choose what to claim, and nothing that would
+/// tempt it to start working from the list instead of reading the task. The
+/// full text, the comments and the dependencies are `get_task`'s.
+///
+/// Read-only like its siblings here, assembled in `tracker::leases` from the
+/// repository's claimable read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSummary {
+    pub id: Uuid,
+    pub number: i32,
+    pub title: String,
+    /// The state's name, not its id.
+    pub state: String,
+    /// 0 (critical) to 3 (low), as a JSON number.
+    pub priority: i16,
+    pub labels: Vec<String>,
+    /// The description, flattened to one line and cut to 200 characters; see
+    /// [`description_excerpt`].
+    pub description_excerpt: String,
+    pub attempts: i16,
+    /// Outgoing dependencies of every kind.
+    pub depends_on_count: i64,
+}
+
+/// The excerpt rule, written once (`SPEC.md`, "MCP tool contracts" →
+/// `ready`).
+///
+/// "Trim the description, replace each newline sequence (CRLF, LF or CR) with
+/// one space, then take the first 200 Unicode scalar values and trim trailing
+/// whitespace, without adding an ellipsis." Each of those steps is here in
+/// that order, and the order matters: flattening first means the 200 are
+/// counted over the single line an agent actually reads, and trimming last
+/// means a cut that lands mid-gap does not end in a space.
+///
+/// Scalar values, not bytes: a description of emoji or CJK text is cut after
+/// 200 characters, never in the middle of one.
+pub fn description_excerpt(description: &str) -> String {
+    let mut flattened = String::with_capacity(description.len());
+    let mut chars = description.trim().chars().peekable();
+
+    while let Some(character) = chars.next() {
+        match character {
+            // CRLF is one newline sequence and becomes one space; a lone CR is
+            // one too.
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                flattened.push(' ');
+            }
+            '\n' => flattened.push(' '),
+            other => flattened.push(other),
+        }
+    }
+
+    flattened
+        .chars()
+        .take(EXCERPT_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -395,5 +466,35 @@ mod tests {
 
         assert_eq!(encoded["session_id"], json!(link.session_id));
         assert!(encoded.as_object().unwrap().get("task_id").is_none());
+    }
+
+    #[test]
+    fn an_excerpt_is_trimmed_and_flattened_onto_one_line() {
+        assert_eq!(
+            description_excerpt("  First line.\nSecond line.\r\nThird.\rFourth.  "),
+            "First line. Second line. Third. Fourth."
+        );
+    }
+
+    #[test]
+    fn an_excerpt_keeps_two_hundred_scalar_values_without_an_ellipsis() {
+        let excerpt = description_excerpt(&"é".repeat(250));
+
+        assert_eq!(excerpt.chars().count(), 200);
+        assert!(!excerpt.ends_with('…'));
+        assert!(!excerpt.ends_with("..."));
+    }
+
+    #[test]
+    fn an_excerpt_cut_in_a_gap_does_not_end_in_whitespace() {
+        let description = format!("{}   tail", "a".repeat(199));
+
+        assert_eq!(description_excerpt(&description), "a".repeat(199));
+    }
+
+    #[test]
+    fn a_short_description_is_its_own_excerpt_and_an_empty_one_stays_empty() {
+        assert_eq!(description_excerpt("Wire the tracker"), "Wire the tracker");
+        assert_eq!(description_excerpt("   \n  "), "");
     }
 }

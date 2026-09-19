@@ -11,6 +11,7 @@
 //! | `POST /projects/{pid}/tasks/{id}/dependencies` | one edge added, 200 with the dependant |
 //! | `DELETE /projects/{pid}/tasks/{id}/dependencies/{dep}?kind=` | one edge of that kind removed, 200 with the dependant |
 //! | `POST /projects/{pid}/tasks/{id}/comments` | one comment written, 201 with it |
+//! | `POST /projects/{pid}/tasks/{id}/release` | a [`release_by_user`] mutation, 200 with the task |
 //! | `GET /tasks?state_kind=` | the dashboard's cross-project list |
 //!
 //! **The three lists take no lock.** A board read takes no part in anyone's
@@ -51,6 +52,7 @@ use crate::tracker::state::resolve_state_in_pool;
 use crate::tracker::tasks::{CreateTaskInput, CreatedBy, create_task};
 use crate::tracker::{
     CommentAuthor, CommentDto, TaskDetailDto, TaskDto, TrackerMutation, add_comment, dependencies,
+    release_by_user,
 };
 
 /// What `GET /tasks` without a `state_kind` is told (400).
@@ -90,6 +92,7 @@ pub fn project_routes() -> Router<AppState> {
             delete(remove_dependency),
         )
         .route("/{pid}/tasks/{id}/comments", post(comment))
+        .route("/{pid}/tasks/{id}/release", post(release))
 }
 
 // ---- create ----
@@ -455,6 +458,41 @@ async fn dashboard(
     let rows = tasks.list_tasks_by_state_kind(kind).await?;
 
     Ok(Json(tasks.load_task_dtos_any_project(&rows).await?))
+}
+
+// ---- release ----
+
+/// `POST /projects/{pid}/tasks/{id}/release` → the task with its lease cleared
+/// (`SPEC.md`, "Tasks").
+///
+/// "Clears the lease, keeps the state; 409 if nobody holds it." A user is not
+/// bound by leases and may release anything, including a task held by a
+/// session that has already ended (`ARCHITECTURE.md`, "Task tracker" → "The
+/// lease is the worker"), and a user release never escalates however many
+/// attempts the task has behind it.
+///
+/// 404 for an unknown project, an unknown task and a reference that addresses
+/// no task at all. The whole thing is one mutation: the refusal path commits
+/// nothing, so a 409 leaves neither a row change nor an event.
+async fn release(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((pid, id)): Path<(Uuid, String)>,
+) -> Result<Json<TaskDto>> {
+    let reference = task_ref(&id)?;
+
+    let mut mutation =
+        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+
+    let task = TaskRepository::new(&state.pool)
+        .find_task_for_update(mutation.conn(), pid, reference)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    let released = release_by_user(&mut mutation, &task).await?;
+    mutation.commit().await?;
+
+    Ok(Json(released))
 }
 
 // ---- shared ----

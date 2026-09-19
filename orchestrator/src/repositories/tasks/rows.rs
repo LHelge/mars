@@ -24,8 +24,15 @@
 //! `blocked`, the lease and `closed_at` are not fields anybody sets one at a
 //! time either. They move together as a state change composes them, so they
 //! share one statement, [`TaskRepository::set_task_state_fields`], which is
-//! `pub(crate)` and which `tracker/` builds claims, releases, hand-offs and
+//! `pub(crate)` and which `tracker/` builds releases, hand-offs and
 //! escalations out of.
+//!
+//! The claim is the exception that proves that rule. It is not a composition
+//! of fields but the one atomic statement `docs/data-model.md` prints in full,
+//! and it is a statement precisely because its conditions and its write have to
+//! be indivisible: [`TaskRepository::claim`] is that statement, and
+//! [`TaskRepository::list_claimable`] is the read of the same predicate that
+//! the `ready` tool offers before anyone races for one.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
@@ -104,6 +111,30 @@ pub struct StateFields {
     pub current_handoff_id: Option<Option<Uuid>>,
     /// The recomputed blocked flag.
     pub blocked: Option<bool>,
+}
+
+/// One row of the claimable list, before the tracker turns it into a
+/// `TaskSummary` (`SPEC.md`, "MCP tool contracts" → `ready`).
+///
+/// The columns the summary is made of, and nothing else: no lease, no
+/// timestamps, no dependency list — `ready` is a menu, not a detail read. The
+/// `description` is the whole stored text; shortening it to
+/// `description_excerpt` is the tracker's rule, applied once in
+/// `tracker::leases`, because it is a contract about what agents see rather
+/// than about what the table holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskSummaryRow {
+    pub id: Uuid,
+    pub number: i32,
+    pub title: String,
+    pub description: String,
+    /// The state's name, from the join — the board's columns are named states.
+    pub state: String,
+    pub priority: i16,
+    pub labels: Vec<String>,
+    pub attempts: i16,
+    /// Outgoing `task_dependencies` edges of every kind.
+    pub depends_on_count: i64,
 }
 
 impl TaskRepository<'_> {
@@ -578,6 +609,135 @@ impl TaskRepository<'_> {
         debug!(project_id = %project_id, task_id = %id, "task state fields written");
 
         Ok(updated)
+    }
+
+    /// Take the lease on a task, if it is still there to take.
+    ///
+    /// The statement is `docs/data-model.md`, `tasks`, word for word: the four
+    /// columns it writes and the five conditions it writes them under. Every
+    /// rule a claim has is in that `WHERE` clause — the task is this project's,
+    /// it is in one of the states the caller is allowed to claim from, it is
+    /// not blocked and nobody holds it — so there is no check in Rust to get
+    /// out of step with it, and `Ok(None)` (zero rows) is the single answer to
+    /// all of them: the claim lost, and the caller owes a conflict.
+    ///
+    /// `state_ids` carries the policy rather than the kind of the state: the
+    /// profile's served states for an agent's `claim`, every non-terminal state
+    /// for a launch from the UI (`ARCHITECTURE.md`, "Task tracker" → "The lease
+    /// is the worker" and "Launching a session for a task"). An empty slice
+    /// matches nothing, which is exactly right for a profile that serves
+    /// nothing.
+    ///
+    /// `attempts` is incremented here and nowhere else; a state change resets
+    /// it ("Attempts and escalation"). The project lock the [`Locked`] token
+    /// proves serialises this project's claims, and the `lease_holder_session_id
+    /// IS NULL` condition keeps the statement correct even for a caller that
+    /// reached it without one.
+    pub async fn claim(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        task_id: Uuid,
+        session_id: Uuid,
+        state_ids: &[Uuid],
+    ) -> Result<Option<Task>> {
+        let claimed = sqlx::query_as!(
+            Task,
+            r#"
+            UPDATE tasks
+            SET lease_holder_session_id = $2,
+                lease_since = NOW(),
+                attempts = attempts + 1,
+                updated_at = NOW()
+            WHERE id = $1
+              AND project_id = $3
+              AND state_id = ANY($4)
+              AND NOT blocked
+              AND lease_holder_session_id IS NULL
+            RETURNING id, project_id, number, title, description, state_id, priority, blocked,
+                      labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
+                      attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                      created_by_session_id, created_at, updated_at, closed_at
+            "#,
+            task_id,
+            session_id,
+            project_id,
+            state_ids,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        match &claimed {
+            Some(task) => debug!(
+                project_id = %project_id,
+                task_id = %task_id,
+                session_id = %session_id,
+                attempts = task.attempts,
+                "task claimed",
+            ),
+            None => debug!(
+                project_id = %project_id,
+                task_id = %task_id,
+                session_id = %session_id,
+                "claim matched no row",
+            ),
+        }
+
+        Ok(claimed)
+    }
+
+    /// The tasks a caller serving `state_ids` could claim right now.
+    ///
+    /// The read behind the MCP `ready` tool (`SPEC.md`, "MCP tool contracts"):
+    /// "tasks in the calling profile's served states that are not blocked and
+    /// have no lease holder, ordered by `priority` then `number`". The
+    /// predicate is `tasks_claimable_idx`'s own — `WHERE NOT blocked AND
+    /// lease_holder_session_id IS NULL`, keyed `(project_id, state_id,
+    /// priority, number)` — so the list walks the partial index rather than the
+    /// table (`docs/data-model.md`, `tasks`).
+    ///
+    /// One query, not one per task: the state's name comes from the join and
+    /// `depends_on_count` from a lateral aggregate over `task_dependencies`,
+    /// counting outgoing edges **of every kind**, which is what `TaskSummary`
+    /// documents. An empty `state_ids` matches nothing, so a profile that
+    /// serves no states gets an empty list without a special case.
+    ///
+    /// Read on the pool and it writes nothing: `ready` takes no lock, emits no
+    /// event and creates no session link (ADR 0021, ADR 0030). The caller
+    /// validates `limit`; the statement applies it as given.
+    pub async fn list_claimable(
+        &self,
+        project_id: Uuid,
+        state_ids: &[Uuid],
+        limit: i64,
+    ) -> Result<Vec<TaskSummaryRow>> {
+        let rows = sqlx::query_as!(
+            TaskSummaryRow,
+            r#"
+            SELECT t.id, t.number, t.title, t.description, s.name AS state, t.priority, t.labels,
+                   t.attempts, d.depends_on_count AS "depends_on_count!"
+            FROM tasks AS t
+            JOIN task_states AS s ON s.id = t.state_id
+            CROSS JOIN LATERAL (
+                SELECT COUNT(*) AS depends_on_count
+                FROM task_dependencies AS e
+                WHERE e.task_id = t.id
+            ) AS d
+            WHERE t.project_id = $1
+              AND t.state_id = ANY($2)
+              AND NOT t.blocked
+              AND t.lease_holder_session_id IS NULL
+            ORDER BY t.priority, t.number
+            LIMIT $3
+            "#,
+            project_id,
+            state_ids,
+            limit,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
     }
 
     /// The project's tasks matching `filter`, ordered by priority then number.

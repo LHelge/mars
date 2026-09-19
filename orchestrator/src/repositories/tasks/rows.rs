@@ -328,6 +328,45 @@ impl TaskRepository<'_> {
         Ok(task)
     }
 
+    /// The task with this UUID, whatever project it belongs to.
+    ///
+    /// The one deliberately unscoped task read. `POST
+    /// /projects/{pid}/tasks/{id}/dependencies` answers a `depends_on` UUID
+    /// that names a task of *another* project with 400 `dependency must
+    /// reference tasks of the same project`, and one that names no task at all
+    /// with 404 (`SPEC.md`, "Tasks") — a difference only a lookup outside the
+    /// project scope can make. Nothing else uses it: every other read puts the
+    /// project in its `WHERE` clause, as the conventions require.
+    ///
+    /// Read under the caller's token but deliberately **without** `FOR
+    /// UPDATE`. The row may belong to another project, and locking it from
+    /// inside this project's lock is how two projects deadlock against each
+    /// other; the caller only needs to know that the row exists, and is about
+    /// to refuse the request because of it.
+    pub async fn find_task_in_any_project_in(
+        &self,
+        mut tx: Locked<'_>,
+        id: Uuid,
+    ) -> Result<Option<Task>> {
+        let task = sqlx::query_as!(
+            Task,
+            r#"
+            SELECT id, project_id, number, title, description, state_id, priority, blocked,
+                   labels, parent_id, assignee_user_id, lease_holder_session_id,
+                   lease_since, attempts, needs_human_reason, current_handoff_id,
+                   created_by_user_id, created_by_session_id, created_at, updated_at,
+                   closed_at
+            FROM tasks
+            WHERE id = $1
+            "#,
+            id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        Ok(task)
+    }
+
     /// Apply the fields a `PUT` supplied, and say whether anything moved.
     ///
     /// The return distinguishes the three outcomes ADR 0030 cares about. An

@@ -1,13 +1,16 @@
 //! `/api/projects/{pid}/tasks` and the dashboard's `/api/tasks`
 //! (`SPEC.md`, "Tasks").
 //!
-//! The read side of the tracker and the one write this module carries:
+//! The read side of the tracker and the writes this module carries:
 //!
 //! | Endpoint | What it is |
 //! | --- | --- |
 //! | `POST /projects/{pid}/tasks` | a [`create_task`] mutation, 201 with the task |
 //! | `GET /projects/{pid}/tasks` | the board read, filtered and ordered by priority then number |
 //! | `GET /projects/{pid}/tasks/{id}` | the detail drawer's `TaskDetail` |
+//! | `POST /projects/{pid}/tasks/{id}/dependencies` | one edge added, 200 with the dependant |
+//! | `DELETE /projects/{pid}/tasks/{id}/dependencies/{dep}?kind=` | one edge of that kind removed, 200 with the dependant |
+//! | `POST /projects/{pid}/tasks/{id}/comments` | one comment written, 201 with it |
 //! | `GET /tasks?state_kind=` | the dashboard's cross-project list |
 //!
 //! **The three lists take no lock.** A board read takes no part in anyone's
@@ -35,21 +38,33 @@ use std::str::FromStr;
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::events::TaskActor;
-use crate::models::{Priority, TaskRef, TaskStateKind};
+use crate::models::{Priority, Task, TaskDependencyKind, TaskRef, TaskStateKind};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskFilter, TaskRepository};
 use crate::routes::{CurrentUser, Path, Query};
 use crate::tracker::state::resolve_state_in_pool;
 use crate::tracker::tasks::{CreateTaskInput, CreatedBy, create_task};
-use crate::tracker::{TaskDetailDto, TaskDto, TrackerMutation};
+use crate::tracker::{
+    CommentAuthor, CommentDto, TaskDetailDto, TaskDto, TrackerMutation, add_comment, dependencies,
+};
 
 /// What `GET /tasks` without a `state_kind` is told (400).
 const STATE_KIND_REQUIRED: &str = "state_kind is required";
+
+/// What a `kind` that is not one of the three is told (400).
+const INVALID_KIND: &str = "invalid dependency kind";
+
+/// What `DELETE .../dependencies/{dep}` without a `?kind=` is told (400).
+///
+/// Required rather than defaulted: removing "the dependency" is ambiguous once
+/// a pair can carry three edges, and guessing `blocks` would silently drop the
+/// blocker of a caller who meant the provenance (`SPEC.md`, "Tasks").
+const KIND_REQUIRED: &str = "kind is required";
 
 /// The router nested at `/api/tasks`: the dashboard's cross-project list.
 ///
@@ -69,6 +84,12 @@ pub fn project_routes() -> Router<AppState> {
     Router::new()
         .route("/{pid}/tasks", get(list).post(create))
         .route("/{pid}/tasks/{id}", get(detail))
+        .route("/{pid}/tasks/{id}/dependencies", post(add_dependency))
+        .route(
+            "/{pid}/tasks/{id}/dependencies/{dep}",
+            delete(remove_dependency),
+        )
+        .route("/{pid}/tasks/{id}/comments", post(comment))
 }
 
 // ---- create ----
@@ -226,6 +247,178 @@ async fn detail(
         .ok_or(Error::NotFound)?;
 
     Ok(Json(detail))
+}
+
+// ---- dependencies ----
+
+/// `POST /projects/{pid}/tasks/{id}/dependencies` (`SPEC.md`, "Tasks").
+///
+/// `depends_on` is a string rather than a UUID for the reason `POST
+/// /tasks`'s `depends_on` entries are: a task is addressed by its UUID *or*
+/// its per-project number. `kind` is a string rather than a
+/// [`TaskDependencyKind`] so that an unrecognised value is the documented
+/// `invalid dependency kind` and not serde's own message about a variant name
+/// — the same reason `?state_kind=` below is a `String`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddDependencyRequest {
+    depends_on: String,
+    kind: Option<String>,
+}
+
+/// `POST /projects/{pid}/tasks/{id}/dependencies` → the dependant task (200).
+///
+/// `kind` defaults to `blocks`. 400 for an unknown kind, for a self-edge and
+/// for a `depends_on` UUID naming a task of another project; 404 for an
+/// unknown project, an unknown `{id}` and a `depends_on` naming no task at
+/// all; 409 for a `blocks` edge that would close a cycle and for an edge that
+/// is already there, kind and all.
+///
+/// Both ends are resolved *inside* the mutation, under the project lock: a
+/// per-project number resolved before the lock could name a different task by
+/// the time the edge is inserted.
+async fn add_dependency(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((pid, id)): Path<(Uuid, String)>,
+    Json(body): Json<AddDependencyRequest>,
+) -> Result<Json<TaskDto>> {
+    let dependant = task_ref(&id)?;
+    let prerequisite = task_ref(&body.depends_on)?;
+    let kind = match body.kind.as_deref() {
+        Some(raw) => dependency_kind(raw)?,
+        None => TaskDependencyKind::default(),
+    };
+
+    let mut mutation =
+        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+
+    let task = locked_task(&mut mutation, pid, dependant).await?;
+    let depends_on = dependencies::resolve_dependency(&mut mutation, prerequisite).await?;
+    let task = dependencies::add_dependency(&mut mutation, &task, &depends_on, kind).await?;
+
+    mutation.commit().await?;
+
+    Ok(Json(task))
+}
+
+/// `?kind=` on `DELETE .../dependencies/{dep}` (`SPEC.md`, "Tasks").
+///
+/// Optional in the type and required by the handler, so that leaving it out is
+/// the documented 400 rather than a rejection from the extractor.
+#[derive(Debug, Deserialize)]
+struct KindQuery {
+    kind: Option<String>,
+}
+
+/// `DELETE /projects/{pid}/tasks/{id}/dependencies/{dep}?kind=` → the
+/// dependant task (200).
+///
+/// Removes that kind alone: a pair joined by `blocks` and `discovered_from`
+/// keeps the provenance when the blocker goes. 400 for a missing or unknown
+/// `kind`; 404 for an unknown project, an unknown `{id}` or `{dep}`, and for
+/// an edge of that kind that is not there.
+///
+/// 200 with a body rather than the usual 204 for a delete: `SPEC.md` types the
+/// response `Task`, because removing a blocker can unblock the task and the
+/// caller wants the flag it now has.
+async fn remove_dependency(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((pid, id, dep)): Path<(Uuid, String, String)>,
+    Query(query): Query<KindQuery>,
+) -> Result<Json<TaskDto>> {
+    let dependant = task_ref(&id)?;
+    let prerequisite = task_ref(&dep)?;
+    let kind = match query.kind.as_deref() {
+        Some(raw) => dependency_kind(raw)?,
+        None => return Err(Error::BadRequest(KIND_REQUIRED.into())),
+    };
+
+    let mut mutation =
+        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+
+    let task = locked_task(&mut mutation, pid, dependant).await?;
+    let depends_on = dependencies::resolve_dependency(&mut mutation, prerequisite).await?;
+    let task = dependencies::remove_dependency(&mut mutation, &task, &depends_on, kind).await?;
+
+    mutation.commit().await?;
+
+    Ok(Json(task))
+}
+
+// ---- comments ----
+
+/// `POST /projects/{pid}/tasks/{id}/comments` (`SPEC.md`, "Tasks").
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommentRequest {
+    body: String,
+}
+
+/// `POST /projects/{pid}/tasks/{id}/comments` → the comment (201).
+///
+/// 201 by the general create rule (`CLAUDE.md`, "API conventions"); `SPEC.md`
+/// types the response `Comment` and leaves the status to that rule.
+///
+/// 400 for a body that is empty after trimming; 404 for an unknown project or
+/// task. There is no lease to hold: commenting is open to anyone who can see
+/// the project.
+async fn comment(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((pid, id)): Path<(Uuid, String)>,
+    Json(body): Json<CommentRequest>,
+) -> Result<(StatusCode, Json<CommentDto>)> {
+    let reference = task_ref(&id)?;
+
+    let mut mutation =
+        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+
+    let task = locked_task(&mut mutation, pid, reference).await?;
+    let comment = add_comment(
+        &mut mutation,
+        &task,
+        CommentAuthor::User(user.id),
+        &body.body,
+    )
+    .await?;
+
+    mutation.commit().await?;
+
+    Ok((StatusCode::CREATED, Json(comment)))
+}
+
+/// The `{id}` of a dependency or comment path, read under the mutation's lock.
+///
+/// The three handlers above all start here rather than with a pool read: the
+/// task they are about to change has to be the row as it is inside the lock,
+/// and a per-project number resolved outside it can name a different task by
+/// the time the change lands. An address that names no task of this project is
+/// 404, whichever of the two forms it took.
+async fn locked_task(
+    mutation: &mut TrackerMutation<'_>,
+    pid: Uuid,
+    reference: TaskRef,
+) -> Result<Task> {
+    TaskRepository::new(mutation.pool())
+        .find_task_for_update(mutation.conn(), pid, reference)
+        .await?
+        .ok_or(Error::NotFound)
+}
+
+/// One of the three dependency kinds, or 400.
+///
+/// The strings are the ones [`TaskDependencyKind`] serialises to, matched by
+/// hand so that an unrecognised value is the documented message rather than
+/// serde's.
+fn dependency_kind(raw: &str) -> Result<TaskDependencyKind> {
+    match raw {
+        "blocks" => Ok(TaskDependencyKind::Blocks),
+        "discovered_from" => Ok(TaskDependencyKind::DiscoveredFrom),
+        "related" => Ok(TaskDependencyKind::Related),
+        _ => Err(Error::BadRequest(INVALID_KIND.into())),
+    }
 }
 
 // ---- dashboard list ----

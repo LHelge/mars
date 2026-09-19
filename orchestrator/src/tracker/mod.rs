@@ -23,6 +23,8 @@
 //! mutation makes due are sent after it commits, from
 //! [`MutationOutcome::escalations`].
 
+pub mod comments;
+pub mod dependencies;
 pub mod dto;
 pub mod escalation;
 pub mod graph;
@@ -30,6 +32,8 @@ pub mod mutation;
 pub mod state;
 pub mod tasks;
 
+pub use comments::{CommentAuthor, add_comment};
+pub use dependencies::{add_dependency, remove_dependency, resolve_dependency};
 pub use dto::{CommentDto, DependencyRef, HandoffDto, TaskDetailDto, TaskDto, TaskSessionLinkDto};
 pub use escalation::Escalation;
 pub use graph::{BlockedFlip, DeletionCapture};

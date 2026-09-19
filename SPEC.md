@@ -178,7 +178,7 @@ The columns of a project's board, in order. Every project starts with the defaul
 | DELETE | `/projects/{pid}/tasks/{id}` | JWT | → 204 |
 | POST | `/projects/{pid}/tasks/{id}/dependencies` | JWT | `{depends_on: id, kind?: "blocks" \| "discovered_from" \| "related"}` → `Task` (`kind` defaults to `blocks`; 409 on cycle) |
 | DELETE | `/projects/{pid}/tasks/{id}/dependencies/{dep}` | JWT | `?kind=blocks` → `Task` (200; removes only that kind; accepts `blocks`, `discovered_from`, `related`) |
-| POST | `/projects/{pid}/tasks/{id}/comments` | JWT | `{body}` → `Comment` |
+| POST | `/projects/{pid}/tasks/{id}/comments` | JWT | `{body}` → `Comment` (201) |
 | POST | `/projects/{pid}/tasks/{id}/release` | JWT | → `Task` (clears the lease, keeps the state; 409 if nobody holds it) |
 | GET | `/projects/{pid}/tasks/stream` | JWT (`?token=`) | SSE of `TaskEvent`; see "SSE" |
 

@@ -34,16 +34,14 @@ use crate::models::{Label, NewTask, Priority, TaskDependencyKind, TaskRef, TaskS
 use crate::prelude::*;
 use crate::repositories::TaskRepository;
 use crate::repositories::tasks::StateFields;
+// What a `depends_on` entry naming nothing in this project is told (400).
+// Creation resolves every entry inside this project, so an id from another
+// project and an id from nowhere get the same answer here — the message the
+// dependency endpoint gives an out-of-project end, stated once.
+use crate::tracker::dependencies::DEPENDENCY_SCOPE;
 use crate::tracker::graph::{check_no_cycle, recompute_blocked};
 use crate::tracker::state::resolve_state;
 use crate::tracker::{TaskDto, TrackerMutation};
-
-/// What a `depends_on` entry naming nothing in this project is told (400).
-///
-/// The same message [`TaskRepository::insert_dependency`] gives an id from
-/// another project, and for the same reason: nothing leaks about whether the
-/// task exists elsewhere.
-const DEPENDENCY_SCOPE: &str = "dependency must reference tasks of the same project";
 
 /// Who is creating the task (`docs/data-model.md`, `tasks`).
 ///

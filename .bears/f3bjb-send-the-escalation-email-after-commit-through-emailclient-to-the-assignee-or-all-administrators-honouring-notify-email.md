@@ -1,10 +1,10 @@
 ---
 id: f3bjb
 title: Send the escalation email after commit through EmailClient to the assignee or all administrators, honouring notify_email
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-16T20:46:30.429134342Z"
-updated: "2026-09-16T20:46:30.429134342Z"
+updated: "2026-09-19T12:33:27.873011076Z"
 tags:
   - orchestrator
   - tracker
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - "2sjtz"
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

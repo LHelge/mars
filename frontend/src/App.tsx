@@ -18,6 +18,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
+import { SettingsPage } from "./pages/SettingsPage";
 
 export function App() {
   return (
@@ -36,7 +37,7 @@ export function App() {
         <Route path="/projects/:id/tasks/:number" element={<PlaceholderPage title="Task" />} />
         <Route path="/sessions/:id" element={<PlaceholderPage title="Session" />} />
         <Route path="/secrets" element={<PlaceholderPage title="Secrets" />} />
-        <Route path="/settings" element={<PlaceholderPage title="Settings" />} />
+        <Route path="/settings" element={<SettingsPage />} />
 
         <Route element={<AdminRoute />}>
           <Route path="/admin" element={<AdminPage />} />

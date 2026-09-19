@@ -33,6 +33,15 @@ export type { AuthState, SignOutHandler, SignOutReason } from "./auth";
 export { getHealth } from "./health";
 export type { Health } from "./health";
 
+export { listProjects } from "./projects";
+
+export { queryKeys } from "./queryKeys";
+
+export { listSessions } from "./sessions";
+export type { ListSessionsParams } from "./sessions";
+
+export { listHumanTasks } from "./tasks";
+
 export {
   changePassword,
   createInvite,

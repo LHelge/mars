@@ -50,13 +50,14 @@ Rootless Podman is the target engine, reached through its Docker-compatible sock
 
 ## Running it
 
-These steps have been walked through end to end on rootless Podman 6.1.2 with `podman-compose` 1.6.0: the stack comes up, the login page is reached through nginx, the forced first-login password change completes, and a session on the stub image runs and replays its transcript.
+These steps have been walked through end to end on both engines — rootless Podman 6.1.2 with `podman-compose` 1.6.0, and rootful Docker 29.8.0 with Docker Compose v5.5.1 — on Arch Linux: the stack comes up, the login page is reached through nginx, the forced first-login password change completes, and a session on the stub image runs, replays its transcript, takes a message, stops to `parked` and resumes after `compose down` and `up`.
 
 ### Prerequisites
 
-- A Linux host with rootless Podman 4.9+ (or Docker 24+); the engine tests run on Podman 4.9.3 and 6.1.2 and on Docker 28.0.4.
-- `podman-compose` or `docker compose`. They differ in one place that matters here — whether `COMPOSE_FILE` is read from `.env` — so "Start" gives the command that works on both.
-- A directory for persistent data, for example `/srv/mars/data`, owned by the service user (uid 1000 under Docker). It is `DATA_DIR_HOST` and must exist before the first start: compose bind-mounts it, and the orchestrator's startup probe fails if it is missing or not writable.
+- A Linux host with rootless Podman 4.9+ (or Docker 24+); the engine tests run on Podman 4.9.3 and 6.1.2 and on Docker 28.0.4, and the walkthrough above on Podman 6.1.2 and Docker 29.8.0.
+- `podman-compose` or `docker compose`. They differ in one place that matters here — whether `COMPOSE_FILE` is read from `.env`; `docker compose` does, `podman-compose` 1.6.0 does not — so "Start" gives the command that works on both.
+- A directory for persistent data, for example `/srv/mars/data`, owned by the service user (uid 1000 under Docker). It is `DATA_DIR_HOST` and must exist before the first start: compose bind-mounts it, and the orchestrator refuses to start if it is missing or not writable by the uid it runs as.
+- On Docker, the service user in the `docker` group, and that group's gid in `DOCKER_GID` — see the Docker paragraph at the end of "Podman setup".
 - `git` is **not** needed on the host: the orchestrator image ships it, and it is the only thing that runs `git`. The one exception is the host-run fallback under "Podman setup", where the orchestrator is a host process and uses the host's `git`.
 - For private repositories: a fine-grained GitHub personal access token scoped to the repository.
 - Model credentials: an `ANTHROPIC_API_KEY`, or a `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (requires a Pro or Max subscription). Never both for the same session.
@@ -133,7 +134,32 @@ The `.env` is the same file, with five values this mode needs (`Configuration`):
 
 **The trade-off.** The orchestrator is no longer in a container, so the read-only root filesystem, the tmpfs `/tmp` and the minimal image are gone; what is left is the systemd hardening in the unit — `ProtectSystem=strict` with `ReadWritePaths=` for the data directory only, `PrivateTmp=yes` (the git wrapper needs a writable `/tmp`) and `NoNewPrivileges=yes`. That is a partial replacement, not an equal one, which is why this is the fallback and the compose deployment is the supported shape. `TimeoutStopSec=40` in the unit must stay above `STOP_GRACE_SECS` (default 20) plus margin, or systemd kills the orchestrator in the middle of stopping its sessions.
 
-For Docker, use the daemon's socket (`unix:///var/run/docker.sock`) and a user in the `docker` group. The supported Docker deployment uses the default uid mapping, so the orchestrator service runs as uid 1000 (`user: "1000:1000"` in the compose file) and the data directory must be owned by uid 1000. The session uid and data-directory ownership requirements still apply.
+#### Docker instead of Podman
+
+Use the daemon's socket (`unix:///var/run/docker.sock`) and a user in the `docker` group, and set four variables in `.env` ("Configuration"):
+
+```bash
+DOCKER_HOST=unix:///var/run/docker.sock
+ENGINE_SOCKET_HOST=/var/run/docker.sock
+DOCKER_GID=$(getent group docker | cut -d: -f3)   # write the number out; .env does not expand
+COMPOSE_FILE=compose.yml:compose.docker.yml       # docker compose does read this from .env
+```
+
+Docker applies no user-namespace mapping, so the orchestrator itself runs as uid 1000 (`user: "1000:1000"` in `compose.docker.yml`) and `DATA_DIR_HOST` must be owned by uid 1000. The session uid and data-directory requirements still apply.
+
+**`DOCKER_GID` is not optional.** `/var/run/docker.sock` is `root:docker` mode `0660`, and the `docker` group membership that lets you reach it belongs to the *host* user, not to uid 1000 inside the orchestrator container. `compose.docker.yml` therefore also carries `group_add: ["${DOCKER_GID}"]`. The gid is host-specific — 967 on the Arch host this was walked through on, commonly 999 on Debian and Ubuntu — so nothing can default it. Without it compose refuses to render the file at all (`set DOCKER_GID: getent group docker | cut -d: -f3`); with the wrong number the orchestrator restart-loops on `the container engine is unreachable; refusing to start`.
+
+**The Docker socket is root-equivalent.** Anything that can write to it can start a privileged container and own the host, and the orchestrator container holds it. Under rootless Podman the same socket carries only the service user's own authority; under Docker it carries root's. The read-only root filesystem, dropped capabilities and uid 1000 are still worth having, but "the orchestrator runs unprivileged" is a weaker claim here than on the target engine (ADR 0004), and `docker` group membership is root on the host by another name. This is why rootless Podman is the supported target and Docker the supported alternative.
+
+Check the result:
+
+```bash
+docker inspect <project>-orchestrator-1 \
+  --format 'User={{.Config.User}} Userns="{{.HostConfig.UsernsMode}}" GroupAdd={{.HostConfig.GroupAdd}}'
+# User=1000:1000 Userns="" GroupAdd=[967]
+```
+
+`UsernsMode` is empty on Docker, for the orchestrator and for session containers alike: the adapter sets `keep-id` only when the engine reports Podman (`ARCHITECTURE.md`, "Engine adapter"). Docker's embedded DNS resolves the `orchestrator` alias on `mars-sessions` for containers the orchestrator creates outside compose, so `MCP_URL` keeps its default; `scripts/verify-deployment.sh` check 4 is what proves it.
 
 ### Configuration
 
@@ -156,19 +182,20 @@ Copy `.env.example` to `.env` and set:
 | `GIT_BOT_NAME`, `GIT_BOT_EMAIL` | Identity for commits the orchestrator creates (merges). |
 | `API_PORT` | Port of the API listener nginx proxies to (default 7000). |
 | `MCP_PORT` | Port of the MCP listener on the sessions network (default 7001). |
-| `HTTP_PORT` | **Compose only.** Host port nginx publishes (default 8080). Under rootless Podman a port below 1024 fails to bind unless `net.ipv4.ip_unprivileged_port_start` is lowered; keep 8080 and put any reverse proxy in front of it. |
+| `HTTP_PORT` | **Compose only.** Host port nginx publishes (default 8080). Under rootless Podman a port below 1024 fails to bind unless `net.ipv4.ip_unprivileged_port_start` is lowered; keep 8080 and put any reverse proxy in front of it. A bare port binds every interface; the whole `ip:port` left-hand side of a compose port mapping is accepted here, so `HTTP_PORT=127.0.0.1:8080` publishes on the loopback address only — see "Operating notes". `scripts/verify-deployment.sh` wants the bare port, so pass it one (`HTTP_PORT=8080 scripts/verify-deployment.sh`) when `.env` carries the `ip:port` form. |
 | `STOP_GRACE_SECS` | Seconds between SIGINT and SIGTERM when stopping a session (default 20). |
 | `MIRROR_FETCH_INTERVAL_SECS` | How often project mirrors are fetched (default 600). |
 | `SESSION_IMAGE_DEFAULT` | Image used by the default profile of new projects and by the startup probe (default `mars-session-claude:latest`). Both pull it, so it has to exist on the engine before the first start; build it as described under "Session image". |
 | `RESEND_API_KEY`, `MAIL_FROM` | Email delivery through Resend, used for invites, password resets and task escalations. `MAIL_FROM` is required once `RESEND_API_KEY` is set. Without an API key, full usable links including their tokens are intentionally written to the orchestrator log at `info` instead of sent. This supports local development without email configuration; no extra flag is required (ADR 0026). |
 | `RUST_LOG` | Log filter, `info` by default and whenever the given filter is unusable, such as the bare non-level word `verbose`. |
-| `COMPOSE_FILE` | **Compose only.** Which compose files make up the deployment, and so which engine it runs on: `compose.yml:compose.podman.yml` or `compose.yml:compose.docker.yml` (ADR 0035). `docker compose` reads it from `.env`; `podman-compose` 1.6.0 does **not** — see "Start". |
+| `COMPOSE_FILE` | **Compose only.** Which compose files make up the deployment, and so which engine it runs on: `compose.yml:compose.podman.yml` or `compose.yml:compose.docker.yml` (ADR 0035). `docker compose` reads it from `.env` — verified on Compose v5.5.1 — and `podman-compose` 1.6.0 does **not**; see "Start". |
+| `DOCKER_GID` | **Compose only, Docker only.** Numeric gid of the host `docker` group (`getent group docker \| cut -d: -f3`), added to the orchestrator container so uid 1000 can open the bind-mounted `/var/run/docker.sock`, which is `root:docker` mode `0660`. Required whenever `compose.docker.yml` is selected, and unused under Podman. There is no default, because the gid differs per distribution. |
 
 Generate a master key with `openssl rand -base64 32`.
 
 ### Start
 
-The deployment is one `compose.yml` plus a one-line override file per engine (ADR 0035). Name both files on the command line:
+The deployment is one `compose.yml` plus a short override file per engine (ADR 0035). Name both files on the command line:
 
 ```bash
 podman-compose -f compose.yml -f compose.podman.yml up -d   # rootless Podman
@@ -187,7 +214,13 @@ The first start builds both images, the orchestrator and nginx, which takes a wh
 
 TLS is terminated in front of nginx by the operator — a host reverse proxy or a load balancer — and `PUBLIC_URL` must be the `https://` URL users actually open, because the session cookie is marked `Secure` exactly when `PUBLIC_URL` is https.
 
-If the orchestrator restarts in a loop, check `compose logs orchestrator`. `startup probe failed; refusing to start` means `DATA_DIR_HOST` is missing or not owned by the right user (the service user under Podman, uid 1000 under Docker). `the container engine is unreachable; refusing to start` means it cannot use the socket at `/run/engine.sock`: either `ENGINE_SOCKET_HOST` does not point at a live socket, or — on Podman — the engine override was not applied and the container is not running as the service user (see "Podman setup").
+If the orchestrator restarts in a loop, check `compose logs orchestrator`. Three lines account for nearly all of it, and every one of them appears once per restart:
+
+- **`the container engine refused a startup step … Permission denied (os error 13)`** — `DATA_DIR_HOST` is not writable by the uid the orchestrator runs as, so it cannot even create the directory the startup probe needs. On Docker that is uid 1000 and the fix is `chown 1000:1000` on the data directory; on Podman it is the service user. (Writability is what is actually required: a directory owned by another uid but world-writable gets past this and the probe then passes, which is not a configuration to rely on.)
+- **`startup probe failed; refusing to start`** — the probe container ran but the file it wrote is owned by another uid than the orchestrator's, or could not be written or appended to. Under rootless Podman this is `keep-id` not being honoured; it is the uid contract failing rather than the directory being wrong (`ARCHITECTURE.md`, "Uid contract").
+- **`the container engine is unreachable; refusing to start`** — it cannot use the socket at `/run/engine.sock`. Either `ENGINE_SOCKET_HOST` does not point at a live socket; or, on Docker, `DOCKER_GID` is wrong or the Podman override was selected by mistake, so uid 1000 has no group that may open `root:docker 0660`; or, on Podman, the engine override was not applied and the container is not running as the service user (see "Podman setup").
+
+Selecting the wrong override is caught here and nowhere earlier. `userns_mode` is a valid Compose-specification key, so `docker compose config` renders it, and Docker 29.8.0 accepts it at `create` as well — it stores `HostConfig.UsernsMode: "keep-id"` verbatim and applies no mapping at all. The container starts; only the orchestrator notices, with the third line above.
 
 The orchestrator applies database migrations on startup; the first migration seeds an administrator:
 
@@ -210,6 +243,8 @@ Code hand-offs keep the producing session, branch, exact commit and a comment to
 - **Known v1 vulnerability:** git commands run by the orchestrator against an agent-controlled checkout can execute helpers configured by that agent, with the orchestrator's access to secrets, project data and the engine socket. This risk is explicitly accepted for v1; isolating those git operations is deferred. See [ADR 0019](docs/decisions/0019-defer-isolation-of-git-checkout-operations.md). Session containers are not a complete containment guarantee while this remains unresolved.
 - `compose down` while sessions are running cannot remove `mars-sessions`, because session containers are still attached to it: the services are gone but the network removal reports an error, and the session containers themselves are left running. Stop or delete the sessions first, or remove them and the network by hand afterwards.
 - `mars-egress` is not declared in `compose.yml` — the orchestrator creates it at startup — so `compose down` never removes it. Removing it by hand is safe once no session container is attached.
+- **`HTTP_PORT` binds every interface** unless you say otherwise. Compose publishes `${HTTP_PORT}:80`, so a bare `8080` becomes `0.0.0.0:8080` and, on Docker, the daemon's own iptables rules sit in front of a host firewall such as ufw and will happily expose it. The left-hand side of a compose port mapping may carry an address, and `HTTP_PORT` is substituted whole, so `HTTP_PORT=127.0.0.1:8080` publishes on the loopback address only — verified on Docker Compose v5.5.1 (`ss -ltn` then shows `127.0.0.1:8080`). Use that form whenever the TLS terminator runs on the same host.
+- **Docker: `all predefined address pools have been fully subnetted`.** The orchestrator creates `mars-egress` at startup, and on a Docker host whose default address pools are used up — a developer machine with dozens of leftover compose networks is enough — the daemon refuses, the orchestrator logs `the container engine refused a startup step` and restart-loops. Free a pool (`docker network prune` after checking what would go), widen `default-address-pools` in `/etc/docker/daemon.json`, or create the network once with an explicit subnet: `docker network create --subnet 10.212.7.0/24 mars-egress`. An existing network is left exactly as it is at startup.
 - Session working copies, project mirrors and transcripts live under `DATA_DIR_HOST`. Back it up with the database.
 - v1 does not automatically redact secrets from agent/tool output or user messages. Transcripts, event history and their backups may contain credentials printed by commands or pasted into messages; encryption of stored secrets does not cover these copies (ADR 0027).
 - Git fetches refresh the project's upstream-tracking branches (`origin/main`, for example). Mars keeps its integration branches (`main`) separately, so a background fetch cannot discard a merge waiting to be pushed. Merge `origin/main` into `main` explicitly to incorporate upstream changes, then push when ready. A push rejected because upstream changed leaves local work intact. Session reference clones still share history through the read-only project repository.
@@ -247,7 +282,7 @@ mars/
 ├── deploy/             mars-orchestrator.service, the user unit for the host-run fallback
 ├── scripts/            verify-deployment.sh, the smoke test for a started stack
 ├── compose.yml         the deployment: postgres, orchestrator, nginx
-├── compose.podman.yml, compose.docker.yml   one-line engine overrides
+├── compose.podman.yml, compose.docker.yml   the engine overrides
 └── compose.hostrun.yml override for the host-run orchestrator ("Podman setup")
 ```
 

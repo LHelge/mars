@@ -7,7 +7,8 @@
 # creates them on demand (ARCHITECTURE.md, "Components").
 #
 # The engine is chosen by an override file, because rootless Podman and Docker
-# differ in exactly one line on one service (ADR 0035). Name both files:
+# differ only in how the orchestrator service gets its uid and its access to
+# the engine socket (ADR 0035). Name both files:
 #
 #   -f compose.yml -f compose.podman.yml   # rootless Podman
 #   -f compose.yml -f compose.docker.yml   # Docker

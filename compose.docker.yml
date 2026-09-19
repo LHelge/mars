@@ -1,4 +1,5 @@
-# Docker override (README.md, "Podman setup", final paragraph; ADR 0035).
+# Docker override (README.md, "Podman setup" -> "Docker instead of Podman";
+# ADR 0035).
 #
 # Docker applies no user-namespace mapping, so the orchestrator itself runs as
 # uid 1000 and DATA_DIR_HOST must be owned by uid 1000 (ARCHITECTURE.md, "Uid
@@ -8,9 +9,18 @@
 #   -f compose.yml -f compose.docker.yml
 #
 # (or COMPOSE_FILE=compose.yml:compose.docker.yml in `.env`, which
-# `docker compose` reads)
+# `docker compose` reads -- unlike podman-compose 1.6.0)
 #
-# This is the only line that differs from the Podman deployment.
+# `group_add` is the second line Docker needs and rootless Podman does not.
+# /var/run/docker.sock is root:docker 0660, and the `docker` group membership
+# that lets the operator reach it lives on the *host* user, not on uid 1000
+# inside this container. Without the group the orchestrator opens nothing and
+# restart-loops on `the container engine is unreachable; refusing to start`.
+# The gid is host-specific (967 on Arch, 999 on Debian/Ubuntu, ...), so it is a
+# variable: DOCKER_GID, from `getent group docker | cut -d: -f3`
+# (README.md, "Configuration").
 services:
   orchestrator:
     user: "1000:1000"
+    group_add:
+      - "${DOCKER_GID:?set DOCKER_GID: getent group docker | cut -d: -f3}"

@@ -10,7 +10,8 @@
 # (or COMPOSE_FILE=compose.yml:compose.podman.yml, which podman-compose 1.6.0
 # reads only from the process environment, not from `.env`)
 #
-# This is the only line that differs from the Docker deployment.
+# This one line is the whole Podman side of the difference; the Docker side is
+# two (`user:` and `group_add:`, see compose.docker.yml).
 services:
   orchestrator:
     userns_mode: keep-id

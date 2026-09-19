@@ -55,8 +55,25 @@ const INTERNAL_MESSAGE: &str = "internal error";
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The resource does not exist, or is out of the caller's scope. 404.
+    ///
+    /// The generic answer, and the one to reach for: which of a route's
+    /// lookups came up empty is usually not something a caller is entitled to
+    /// learn. [`Error::Missing`] is the exception.
     #[error("not found")]
     NotFound,
+    /// A 404 that names what was missing. The string is the client-visible
+    /// message.
+    ///
+    /// For the one shape of 404 where the generic body is not an answer: a
+    /// route that looks several things up in a row and whose caller has to act
+    /// differently depending on which one was absent. `DELETE
+    /// .../dependencies/{dep}` is the case that put it here — an unknown task
+    /// and an edge that was never there are the same `not found` otherwise,
+    /// and only the second one means "your request already holds" (`SPEC.md`,
+    /// "Tasks"). The naming is the whole point, so a call site that has
+    /// nothing to add uses [`Error::NotFound`] instead.
+    #[error("{0}")]
+    Missing(String),
     /// Authenticated, but not permitted. 403. The string is the client-visible
     /// message: the password-change gate answers `password change required`
     /// and an administrator-only route `admin required` (`SPEC.md`,
@@ -149,7 +166,7 @@ impl Error {
             Error::BadRequest(_) => StatusCode::BAD_REQUEST,
             Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Error::Forbidden(_) => StatusCode::FORBIDDEN,
-            Error::NotFound => StatusCode::NOT_FOUND,
+            Error::NotFound | Error::Missing(_) => StatusCode::NOT_FOUND,
             Error::Conflict(_) => StatusCode::CONFLICT,
             Error::GitConflict { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Error::Throttled(_) => StatusCode::TOO_MANY_REQUESTS,
@@ -438,6 +455,19 @@ mod tests {
             Error::NotFound,
             StatusCode::NOT_FOUND,
             json!({ "status": 404, "error": "not found" }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_named_404_is_404_with_the_call_site_s_message() {
+        // The variant exists so that this body is distinguishable from the
+        // generic one above; if it ever collapsed back into `not found` the
+        // callers that route on it would silently stop working.
+        assert_maps_to(
+            Error::Missing("dependency not found".into()),
+            StatusCode::NOT_FOUND,
+            json!({ "status": 404, "error": "dependency not found" }),
         )
         .await;
     }

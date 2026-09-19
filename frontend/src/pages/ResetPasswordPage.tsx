@@ -13,6 +13,9 @@ import { useFormSubmit } from "../hooks";
 import { ApiError, resetPassword } from "../services";
 import { validatePassword } from "../utils";
 
+/** The 400 body every reset-token rejection shares (unknown, used or expired). */
+const INVALID_RESET_TOKEN = "invalid or expired token";
+
 function InvalidLink() {
   return (
     <AuthLayout title="Choose a new password">
@@ -43,12 +46,16 @@ export function ResetPasswordPage() {
     try {
       await resetPassword(token ?? "", password);
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 400) {
-        // The only thing the endpoint rejects here that the client did not
-        // already check is the token itself.
+      if (
+        caught instanceof ApiError &&
+        caught.status === 400 &&
+        caught.error === INVALID_RESET_TOKEN
+      ) {
         setInvalidLink(true);
         return;
       }
+      // Any other 400 is the server's own password rule, which is the
+      // authoritative one: it is shown verbatim and the link is still good.
       if (caught instanceof TypeError) {
         throw new ApiError(0, "Orchestrator unreachable");
       }

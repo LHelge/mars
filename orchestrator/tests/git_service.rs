@@ -710,56 +710,9 @@ async fn a_diff_of_a_session_head_syncs_silently() {
     );
 }
 
-#[tokio::test]
-async fn a_diff_by_handoff_id_never_touches_the_work_clone() {
-    let fixture = Fixture::create("diff-handoff").await;
-    let session_id = fixture
-        .session_with_commit("HANDED.md", "handed\n", "feat: handed")
-        .await;
-    let service = fixture.service();
-
-    let synced = service
-        .sync_session(fixture.project.id, session_id, &GitActor::System)
-        .await
-        .expect("the sync succeeds");
-
-    let handoff_id = Uuid::new_v4();
-    refs::retain_handoff(
-        &fixture.paths().project_repo(fixture.project.id),
-        handoff_id,
-        &synced.commit,
-    )
-    .await
-    .expect("the hand-off commit is retained");
-
-    // A hand-off is reviewable after its session is gone, which is exactly
-    // what "never syncs a moving branch" has to survive.
-    std::fs::remove_dir_all(fixture.paths().session_work(session_id))
-        .expect("the work clone is removed");
-
-    let diff = service
-        .diff(
-            fixture.project.id,
-            DiffSelector::Handoff(handoff_id),
-            Some("main"),
-        )
-        .await
-        .expect("the diff succeeds without a work clone");
-
-    assert_eq!(diff.head, handoff_id.to_string());
-    assert_eq!(
-        diff.files
-            .iter()
-            .map(|file| file.path.as_str())
-            .collect::<Vec<_>>(),
-        vec!["HANDED.md"]
-    );
-    assert_eq!(
-        fixture.events(session_id).await.len(),
-        1,
-        "only the explicit sync recorded anything"
-    );
-}
+// A diff by `handoff_id` is `tests/handoffs_diff.rs`: the selector is now
+// looked up in `task_handoffs`, so the case cannot be arranged by retaining a
+// bare ref here, and that suite publishes its hand-offs through the API.
 
 #[tokio::test]
 async fn listing_session_branches_records_nothing() {

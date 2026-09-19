@@ -1,14 +1,15 @@
 ---
 id: d4vna
 title: Define SessionOwner behaviour when stream.jsonl is truncated below the committed offset
-status: open
+status: done
 priority: P3
 created: "2026-09-18T22:14:14.858432603Z"
-updated: "2026-09-18T22:14:14.858432603Z"
+updated: "2026-09-19T00:35:00.093562602Z"
 tags:
   - orchestrator
   - sessions
 parent: s52qg
+attempts: 1
 ---
 
 ## Summary

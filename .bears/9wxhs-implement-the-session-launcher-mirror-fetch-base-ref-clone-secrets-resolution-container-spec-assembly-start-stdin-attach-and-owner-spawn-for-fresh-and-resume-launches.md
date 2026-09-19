@@ -1,10 +1,10 @@
 ---
 id: "9wxhs"
 title: "Implement the session launcher: mirror fetch, base-ref clone, secrets resolution, container spec assembly, start, stdin attach and owner spawn for fresh and resume launches"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:31:36.800460115Z"
-updated: "2026-09-17T20:04:54.318127824Z"
+updated: "2026-09-19T00:34:58.338583780Z"
 tags:
   - orchestrator
   - sessions
@@ -17,6 +17,7 @@ depends_on:
   - n7tzv
   - escp8
 parent: s52qg
+attempts: 1
 ---
 
 ## Summary

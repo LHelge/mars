@@ -18,9 +18,9 @@
 //! What is left here is what the trait cannot express: the image pull, nested
 //! bind mounts, `UsernsMode: keep-id:uid=1000,gid=1000` through Podman's
 //! compatibility API, many creates at once, a real PTY, a real stdin delivery
-//! into a bind mount, and the startup probe and [`bootstrap_engine`] end to end
-//! at the bottom — the same sequence the binary runs between its migrations and
-//! its listeners. `keep-id` and the `SIGINT` were open questions; their answers
+//! into a bind mount, and [`bootstrap_engine`] end to end at the bottom, the
+//! startup probe included — the same sequence the binary runs between its
+//! migrations and its listeners. `keep-id` and the `SIGINT` were open questions; their answers
 //! are recorded in `ARCHITECTURE.md`, "Engine adapter" and "Session image".
 //!
 //! **The uid contract, and why most scenarios ignore it.** The session
@@ -30,12 +30,13 @@
 //! holds on rootless Podman through `keep-id` and on a Docker host whose own
 //! user is uid 1000. A GitHub-hosted Docker runner executes as uid 1001, so
 //! there the contract does not hold and the startup probe is *expected* to
-//! fail: `startup_probe_end_to_end` and `bootstrap_engine_end_to_end` assert
-//! the failure branch there and the success branch everywhere else. The
-//! scenarios that only need a file written — the stdin attach and the nested
-//! binds — run as `0:0` into a world-writable temporary directory and assert
+//! fail: `bootstrap_engine_end_to_end`, which runs the probe as part of the
+//! bootstrap, asserts the failure branch there and the success branch
+//! everywhere else. The scenarios that only need a file written — the stdin
+//! attach and the nested binds — run as `0:0` into a world-writable temporary directory and assert
 //! nothing about ownership, so they hold on every engine and every runner.
-//! Only `userns_keep_id_accepted` and the two probe scenarios assert a uid.
+//! Only `userns_keep_id_accepted` and `bootstrap_engine_end_to_end` assert a
+//! uid.
 
 mod common;
 
@@ -51,12 +52,11 @@ use common::engine::{
 use common::engine_contract::{ContractEnv, assert_engine_contract};
 use futures_util::future::join_all;
 use mars_orchestrator::engine::bollard::BollardEngine;
-use mars_orchestrator::engine::probe::{ProbeInput, run_startup_probe};
 // The three `spec` items each belong to a scenario that cannot be asserted
 // through the trait: `order_binds` is the ordering `nested_bind_mounts_*` puts
 // a deliberately wrong list through, `to_bollard` is where
 // `userns_keep_id_accepted` reads the `HostConfig` field the trait does not
-// expose, and `LABEL_PROBE` is the label the probe scenarios assert no
+// expose, and `LABEL_PROBE` is the label the bootstrap scenario asserts no
 // container is left carrying.
 use mars_orchestrator::engine::spec::{LABEL_PROBE, order_binds, to_bollard};
 use mars_orchestrator::engine::{
@@ -636,96 +636,19 @@ async fn userns_keep_id_accepted() {
     .await;
 }
 
-/// The startup probe end to end (`ARCHITECTURE.md`, "Engine adapter", Startup
-/// probe): the container runs over a real data directory, the file comes back
-/// owned by this process, and nothing is left behind.
+/// [`bootstrap_engine`] end to end: exactly the sequence `main` runs between
+/// the migrations and its listeners — connect, create both networks, probe —
+/// driven from a `Config` (`ARCHITECTURE.md`, "Orchestrator internals"), and
+/// with it the startup probe itself (`ARCHITECTURE.md`, "Engine adapter",
+/// Startup probe): the probe container runs over a real data directory, the
+/// file comes back owned by this process, and nothing — neither the directory
+/// nor the container — is left behind.
 ///
 /// On a host whose own uid is not 1000 and which maps no namespace — a
 /// GitHub-hosted Docker runner — the probe is meant to fail, and this asserts
 /// that failure instead. The exact message is asserted there: the probe makes
 /// its session subdirectories world-writable, so the container's write
 /// succeeds and the ownership check is what refuses.
-#[tokio::test]
-async fn startup_probe_end_to_end() {
-    let Some(engine) = connect_or_skip().await else {
-        return;
-    };
-    // A reference, so the scenario body below can be an `async move` block
-    // without moving the engine the cleanup still needs.
-    let engine = &engine;
-    ensure_test_image(engine).await;
-
-    // Only one probe at a time: the assertion below is that no `mars.probe`
-    // container survives, and a probe running beside this one would be one.
-    let _probe = probe_lock().lock().await;
-
-    with_cleanup(engine, |cleanup| async move {
-        let data = writable_tempdir();
-        let data_dir = absolute(data.path());
-        let internal = unique_name("probe-int");
-        let egress = unique_name("probe-egress");
-
-        engine
-            .ensure_network(&internal, true)
-            .await
-            .expect("the internal network is created");
-        cleanup.network(&internal);
-        engine
-            .ensure_network(&egress, false)
-            .await
-            .expect("the egress network is created");
-        cleanup.network(&egress);
-
-        let outcome = run_startup_probe(
-            engine,
-            ProbeInput {
-                image: TEST_IMAGE.to_string(),
-                data_dir: data_dir.clone(),
-                data_dir_host: data_dir.clone(),
-                network_internal: internal.clone(),
-                network_egress: egress.clone(),
-                extra_hosts: Vec::new(),
-            },
-        )
-        .await;
-
-        let own_uid = uid_of(&data_dir);
-        if probe_should_pass(engine.kind(), own_uid) {
-            let report = outcome.expect("the probe passes");
-            assert_eq!(report.engine_kind, engine.kind());
-            assert_eq!(report.own_uid, own_uid);
-            assert_eq!(
-                report.file_uid, own_uid,
-                "the probe file came back owned by another uid"
-            );
-
-            let leftovers: Vec<_> = std::fs::read_dir(data_dir.join("tmp"))
-                .expect("the probe created DATA_DIR/tmp")
-                .map(|entry| entry.expect("the entry reads").path())
-                .collect();
-            assert!(
-                leftovers.is_empty(),
-                "the probe left its directory behind: {leftovers:?}"
-            );
-        } else {
-            assert_probe_failure(outcome.err(), own_uid);
-        }
-
-        let probes = engine
-            .list_by_label(LABEL_PROBE)
-            .await
-            .expect("the engine lists by label");
-        assert!(
-            probes.is_empty(),
-            "the probe container survived the probe: {probes:?}"
-        );
-    })
-    .await;
-}
-
-/// [`bootstrap_engine`] end to end: exactly the sequence `main` runs between
-/// the migrations and its listeners — connect, create both networks, probe —
-/// driven from a `Config` (`ARCHITECTURE.md`, "Orchestrator internals").
 #[tokio::test]
 async fn bootstrap_engine_end_to_end() {
     let Some(engine) = connect_or_skip().await else {
@@ -759,6 +682,15 @@ async fn bootstrap_engine_end_to_end() {
                 // rather than unwrapped.
                 Err(error) => panic!("the bootstrap failed: {error}"),
             }
+
+            let leftovers: Vec<_> = std::fs::read_dir(data_dir.join("tmp"))
+                .expect("the probe created DATA_DIR/tmp")
+                .map(|entry| entry.expect("the entry reads").path())
+                .collect();
+            assert!(
+                leftovers.is_empty(),
+                "the probe left its directory behind: {leftovers:?}"
+            );
         } else {
             assert_probe_failure(outcome.err(), own_uid);
         }
@@ -771,6 +703,15 @@ async fn bootstrap_engine_end_to_end() {
                 .await
                 .expect("the bootstrap created the network");
         }
+
+        let probes = engine
+            .list_by_label(LABEL_PROBE)
+            .await
+            .expect("the engine lists by label");
+        assert!(
+            probes.is_empty(),
+            "the probe container survived the probe: {probes:?}"
+        );
     })
     .await;
 }

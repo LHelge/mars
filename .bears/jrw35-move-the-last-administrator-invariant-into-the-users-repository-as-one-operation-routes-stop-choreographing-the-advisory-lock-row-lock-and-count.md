@@ -1,10 +1,10 @@
 ---
 id: jrw35
 title: Move the last-administrator invariant into the users repository as one operation; routes stop choreographing the advisory lock, row lock and count
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-17T20:02:59.380928728Z"
-updated: "2026-09-19T13:43:06.208189568Z"
+updated: "2026-09-19T14:30:17.440277096Z"
 tags:
   - orchestrator
   - auth

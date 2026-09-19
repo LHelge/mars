@@ -1,10 +1,10 @@
 ---
 id: bppkk
 title: "Add SessionService actions: send_input with parked relaunch, stop, end with fetch-back and lease release, retry, sync, delete with directory and transcript removal"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:32:52.275635850Z"
-updated: "2026-09-19T00:35:02.100456168Z"
+updated: "2026-09-19T01:23:07.575959224Z"
 tags:
   - orchestrator
   - sessions

@@ -1,10 +1,10 @@
 ---
 id: tjccc
 title: Add sessions REST routes for create, list, get, title update, delete and event pagination
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:33:54.133596109Z"
-updated: "2026-09-19T00:35:04.343593262Z"
+updated: "2026-09-19T01:23:09.415571357Z"
 tags:
   - orchestrator
   - sessions

@@ -1,10 +1,10 @@
 ---
 id: "47gts"
 title: "Fold the startup probe into bootstrap_engine: drop ProbeInput, ProbeReport and RecordingEngine, test the probe through bootstrap with the mock"
-status: open
+status: done
 priority: P2
 created: "2026-09-17T20:02:43.362443951Z"
-updated: "2026-09-17T20:02:43.362443951Z"
+updated: "2026-09-19T19:33:30.777619410Z"
 tags:
   - orchestrator
   - engine
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - "6m8br"
 parent: quxdn
+attempts: 1
 ---
 
 ## Summary

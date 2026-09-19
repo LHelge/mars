@@ -1,10 +1,10 @@
 ---
 id: xy85f
 title: "Replace the bespoke engine stubs with the mock: PlaceholderEngine and UnreachableEngine go where MockEngine can serve"
-status: open
+status: done
 priority: P3
 created: "2026-09-17T20:04:27.851779858Z"
-updated: "2026-09-17T20:04:27.851779858Z"
+updated: "2026-09-19T19:33:32.657175654Z"
 tags:
   - orchestrator
   - engine
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - n7tzv
 parent: quxdn
+attempts: 1
 ---
 
 ## Summary

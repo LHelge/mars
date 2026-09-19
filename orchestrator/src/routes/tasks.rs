@@ -44,7 +44,8 @@ use crate::models::{Priority, TaskRef, TaskStateKind};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskFilter, TaskRepository};
 use crate::routes::{CurrentUser, Path, Query};
-use crate::tracker::tasks::{CreateTaskInput, CreatedBy, create_task, resolve_state_in_project};
+use crate::tracker::state::resolve_state_in_pool;
+use crate::tracker::tasks::{CreateTaskInput, CreatedBy, create_task};
 use crate::tracker::{TaskDetailDto, TaskDto, TrackerMutation};
 
 /// What `GET /tasks` without a `state_kind` is told (400).
@@ -174,7 +175,7 @@ async fn list(
     let tasks = TaskRepository::new(&state.pool);
 
     let state_id = match query.state.as_deref() {
-        Some(name) => Some(resolve_state_in_project(&state.pool, pid, name).await?.id),
+        Some(name) => Some(resolve_state_in_pool(&state.pool, pid, name).await?.id),
         None => None,
     };
 

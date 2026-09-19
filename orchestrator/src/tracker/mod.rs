@@ -40,7 +40,10 @@ pub use dto::{
 };
 pub use escalation::Escalation;
 pub use graph::{BlockedFlip, DeletionCapture};
-pub use leases::{claim_for_launch, claim_for_profile, ready_summaries, release_by_user};
+pub use leases::{
+    ReleaseReason, claim_for_launch, claim_for_profile, needs_human, ready_summaries,
+    release_by_agent, release_by_user, release_leases_for_session,
+};
 pub use mutation::{Locked, MutationOutcome, TrackerMutation};
 pub use state::{StateChangeOptions, StateChangeResult, StateEventKind};
 pub use tasks::{CreateTaskInput, CreatedBy, create_task};

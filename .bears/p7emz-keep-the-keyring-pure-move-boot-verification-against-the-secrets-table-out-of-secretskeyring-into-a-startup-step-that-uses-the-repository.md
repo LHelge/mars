@@ -1,10 +1,10 @@
 ---
 id: p7emz
 title: "Keep the keyring pure: move boot verification against the secrets table out of SecretsKeyring into a startup step that uses the repository"
-status: open
+status: done
 priority: P2
 created: "2026-09-17T20:03:30.565493879Z"
-updated: "2026-09-17T20:03:30.565493879Z"
+updated: "2026-09-19T19:33:34.432626182Z"
 tags:
   - orchestrator
   - secrets
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - psybz
 parent: zeccj
+attempts: 1
 ---
 
 ## Summary

@@ -2,10 +2,10 @@
 id: quxdn
 title: "Architecture: one container engine contract, proven on both adapters"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-17T19:59:24.224452390Z"
-updated: "2026-09-17T19:59:24.224452390Z"
+updated: "2026-09-19T19:33:43.068941637Z"
 tags:
   - orchestrator
   - engine

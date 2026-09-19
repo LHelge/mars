@@ -49,3 +49,4 @@ Fill in `CronService::token_cleanup`: once an hour delete expired refresh tokens
 ## Assumes from other epics
 - "Authentication, users, invites and email": `RefreshTokenRepository`, `PasswordResetTokenRepository`, `UserInviteRepository` with their `delete_expired` placeholders and `TestApp` user helpers.
 - "Secrets manager": `SecretRepository` with insert and `insert_use` for seeding test rows.
+- Note (p7emz, 2026-09-19): `SecretRepository::list_orphans` and its test `orphans_are_the_scoped_rows_whose_target_is_gone` were deleted as dead code, along with `distinct_key_versions` and `list_meta`. This task adds `delete_orphans()` with its own test; do not expect a selecting query to build on.

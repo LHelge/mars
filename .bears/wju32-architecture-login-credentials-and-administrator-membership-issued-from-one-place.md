@@ -2,10 +2,10 @@
 id: wju32
 title: "Architecture: login credentials and administrator membership issued from one place"
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-09-17T19:59:36.274053474Z"
-updated: "2026-09-17T19:59:36.274053474Z"
+updated: "2026-09-19T19:33:36.171869037Z"
 tags:
   - orchestrator
   - auth

@@ -2,10 +2,10 @@
 id: zeccj
 title: "Architecture: a secret's encrypted identity is owned by one type"
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-09-17T19:59:47.357728130Z"
-updated: "2026-09-17T19:59:47.357728130Z"
+updated: "2026-09-19T19:33:34.433004881Z"
 tags:
   - orchestrator
   - secrets

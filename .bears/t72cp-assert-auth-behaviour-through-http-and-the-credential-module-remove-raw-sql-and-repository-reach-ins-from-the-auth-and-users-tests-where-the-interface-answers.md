@@ -1,10 +1,10 @@
 ---
 id: t72cp
 title: "Assert auth behaviour through HTTP and the credential module: remove raw SQL and repository reach-ins from the auth and users tests where the interface answers"
-status: open
+status: done
 priority: P3
 created: "2026-09-17T20:04:43.884217910Z"
-updated: "2026-09-17T20:04:43.884217910Z"
+updated: "2026-09-19T19:33:36.171568597Z"
 tags:
   - orchestrator
   - auth
@@ -15,6 +15,7 @@ depends_on:
   - jrw35
   - kc58a
 parent: wju32
+attempts: 1
 ---
 
 ## Summary

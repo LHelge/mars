@@ -1,10 +1,10 @@
 ---
 id: "4qqjs"
 title: Define TaskEvent, TaskActor and the API Task, TaskDetail, Comment and Handoff DTOs with their repository loaders
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:39:58.382423897Z"
-updated: "2026-09-16T20:51:52.106460720Z"
+updated: "2026-09-19T09:11:57.107663299Z"
 tags:
   - orchestrator
   - tracker
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - pkaee
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

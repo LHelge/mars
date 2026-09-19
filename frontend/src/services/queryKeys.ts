@@ -2,7 +2,7 @@
 // group for a new resource rather than editing someone else's, so two pages
 // being built in parallel never collide here.
 
-import type { SessionState } from "../types";
+import type { SecretScope, SessionState } from "../types";
 
 export const queryKeys = {
   sessions: {
@@ -20,6 +20,18 @@ export const queryKeys = {
   projects: {
     all: ["projects"] as const,
     list: () => ["projects", "list"] as const,
+  },
+
+  secrets: {
+    all: ["secrets"] as const,
+    /**
+     * One list per scope. `user` without a `scopeId` is "my secrets"; the page
+     * normalises the caller's own id away so both spellings share one entry.
+     */
+    list: (scope: SecretScope, scopeId?: string | null) =>
+      ["secrets", "list", scope, scopeId ?? "self"] as const,
+    /** The audit trail of one secret, at the limit currently asked for. */
+    uses: (id: string, limit = 20) => ["secrets", "uses", id, limit] as const,
   },
 
   users: {

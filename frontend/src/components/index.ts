@@ -25,6 +25,9 @@ export type { PasswordChangeFormProps } from "./PasswordChangeForm";
 
 export { ProtectedRoute } from "./ProtectedRoute";
 
+export { SecretsManager } from "./secrets/SecretsManager";
+export type { SecretsManagerProps } from "./secrets/SecretsManager";
+
 export { SectionHeader } from "./SectionHeader";
 export type { SectionHeaderProps } from "./SectionHeader";
 

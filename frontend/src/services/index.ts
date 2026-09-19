@@ -41,6 +41,16 @@ export type { Health } from "./health";
 
 export { listProjects } from "./projects";
 
+export {
+  createSecret,
+  deleteSecret,
+  listSecretUses,
+  listSecrets,
+  patchSecret,
+  replaceSecretValue,
+} from "./secrets";
+export type { ListSecretsParams } from "./secrets";
+
 export { queryKeys } from "./queryKeys";
 
 export { listSessions } from "./sessions";

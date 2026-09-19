@@ -1,16 +1,17 @@
 ---
 id: t85sb
 title: Implement services/apiClient.ts, services/auth.ts with the token store and useAuth()
-status: open
+status: in_progress
 priority: P0
 created: "2026-09-16T20:39:52.095665806Z"
-updated: "2026-09-16T20:39:52.095665806Z"
+updated: "2026-09-19T10:41:23.945902883Z"
 tags:
   - frontend
   - auth
 depends_on:
   - c3hjz
 parent: "2f5u2"
+attempts: 1
 ---
 
 ## Summary

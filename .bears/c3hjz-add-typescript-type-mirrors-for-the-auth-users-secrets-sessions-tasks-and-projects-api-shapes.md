@@ -1,15 +1,16 @@
 ---
 id: c3hjz
 title: Add TypeScript type mirrors for the auth, users, secrets, sessions, tasks and projects API shapes
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:39:01.349288704Z"
-updated: "2026-09-16T20:51:52.273242623Z"
+updated: "2026-09-19T10:41:22.522319504Z"
 tags:
   - frontend
 depends_on:
   - t36d2
 parent: "2f5u2"
+attempts: 1
 ---
 
 ## Summary

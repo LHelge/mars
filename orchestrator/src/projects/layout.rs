@@ -39,6 +39,11 @@ use crate::prelude::*;
 const CLAUDE: &str = "claude";
 /// The parent of the project's shared directories.
 const SHARED: &str = "shared";
+/// The CLI's own per-working-directory subtree inside its state directory.
+const CLI_PROJECTS: &str = "projects";
+/// How the CLI encodes the working directory every session runs with,
+/// `/session/work` (`ARCHITECTURE.md`, "Storage", "Claude Code invocation").
+const CLI_WORK_DIR: &str = "-session-work";
 
 /// Where one project's files live, in both views of the data volume.
 ///
@@ -98,6 +103,37 @@ impl ProjectLayout {
     /// `DATA_DIR/projects/<id>/claude`: the CLI state directory.
     pub fn claude_dir(&self) -> PathBuf {
         self.root().join(CLAUDE)
+    }
+
+    /// `DATA_DIR/projects/<id>/claude/projects/-session-work`: where the CLI
+    /// files one transcript per session of this project (`ARCHITECTURE.md`,
+    /// "Storage").
+    pub fn cli_transcripts_dir(&self) -> PathBuf {
+        self.claude_dir().join(CLI_PROJECTS).join(CLI_WORK_DIR)
+    }
+
+    /// The transcript file and the directory of the same name a CLI session id
+    /// owns, which deleting a session removes (`ARCHITECTURE.md`, "Storage").
+    ///
+    /// `None` for an id that is not a single plain path component. The value
+    /// comes from the CLI's own `init` event, which is agent-controlled output
+    /// (`ARCHITECTURE.md`, "Launch sequence"), so one carrying a separator or
+    /// `..` would name a path outside the state directory; the caller skips the
+    /// removal rather than following it. `<id>.jsonl` first, then `<id>/`.
+    pub fn cli_transcript_paths(&self, cli_session_id: &str) -> Option<(PathBuf, PathBuf)> {
+        if cli_session_id.is_empty()
+            || !cli_session_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return None;
+        }
+
+        let root = self.cli_transcripts_dir();
+        Some((
+            root.join(format!("{cli_session_id}.jsonl")),
+            root.join(cli_session_id),
+        ))
     }
 
     /// `DATA_DIR/projects/<id>/shared`: the parent of every shared directory.
@@ -269,19 +305,36 @@ pub(crate) async fn remove_dir_all(path: &Path) -> Result<()> {
     }
 }
 
+/// `rm -f`, with a missing path counting as done.
+///
+/// `pub(crate)` for the session service, which removes a deleted session's CLI
+/// transcript from inside this layout (`ARCHITECTURE.md`, "Storage") and owes
+/// the same tolerance and the same log line as the methods above.
+pub(crate) async fn remove_file(path: &Path) -> Result<()> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(io_failure(path, "remove", err)),
+    }
+}
+
 /// Log the path and return a message that does not carry it.
 ///
 /// The path is not a secret, but it is an internal detail: a 500 answers
 /// `internal error` and the log line is where the operator reads which
 /// directory failed (`ARCHITECTURE.md`, "Orchestrator internals", Errors).
+///
+/// "data directory" rather than "project directory": the session service
+/// removes a session's own directory through [`remove_dir_all`] as well, and one
+/// message for both keeps the two from drifting.
 fn io_failure(path: &Path, operation: &'static str, err: std::io::Error) -> Error {
     error!(
         path = %path.display(),
         operation,
         error = %err,
-        "project directory operation failed"
+        "data directory operation failed"
     );
-    Error::Internal(format!("could not {operation} a project directory"))
+    Error::Internal(format!("could not {operation} a data directory"))
 }
 
 #[cfg(test)]
@@ -326,6 +379,43 @@ mod tests {
             layout.shared_dir("target").unwrap(),
             PathBuf::from(format!("/data/projects/{ID}/shared/target"))
         );
+    }
+
+    #[test]
+    fn the_cli_transcript_paths_are_the_documented_tree() {
+        let layout = ProjectLayout::new(Path::new("/data"), id());
+
+        assert_eq!(
+            layout.cli_transcripts_dir(),
+            PathBuf::from(format!("/data/projects/{ID}/claude/projects/-session-work")),
+        );
+        assert_eq!(
+            layout.cli_transcript_paths("abc-123_DEF"),
+            Some((
+                PathBuf::from(format!(
+                    "/data/projects/{ID}/claude/projects/-session-work/abc-123_DEF.jsonl"
+                )),
+                PathBuf::from(format!(
+                    "/data/projects/{ID}/claude/projects/-session-work/abc-123_DEF"
+                )),
+            )),
+        );
+    }
+
+    /// The id comes from agent-controlled CLI output, so one that is not a
+    /// plain path component names nothing at all rather than a path outside the
+    /// state directory.
+    #[test]
+    fn a_cli_session_id_that_is_not_one_path_component_names_nothing() {
+        let layout = ProjectLayout::new(Path::new("/data"), id());
+
+        for hostile in ["", "..", "../../etc", "a/b", "a\0b", "a b", "/absolute"] {
+            assert_eq!(
+                layout.cli_transcript_paths(hostile),
+                None,
+                "{hostile} must not name a path",
+            );
+        }
     }
 
     /// The `repo.git` and `projects/<id>` segments have one definition, in

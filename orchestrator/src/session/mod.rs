@@ -22,6 +22,12 @@
 //! events, offset and counters together (`ARCHITECTURE.md`, "Session owner
 //! task", "Durability and recovery").
 //!
+//! [`service`] is the other half of the lifecycle: what a *user* asks of a
+//! session — input, stop, end, retry, sync and delete — in the one place the
+//! REST routes, the WebSocket handler and the cron jobs share, so that all
+//! three apply the same rules (`ARCHITECTURE.md`, "Session lifecycle", "Stop
+//! semantics"; `SPEC.md`, "Sessions").
+//!
 //! [`recovery`] is what runs once at startup, before anything serves: it adopts
 //! the containers a restart left running, parks the sessions whose container is
 //! gone and fails the ones the restart caught mid-creation
@@ -32,6 +38,7 @@ pub mod owner;
 pub mod prepare;
 pub mod recovery;
 pub mod registry;
+pub mod service;
 pub mod token;
 
 pub use launcher::{
@@ -47,4 +54,5 @@ pub use recovery::{CREATING_REASON, MISSING_CONTAINER_REASON, RecoveryReport, re
 pub use registry::{
     LaunchGuard, OwnerCommand, OwnerRx, Phase, QueuedInput, SessionRegistry, SubmitResult,
 };
+pub use service::SessionService;
 pub use token::{MCP_TOKEN_CHARS, McpToken, hash_mcp_token};

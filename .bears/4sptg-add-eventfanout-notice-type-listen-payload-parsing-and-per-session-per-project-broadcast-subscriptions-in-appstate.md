@@ -1,10 +1,10 @@
 ---
 id: "4sptg"
 title: "Add EventFanout: Notice type, LISTEN payload parsing and per-session/per-project broadcast subscriptions in AppState"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:44:03.854778874Z"
-updated: "2026-09-16T20:51:52.081740217Z"
+updated: "2026-09-19T20:19:44.025354583Z"
 tags:
   - orchestrator
   - realtime
@@ -13,6 +13,7 @@ depends_on:
   - s52qg
   - "5h3y4"
 parent: h8kw9
+attempts: 1
 ---
 
 ## Summary

@@ -28,9 +28,11 @@ pub mod escalation;
 pub mod graph;
 pub mod mutation;
 pub mod state;
+pub mod tasks;
 
 pub use dto::{CommentDto, DependencyRef, HandoffDto, TaskDetailDto, TaskDto, TaskSessionLinkDto};
 pub use escalation::Escalation;
 pub use graph::{BlockedFlip, DeletionCapture};
 pub use mutation::{Locked, MutationOutcome, TrackerMutation};
 pub use state::{StateChangeOptions, StateChangeResult, StateEventKind};
+pub use tasks::{CreateTaskInput, CreatedBy, create_task};

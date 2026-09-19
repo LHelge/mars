@@ -17,6 +17,7 @@ pub mod projects;
 pub mod secrets;
 pub mod sessions;
 pub mod shared_dirs;
+pub mod tasks;
 pub mod throttle;
 pub mod users;
 
@@ -43,10 +44,12 @@ pub fn routes() -> Router<AppState> {
                 .merge(git::routes())
                 .merge(profiles::routes())
                 .merge(sessions::project_routes())
-                .merge(shared_dirs::routes()),
+                .merge(shared_dirs::routes())
+                .merge(tasks::project_routes()),
         )
         .nest("/secrets", secrets::routes())
         .nest("/sessions", sessions::routes())
+        .nest("/tasks", tasks::routes())
         .nest("/users", users::routes());
 
     // The only routes with a prefix of their own, because `SPEC.md`,

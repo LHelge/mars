@@ -181,7 +181,7 @@ async fn bootstrap() -> Bootstrap {
     // only be discovered at a session launch (`ARCHITECTURE.md`, "Secrets",
     // Keyring). The error lists every offending version and no key material
     // (rule 3).
-    if let Err(err) = keyring.verify_against_db(&pool).await {
+    if let Err(err) = secrets::verify_keyring_at_startup(&pool, &keyring).await {
         error!(error = %err, "the stored secrets cannot be read with the configured master keys");
         std::process::exit(EXIT_FAILURE);
     }

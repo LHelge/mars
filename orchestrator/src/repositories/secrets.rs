@@ -38,7 +38,7 @@ use crate::models::{
 };
 use crate::prelude::*;
 use crate::repositories::unique_violation;
-use crate::secrets::{KeyVersionSample, SealedSecret};
+use crate::secrets::SealedSecret;
 
 /// Which user-scoped secrets one listing is allowed to show.
 ///
@@ -344,36 +344,6 @@ impl<'a> SecretRepository<'a> {
         Ok(candidates)
     }
 
-    /// Every secret in this scope as the API shape, by name (`GET /secrets`).
-    ///
-    /// The `LEFT JOIN` is what makes `last_used_at` an aggregate rather than a
-    /// column: `MAX(secret_uses.at)` per secret, and NULL for a secret that
-    /// has never been used, which the join keeps in the result instead of
-    /// dropping it (`SPEC.md`, "Secrets"). A scope with no secrets at all is
-    /// an empty vector, never a 404 — the scope exists whether or not anything
-    /// is in it.
-    pub async fn list_meta(&self, scope: &ScopeRef) -> Result<Vec<SecretMeta>> {
-        let meta = sqlx::query_as!(
-            SecretMeta,
-            r#"
-            SELECT s.id, s.scope AS "scope: SecretScope", s.scope_id, s.name,
-                   s.orchestrator_only, s.key_version, s.created_by, s.created_at, s.updated_at,
-                   MAX(u.at) AS "last_used_at?"
-            FROM secrets s
-            LEFT JOIN secret_uses u ON u.secret_id = s.id
-            WHERE s.scope = $1 AND s.scope_id IS NOT DISTINCT FROM $2
-            GROUP BY s.id
-            ORDER BY s.name
-            "#,
-            scope.scope() as SecretScope,
-            scope.scope_id(),
-        )
-        .fetch_all(self.pool)
-        .await?;
-
-        Ok(meta)
-    }
-
     /// The secrets one listing request may see, by scope and then by name.
     ///
     /// The two clauses of [`SecretListFilter`], each of which narrows only
@@ -607,7 +577,8 @@ impl<'a> SecretRepository<'a> {
     /// `secrets.scope_id` carries no foreign key — the scope decides which
     /// table it points at (`docs/data-model.md`, `secrets`) — so deleting a
     /// project takes nothing with it, and its secrets would become exactly the
-    /// orphans [`SecretRepository::list_orphans`] exists to find. Project
+    /// orphans the reaper exists to find (`ARCHITECTURE.md`, "Background
+    /// jobs"). Project
     /// deletion therefore removes them itself, in the same transaction as the
     /// row ([`crate::projects::delete_project`]). The `secret_uses` audit rows
     /// cascade with each secret, as they do for a single
@@ -749,44 +720,30 @@ impl<'a> SecretRepository<'a> {
         Ok(remaining)
     }
 
-    /// Every distinct `key_version` in the table, ascending.
+    /// One sealed row per distinct `key_version` in the table, ascending.
     ///
-    /// The startup check: the keyring verifies it can unwrap one row per
-    /// version present and refuses to start otherwise, because a missing key
-    /// version would otherwise only be discovered at a session launch
-    /// (`ARCHITECTURE.md`, "Secrets", Keyring). An empty table returns an
-    /// empty vector, which is a valid keyring — there is nothing to unwrap.
-    pub async fn distinct_key_versions(&self) -> Result<Vec<i32>> {
-        let versions = sqlx::query_scalar!(
-            r#"SELECT DISTINCT key_version AS "key_version!" FROM secrets ORDER BY key_version"#
-        )
-        .fetch_all(self.pool)
-        .await?;
-
-        Ok(versions)
-    }
-
-    /// One row per distinct `key_version`, with its wrapping.
-    ///
-    /// What the startup check actually reads: knowing which versions are
-    /// present is not enough to know the configured master keys can still
-    /// open them, so this hands the keyring a sample it can try to unwrap
-    /// (`ARCHITECTURE.md`, "Secrets", Keyring). `DISTINCT ON` with a matching
+    /// What the startup check reads: knowing which versions are present is not
+    /// enough to know the configured master keys can still open them, so this
+    /// hands the check a sample per version whose data key it can try to
+    /// unwrap ([`verify_keyring_at_startup`](crate::secrets::verify_keyring_at_startup);
+    /// `ARCHITECTURE.md`, "Secrets", Keyring). `DISTINCT ON` with a matching
     /// `ORDER BY` picks the lowest id per version, which makes the sample the
-    /// same row on every start and the query one index scan rather than a
-    /// full table read. An empty table returns an empty vector and the check
-    /// passes trivially.
+    /// same row on every start and the query one index scan rather than a full
+    /// table read. An empty table returns an empty vector and the check passes
+    /// trivially.
     ///
-    /// The bytes are a wrapped data key, never a value, and neither they nor
-    /// the nonce are logged anywhere on this path (rule 3).
-    pub async fn distinct_key_version_samples(&self) -> Result<Vec<KeyVersionSample>> {
+    /// A [`SealedSecret`] rather than the wrapping columns alone: the sealed
+    /// envelope is the one shape a stored row is read into, and it is the type
+    /// that owns unwrapping. The value's ciphertext comes along and is never
+    /// decrypted here; nothing on this path is logged (rule 3).
+    pub async fn sample_per_key_version(&self) -> Result<Vec<SealedSecret>> {
         let samples = sqlx::query_as!(
-            KeyVersionSample,
+            Secret,
             r#"
             SELECT DISTINCT ON (key_version)
-                   key_version AS "key_version!",
-                   data_key_wrapped AS "data_key_wrapped!",
-                   data_key_nonce AS "data_key_nonce!"
+                   id, scope AS "scope: SecretScope", scope_id, name, ciphertext, nonce,
+                   data_key_wrapped, data_key_nonce, key_version, orchestrator_only,
+                   created_by, created_at, updated_at
             FROM secrets
             ORDER BY key_version, id
             "#
@@ -794,7 +751,7 @@ impl<'a> SecretRepository<'a> {
         .fetch_all(self.pool)
         .await?;
 
-        Ok(samples)
+        Ok(samples.iter().map(Secret::sealed).collect())
     }
 
     /// Whether the user or project a scope points at still exists.
@@ -807,7 +764,8 @@ impl<'a> SecretRepository<'a> {
     ///
     /// `global` has no target, so it is true without a query. The answer is a
     /// snapshot either way: the row could be deleted immediately afterwards,
-    /// which is what [`SecretRepository::list_orphans`] and the reaper are for.
+    /// which is what the orphan reaper is for (`ARCHITECTURE.md`,
+    /// "Background jobs").
     pub async fn scope_exists(&self, scope: &ScopeRef) -> Result<bool> {
         let exists = match scope.scope() {
             SecretScope::Global => true,
@@ -830,33 +788,6 @@ impl<'a> SecretRepository<'a> {
         };
 
         Ok(exists)
-    }
-
-    /// The ids of secrets whose scope target no longer exists.
-    ///
-    /// `scope_id` has no foreign key — the scope decides which table it points
-    /// at, so there is nothing for one constraint to reference
-    /// (`docs/data-model.md`, `secrets`) — which means deleting a user or a
-    /// project leaves its secrets behind. This is what the reaper sweeps.
-    /// `global` rows have no target and are never orphans.
-    pub async fn list_orphans(&self) -> Result<Vec<Uuid>> {
-        let orphans = sqlx::query_scalar!(
-            r#"
-            SELECT s.id AS "id!"
-            FROM secrets s
-            WHERE (s.scope = 'user'
-                   AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = s.scope_id))
-               OR (s.scope = 'project'
-                   AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = s.scope_id))
-            ORDER BY s.id
-            "#
-        )
-        .fetch_all(self.pool)
-        .await?;
-
-        debug!(rows = orphans.len(), "orphaned secrets selected");
-
-        Ok(orphans)
     }
 
     /// Record that a secret was read, and why.

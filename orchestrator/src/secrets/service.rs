@@ -75,7 +75,7 @@ const LIMIT_TOO_SMALL: &str = "limit must be at least 1";
 /// A 500, not a 400: the caller cannot influence a row's `key_version` or its
 /// ciphertext, so a row that will not open is a fault in the deployment — a
 /// master key dropped from the environment, which the startup check
-/// ([`SecretsKeyring::verify_against_db`]) exists to catch first
+/// ([`crate::secrets::verify_keyring_at_startup`]) exists to catch first
 /// (`ARCHITECTURE.md`, "Secrets", Keyring). The detail is logged; the client
 /// gets the generic internal message.
 const UNREADABLE_ROW: &str = "a stored secret could not be re-encrypted";

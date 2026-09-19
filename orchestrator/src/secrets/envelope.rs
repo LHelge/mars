@@ -310,6 +310,23 @@ impl SealedSecret {
         }))
     }
 
+    /// Check that the configured keyring can still unwrap this row's data key.
+    ///
+    /// The question the startup check asks of one sampled row per stored
+    /// `key_version` ([`verify_keyring_at_startup`](crate::secrets::verify_keyring_at_startup);
+    /// `ARCHITECTURE.md`, "Secrets", Keyring): it is about the wrapping alone,
+    /// so the value is never decrypted and the data key is dropped —
+    /// `Zeroizing` wipes it — the moment it has been shown to exist. The
+    /// errors are the keyring's own, so
+    /// [`SecretsError::UnknownKeyVersion`] still distinguishes a key the
+    /// operator did not configure from one that is configured but wrong.
+    pub fn verify_unwrappable(
+        &self,
+        keyring: &SecretsKeyring,
+    ) -> std::result::Result<(), SecretsError> {
+        self.data_key(keyring).map(|_| ())
+    }
+
     /// Unwrap this row's data key.
     ///
     /// Private: a data key is never handed to a caller outside this module, and
@@ -348,37 +365,6 @@ impl Secret {
                 version: self.key_version,
             },
         }
-    }
-}
-
-/// One stored row per distinct `key_version`, for the startup check.
-///
-/// [`SecretsKeyring::verify_against_db`] unwraps one sample per version present
-/// in the table before the orchestrator serves anything, so a master key
-/// missing from the environment is found at boot rather than at a session
-/// launch (`ARCHITECTURE.md`, "Secrets", Keyring). It is the wrapping alone,
-/// without an identity or a ciphertext, because unwrapping a data key needs
-/// neither: a sample is a question about the keyring, not about a value.
-///
-/// The two byte fields are still key material: `Debug` shows the version and
-/// nothing else, and there is no `Serialize` (`CLAUDE.md`, rule 3).
-#[derive(Clone, PartialEq, Eq)]
-pub struct KeyVersionSample {
-    /// The version every row in this group is wrapped under.
-    pub key_version: i32,
-    /// The sampled row's wrapped data key.
-    pub data_key_wrapped: Vec<u8>,
-    /// The nonce that wrap used.
-    pub data_key_nonce: Vec<u8>,
-}
-
-impl std::fmt::Debug for KeyVersionSample {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KeyVersionSample")
-            .field("key_version", &self.key_version)
-            .field("data_key_wrapped", &"<redacted>")
-            .field("data_key_nonce", &"<redacted>")
-            .finish()
     }
 }
 

@@ -1,5 +1,5 @@
-//! The startup key check against a real table (`ARCHITECTURE.md`, "Secrets",
-//! Keyring).
+//! The startup key check against a real table
+//! (`verify_keyring_at_startup`; `ARCHITECTURE.md`, "Secrets", Keyring).
 //!
 //! > At start the keyring verifies it can unwrap one row per `key_version`
 //! > present in the table and refuses to start otherwise, because a missing
@@ -26,7 +26,9 @@ mod common;
 use common::TestApp;
 use mars_orchestrator::models::{NewSecret, ScopeRef, SecretName};
 use mars_orchestrator::repositories::SecretRepository;
-use mars_orchestrator::secrets::{MASTER_KEY_LEN, SealedSecret, SecretIdentity, SecretsKeyring};
+use mars_orchestrator::secrets::{
+    MASTER_KEY_LEN, SealedSecret, SecretIdentity, SecretsKeyring, verify_keyring_at_startup,
+};
 
 /// The version that exists in the table but not, by default, in the
 /// environment.
@@ -96,9 +98,7 @@ async fn insert_row_wrapped_under_99(app: &TestApp, wrapping: &SecretsKeyring) {
 async fn an_empty_table_verifies() {
     let app = TestApp::spawn().await;
 
-    app.state
-        .keyring
-        .verify_against_db(&app.pool)
+    verify_keyring_at_startup(&app.pool, &app.state.keyring)
         .await
         .expect("a table with no secrets has nothing to unwrap");
 }
@@ -110,8 +110,7 @@ async fn a_row_the_keyring_can_unwrap_verifies() {
 
     insert_row_wrapped_under_99(&app, &keyring).await;
 
-    keyring
-        .verify_against_db(&app.pool)
+    verify_keyring_at_startup(&app.pool, &keyring)
         .await
         .expect("the version that wrapped the row is configured");
 }
@@ -123,10 +122,7 @@ async fn a_missing_key_version_is_reported_by_number() {
 
     // The app's own keyring carries version 1 only: the restart the operator
     // did without adding the key.
-    let message = app
-        .state
-        .keyring
-        .verify_against_db(&app.pool)
+    let message = verify_keyring_at_startup(&app.pool, &app.state.keyring)
         .await
         .expect_err("version 99 has no configured master key")
         .to_string();
@@ -145,8 +141,7 @@ async fn a_configured_but_wrong_key_is_reported_as_undecryptable() {
 
     // Version 99 is configured, but with a different key: the row must not be
     // silently accepted, and the message must not claim the key is missing.
-    let message = keyring_with_99(&app, OTHER_KEY_99)
-        .verify_against_db(&app.pool)
+    let message = verify_keyring_at_startup(&app.pool, &keyring_with_99(&app, OTHER_KEY_99))
         .await
         .expect_err("the configured key for version 99 did not wrap the row")
         .to_string();
@@ -169,10 +164,7 @@ async fn every_bad_version_is_named_in_one_message() {
         .expect("one entry is a valid keyring");
     insert(&app, sealed_under(&other, "OLDER_TOKEN")).await;
 
-    let message = app
-        .state
-        .keyring
-        .verify_against_db(&app.pool)
+    let message = verify_keyring_at_startup(&app.pool, &app.state.keyring)
         .await
         .expect_err("neither version is configured")
         .to_string();
@@ -186,10 +178,7 @@ async fn the_check_reads_the_wrapping_and_no_key_material_reaches_the_message() 
     let app = TestApp::spawn().await;
     insert_row_wrapped_under_99(&app, &keyring_with_99(&app, KEY_99)).await;
 
-    let message = app
-        .state
-        .keyring
-        .verify_against_db(&app.pool)
+    let message = verify_keyring_at_startup(&app.pool, &app.state.keyring)
         .await
         .expect_err("version 99 has no configured master key")
         .to_string();

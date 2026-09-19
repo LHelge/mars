@@ -1,10 +1,10 @@
 ---
 id: md2zq
 title: "Add launch-for-task: claim in the session insert transaction, hand-off base selection, MARS_TASK_ID, generated task message, lease release on failure and GET /sessions/{id}/tasks"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:35:04.556129627Z"
-updated: "2026-09-19T13:18:21.362913298Z"
+updated: "2026-09-19T13:53:41.532380497Z"
 tags:
   - orchestrator
   - sessions

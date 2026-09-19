@@ -2,10 +2,10 @@
 id: s52qg
 title: "Session lifecycle: launcher, owner, recovery and sessions API"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:13:19.124265874Z"
-updated: "2026-09-16T20:15:29.852434868Z"
+updated: "2026-09-19T13:53:46.866947488Z"
 tags:
   - orchestrator
   - sessions

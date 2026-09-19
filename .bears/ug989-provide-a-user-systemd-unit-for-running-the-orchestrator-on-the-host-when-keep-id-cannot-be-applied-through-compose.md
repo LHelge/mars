@@ -1,16 +1,17 @@
 ---
 id: ug989
 title: Provide a user systemd unit for running the orchestrator on the host when keep-id cannot be applied through compose
-status: open
+status: done
 priority: P3
 created: "2026-09-16T20:45:06.272041833Z"
-updated: "2026-09-16T20:45:06.272041833Z"
+updated: "2026-09-19T17:47:19.614215647Z"
 tags:
   - infra
   - docs
 depends_on:
   - sgg2e
 parent: "5czwa"
+attempts: 1
 ---
 
 ## Summary

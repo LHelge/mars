@@ -51,16 +51,14 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum_extra::extract::CookieJar;
-use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::email::EmailMessage;
-use crate::models::{Email, OpaqueToken, Password, User, UserInvite, UserUpdate, Username};
+use crate::auth::{Credentials, IssuedPair};
+use crate::models::{Email, User, UserInvite, UserUpdate, Username};
 use crate::prelude::*;
-use crate::repositories::{UserInviteRepository, UserRepository, user_invites};
-use crate::routes::auth::{TokenPairResponse, hash_blocking, verify_blocking};
-use crate::routes::cookies::refresh_cookie;
+use crate::repositories::{UserInviteRepository, UserRepository};
+use crate::routes::auth::TokenPairResponse;
 use crate::routes::{AdminUser, CurrentUser, UngatedUser};
 
 /// The 409 an administrator gets for demoting the last one (`SPEC.md`,
@@ -111,31 +109,13 @@ struct CreateInviteRequest {
 
 /// `POST /users/invites` → the stored invite (201, administrators only).
 ///
-/// The sequence is the one `SPEC.md`, "Users" and `docs/data-model.md`,
-/// `user_invites` prescribe between them:
-///
-/// 1. normalise and validate the address ([`Email::parse`] trims and
-///    lower-cases it, so the two unique indexes compare what the caller meant),
-/// 2. `BEGIN`,
-/// 3. [`UserInviteRepository::delete_expired_open_for_email`] — the partial
-///    unique index is blind to `expires_at`, so a dead invite would otherwise
-///    refuse the replacement,
-/// 4. [`UserInviteRepository::insert`], which decides *both* conflicts in one
-///    statement: an address that already belongs to a user, and a second open
-///    invite for the address,
-/// 5. `COMMIT`, and only then the email.
-///
-/// Steps 3 and 4 share a transaction so the address is never left with no
-/// invite at all, and so a concurrent acceptance of an invite for the same
-/// address is caught by `users_email_key` at accept time rather than by a
-/// pre-read here.
-///
-/// The email goes out *after* the commit, so a mail failure leaves the invite
-/// row standing and `POST /users/invites/{id}/resend` recovers it; the
-/// alternative — sending inside the transaction — would deliver links to
-/// invites that rolled back. The raw token exists only in the link
-/// ([`OpaqueToken`]); the row holds its hash, the response holds neither and
-/// nothing here logs either (rule 3, ADR 0026).
+/// Two decisions here — that the caller is an administrator, and that the
+/// address normalises ([`Email::parse`] trims and lower-cases it, so the two
+/// unique indexes compare what the caller meant) — and the rest is
+/// [`Credentials::create_invite`]: the token, the transaction, the two
+/// conflicts and the email after the commit. An invitation is a credential, so
+/// it is issued where every other credential is (`ARCHITECTURE.md`, "User
+/// authentication and revocation").
 async fn create_invite(
     State(state): State<AppState>,
     AdminUser(caller): AdminUser,
@@ -143,29 +123,10 @@ async fn create_invite(
 ) -> Result<(StatusCode, Json<UserInvite>)> {
     let email = Email::parse(&body.email)?;
     let admin = body.admin.unwrap_or(false);
-    let token = OpaqueToken::generate();
-    let expires_at = user_invites::expires_at(Utc::now());
 
-    let invites = UserInviteRepository::new(&state.pool);
-    let mut tx = state.pool.begin().await?;
-    invites
-        .delete_expired_open_for_email(&mut tx, &email)
+    let invite = Credentials::new(&state)
+        .create_invite(&email, admin, caller.id)
         .await?;
-    let invite = invites
-        .insert(
-            &mut tx,
-            &email,
-            &token.hash,
-            admin,
-            Some(caller.id),
-            expires_at,
-        )
-        .await?;
-    tx.commit().await?;
-
-    info!(invite_id = %invite.id, invited_by = %caller.id, admin, "invite created");
-
-    deliver(&state, &invite, &token.raw).await?;
 
     Ok((StatusCode::CREATED, Json(invite)))
 }
@@ -227,36 +188,11 @@ async fn resend_invite(
     AdminUser(caller): AdminUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<UserInvite>> {
-    let token = OpaqueToken::generate();
-
-    let invite = UserInviteRepository::new(&state.pool)
-        .rotate_token(id, &token.hash, user_invites::expires_at(Utc::now()))
-        .await?
-        .ok_or(Error::NotFound)?;
-
-    info!(invite_id = %invite.id, actor_id = %caller.id, "invite resent");
-
-    deliver(&state, &invite, &token.raw).await?;
-
-    Ok(Json(invite))
-}
-
-/// Send `invite`'s invitation, carrying `raw_token` in the link.
-///
-/// The link is `<PUBLIC_URL>/invite/<token>`; `Config` already strips trailing
-/// slashes from `public_url`, so the join is a plain `format!`.
-///
-/// A failure is logged with the invite id — never the address, the link or the
-/// token (rule 3) — and returned, which [`Error::Email`] renders as a generic
-/// 500. The invite row survives it, so the administrator's next move is
-/// [`resend_invite`].
-async fn deliver(state: &AppState, invite: &UserInvite, raw_token: &str) -> Result<()> {
-    let link = format!("{}/invite/{}", state.config.public_url, raw_token);
-    let message = EmailMessage::invitation(&invite.email, &link, invite.expires_at);
-
-    state.email.send(message).await.inspect_err(|err| {
-        error!(invite_id = %invite.id, error = %err, "the invitation could not be sent");
-    })
+    Ok(Json(
+        Credentials::new(&state)
+            .resend_invite(id, caller.id)
+            .await?,
+    ))
 }
 
 // ---- users ----
@@ -463,17 +399,6 @@ async fn remove(
 /// must not be able to tell the two situations apart.
 const ADMIN_REQUIRED: &str = "admin required";
 
-/// The 401 for a caller whose row disappeared between the extractor and the
-/// lock; the same string every other failed authentication answers with.
-const AUTHENTICATION_REQUIRED: &str = "authentication required";
-
-/// The 400 for a self-service change that left `current_password` out.
-const CURRENT_PASSWORD_REQUIRED: &str = "current password required";
-
-/// The 400 for a self-service change whose `current_password` did not verify
-/// against the locked row.
-const CURRENT_PASSWORD_INCORRECT: &str = "current password is incorrect";
-
 /// `POST /users/{id}/password` (`{ current_password?, password }`).
 ///
 /// `current_password` is required when `id` is the caller's own id and ignored
@@ -497,14 +422,26 @@ struct ChangePasswordRequest {
 /// though the frontend never offers it.
 ///
 /// Two flows behind one path, split on `id`, because `SPEC.md` gives them one
-/// row in "Users (`/api/users`)" and two different answers. What they share is
-/// [`UserRepository::apply_password_change`]: whichever one runs, the hash,
-/// `auth_version`, `must_change_password`, every refresh token and every
-/// outstanding reset link move together or not at all (ADR 0025).
+/// row in "Users (`/api/users`)" and two different answers. What this handler
+/// decides is only *which*: whether `id` is the caller's own — the
+/// self-service change, which keeps this browser signed in — and, when it is
+/// not, whether the caller is an administrator at all. Everything after that
+/// is [`Credentials::change_password`], where the hash, `auth_version`,
+/// `must_change_password`, every refresh token, every outstanding reset link
+/// and the replacement pair move together or not at all (ADR 0025).
+///
+/// The role is read from `caller`, which the extractor loaded from the
+/// database, never from the access token's `admin` claim (ADR 0025). The
+/// administrator-membership advisory lock is not taken: a password is not
+/// `admin`, and this cannot change how many administrators exist.
 ///
 /// The response type is [`Response`] rather than a tuple because the two
-/// answers do not have one shape: 200 with a body and a `Set-Cookie`, or 204
-/// with neither.
+/// answers do not have one shape: 200 with a body and a `Set-Cookie`
+/// ("A self-service change requires `current_password` and creates a
+/// replacement refresh token in that transaction, then returns its cookie and
+/// a matching access token after commit"), or 204 with neither ("Changing
+/// another user's password returns 204 without changing the acting admin's
+/// credentials" — `SPEC.md`, "Authentication").
 async fn change_password(
     State(state): State<AppState>,
     UngatedUser(caller): UngatedUser,
@@ -512,131 +449,31 @@ async fn change_password(
     Path(id): Path<Uuid>,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<Response> {
-    if id == caller.id {
-        change_own_password(&state, jar, &caller, body).await
-    } else {
-        change_another_password(&state, &caller, id, body).await
-    }
-}
+    let own = id == caller.id;
 
-/// The self-service change: 200 `{ user, access_token }` and a fresh
-/// `refresh_token` cookie.
-///
-/// "A self-service change requires `current_password` and creates a
-/// replacement refresh token in that transaction, then returns its cookie and
-/// a matching access token after commit; this browser stays signed in"
-/// (`SPEC.md`, "Authentication"). The replacement is created *by*
-/// [`UserRepository::apply_password_change`], after its blanket revocation and
-/// inside the same transaction, which is why this handler does not call
-/// `auth::issue_pair`: a token inserted before the revocation would revoke
-/// itself, and one inserted after the commit would leave a window in which the
-/// browser holds no usable token at all.
-///
-/// The order is the one `docs/data-model.md` requires of a credential
-/// mutation, and the expensive part is deliberately outside the lock:
-///
-/// 1. the new password validated and hashed on the blocking pool;
-/// 2. `BEGIN` and the user-row lock;
-/// 3. `current_password` verified against the row the lock returned — not
-///    against the copy the extractor read, which may predate a password change
-///    that committed while this request waited (ADR 0025);
-/// 4. the mutation, `COMMIT`, and only then the token and the cookie.
-///
-/// Step 3 spends an Argon2 verification while holding the row lock. That is
-/// the sanctioned cost: the alternative is verifying twice, and the lock is
-/// per user, so what waits behind it is that one user's own concurrent
-/// credential work.
-async fn change_own_password(
-    state: &AppState,
-    jar: CookieJar,
-    caller: &User,
-    body: ChangePasswordRequest,
-) -> Result<Response> {
-    let Some(current_password) = body.current_password else {
-        debug!(user_id = %caller.id, "password change refused: no current password");
-        return Err(Error::BadRequest(CURRENT_PASSWORD_REQUIRED.to_string()));
-    };
-
-    let password = Password::parse(&body.password)?;
-    let password_hash = hash_blocking(password).await?;
-
-    let users = UserRepository::new(&state.pool);
-    let mut tx = state.pool.begin().await?;
-
-    let Some(locked) = users.lock_user(&mut tx, caller.id).await? else {
-        // Deleted between the extractor's read and the lock.
-        return Err(Error::Unauthorized(AUTHENTICATION_REQUIRED.to_string()));
-    };
-
-    if !verify_blocking(locked.password_hash.clone(), current_password).await? {
-        debug!(user_id = %caller.id, "password change refused: wrong current password");
-        return Err(Error::BadRequest(CURRENT_PASSWORD_INCORRECT.to_string()));
-    }
-
-    let replacement = OpaqueToken::generate();
-    let updated = users
-        .apply_password_change(&mut tx, locked.id, &password_hash, Some(&replacement.hash))
-        .await?;
-    tx.commit().await?;
-
-    // From the committed row, so the claims carry the new `auth_version` and
-    // the cleared `must_change_password` — which is what makes the token
-    // minted a moment ago stop working and this one start.
-    let access_token = Claims::for_user(&updated, Utc::now()).encode(&state.config)?;
-
-    info!(user_id = %updated.id, "password changed");
-
-    Ok((
-        StatusCode::OK,
-        jar.add(refresh_cookie(&state.config, &replacement.raw)),
-        Json(TokenPairResponse {
-            user: updated,
-            access_token,
-        }),
-    )
-        .into_response())
-}
-
-/// An administrator setting somebody else's password: 204, no cookie, no body.
-///
-/// "Changing another user's password returns 204 without changing the acting
-/// admin's credentials" (`SPEC.md`, "Authentication"), so nothing here touches
-/// the caller's row or tokens — only the target's, whose logins are all revoked
-/// and whose `must_change_password` is cleared by the shared statement.
-/// `current_password` is ignored rather than validated: the whole point is
-/// that the administrator does not know it.
-///
-/// The role is read from `caller`, which the extractor loaded from the
-/// database, never from the access token's `admin` claim (ADR 0025). The
-/// administrator-membership advisory lock is not taken: a password is not
-/// `admin`, and this cannot change how many administrators exist.
-async fn change_another_password(
-    state: &AppState,
-    caller: &User,
-    id: Uuid,
-    body: ChangePasswordRequest,
-) -> Result<Response> {
-    if !caller.admin {
+    if !own && !caller.admin {
         debug!(user_id = %id, actor_id = %caller.id, "password change refused: not an administrator");
         return Err(Error::Forbidden(ADMIN_REQUIRED.to_string()));
     }
 
-    let password = Password::parse(&body.password)?;
-    let password_hash = hash_blocking(password).await?;
+    let issued = Credentials::new(&state)
+        .change_password(id, body.current_password, &body.password, own)
+        .await?;
 
-    let users = UserRepository::new(&state.pool);
-    let mut tx = state.pool.begin().await?;
-
-    let Some(target) = users.lock_user(&mut tx, id).await? else {
-        return Err(Error::NotFound);
+    let Some(IssuedPair {
+        user,
+        access_token,
+        refresh_cookie,
+    }) = issued
+    else {
+        info!(user_id = %id, actor_id = %caller.id, "password changed by an administrator");
+        return Ok(StatusCode::NO_CONTENT.into_response());
     };
 
-    users
-        .apply_password_change(&mut tx, target.id, &password_hash, None)
-        .await?;
-    tx.commit().await?;
-
-    info!(user_id = %id, actor_id = %caller.id, "password changed by an administrator");
-
-    Ok(StatusCode::NO_CONTENT.into_response())
+    Ok((
+        StatusCode::OK,
+        jar.add(refresh_cookie),
+        Json(TokenPairResponse { user, access_token }),
+    )
+        .into_response())
 }

@@ -19,6 +19,7 @@ use axum::http::StatusCode;
 use axum::http::header::SET_COOKIE;
 use chrono::Utc;
 use common::TestApp;
+use mars_orchestrator::auth::REFRESH_COOKIE;
 use mars_orchestrator::prelude::*;
 use serde_json::{Value, json};
 

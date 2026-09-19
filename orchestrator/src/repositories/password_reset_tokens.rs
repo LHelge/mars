@@ -30,6 +30,16 @@ use uuid::Uuid;
 use crate::models::PasswordResetToken;
 use crate::prelude::*;
 
+/// When a reset link issued at `now` expires (`docs/data-model.md`,
+/// `password_reset_tokens`).
+///
+/// The counterpart of [`crate::repositories::user_invites::expires_at`], and
+/// the only place [`PASSWORD_RESET_TTL`] is added to a clock: the lifetime is
+/// written down once and the arithmetic happens once.
+pub fn expires_at(now: DateTime<Utc>) -> DateTime<Utc> {
+    now + PASSWORD_RESET_TTL
+}
+
 /// All SQL against `password_reset_tokens` (`ARCHITECTURE.md`, "Orchestrator
 /// internals").
 ///
@@ -191,5 +201,16 @@ impl<'a> PasswordResetTokenRepository<'a> {
         debug!(deleted, "expired password reset tokens deleted");
 
         Ok(deleted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reset_link_expires_an_hour_after_it_is_issued() {
+        let now = Utc::now();
+        assert_eq!(expires_at(now) - now, chrono::TimeDelta::hours(1));
     }
 }

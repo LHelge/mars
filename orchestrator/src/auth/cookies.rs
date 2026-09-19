@@ -1,4 +1,4 @@
-//! The refresh-token cookie, built in one place.
+//! The refresh-token cookie: its name, its attributes and how it is read back.
 //!
 //! `SPEC.md`, "Authentication" fixes the attributes: `HttpOnly`,
 //! `SameSite=Lax`, `Path=/` and `Secure` when `PUBLIC_URL` is https. Login,
@@ -8,12 +8,25 @@
 //! would not overwrite the first one, it would sit beside it. Hence: two
 //! functions, no attributes written anywhere else.
 //!
-//! Pure; neither function reads the database or `AppState`.
+//! [`REFRESH_COOKIE`] and [`presented_token`] live here for the same reason.
+//! The name is half of what a browser matches on, and the route layer never
+//! spells it: it hands [`crate::auth::Credentials`] the whole jar and gets a
+//! cookie back, so setting, clearing and reading the cookie are one module's
+//! business (`ARCHITECTURE.md`, "User authentication and revocation").
+//!
+//! Pure; nothing here reads the database or `AppState`.
 
+use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use chrono::TimeDelta;
 
 use crate::prelude::*;
+
+/// The name of the refresh-token cookie (`SPEC.md`, "Authentication").
+///
+/// A browser matches a cookie by name, domain and path, so this spelling is
+/// part of the wire contract: changing it signs everyone out.
+pub const REFRESH_COOKIE: &str = "refresh_token";
 
 /// The cookie carrying `raw`, valid for [`REFRESH_TOKEN_TTL`].
 ///
@@ -51,12 +64,24 @@ fn build(config: &Config, value: String, max_age: TimeDelta) -> Cookie<'static> 
     cookie
 }
 
+/// The raw refresh token in `jar`, if the cookie is there and not empty.
+///
+/// An empty value is treated as absent: that is exactly what
+/// [`clear_refresh_cookie`] sets, and a browser that has not yet dropped the
+/// cleared cookie should get the same answer as one that has.
+pub fn presented_token(jar: &CookieJar) -> Option<String> {
+    jar.get(REFRESH_COOKIE)
+        .map(|cookie| cookie.value().to_string())
+        .filter(|raw| !raw.is_empty())
+}
+
 /// Whether `public_url` is an https URL.
 ///
-/// [`Config`] already rejects a `PUBLIC_URL` without an `http://` or `https://`
-/// prefix, but the comparison is case-insensitive here anyway: `Secure` is the
-/// flag that keeps the refresh token off a plaintext connection, and it must
-/// not turn on a spelling.
+/// The one rule that decides the `Secure` flag. [`Config`] already rejects a
+/// `PUBLIC_URL` without an `http://` or `https://` prefix, but the comparison
+/// is case-insensitive here anyway: `Secure` is the flag that keeps the
+/// refresh token off a plaintext connection, and it must not turn on a
+/// spelling.
 fn is_https(public_url: &str) -> bool {
     public_url
         .get(..8)
@@ -189,6 +214,32 @@ mod tests {
         assert!(!is_https(""));
         assert!(!is_https("https:/"));
         assert!(!is_https("h†tps://x"));
+    }
+
+    #[test]
+    fn a_presented_token_is_read_back_from_the_jar_by_name() {
+        let jar = CookieJar::new().add(refresh_cookie(
+            &config("https://mars.example.invalid"),
+            FAKE_RAW,
+        ));
+
+        assert_eq!(presented_token(&jar), Some(FAKE_RAW.to_string()));
+    }
+
+    #[test]
+    fn an_absent_or_cleared_cookie_presents_nothing() {
+        assert_eq!(presented_token(&CookieJar::new()), None);
+
+        // What `clear_refresh_cookie` sets: a browser that has not yet dropped
+        // it must look exactly like one that has.
+        let jar = CookieJar::new().add(clear_refresh_cookie(&config(
+            "https://mars.example.invalid",
+        )));
+        assert_eq!(presented_token(&jar), None);
+
+        // A cookie by another name is not this one.
+        let jar = CookieJar::new().add(Cookie::new("session", FAKE_RAW));
+        assert_eq!(presented_token(&jar), None);
     }
 
     #[test]

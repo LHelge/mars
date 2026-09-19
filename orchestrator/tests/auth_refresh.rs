@@ -22,6 +22,7 @@ use axum::http::StatusCode;
 use axum::http::header::SET_COOKIE;
 use chrono::{TimeDelta, Utc};
 use common::TestApp;
+use mars_orchestrator::auth::REFRESH_COOKIE;
 use mars_orchestrator::models::{OpaqueToken, User, UserUpdate};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;

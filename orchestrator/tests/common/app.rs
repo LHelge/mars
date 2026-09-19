@@ -32,6 +32,7 @@ use axum_test::{TestRequest, TestResponse, TestServer};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{TimeDelta, Utc};
+use mars_orchestrator::auth::REFRESH_COOKIE;
 use mars_orchestrator::build_api_router;
 use mars_orchestrator::email::EmailClient;
 use mars_orchestrator::email::mock::MockEmailClient;

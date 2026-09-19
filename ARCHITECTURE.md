@@ -86,7 +86,7 @@ The orchestrator container is the high-value target. It runs as an unprivileged 
 
 ### User authentication and revocation
 
-User access tokens include `auth_version`, matched against the current user on every authenticated request. Password changes and resets increment this version and revoke refresh tokens in one transaction; self-service changes issue a replacement pair for the current browser. Authorization uses the database's current administrator role and password-change flag. A deleted user cannot authenticate. Login, refresh and password/reset-token mutations serialize on the user row so credential issuance cannot race past revocation (ADR 0025; exact API and transaction contracts in `SPEC.md` and `docs/data-model.md`).
+User access tokens include `auth_version`, matched against the current user on every authenticated request. Password changes and resets increment this version and revoke refresh tokens in one transaction; self-service changes issue a replacement pair for the current browser. Authorization uses the database's current administrator role and password-change flag. A deleted user cannot authenticate. Login, refresh and password/reset-token mutations serialize on the user row so credential issuance cannot race past revocation (ADR 0025; exact API and transaction contracts in `SPEC.md` and `docs/data-model.md`). `auth::Credentials` is the only issuer of access tokens and refresh cookies in the orchestrator, so that ordering — lock the user row, revalidate what was read, mutate, commit, and only then mint the pair — is written once rather than repeated by each route.
 
 Open WebSocket and SSE connections retain the existing rule that ordinary JWT expiry does not interrupt them. They recheck account existence, login version and the password-change gate at their existing heartbeat ticks; WebSocket also checks before accepting application messages or terminal input. Invalid authorization closes the connection and its terminal attachment, without stopping agent sessions. Revocation may take one heartbeat interval to end passive streaming. Failed authorization refresh returns the browser to login; a self-service password change reconnects using its replacement credentials. This uses database checks, with no token blacklist or revocation broadcast service.
 
@@ -139,6 +139,7 @@ orchestrator/
 │   ├── models/                domain types + validation (User, Project, Session, Task, Secret, ...)
 │   ├── repositories/          all SQL; one struct per aggregate, borrows the pool
 │   ├── routes/                axum routers, one module per resource, nested under /api
+│   ├── auth/                  login credentials: issue, rotate, revoke; cookie; throttle wiring
 │   ├── ws/                    session WebSocket handler
 │   ├── sse/                   task event stream
 │   ├── mcp/                   rmcp server, tool handlers, bearer auth
@@ -157,6 +158,8 @@ orchestrator/
 `main.rs` owns the startup order — configuration, tracing, pool, migrations, the recovery steps above, then binding the two listeners — and the serving itself is `lib.rs`: `build_api_router(AppState)` and `run(state, api_listener, mcp_listener, shutdown)`, which takes both listeners already bound so that `main` binds the configured ports while tests bind port 0, and drives both graceful shutdowns from one signal.
 
 `AppState` is cloned into every handler and holds: `Arc<Config>`, the `PgPool`, `Arc<dyn ContainerEngine>`, `Arc<dyn EmailClient>`, `Arc<dyn GitCredentialProvider>`, the `SecretsKeyring`, the in-memory `LoginThrottle` and `ResetRateLimit` (`SPEC.md`, "Authentication"), the `ProjectGitLocks` table the per-project git lock is taken from ("Git model", Serialization), the `SessionRegistry` (handles to running session owner tasks), and the broadcast senders for event fan-out. Every `Arc<dyn Trait>` has a mock behind the `integration-tests` feature so the whole API can be tested without an engine, a mail provider or GitHub.
+
+`auth/` borrows that same `AppState` — the throttle and the rate limit stay where they are, and `auth::Credentials` is what reads them. It owns every operation that hands out a credential (login, refresh, logout, invite acceptance, reset-link issuance and consumption, password changes, invitation issuance), together with the access-token and refresh-cookie lifetimes, the cookie's name and attributes and the `Claims` minting. The route modules above it are HTTP translation: they parse a request, call one method and shape the answer, and none of them opens a transaction, locks a user row or builds a cookie. The read side is separate and stays in `routes/extractors.rs`.
 
 **Crates**, one per concern, added with `cargo add` and never by editing versions by hand. Git is not a crate (ADR 0011).
 

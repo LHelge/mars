@@ -17,8 +17,8 @@ use axum::http::header::SET_COOKIE;
 use axum_extra::extract::cookie::Cookie;
 use chrono::{DateTime, Utc};
 use common::TestApp;
+use mars_orchestrator::auth::REFRESH_COOKIE;
 use mars_orchestrator::models::OpaqueToken;
-use mars_orchestrator::prelude::*;
 
 const LOGOUT: &str = "/api/auth/logout";
 

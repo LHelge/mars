@@ -278,6 +278,10 @@ pub struct SessionOwner {
     /// The offset the owner believes the database holds; only a successful
     /// commit moves it.
     committed_offset: u64,
+    /// True while the transcript is shorter than [`Self::committed_offset`], so
+    /// nothing it holds may be committed and the `error` event announcing that
+    /// has already been written (`ARCHITECTURE.md`, "Durability and recovery").
+    below_committed: bool,
     /// A translated line whose commit failed, retried before any newer line.
     pending: Option<TranslatedLine>,
     /// The `cost_usd` of the previous `result` of this process, the baseline the
@@ -333,6 +337,7 @@ impl SessionOwner {
             buffer: Vec::new(),
             queue: VecDeque::new(),
             committed_offset: ctx.start_offset,
+            below_committed: false,
             pending: None,
             last_result_cost: None,
         }
@@ -534,7 +539,43 @@ impl SessionOwner {
         self.read_offset += gained.len() as u64;
         self.buffer.append(&mut gained);
 
-        Ok(self.take_complete_lines())
+        Ok(self.usable_lines())
+    }
+
+    /// The complete lines the buffer holds that may be committed.
+    ///
+    /// Everything ending at or below [`Self::committed_offset`] is dropped
+    /// without reaching the translator: `_offset` never moves backwards, so a
+    /// transcript that shrank below the committed offset records nothing until it
+    /// grows past that offset again (`ARCHITECTURE.md`, "Durability and
+    /// recovery"). In ordinary operation every line ends above it and this keeps
+    /// them all.
+    fn usable_lines(&mut self) -> Vec<(String, u64)> {
+        let committed = self.committed_offset;
+        let mut lines = self.take_complete_lines();
+        if !self.below_committed {
+            return lines;
+        }
+
+        let before = lines.len();
+        lines.retain(|(_, end_offset)| *end_offset > committed);
+        let dropped = before - lines.len();
+        if dropped > 0 {
+            warn!(
+                session_id = %self.session_id,
+                dropped,
+                committed_offset = committed,
+                "transcript lines below the committed offset were not recorded",
+            );
+        }
+        if !lines.is_empty() {
+            // The file grew past the committed offset: the first line above it
+            // is ordinary output again, and a later shrink announces itself
+            // afresh.
+            self.below_committed = false;
+        }
+
+        lines
     }
 
     /// Open the transcript at the read offset, answering whether it is open.
@@ -569,6 +610,14 @@ impl SessionOwner {
     /// longer index this content. Rewinding to 0 would re-translate history the
     /// database already holds, so the owner gives up on the bytes it missed and
     /// continues from the new end.
+    ///
+    /// A shrink *below* the committed offset is more than missed bytes: the
+    /// stored `MAX(_offset)` is then ahead of the whole file, so the lines it
+    /// gains would carry offsets that go backwards. The session stays usable —
+    /// the container runs, stop and exit handling are untouched — but one
+    /// non-fatal `error` event says that output is not recorded until the file
+    /// passes the committed offset again, and [`Self::usable_lines`] drops
+    /// everything below it (`ARCHITECTURE.md`, "Durability and recovery").
     async fn handle_truncation(&mut self) -> Result<()> {
         let path = self.dirs.stream_jsonl();
         let session_id = self.session_id;
@@ -599,6 +648,25 @@ impl SessionOwner {
             file.seek(SeekFrom::Start(length))
                 .await
                 .map_err(|err| read_failure(&path, session_id, err))?;
+        }
+
+        if length < self.committed_offset && !self.below_committed {
+            let committed = self.committed_offset;
+            self.below_committed = true;
+            warn!(
+                session_id = %session_id,
+                length,
+                committed_offset = committed,
+                "the transcript shrank below the committed offset; recording nothing until it passes it again",
+            );
+            self.append_own_event(AgentEvent::new(AgentEventBody::Error {
+                message: format!(
+                    "the session transcript was truncated to {length} bytes, below the {committed} bytes already recorded; \
+                     agent output is not recorded until the transcript grows past {committed} bytes again",
+                ),
+                fatal: false,
+            }))
+            .await;
         }
 
         Ok(())

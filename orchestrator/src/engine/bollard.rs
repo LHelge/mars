@@ -411,6 +411,12 @@ fn says_needs_force(message: &str) -> bool {
     message.contains("without force") || message.contains("force remove")
 }
 
+/// How many times a listing that could not be decoded is asked for again, and
+/// how long between two attempts: two seconds in all, far longer than a
+/// container spends between `running` and `exited`.
+const LIST_RETRIES: u32 = 20;
+const LIST_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Whether an engine's refusal of a create says the container name is taken.
 ///
 /// The fourth message the adapter reads rather than only reports, for the
@@ -925,7 +931,33 @@ impl ContainerEngine for BollardEngine {
             .filters(&filters)
             .build();
 
-        let containers = self.docker.list_containers(Some(options)).await?;
+        // A listing can catch a container between two states the engine API
+        // has no name for: the Podman 4 series reports `stopped` for a
+        // container whose process has ended and whose clean-up has not
+        // finished, and the typed response refuses the unknown variant, which
+        // fails the whole listing and not only that row. The state is over in
+        // milliseconds — the container becomes `exited` — so the listing is
+        // asked for again rather than reported as an engine that is down:
+        // startup recovery treats a failed listing as fatal
+        // (`ARCHITECTURE.md`, "Restart procedure").
+        let mut attempt = 0;
+        let containers = loop {
+            match self.docker.list_containers(Some(options.clone())).await {
+                Ok(containers) => break containers,
+                Err(bollard::errors::Error::JsonDataError { message, .. })
+                    if attempt < LIST_RETRIES =>
+                {
+                    attempt += 1;
+                    debug!(
+                        attempt,
+                        error = %message,
+                        "the container listing held a state in transition; asking again"
+                    );
+                    tokio::time::sleep(LIST_RETRY_DELAY).await;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        };
 
         Ok(containers.into_iter().map(to_container_summary).collect())
     }

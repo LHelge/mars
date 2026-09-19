@@ -1,10 +1,10 @@
 ---
 id: wty2g
 title: Forward WebSocket input and stop through SessionService with input_accepted/input_rejected, and re-authorize before every application message and at ping ticks with a 1008 close
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:46:37.465370822Z"
-updated: "2026-09-16T20:46:37.465370822Z"
+updated: "2026-09-19T21:42:52.252743924Z"
 tags:
   - orchestrator
   - realtime
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - "3c37q"
 parent: h8kw9
+attempts: 1
 ---
 
 ## Summary

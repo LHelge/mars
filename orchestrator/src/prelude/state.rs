@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::email::EmailClient;
 use crate::engine::ContainerEngine;
+use crate::events::EventFanout;
 use crate::git::{GitCredentialProvider, ProjectGitLocks};
 use crate::prelude::*;
 use crate::routes::throttle::{LoginThrottle, ResetRateLimit};
@@ -41,12 +42,7 @@ pub type SessionEndedHook = Arc<dyn Fn(Uuid) -> BoxFuture<'static, ()> + Send + 
 ///
 /// The three collaborator traits are here as trait objects so the whole API
 /// can be tested without an engine, a mail provider or GitHub; each has a mock
-/// behind the `integration-tests` feature. The fields still missing are added
-/// in place by the epic that owns them:
-///
-/// | Field | Owning epic |
-/// | --- | --- |
-/// | the broadcast senders for event fan-out | Real-time delivery |
+/// behind the `integration-tests` feature.
 ///
 /// Every field is cheap to clone: an `Arc`, a `PgPool` handle or a broadcast
 /// sender. Cloning the state never clones the data behind it.
@@ -84,6 +80,14 @@ pub struct AppState {
     /// `Clone` with its map behind an `Arc` of its own, so it needs no second
     /// `Arc` here.
     pub session_registry: SessionRegistry,
+    /// The broadcast senders for event fan-out (`ARCHITECTURE.md`, "Event
+    /// delivery"): the shared Postgres listener publishes a [`Notice`] here
+    /// and every WebSocket and SSE subscriber of that session or project wakes
+    /// up and reads from its own cursor. It is `Clone` with its maps behind an
+    /// `Arc` of its own, so it needs no second `Arc` here.
+    ///
+    /// [`Notice`]: crate::events::Notice
+    pub fanout: EventFanout,
     /// What to run when a session reaches `done` or `failed`, or `None` when
     /// nothing is installed. See [`SessionEndedHook`].
     pub on_session_ended: Option<SessionEndedHook>,
@@ -100,9 +104,10 @@ impl AppState {
     /// its own with an injected clock. The git lock table is built here for
     /// the same reason, and a test that wants to take a git lock takes it
     /// through `state.git_locks`, the very table the handlers wait on. The
-    /// session registry starts empty for the same reason again: a test that
-    /// registers an owner registers it in the registry the handlers forward
-    /// through.
+    /// session registry and the event fan-out start empty for the same reason
+    /// again: a test that registers an owner registers it in the registry the
+    /// handlers forward through, and a test that subscribes to a session's
+    /// notices subscribes to the channel the listener publishes on.
     pub fn new(
         config: Arc<Config>,
         pool: PgPool,
@@ -122,6 +127,7 @@ impl AppState {
             reset_rate_limit: Arc::new(ResetRateLimit::new()),
             git_locks: Arc::new(ProjectGitLocks::new()),
             session_registry: SessionRegistry::new(),
+            fanout: EventFanout::new(),
             on_session_ended: None,
         }
     }
@@ -169,6 +175,12 @@ impl FromRef<AppState> for Arc<Config> {
 impl FromRef<AppState> for PgPool {
     fn from_ref(state: &AppState) -> Self {
         state.pool.clone()
+    }
+}
+
+impl FromRef<AppState> for EventFanout {
+    fn from_ref(state: &AppState) -> Self {
+        state.fanout.clone()
     }
 }
 
@@ -321,6 +333,32 @@ mod tests {
 
         assert_eq!(state.session_registry.tracked_sessions(), 1);
         assert!(state.session_registry.is_live(session));
+    }
+
+    #[tokio::test]
+    async fn the_fanout_is_shared_by_a_clone_and_starts_empty() {
+        use crate::events::Notice;
+
+        let state = test_state();
+        let clone = state.clone();
+
+        let session = Uuid::new_v4();
+        assert_eq!(state.fanout.session_subscribers(session), 0);
+
+        // A stream handler holding the clone subscribes to the very channel
+        // the shared listener, holding the original, publishes on.
+        let mut receiver = clone.fanout.subscribe_session(session);
+        assert_eq!(state.fanout.session_subscribers(session), 1);
+
+        state
+            .fanout
+            .publish_session(session, Notice::SessionEvents { seq: 1 });
+        assert_eq!(receiver.try_recv(), Ok(Notice::SessionEvents { seq: 1 }));
+
+        // And the extractor hands out the same fan-out, not a new one.
+        let extracted = EventFanout::from_ref(&state);
+        extracted.publish_session(session, Notice::Resync);
+        assert_eq!(receiver.try_recv(), Ok(Notice::Resync));
     }
 
     #[tokio::test]

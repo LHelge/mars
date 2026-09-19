@@ -1,10 +1,10 @@
 ---
 id: uhp3q
 title: "Write nginx/nginx.conf: static frontend, /api and /ws proxying, unbuffered task SSE and query-free access logs"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:41:58.174822778Z"
-updated: "2026-09-16T20:51:52.477799432Z"
+updated: "2026-09-19T15:53:02.567534251Z"
 tags:
   - infra
   - frontend
@@ -13,6 +13,7 @@ depends_on:
   - s52qg
   - "2f5u2"
 parent: "5czwa"
+attempts: 1
 ---
 
 ## Summary

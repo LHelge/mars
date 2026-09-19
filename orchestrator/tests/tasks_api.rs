@@ -1484,7 +1484,7 @@ async fn a_hand_off_is_refused_by_its_input_rules_and_then_by_the_missing_epic()
     assert_error(
         &empty,
         StatusCode::BAD_REQUEST,
-        "handoff comment must not be empty",
+        "comment body must not be empty",
     );
 
     // A well-shaped hand-off waits for the Code hand-offs epic.

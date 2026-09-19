@@ -70,6 +70,18 @@ pub enum TaskError {
     /// A hand-off carried an empty source branch.
     #[error("source branch must not be empty")]
     EmptySourceBranch,
+    /// A REST revision hand-off left out the session the commit comes from.
+    #[error("revision hand-off requires source_session_id")]
+    HandoffSourceRequired,
+    /// An MCP revision hand-off supplied a source session of its own.
+    #[error("source_session_id is derived from the calling session")]
+    HandoffSourceNotAllowed,
+    /// A hand-off did not come with a move to a different state.
+    #[error("handoff requires a different target state")]
+    HandoffRequiresStateChange,
+    /// A revision hand-off carried a review decision.
+    #[error("review applies to forward hand-offs only")]
+    HandoffReviewOnRevision,
     /// A task reference was neither a UUID nor a per-project number.
     #[error("a task is addressed by its UUID or its per-project number")]
     InvalidTaskRef,
@@ -434,6 +446,10 @@ mod tests {
             TaskError::InvalidHandoffActor,
             TaskError::InvalidReview,
             TaskError::EmptySourceBranch,
+            TaskError::HandoffSourceRequired,
+            TaskError::HandoffSourceNotAllowed,
+            TaskError::HandoffRequiresStateChange,
+            TaskError::HandoffReviewOnRevision,
             TaskError::InvalidTaskRef,
         ] {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);

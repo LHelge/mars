@@ -491,8 +491,9 @@ mod tests {
     /// contract: `.env.example` carries exactly these names.
     ///
     /// Some of them are not this module's: `POSTGRES_*` are read by the
-    /// postgres container, and `ENGINE_SOCKET_HOST`, `HTTP_PORT` and
-    /// `COMPOSE_FILE` by compose itself (`compose.yml`; ADR 0035). [`Config`]
+    /// postgres container, and `ENGINE_SOCKET_HOST`, `HTTP_PORT`,
+    /// `COMPOSE_FILE` and `DOCKER_GID` by compose itself (`compose.yml`,
+    /// `compose.docker.yml`; ADR 0035). [`Config`]
     /// ignores all of them, and they belong here because `.env.example` and
     /// the README table are one list.
     const README_VARIABLES: &[&str] = &[
@@ -523,6 +524,7 @@ mod tests {
         "MAIL_FROM",
         "RUST_LOG",
         "COMPOSE_FILE",
+        "DOCKER_GID",
     ];
 
     /// A fixed directory to resolve `DATA_DIR` against, so assertions do not

@@ -10,6 +10,7 @@ import {
   login,
   logout,
   lookupInvite,
+  onCredentialsReplaced,
   onSignOut,
   requestPasswordReset,
   resetPassword,
@@ -82,6 +83,26 @@ describe("auth state", () => {
     unsubscribe();
     clearAuth();
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires onCredentialsReplaced only for an already signed-in browser", () => {
+    const replaced = vi.fn();
+    const off = onCredentialsReplaced(replaced);
+
+    // A first sign-in installs credentials, it does not replace any.
+    installSession(authResponse("token-a"));
+    expect(replaced).not.toHaveBeenCalled();
+
+    // A self-service password change or a refresh rotation does.
+    installSession(authResponse("token-b"));
+    expect(replaced).toHaveBeenCalledTimes(1);
+    expect(replaced).toHaveBeenCalledWith("token-b");
+    // The new token is already in place when the handler runs.
+    expect(getAccessToken()).toBe("token-b");
+
+    off();
+    installSession(authResponse("token-c"));
+    expect(replaced).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the snapshot object identical until something changes", () => {

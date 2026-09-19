@@ -9,6 +9,7 @@
 import { Route, Routes } from "react-router";
 import { AdminRoute } from "./components/AdminRoute";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { ChangePasswordPage } from "./pages/ChangePasswordPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -26,7 +27,7 @@ export function App() {
       <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 
       <Route element={<ProtectedRoute />}>
-        <Route path="/change-password" element={<PlaceholderPage title="Change your password" layout="auth" />} />
+        <Route path="/change-password" element={<ChangePasswordPage />} />
         <Route path="/" element={<DashboardPage />} />
         <Route path="/projects" element={<PlaceholderPage title="Projects" />} />
         <Route path="/projects/:id" element={<PlaceholderPage title="Project" />} />

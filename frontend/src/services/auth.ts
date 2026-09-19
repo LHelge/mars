@@ -28,6 +28,9 @@ export type SignOutReason = "user" | "refresh_failed";
 
 export type SignOutHandler = (reason: SignOutReason) => void;
 
+/** Called with the access token that replaced the previous one. */
+export type CredentialsReplacedHandler = (accessToken: string) => void;
+
 function readStoredToken(): string | null {
   try {
     return globalThis.localStorage.getItem(TOKEN_STORAGE_KEY);
@@ -59,6 +62,7 @@ let state: AuthState = { user: null, accessToken: readStoredToken() };
 
 const listeners = new Set<() => void>();
 const signOutHandlers = new Set<SignOutHandler>();
+const credentialsReplacedHandlers = new Set<CredentialsReplacedHandler>();
 
 function setState(next: AuthState): void {
   state = next;
@@ -104,10 +108,42 @@ export function onSignOut(handler: SignOutHandler): () => void {
   };
 }
 
-/** Installs a fresh `{user, access_token}` pair from login, invite or refresh. */
+/**
+ * Registers a handler to run when the token pair of an *already signed-in*
+ * browser is replaced — a self-service password change or a refresh rotation
+ * (`SPEC.md`, "Authentication": "A successful self-service password change
+ * installs its new pair before reopening streams"; "Frontend", Rules:
+ * "Self-service password changes replace the token pair and reconnect streams
+ * without replaying pending inputs").
+ *
+ * The session transcript and task board stream hooks subscribe to this from
+ * their providers and reconnect their event streams with the fresh access
+ * token; pending inputs are not replayed. Returns the unregister function.
+ */
+export function onCredentialsReplaced(
+  handler: CredentialsReplacedHandler,
+): () => void {
+  credentialsReplacedHandlers.add(handler);
+  return () => {
+    credentialsReplacedHandlers.delete(handler);
+  };
+}
+
+/**
+ * Installs a fresh `{user, access_token}` pair from login, invite, refresh or
+ * a self-service password change: token, then user, then the state
+ * subscribers, and finally — when this browser was already signed in — the
+ * `onCredentialsReplaced` handlers, which see the new token already in place.
+ */
 export function installSession(auth: AuthResponse): void {
+  const replaced = state.accessToken !== null;
   writeStoredToken(auth.access_token);
   setState({ user: auth.user, accessToken: auth.access_token });
+  if (replaced) {
+    for (const handler of [...credentialsReplacedHandlers]) {
+      handler(auth.access_token);
+    }
+  }
 }
 
 export function setCurrentUser(user: User): void {

@@ -26,5 +26,7 @@ export const queryKeys = {
     all: ["users"] as const,
     /** Admin only; the dashboard uses it to name a task's assignee. */
     list: () => ["users", "list"] as const,
+    /** The signed-in user; refreshed in place after a self-service password change. */
+    me: () => ["users", "me"] as const,
   },
 };

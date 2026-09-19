@@ -20,6 +20,7 @@ export {
   login,
   logout,
   lookupInvite,
+  onCredentialsReplaced,
   onSignOut,
   refreshAccessToken,
   requestPasswordReset,
@@ -28,7 +29,12 @@ export {
   signOut,
   subscribe,
 } from "./auth";
-export type { AuthState, SignOutHandler, SignOutReason } from "./auth";
+export type {
+  AuthState,
+  CredentialsReplacedHandler,
+  SignOutHandler,
+  SignOutReason,
+} from "./auth";
 
 export { getHealth } from "./health";
 export type { Health } from "./health";

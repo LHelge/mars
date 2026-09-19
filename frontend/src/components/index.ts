@@ -20,6 +20,9 @@ export type { LoadingStateProps } from "./LoadingState";
 export { PageLayout } from "./PageLayout";
 export type { PageLayoutProps } from "./PageLayout";
 
+export { PasswordChangeForm } from "./PasswordChangeForm";
+export type { PasswordChangeFormProps } from "./PasswordChangeForm";
+
 export { ProtectedRoute } from "./ProtectedRoute";
 
 export { SectionHeader } from "./SectionHeader";

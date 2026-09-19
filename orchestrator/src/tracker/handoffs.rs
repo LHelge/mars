@@ -34,19 +34,30 @@
 //! `refs/handoffs/<id>`, which is expected and which the orphan-cleanup job
 //! removes (ADR 0018).
 //!
-//! **What is still missing**: [`publish`] — the database half that consumes a
-//! [`PreparedHandoff`] — is the stub it has been since the tracker epic, and
-//! refuses every hand-off with [`HANDOFFS_UNAVAILABLE`].
+//! Step 4 is [`publish_in_transaction`], which does the whole database half in
+//! one function: the recheck, the comment, the record, the pointer, the move
+//! and the events.
+//!
+//! **What is still missing**: the *composition* of the two halves, and the
+//! route that reaches it. [`publish`] — the extension point
+//! `PUT /projects/{pid}/tasks/{id}` still calls — is the stub it has been since
+//! the tracker epic and refuses every hand-off with [`HANDOFFS_UNAVAILABLE`]
+//! until that rewiring lands.
 
+use chrono::Utc;
 use uuid::Uuid;
 
 use crate::git::{DataPaths, GitError, GitRef, GitService, ProjectGitGuard, refs};
 use crate::models::{
-    HandoffCaller, HandoffInput, ReviewDecision, Task, TaskHandoff, TaskState, ValidatedHandoff,
+    HandoffCaller, HandoffInput, NewTaskComment, NewTaskHandoff, ReviewDecision, ReviewStatus,
+    Task, TaskError, TaskHandoff, TaskState, ValidatedHandoff,
 };
 use crate::prelude::*;
-use crate::repositories::{SessionRepository, TaskRepository};
-use crate::tracker::TrackerMutation;
+use crate::repositories::tasks::StateFields;
+use crate::repositories::{SessionRepository, TaskRepository, unique_violation};
+use crate::tracker::state::resolve_state;
+use crate::tracker::tasks::{UpdateTaskInput, update_task};
+use crate::tracker::{CommentDto, TaskDto, TrackerMutation};
 
 /// What a `handoff` is answered with until the database half lands.
 pub const HANDOFFS_UNAVAILABLE: &str = "code hand-offs are not available yet";
@@ -86,6 +97,10 @@ pub struct PreparedHandoff {
     pub id: Uuid,
     /// The task being handed off.
     pub task_id: Uuid,
+    /// The state the task was in at preparation time, for the recheck.
+    pub state_id: Uuid,
+    /// The lease holder at preparation time, for the recheck.
+    pub lease_holder_session_id: Option<Uuid>,
     /// The session the code comes from, or `None` when a forward's original
     /// session has since been deleted.
     pub source_session_id: Option<Uuid>,
@@ -268,6 +283,8 @@ pub async fn prepare(
     Ok(PreparedHandoff {
         id,
         task_id: task.id,
+        state_id: task.state_id,
+        lease_holder_session_id: task.lease_holder_session_id,
         source_session_id,
         source_branch,
         commit,
@@ -327,4 +344,235 @@ fn comment_of(validated: &ValidatedHandoff) -> &str {
 #[allow(unused_variables)]
 pub async fn publish(m: &mut TrackerMutation<'_>, task: &Task, comment: &str) -> Result<()> {
     Err(Error::BadRequest(HANDOFFS_UNAVAILABLE.into()))
+}
+
+/// What a task that moved between [`prepare`] and publication is told (409).
+///
+/// One message for all four rechecks — the state, the holder, the caller's
+/// hold and the previous current hand-off — because they mean the same thing
+/// to the caller: the task is no longer the task the ref was pinned for, and
+/// the answer is to re-read it (`ARCHITECTURE.md`, "Task tracker" → "Code
+/// hand-offs").
+pub const HANDOFF_RECHECK_FAILED: &str =
+    "task changed during hand-off publication; re-read it and retry";
+
+/// Publish a [`PreparedHandoff`]: the database half, inside `begin_mutation`.
+///
+/// Step 4 of the order in the module documentation, and the whole of it. `m`
+/// holds the project row lock and carries the actor matching `caller`; `task`
+/// is the row as it is under that lock, read with
+/// `TaskRepository::find_task_for_update`, exactly as
+/// [`update_task`](crate::tracker::update_task) and
+/// [`change_state`](crate::tracker::state::change_state) require. Everything
+/// below commits together with the caller's mutation or not at all, and any
+/// error here leaves the caller to roll back and [`discard_prepared`] the ref
+/// (ADR 0021, 0028).
+///
+/// **The recheck comes first.** [`prepare`] validated against plain pool reads
+/// and then spent time in git, so the authoritative reading of the three
+/// values it decided on is taken here, under the lock: the task's `state_id`,
+/// its `lease_holder_session_id` — which for a [`HandoffCaller::Session`] must
+/// still be the caller — and its `current_handoff_id`, which must be the
+/// `previous_handoff_id` the preparation saw. Any difference is
+/// [`Error::Conflict`] with [`HANDOFF_RECHECK_FAILED`], before a row is
+/// written.
+///
+/// Then, in this order, because each step needs the one before it:
+///
+/// 1. the **comment** row, authored by `caller` and never `system`: a hand-off
+///    always carries its message to the next worker, and `task_handoffs` owes
+///    it a `comment_id` (`docs/data-model.md`, `task_handoffs`);
+/// 2. the **`task_handoffs`** row with the prepared id, so that the row and
+///    the retained `refs/handoffs/<id>` match. Its review fields are
+///    [`ReviewCarry`]'s: `Fresh` is `unreviewed` with no reviewer and no time,
+///    `Decision` is the verdict with `caller` as the reviewer and the
+///    transaction's own timestamp, and `CarriedFrom` copies the previous
+///    record's four review fields verbatim — including a reviewer pair that
+///    deletion has nulled (`NewTaskHandoff::carry_review`);
+/// 3. **`tasks.current_handoff_id`**, set *before* the move, because
+///    `state_changed` carries "the full task after the change" and the board
+///    reads the new hand-off out of that payload (`SPEC.md`, "Code hand-offs
+///    and review");
+/// 4. the **move**, through [`update_task`](crate::tracker::update_task) — not
+///    a copy of it — so that a hand-off may carry ordinary field updates in the
+///    same request and so that the lease release, the `attempts` reset,
+///    `closed_at`, the dependants' `blocked` recompute and the parent closure
+///    are the same rules every other caller gets. `update.state` names the
+///    target, which must differ from the state the task is in
+///    ([`TaskError::HandoffRequiresStateChange`](crate::models::TaskError));
+/// 5. the **`commented`** event, after the state events, which is the order
+///    `SPEC.md`, "Code hand-offs and review" gives: the state event carries the
+///    task including its new hand-off, and the accompanying `commented` event
+///    carries the comment;
+/// 6. the **`task_sessions`** links: the source session, when the record still
+///    names one, and the calling session. `TrackerMutation::touch`
+///    deduplicates the pair a revision by its own holder writes twice.
+///
+/// **No `released` event.** The lease clears as part of the state change, not
+/// as a release, so there is nothing separate to announce (`SPEC.md`,
+/// "TaskEvent").
+///
+/// **A move into the human state is a `state_changed`**, not an `escalated`:
+/// this goes through `update_task`, which uses
+/// [`StateEventKind::StateChanged`](crate::tracker::StateEventKind), and only
+/// the escalation paths — which also owe an email — say `escalated`
+/// (`tracker::state`). Publishing code into `needs_human` is a hand-off to a
+/// person, not an agent running out of attempts.
+pub async fn publish_in_transaction(
+    m: &mut TrackerMutation<'_>,
+    task: &Task,
+    prepared: &PreparedHandoff,
+    caller: &HandoffCaller,
+    update: UpdateTaskInput,
+) -> Result<TaskDto> {
+    let project_id = m.project_id();
+
+    if task.id != prepared.task_id {
+        error!(
+            task_id = %task.id,
+            prepared_task_id = %prepared.task_id,
+            "a hand-off was prepared for a different task than the one being published",
+        );
+        return Err(Error::Internal("hand-off task mismatch".into()));
+    }
+
+    // (0) The recheck, under the lock, before anything is written.
+    let holder_still_the_caller = match caller {
+        HandoffCaller::Session { session_id } => task.lease_holder_session_id == Some(*session_id),
+        HandoffCaller::User { .. } => true,
+    };
+    if task.state_id != prepared.state_id
+        || task.lease_holder_session_id != prepared.lease_holder_session_id
+        || task.current_handoff_id != prepared.previous_handoff_id
+        || !holder_still_the_caller
+    {
+        debug!(
+            project_id = %project_id,
+            task_id = %task.id,
+            handoff_id = %prepared.id,
+            "the task changed between hand-off preparation and publication",
+        );
+        return Err(Error::Conflict(HANDOFF_RECHECK_FAILED.into()));
+    }
+
+    // The target state, so that a hand-off that does not move the task is
+    // refused here as well as at the transports (`SPEC.md`).
+    let target = match update.state.as_deref() {
+        Some(name) => resolve_state(m, name).await?,
+        None => return Err(TaskError::HandoffRequiresStateChange.into()),
+    };
+    if target.id == task.state_id {
+        return Err(TaskError::HandoffRequiresStateChange.into());
+    }
+
+    let repository = TaskRepository::new(m.pool());
+
+    // (1) The comment the hand-off is published with.
+    let new_comment = match caller {
+        HandoffCaller::User { user_id } => {
+            NewTaskComment::from_user(task.id, *user_id, &prepared.comment)
+        }
+        HandoffCaller::Session { session_id } => {
+            NewTaskComment::from_session(task.id, *session_id, &prepared.comment)
+        }
+    };
+    let comment = CommentDto::from(
+        repository
+            .insert_comment(m.conn(), project_id, &new_comment)
+            .await?,
+    );
+
+    // (2) The record itself, with the id the ref was pinned under.
+    let mut new_handoff = NewTaskHandoff::new(
+        task.id,
+        prepared.source_branch.clone(),
+        prepared.commit.clone(),
+        comment.id,
+    );
+    new_handoff.id = prepared.id;
+    new_handoff.source_session_id = prepared.source_session_id;
+    match caller {
+        HandoffCaller::User { user_id } => new_handoff.created_by_user_id = Some(*user_id),
+        HandoffCaller::Session { session_id } => {
+            new_handoff.created_by_session_id = Some(*session_id);
+        }
+    }
+    match &prepared.review {
+        // A new revision is unreviewed, which is what `new` already built.
+        ReviewCarry::Fresh => {}
+        ReviewCarry::Decision(decision) => {
+            new_handoff.review_status = ReviewStatus::from(*decision);
+            new_handoff.reviewed_at = Some(Utc::now());
+            match caller {
+                HandoffCaller::User { user_id } => {
+                    new_handoff.reviewed_by_user_id = Some(*user_id);
+                }
+                HandoffCaller::Session { session_id } => {
+                    new_handoff.reviewed_by_session_id = Some(*session_id);
+                }
+            }
+        }
+        ReviewCarry::CarriedFrom(previous) => new_handoff.carry_review(previous),
+    }
+
+    let handoff = repository
+        .insert_handoff(m.conn(), project_id, &new_handoff)
+        .await
+        .map_err(|err| reused_handoff_id(err, prepared.id))?;
+
+    // (3) The pointer, before the move: `state_changed` carries the task as it
+    // is after the change, and the new hand-off is part of that.
+    repository
+        .set_task_state_fields(
+            m.conn(),
+            project_id,
+            task.id,
+            &StateFields {
+                current_handoff_id: Some(Some(handoff.id)),
+                ..StateFields::default()
+            },
+        )
+        .await?;
+
+    // (4) The move, with whatever ordinary field changes came with it.
+    let outcome = update_task(m, task, update).await?;
+
+    // (5) The comment event, after the state events it accompanies.
+    m.emit_comment(&outcome.task, &comment)?;
+
+    // (6) The links: the code's origin and the caller, deduplicated.
+    if let Some(source_session_id) = prepared.source_session_id {
+        m.touch(task.id, source_session_id);
+    }
+    if let HandoffCaller::Session { session_id } = caller {
+        m.touch(task.id, *session_id);
+    }
+
+    info!(
+        project_id = %project_id,
+        task_id = %task.id,
+        handoff_id = %handoff.id,
+        review_status = %handoff.review_status,
+        state = %target.name,
+        "hand-off published",
+    );
+
+    Ok(outcome.task)
+}
+
+/// The one insert failure that is ours rather than the caller's.
+///
+/// The id comes from [`prepare`], which generates it, so a primary key
+/// collision means an id was reused — a bug, not something a caller can
+/// provoke or retry — and it is answered generically with the detail in the
+/// log (`CLAUDE.md`, "Backend conventions").
+fn reused_handoff_id(error: Error, handoff_id: Uuid) -> Error {
+    if let Error::Database(ref db_error) = error
+        && let Some("task_handoffs_pkey") = unique_violation(db_error)
+    {
+        error!(handoff_id = %handoff_id, "a prepared hand-off id was already taken");
+        return Error::Internal("hand-off could not be recorded".into());
+    }
+
+    error
 }

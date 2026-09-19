@@ -438,7 +438,7 @@ The current record is selected through `tasks.current_handoff_id`, not timestamp
 
 ### `task_sessions`
 
-Which sessions worked on which tasks. A row is upserted when a session successfully creates, claims, changes, comments on, releases, escalates or hands off a task, and when a session is launched for a task. A user publishing a code hand-off also links its source session. The link for the directly changed task commits in the same transaction as the change and its events. Preserve `first_touched_at` on conflict and advance `last_touched_at` only for an actual change. Read-only calls, rejected operations and updates with no effective changes neither create links nor advance either timestamp (ADR 0030).
+Which sessions worked on which tasks. A row is upserted when a session successfully creates, claims, changes, comments on, releases, escalates or hands off a task, and when a session is launched for a task. Publishing a code hand-off links the source session whenever the record still names one — a revision links the session the commit came from, and a forward links the original producing session it copied, unless deletion has nulled it — plus the calling session when the caller is a session, which for a revision an agent publishes from its own branch is the same link. The link for the directly changed task commits in the same transaction as the change and its events. Preserve `first_touched_at` on conflict and advance `last_touched_at` only for an actual change. Read-only calls, rejected operations and updates with no effective changes neither create links nor advance either timestamp (ADR 0030).
 
 | Column | Type | Constraints |
 | --- | --- | --- |

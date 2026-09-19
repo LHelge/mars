@@ -205,11 +205,10 @@ impl TestApp {
         };
 
         // `AppState::new` takes everything the state holds today, including
-        // the empty `SessionRegistry`. The fields later epics add in place —
-        // the broadcast senders for event fan-out (`ARCHITECTURE.md`,
-        // "Orchestrator internals") — are constructed there with their own
-        // `Default`/`new()` when they arrive, and `TestApp` grows an accessor
-        // for the ones a test has to reach.
+        // the empty `SessionRegistry` and the empty `EventFanout`: the fields
+        // that hold no configuration and have no collaborator to mock are
+        // constructed there with their own `new()`, so a test subscribes to
+        // the very fan-out the handlers publish on, through `app.state`.
         let state = AppState::new(
             Arc::new(config),
             pool.clone(),

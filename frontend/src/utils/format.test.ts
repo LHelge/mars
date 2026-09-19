@@ -1,0 +1,47 @@
+import { describe, expect, it } from "vitest";
+import { formatDateTime, formatRelative, formatUsd, PLACEHOLDER } from "./format";
+
+const NOW = new Date("2026-03-01T12:00:00Z");
+
+describe("formatRelative", () => {
+  it("answers the placeholder for a missing timestamp", () => {
+    expect(formatRelative(null, NOW)).toBe(PLACEHOLDER);
+    expect(formatRelative(undefined, NOW)).toBe(PLACEHOLDER);
+    expect(formatRelative("not a date", NOW)).toBe(PLACEHOLDER);
+  });
+
+  it("scales from seconds to days", () => {
+    expect(formatRelative("2026-03-01T11:59:31Z", NOW)).toBe("just now");
+    expect(formatRelative("2026-03-01T11:56:00Z", NOW)).toBe("4m ago");
+    expect(formatRelative("2026-03-01T09:00:00Z", NOW)).toBe("3h ago");
+    expect(formatRelative("2026-02-18T12:00:00Z", NOW)).toBe("11d ago");
+  });
+
+  it("clamps clock skew instead of counting backwards", () => {
+    expect(formatRelative("2026-03-01T12:05:00Z", NOW)).toBe("just now");
+  });
+});
+
+describe("formatDateTime", () => {
+  it("answers the placeholder for a missing timestamp", () => {
+    expect(formatDateTime(null)).toBe(PLACEHOLDER);
+    expect(formatDateTime("")).toBe(PLACEHOLDER);
+  });
+
+  it("formats a real timestamp", () => {
+    expect(formatDateTime("2026-03-01T12:00:00Z")).not.toBe(PLACEHOLDER);
+  });
+});
+
+describe("formatUsd", () => {
+  it("always shows two decimals", () => {
+    expect(formatUsd(0)).toBe("$0.00");
+    expect(formatUsd(1.2)).toBe("$1.20");
+    expect(formatUsd(12.345)).toBe("$12.35");
+  });
+
+  it("answers the placeholder for a missing amount", () => {
+    expect(formatUsd(null)).toBe(PLACEHOLDER);
+    expect(formatUsd(Number.NaN)).toBe(PLACEHOLDER);
+  });
+});

@@ -10,9 +10,10 @@
 //!
 //! It owns three things a writer would otherwise have to carry by hand:
 //!
-//! - **the locked transaction**, from
-//!   [`TaskRepository::begin_mutation`], handed to repository helpers through
-//!   [`TrackerMutation::conn`];
+//! - **the locked transaction**, from `TaskRepository::begin_mutation`, handed
+//!   to repository helpers as a [`Locked`] token through
+//!   [`TrackerMutation::conn`] — and `Locked` is what every tracker write
+//!   takes, so a write outside the project lock does not compile;
 //! - **the event batch**, collected in emission order by the `emit_*` methods
 //!   and appended once on commit, so the sequences are allocated together and
 //!   `pg_notify` fires once, inside the transaction (ADR 0028);
@@ -30,6 +31,8 @@
 //! deletion — are written as functions taking `&mut TrackerMutation`, which is
 //! how they come to share one transaction without passing one around.
 
+use std::ops::{Deref, DerefMut};
+
 use chrono::Utc;
 use sqlx::{PgConnection, Postgres, Transaction};
 use uuid::Uuid;
@@ -40,9 +43,64 @@ use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::tracker::{CommentDto, Escalation, TaskDto};
 
+/// A connection that is known to be inside a project-locked tracker mutation.
+///
+/// `ARCHITECTURE.md`, "Task tracker" → "One mutation at a time per project"
+/// says every tracker writer locks the project row first and shares that one
+/// transaction. This type is that sentence as a compile-time fact: the field
+/// is private to this module, so the only way to obtain a `Locked` is
+/// [`TrackerMutation::conn`] — and every `TaskRepository` helper that writes a
+/// tracker table, or has to read one under the lock, takes a `Locked` rather
+/// than a bare `&mut PgConnection`. A write outside the lock therefore does
+/// not compile, and the module doc of `repositories/tasks` states the rule
+/// once instead of every helper repeating a warning nobody can enforce.
+///
+/// It derefs to the connection because the helpers still run ordinary SQL on
+/// it; [`Locked::reborrow`] is how a helper hands the token on to another one
+/// without giving it up.
+pub struct Locked<'a>(&'a mut PgConnection);
+
+impl<'a> Locked<'a> {
+    /// The one documented exception: creating a project.
+    ///
+    /// `projects::create_project` inserts the project, its default states and
+    /// its default profile's served states in one transaction, and there is no
+    /// project row to lock yet — the row it would lock is the row it is
+    /// inserting, still invisible to every other transaction, so there is
+    /// nothing for a lock to serialise against (`docs/data-model.md`, "Tracker
+    /// mutation transactions"). That transaction is as exclusive as the lock
+    /// would make it, so it may mint a token; nothing else may, which is why
+    /// this is `pub(crate)` and named after its single caller.
+    pub(crate) fn during_project_creation(conn: &'a mut PgConnection) -> Self {
+        Self(conn)
+    }
+
+    /// Hand the token to a nested helper for the length of the borrow.
+    ///
+    /// The same move as sqlx's `&mut *tx`, one level up: the caller keeps the
+    /// token and the callee gets one of its own for the call.
+    pub fn reborrow(&mut self) -> Locked<'_> {
+        Locked(self.0)
+    }
+}
+
+impl Deref for Locked<'_> {
+    type Target = PgConnection;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl DerefMut for Locked<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+    }
+}
+
 /// What a committed mutation leaves for its caller.
 ///
-/// The sequences are the ones [`TaskRepository::append_task_events`] allocated,
+/// The sequences are the ones `TaskRepository::append_task_events` allocated,
 /// in emission order — a handler that answers with a cursor, or a test that
 /// asserts the stream, reads them here. The escalations are the emails the
 /// commit made due; the caller sends them, outside the transaction that is now
@@ -130,14 +188,20 @@ impl<'a> TrackerMutation<'a> {
         })
     }
 
-    /// The transaction, for the repository helpers this mutation runs.
+    /// The locked connection, for the repository helpers this mutation runs.
     ///
-    /// Everything read through it is authoritative for this project, and
-    /// everything written through it commits or rolls back with the events.
-    /// **Never call engine, email, git or model code while holding it**: the
-    /// project lock is held for exactly as long as this mutation lives.
-    pub fn conn(&mut self) -> &mut PgConnection {
-        &mut self.tx
+    /// The only way to build a [`Locked`], and therefore the only way to reach
+    /// a tracker write at all. Everything read through it is authoritative for
+    /// this project, and everything written through it commits or rolls back
+    /// with the events. **Never call engine, email, git or model code while
+    /// holding it**: the project lock is held for exactly as long as this
+    /// mutation lives.
+    ///
+    /// A combined tracker/session operation takes its session connection from
+    /// here too, which is what keeps the documented lock order — git, then the
+    /// project row, then session rows — true by construction.
+    pub fn conn(&mut self) -> Locked<'_> {
+        Locked(&mut self.tx)
     }
 
     /// Who is making this change.
@@ -277,7 +341,7 @@ impl<'a> TrackerMutation<'a> {
 
     /// Append the events, write the session links and commit everything.
     ///
-    /// The whole batch goes through [`TaskRepository::append_task_events`] in
+    /// The whole batch goes through `TaskRepository::append_task_events` in
     /// one call, so the sequences are successive and exactly one
     /// `pg_notify('task_events', '<project_id>:<seq>')` is issued, inside this
     /// transaction and therefore delivered only on commit (ADR 0028). A second
@@ -308,12 +372,12 @@ impl<'a> TrackerMutation<'a> {
             Vec::new()
         } else {
             let seqs = repository
-                .append_task_events(&mut tx, project_id, &events)
+                .append_task_events(Locked(&mut tx), project_id, &events)
                 .await?;
 
             for (task_id, session_id) in &touches {
                 repository
-                    .touch_task_session(&mut tx, *task_id, *session_id)
+                    .touch_task_session(Locked(&mut tx), *task_id, *session_id)
                     .await?;
             }
 

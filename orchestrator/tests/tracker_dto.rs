@@ -27,12 +27,15 @@ mod common;
 
 use std::time::Duration;
 
+use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::models::{
     NewSession, NewTask, NewTaskComment, NewTaskHandoff, Priority, ProfileKind, ReviewStatus, Task,
     TaskDependencyKind, TaskRef, TaskUpdate,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::{SessionRepository, StateFields, TaskFilter, TaskRepository};
+use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
+use mars_orchestrator::repositories::{SessionRepository, TaskFilter, TaskRepository};
+use mars_orchestrator::tracker::{Locked, TrackerMutation};
 use tokio::time::sleep;
 use uuid::Uuid;
 
@@ -91,15 +94,14 @@ async fn seed_project(pool: &PgPool) -> Uuid {
         .expect("the project seeds");
 
     let repository = TaskRepository::new(pool);
-    let mut tx = repository
-        .begin_mutation(project_id)
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
         .await
         .expect("the mutation opens");
     repository
-        .insert_default_states(&mut tx, project_id)
+        .insert_default_states(mutation.conn(), project_id)
         .await
         .expect("the default states insert");
-    tx.commit().await.expect("the transaction commits");
+    mutation.commit().await.expect("the mutation commits");
 
     project_id
 }
@@ -146,15 +148,14 @@ async fn seed_session(pool: &PgPool, project_id: Uuid, profile_id: Uuid) -> Uuid
 async fn insert_titled(pool: &PgPool, project_id: Uuid, title: &str) -> Task {
     let task = NewTask::new(project_id, title).expect("the title parses");
     let repository = TaskRepository::new(pool);
-    let mut tx = repository
-        .begin_mutation(project_id)
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
         .await
         .expect("the mutation opens");
     let inserted = repository
-        .insert_task(&mut tx, project_id, &task)
+        .insert_task(mutation.conn(), project_id, &task)
         .await
         .expect("the task inserts");
-    tx.commit().await.expect("the transaction commits");
+    mutation.commit().await.expect("the mutation commits");
 
     inserted
 }
@@ -162,15 +163,14 @@ async fn insert_titled(pool: &PgPool, project_id: Uuid, title: &str) -> Task {
 /// Run `body` inside a committed tracker mutation.
 async fn in_mutation<T, F>(pool: &PgPool, project_id: Uuid, body: F) -> T
 where
-    F: AsyncFnOnce(&TaskRepository<'_>, &mut sqlx::PgConnection) -> T,
+    F: AsyncFnOnce(&TaskRepository<'_>, Locked<'_>) -> T,
 {
     let repository = TaskRepository::new(pool);
-    let mut tx = repository
-        .begin_mutation(project_id)
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
         .await
         .expect("the mutation opens");
-    let outcome = body(&repository, &mut tx).await;
-    tx.commit().await.expect("the transaction commits");
+    let outcome = body(&repository, mutation.conn()).await;
+    mutation.commit().await.expect("the mutation commits");
 
     outcome
 }
@@ -188,13 +188,13 @@ async fn a_task_carries_its_state_name_its_edges_and_no_handoff() {
 
     // The same pair carries both kinds, which is the case `SPEC.md` calls out
     // and the one a naive `depends_on` collapses.
-    in_mutation(&pool, project_id, async |repository, tx| {
+    in_mutation(&pool, project_id, async |repository, mut tx| {
         for kind in [
             TaskDependencyKind::Blocks,
             TaskDependencyKind::DiscoveredFrom,
         ] {
             repository
-                .insert_dependency(tx, project_id, subject.id, prerequisite.id, kind)
+                .insert_dependency(tx.reborrow(), project_id, subject.id, prerequisite.id, kind)
                 .await
                 .expect("the edge inserts");
         }
@@ -253,10 +253,10 @@ async fn a_task_carries_the_handoff_its_column_names() {
 
     let task = insert_titled(&pool, project_id, "handed off").await;
 
-    let handoff_id = in_mutation(&pool, project_id, async |repository, tx| {
+    let handoff_id = in_mutation(&pool, project_id, async |repository, mut tx| {
         let comment = NewTaskComment::from_session(task.id, session_id, "have a look");
         repository
-            .insert_comment(tx, project_id, &comment)
+            .insert_comment(tx.reborrow(), project_id, &comment)
             .await
             .expect("the comment inserts");
 
@@ -264,7 +264,7 @@ async fn a_task_carries_the_handoff_its_column_names() {
         handoff.source_session_id = Some(session_id);
         handoff.created_by_session_id = Some(session_id);
         let inserted = repository
-            .insert_handoff(tx, project_id, &handoff)
+            .insert_handoff(tx.reborrow(), project_id, &handoff)
             .await
             .expect("the hand-off inserts");
 
@@ -347,14 +347,14 @@ async fn a_detail_carries_its_comments_children_and_sessions_in_order() {
 
     // The second child is more urgent, so board order — priority, then
     // number — puts it first, which insertion order alone would not.
-    in_mutation(&pool, project_id, async |repository, tx| {
+    in_mutation(&pool, project_id, async |repository, mut tx| {
         for (child, priority) in [
             (&first_child, Priority::default()),
             (&second_child, Priority::CRITICAL),
         ] {
             repository
                 .update_task(
-                    tx,
+                    tx.reborrow(),
                     project_id,
                     child.id,
                     &TaskUpdate {
@@ -496,17 +496,16 @@ async fn a_board_of_fifty_tasks_loads_in_board_order_and_a_bounded_number_of_que
         let mut task =
             NewTask::new(project_id, &format!("task {index}")).expect("the title parses");
         task.priority = Priority::try_from(index % 4).expect("a valid priority");
-        let mut tx = repository
-            .begin_mutation(project_id)
+        let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
             .await
             .expect("the mutation opens");
         inserted.push(
             repository
-                .insert_task(&mut tx, project_id, &task)
+                .insert_task(mutation.conn(), project_id, &task)
                 .await
                 .expect("the task inserts"),
         );
-        tx.commit().await.expect("the transaction commits");
+        mutation.commit().await.expect("the mutation commits");
     }
     assert_eq!(inserted.len(), 50);
 
@@ -600,13 +599,12 @@ async fn the_in_transaction_loader_sees_the_uncommitted_change() {
         .expect("the state reads")
         .expect("the state exists");
 
-    let mut tx = repository
-        .begin_mutation(project_id)
+    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
         .await
         .expect("the mutation opens");
     repository
         .set_task_state_fields(
-            &mut tx,
+            mutation.conn(),
             project_id,
             task.id,
             &StateFields {
@@ -620,7 +618,7 @@ async fn the_in_transaction_loader_sees_the_uncommitted_change() {
     // What an event payload for this move would carry: the task as it is
     // inside the transaction.
     let inside = repository
-        .load_task_dto_in(&mut tx, project_id, task.id)
+        .load_task_dto_in(mutation.conn(), project_id, task.id)
         .await
         .expect("the task loads")
         .expect("the task is there");
@@ -634,7 +632,7 @@ async fn the_in_transaction_loader_sees_the_uncommitted_change() {
         .expect("the task is there");
     assert_eq!(outside.state, "backlog");
 
-    tx.commit().await.expect("the transaction commits");
+    mutation.commit().await.expect("the mutation commits");
 
     let after = repository
         .load_task_dto(project_id, task.id)
@@ -644,13 +642,12 @@ async fn the_in_transaction_loader_sees_the_uncommitted_change() {
     assert_eq!(after.state, "review");
 
     // An unknown task inside a mutation is `None`, as it is on the pool.
-    let mut tx = repository
-        .begin_mutation(project_id)
+    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
         .await
         .expect("the mutation opens");
     assert!(
         repository
-            .load_task_dto_in(&mut tx, project_id, Uuid::new_v4())
+            .load_task_dto_in(mutation.conn(), project_id, Uuid::new_v4())
             .await
             .expect("the task loads")
             .is_none()

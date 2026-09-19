@@ -28,6 +28,7 @@ use crate::models::{DEFAULT_TASK_STATES, NewTaskState, TaskState, TaskStateKind,
 use crate::prelude::*;
 use crate::repositories::tasks::TaskRepository;
 use crate::repositories::{foreign_key_violation, unique_violation};
+use crate::tracker::Locked;
 
 impl TaskRepository<'_> {
     /// Insert the documented default state set and return it in board order.
@@ -46,14 +47,13 @@ impl TaskRepository<'_> {
     /// this file's, so the list exists once.
     pub async fn insert_default_states(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
     ) -> Result<Vec<TaskState>> {
         let mut inserted = Vec::with_capacity(DEFAULT_TASK_STATES.len());
         for (name, kind, position) in DEFAULT_TASK_STATES {
             inserted.push(
-                insert_state_row(&mut *tx, project_id, Uuid::new_v4(), name, kind, position)
-                    .await?,
+                insert_state_row(&mut tx, project_id, Uuid::new_v4(), name, kind, position).await?,
             );
         }
 
@@ -64,9 +64,9 @@ impl TaskRepository<'_> {
 
     /// Insert one state and return the stored row.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**:
-    /// the position it lands at, and whether the project already has a human
-    /// state, are both answers about the project's current state list.
+    /// The token is what makes this answerable: the position it lands at, and
+    /// whether the project already has a human state, are both facts about the
+    /// project's current state list.
     ///
     /// A `None` position appends. An explicit one shifts every state at or
     /// after it up by one first, so the new state takes that place and the
@@ -78,11 +78,11 @@ impl TaskRepository<'_> {
     /// in this project, and a second `human` state.
     pub async fn insert_state(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         state: &NewTaskState,
     ) -> Result<TaskState> {
-        let end = end_position(&mut *tx, project_id).await?;
+        let end = end_position(&mut tx, project_id).await?;
 
         let position = match state.position {
             Some(position) if position < 0 => {
@@ -104,7 +104,7 @@ impl TaskRepository<'_> {
         }
 
         let inserted = insert_state_row(
-            &mut *tx,
+            &mut tx,
             project_id,
             state.id,
             state.name.as_str(),
@@ -191,7 +191,6 @@ impl TaskRepository<'_> {
 
     /// Rename a state, keeping its id, kind and position.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction.**
     /// Renaming renames the state everywhere at once, because tasks and
     /// profiles reference it by id (`SPEC.md`, "Task states"). The new name
     /// being taken in this project is [`Error::Conflict`]; an unknown state is
@@ -201,7 +200,7 @@ impl TaskRepository<'_> {
     /// the route answers 400 when one is supplied.
     pub async fn rename_state(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         id: Uuid,
         name: &TaskStateName,
@@ -230,8 +229,8 @@ impl TaskRepository<'_> {
 
     /// Move a state to `position`, re-packing the rest around it.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**:
-    /// the new order is computed from the current one.
+    /// The new order is computed from the current one, which is why this
+    /// takes the token.
     ///
     /// The list is read in board order, the state is taken out and put back at
     /// `position`, and the whole list is written back as `0..n` in one
@@ -240,7 +239,7 @@ impl TaskRepository<'_> {
     /// [`Error::BadRequest`] and an unknown state [`Error::NotFound`].
     pub async fn move_state(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         id: Uuid,
         position: i32,
@@ -249,7 +248,7 @@ impl TaskRepository<'_> {
             return Err(Error::BadRequest("position must not be negative".into()));
         }
 
-        let mut ordered = state_ids_in_order(&mut *tx, project_id).await?;
+        let mut ordered = state_ids_in_order(&mut tx, project_id).await?;
         let from = ordered
             .iter()
             .position(|state_id| *state_id == id)
@@ -261,19 +260,18 @@ impl TaskRepository<'_> {
         let to = (position as usize).min(ordered.len());
         ordered.insert(to, id);
 
-        write_positions(&mut *tx, project_id, &ordered).await?;
+        write_positions(&mut tx, project_id, &ordered).await?;
 
         debug!(project_id = %project_id, state_id = %id, position = to, "task state moved");
 
         // Read back rather than trusting the arithmetic: the returned row is
         // what the route serialises.
-        self.find_state_in_tx(&mut *tx, project_id, id).await
+        self.find_state_in_tx(&mut tx, project_id, id).await
     }
 
     /// Delete a state, refusing the four cases the documents reserve.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**:
-    /// every refusal below is a count over the project's current rows, and
+    /// Every refusal below is a count over the project's current rows, and
     /// without the lock a concurrent mutation could remove the last queue
     /// state between the check and the delete.
     ///
@@ -291,25 +289,20 @@ impl TaskRepository<'_> {
     ///
     /// Positions are re-packed to `0..n` afterwards, so the board keeps no gap
     /// where the column was.
-    pub async fn delete_state(
-        &self,
-        tx: &mut PgConnection,
-        project_id: Uuid,
-        id: Uuid,
-    ) -> Result<()> {
-        let state = self.find_state_in_tx(&mut *tx, project_id, id).await?;
+    pub async fn delete_state(&self, mut tx: Locked<'_>, project_id: Uuid, id: Uuid) -> Result<()> {
+        let state = self.find_state_in_tx(&mut tx, project_id, id).await?;
 
         match state.kind {
             TaskStateKind::Human => {
                 return Err(Error::Conflict("cannot delete the human state".into()));
             }
             TaskStateKind::Queue
-                if count_kind(&mut *tx, project_id, TaskStateKind::Queue).await? <= 1 =>
+                if count_kind(&mut tx, project_id, TaskStateKind::Queue).await? <= 1 =>
             {
                 return Err(Error::Conflict("cannot delete the last queue state".into()));
             }
             TaskStateKind::Terminal
-                if count_kind(&mut *tx, project_id, TaskStateKind::Terminal).await? <= 1 =>
+                if count_kind(&mut tx, project_id, TaskStateKind::Terminal).await? <= 1 =>
             {
                 return Err(Error::Conflict(
                     "cannot delete the last terminal state".into(),
@@ -337,8 +330,8 @@ impl TaskRepository<'_> {
         .await
         .map_err(map_state_error)?;
 
-        let ordered = state_ids_in_order(&mut *tx, project_id).await?;
-        write_positions(&mut *tx, project_id, &ordered).await?;
+        let ordered = state_ids_in_order(&mut tx, project_id).await?;
+        write_positions(&mut tx, project_id, &ordered).await?;
 
         debug!(project_id = %project_id, state_id = %id, "task state deleted");
 
@@ -347,8 +340,8 @@ impl TaskRepository<'_> {
 
     /// The state a new task lands in: the queue state with the lowest position.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**,
-    /// the same one that inserts the task (`docs/data-model.md`,
+    /// Read under the same token as the insert that follows it
+    /// (`docs/data-model.md`,
     /// `task_states`: "The default state for a new task is the `queue` state
     /// with the lowest position"). `backlog` by default.
     ///
@@ -356,11 +349,7 @@ impl TaskRepository<'_> {
     /// [`TaskRepository::delete_state`] makes unreachable for a project this
     /// crate created, and which is still not an insert this repository can
     /// make up a state for.
-    pub async fn default_state(
-        &self,
-        tx: &mut PgConnection,
-        project_id: Uuid,
-    ) -> Result<TaskState> {
+    pub async fn default_state(&self, mut tx: Locked<'_>, project_id: Uuid) -> Result<TaskState> {
         let state = sqlx::query_as!(
             TaskState,
             r#"
@@ -380,8 +369,7 @@ impl TaskRepository<'_> {
 
     /// Replace the set of states a profile serves.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**:
-    /// the states are validated against the project's current list, and a
+    /// The states are validated against the project's current list, and a
     /// concurrent state deletion would otherwise land between the check and
     /// the insert.
     ///
@@ -397,7 +385,7 @@ impl TaskRepository<'_> {
     /// profile meant for hand-launched sessions wants.
     pub async fn set_profile_states(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         profile_id: Uuid,
         state_ids: &[Uuid],
@@ -471,10 +459,9 @@ impl TaskRepository<'_> {
     /// [`TaskRepository::set_profile_states`] addressed by state *name*, which
     /// is how `ProfileInput.serves_states` arrives.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**,
-    /// for the same reason: the names are resolved against the project's
-    /// current states, and a rename or a deletion between the lookup and the
-    /// insert would write a link the caller never asked for
+    /// Under the token for the same reason: the names are resolved against
+    /// the project's current states, and a rename or a deletion between the
+    /// lookup and the insert would write a link the caller never asked for
     /// (`docs/data-model.md`, "Tracker mutation transactions" lists profile
     /// served states).
     ///
@@ -494,7 +481,7 @@ impl TaskRepository<'_> {
     /// happens there.
     pub async fn set_profile_states_by_name(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         profile_id: Uuid,
         names: &[String],
@@ -516,7 +503,7 @@ impl TaskRepository<'_> {
             match rows.iter().find(|row| row.name == *name) {
                 Some(row) if row.kind == TaskStateKind::Queue => state_ids.push(row.id),
                 _ => {
-                    let queues = queue_state_names(&mut *tx, project_id).await?;
+                    let queues = queue_state_names(&mut tx, project_id).await?;
                     return Err(Error::BadRequest(format!(
                         "serves_states: \"{name}\" is not a queue state of this project; \
                          queue states are: {}",

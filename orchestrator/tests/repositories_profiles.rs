@@ -22,9 +22,11 @@ mod common;
 use std::collections::HashMap;
 
 use axum::http::StatusCode;
+use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::models::{AgentProfile, ProfileInput, ProfileUpdate};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{ProjectRepository, TaskRepository};
+use mars_orchestrator::tracker::TrackerMutation;
 use uuid::Uuid;
 
 /// Not a real image: the stub the session tests replay a fixture transcript
@@ -68,15 +70,14 @@ async fn seeded_project(pool: &PgPool) -> Uuid {
         .expect("the project seeds");
 
     let tasks = TaskRepository::new(pool);
-    let mut tx = tasks
-        .begin_mutation(project_id)
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
         .await
         .expect("the mutation opens");
     tasks
-        .insert_default_states(&mut tx, project_id)
+        .insert_default_states(mutation.conn(), project_id)
         .await
         .expect("the default states insert");
-    tx.commit().await.expect("the transaction commits");
+    mutation.commit().await.expect("the mutation commits");
 
     project_id
 }
@@ -102,12 +103,13 @@ async fn insert(pool: &PgPool, project_id: Uuid, input: ProfileInput) -> Result<
 
     let projects = ProjectRepository::new(pool);
     let tasks = TaskRepository::new(pool);
-    let mut tx = tasks.begin_mutation(project_id).await?;
-    let inserted = projects.insert_profile(&mut tx, &profile).await?;
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System).await?;
+    let mut locked = mutation.conn();
+    let inserted = projects.insert_profile(&mut locked, &profile).await?;
     tasks
-        .set_profile_states_by_name(&mut tx, project_id, inserted.id, &profile.serves_states)
+        .set_profile_states_by_name(locked, project_id, inserted.id, &profile.serves_states)
         .await?;
-    tx.commit().await?;
+    mutation.commit().await?;
 
     projects
         .find_profile(project_id, inserted.id)
@@ -130,18 +132,17 @@ async fn update(
     update: &ProfileUpdate,
 ) -> Result<Option<AgentProfile>> {
     let projects = ProjectRepository::new(pool);
-    let tasks = TaskRepository::new(pool);
-    let mut tx = tasks.begin_mutation(project_id).await?;
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System).await?;
     let updated = projects
-        .update_profile(&mut tx, project_id, id, update)
+        .update_profile(&mut mutation.conn(), project_id, id, update)
         .await;
     match updated {
         Ok(updated) => {
-            tx.commit().await?;
+            mutation.commit().await?;
             Ok(updated)
         }
         Err(error) => {
-            tx.rollback().await?;
+            mutation.no_change().await?;
             Err(error)
         }
     }
@@ -156,17 +157,17 @@ async fn set_served(
 ) -> Result<()> {
     let names: Vec<String> = names.iter().map(|name| name.to_string()).collect();
     let tasks = TaskRepository::new(pool);
-    let mut tx = tasks.begin_mutation(project_id).await?;
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System).await?;
     match tasks
-        .set_profile_states_by_name(&mut tx, project_id, profile_id, &names)
+        .set_profile_states_by_name(mutation.conn(), project_id, profile_id, &names)
         .await
     {
         Ok(()) => {
-            tx.commit().await?;
+            mutation.commit().await?;
             Ok(())
         }
         Err(error) => {
-            tx.rollback().await?;
+            mutation.no_change().await?;
             Err(error)
         }
     }
@@ -311,7 +312,9 @@ async fn a_served_state_that_is_not_a_queue_state_of_the_project_is_a_bad_reques
     // A queue state of another project is not this project's either.
     let other = seeded_project(&pool).await;
     let tasks = TaskRepository::new(&pool);
-    let mut tx = tasks.begin_mutation(other).await.unwrap();
+    let mut mutation = TrackerMutation::begin(&pool, other, TaskActor::System)
+        .await
+        .unwrap();
     let renamed = tasks
         .find_state_by_name(other, "backlog")
         .await
@@ -319,14 +322,14 @@ async fn a_served_state_that_is_not_a_queue_state_of_the_project_is_a_bad_reques
         .expect("the default set has a backlog state");
     tasks
         .rename_state(
-            &mut tx,
+            mutation.conn(),
             other,
             renamed.id,
             &mars_orchestrator::models::TaskStateName::parse("icebox").unwrap(),
         )
         .await
         .unwrap();
-    tx.commit().await.unwrap();
+    mutation.commit().await.unwrap();
     let error = set_served(&pool, project_id, profile.id, &["icebox"])
         .await
         .expect_err("the state belongs to another project");
@@ -346,17 +349,19 @@ async fn a_served_state_that_is_not_a_queue_state_of_the_project_is_a_bad_reques
         .await
         .unwrap()
         .expect("the default set has a ready state");
-    let mut tx = tasks.begin_mutation(project_id).await.unwrap();
+    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
+        .await
+        .unwrap();
     tasks
         .rename_state(
-            &mut tx,
+            mutation.conn(),
             project_id,
             ready.id,
             &mars_orchestrator::models::TaskStateName::parse("planned").unwrap(),
         )
         .await
         .unwrap();
-    tx.commit().await.unwrap();
+    mutation.commit().await.unwrap();
 
     let error = insert(&pool, project_id, input("implementer"))
         .await
@@ -507,61 +512,67 @@ async fn the_default_profile_and_a_profile_with_sessions_cannot_be_deleted() {
     let planner = insert_ok(&pool, project_id, input("planner")).await;
     let spare = insert_ok(&pool, project_id, input("spare")).await;
 
-    let mut tx = tasks.begin_mutation(project_id).await.unwrap();
+    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
+        .await
+        .unwrap();
     let error = repository
-        .delete_profile(&mut tx, project_id, seeded.id)
+        .delete_profile(&mut mutation.conn(), project_id, seeded.id)
         .await
         .expect_err("the default profile stays");
-    tx.rollback().await.unwrap();
+    mutation.no_change().await.unwrap();
     assert_conflict(error, "the default profile cannot be deleted");
 
     // A profile that has ever run a session keeps the transcript alive, so the
     // `ON DELETE RESTRICT` case answers 409 rather than surfacing as a 500.
     seed_session(&pool, project_id, planner.id).await;
-    let mut tx = tasks.begin_mutation(project_id).await.unwrap();
+    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
+        .await
+        .unwrap();
     assert_eq!(
         repository
-            .profile_session_count(&mut tx, planner.id)
+            .profile_session_count(&mut mutation.conn(), planner.id)
             .await
             .unwrap(),
         1,
     );
     let error = repository
-        .delete_profile(&mut tx, project_id, planner.id)
+        .delete_profile(&mut mutation.conn(), project_id, planner.id)
         .await
         .expect_err("the profile still has a session");
-    tx.rollback().await.unwrap();
+    mutation.no_change().await.unwrap();
     assert_conflict(error, "profile has sessions");
 
     // Neither refusal removed anything, and an ordinary profile still goes.
-    let mut tx = tasks.begin_mutation(project_id).await.unwrap();
+    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
+        .await
+        .unwrap();
     assert_eq!(
         repository
-            .profile_session_count(&mut tx, spare.id)
+            .profile_session_count(&mut mutation.conn(), spare.id)
             .await
             .unwrap(),
         0,
     );
     assert!(
         repository
-            .delete_profile(&mut tx, project_id, spare.id)
+            .delete_profile(&mut mutation.conn(), project_id, spare.id)
             .await
             .unwrap()
     );
     // Deleting it twice is not an error, and neither is a foreign project.
     assert!(
         !repository
-            .delete_profile(&mut tx, project_id, spare.id)
+            .delete_profile(&mut mutation.conn(), project_id, spare.id)
             .await
             .unwrap()
     );
     assert!(
         !repository
-            .delete_profile(&mut tx, Uuid::new_v4(), planner.id)
+            .delete_profile(&mut mutation.conn(), Uuid::new_v4(), planner.id)
             .await
             .unwrap()
     );
-    tx.commit().await.unwrap();
+    mutation.commit().await.unwrap();
 
     assert_eq!(
         repository

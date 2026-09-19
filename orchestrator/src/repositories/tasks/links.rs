@@ -11,19 +11,21 @@
 //! The upsert carries both halves of the documented behaviour: a repeated
 //! touch keeps `first_touched_at` and moves `last_touched_at` only.
 
-use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::models::{Task, TaskSession};
 use crate::prelude::*;
 use crate::repositories::tasks::TaskRepository;
+use crate::tracker::Locked;
 
 impl TaskRepository<'_> {
     /// Record that this session just changed this task.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**,
-    /// the same one as the change: "the link for the directly changed task
-    /// commits in the same transaction as the change and its events".
+    /// Called from
+    /// [`TrackerMutation::commit`](crate::tracker::TrackerMutation::commit)
+    /// alone, in the same transaction as the change: "the link for the
+    /// directly changed task commits in the same transaction as the change and
+    /// its events".
     ///
     /// The first touch inserts; every later one updates `last_touched_at` and
     /// leaves `first_touched_at` exactly as it was. `ON CONFLICT` rather than
@@ -36,9 +38,9 @@ impl TaskRepository<'_> {
     /// time, so calling this twice in one transaction is idempotent down to
     /// the timestamp — a hand-off that comments, moves and links in one go
     /// records one touch, not three.
-    pub async fn touch_task_session(
+    pub(crate) async fn touch_task_session(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         task_id: Uuid,
         session_id: Uuid,
     ) -> Result<TaskSession> {

@@ -1145,14 +1145,16 @@ async fn fetching_and_listing_an_unknown_project_is_404() {
 
 // The deletion tests' own imports and helpers, kept together down here rather
 // than in the shared blocks at the top of the file.
+use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::models::{
-    NewEvent, NewSession, NewSharedDir, NewTask, NewTaskComment, NewTaskEvent, NewTaskHandoff,
-    ProfileKind, SecretUsePurpose, SessionState, StateChange, TaskDependencyKind, task_event_kind,
+    NewEvent, NewSession, NewSharedDir, NewTask, NewTaskComment, NewTaskHandoff, ProfileKind,
+    SecretUsePurpose, SessionState, StateChange, TaskDependencyKind,
 };
 use mars_orchestrator::projects::session_dir;
 use mars_orchestrator::repositories::{
     ProjectRepository, SecretRepository, SessionRepository, TaskRepository,
 };
+use mars_orchestrator::tracker::TrackerMutation;
 use sqlx::PgPool;
 
 /// An obviously fake but well-formed SHA-1 object id (rule 3).
@@ -1363,13 +1365,18 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
 
     let session_id = session_in(app, project_id, SessionState::Parked).await;
 
-    let mut tx = tasks
-        .begin_mutation(project_id)
-        .await
-        .expect("the mutation opens");
+    let mut mutation = TrackerMutation::begin(
+        pool,
+        project_id,
+        TaskActor::User {
+            user_id: user.user.id,
+        },
+    )
+    .await
+    .expect("the mutation opens");
     let blocker = tasks
         .insert_task(
-            &mut tx,
+            mutation.conn(),
             project_id,
             &NewTask::new(project_id, "the blocker").expect("the title parses"),
         )
@@ -1377,7 +1384,7 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
         .expect("the task inserts");
     let blocked = tasks
         .insert_task(
-            &mut tx,
+            mutation.conn(),
             project_id,
             &NewTask::new(project_id, "the blocked one").expect("the title parses"),
         )
@@ -1385,7 +1392,7 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
         .expect("the task inserts");
     tasks
         .insert_dependency(
-            &mut tx,
+            mutation.conn(),
             project_id,
             blocked.id,
             blocker.id,
@@ -1396,7 +1403,7 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
 
     let comment = NewTaskComment::from_user(blocker.id, user.user.id, "implemented and pushed");
     tasks
-        .insert_comment(&mut tx, project_id, &comment)
+        .insert_comment(mutation.conn(), project_id, &comment)
         .await
         .expect("the comment inserts");
     let mut handoff = NewTaskHandoff::new(
@@ -1408,22 +1415,14 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
     handoff.source_session_id = Some(session_id);
     handoff.created_by_session_id = Some(session_id);
     tasks
-        .insert_handoff(&mut tx, project_id, &handoff)
+        .insert_handoff(mutation.conn(), project_id, &handoff)
         .await
         .expect("the hand-off inserts");
 
-    tasks
-        .append_task_events(
-            &mut tx,
-            project_id,
-            &[NewTaskEvent::project_wide(
-                task_event_kind::STATES_CHANGED,
-                json!({ "states": [] }),
-            )],
-        )
-        .await
-        .expect("the task event appends");
-    tx.commit().await.expect("the transaction commits");
+    mutation
+        .emit_states_changed(&[])
+        .expect("the board event is emitted");
+    mutation.commit().await.expect("the mutation commits");
 
     let response = app
         .post_as(user, "/api/secrets")

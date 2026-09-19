@@ -374,8 +374,7 @@ impl NewTask {
 /// NULL". The state, the lease, `attempts`, `closed_at`, `blocked`,
 /// `needs_human_reason` and the current hand-off are deliberately absent: they
 /// are the tracker's to compose out of a state move, a claim, a release or an
-/// escalation, through
-/// [`TaskRepository::set_task_state_fields`](crate::repositories::TaskRepository::set_task_state_fields),
+/// escalation, through the crate-private `TaskRepository::set_task_state_fields`,
 /// never a field a body sets on its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskUpdate {

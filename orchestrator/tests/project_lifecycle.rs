@@ -36,16 +36,17 @@ use axum::http::StatusCode;
 use chrono::{DateTime, FixedOffset};
 use common::git::BareFixture;
 use common::{AuthenticatedUser, TestApp};
+use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::git::DataPaths;
 use mars_orchestrator::models::{
-    NewEvent, NewSession, NewTask, NewTaskComment, NewTaskEvent, ProfileKind, Project,
-    ProjectStatus, SecretUsePurpose, SessionState, StateChange, TaskDependencyKind,
-    task_event_kind,
+    NewEvent, NewSession, NewTask, NewTaskComment, ProfileKind, Project, ProjectStatus,
+    SecretUsePurpose, SessionState, StateChange, TaskDependencyKind,
 };
 use mars_orchestrator::projects::clone_job;
 use mars_orchestrator::repositories::{
     ProjectRepository, SecretRepository, SessionRepository, TaskRepository,
 };
+use mars_orchestrator::tracker::TrackerMutation;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -564,13 +565,18 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
     let session_id = session_in(app, project_id, SessionState::Parked).await;
 
     let tasks = TaskRepository::new(pool);
-    let mut tx = tasks
-        .begin_mutation(project_id)
-        .await
-        .expect("the mutation opens");
+    let mut mutation = TrackerMutation::begin(
+        pool,
+        project_id,
+        TaskActor::User {
+            user_id: user.user.id,
+        },
+    )
+    .await
+    .expect("the mutation opens");
     let blocker = tasks
         .insert_task(
-            &mut tx,
+            mutation.conn(),
             project_id,
             &NewTask::new(project_id, "the blocker").expect("the title parses"),
         )
@@ -578,7 +584,7 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
         .expect("the task inserts");
     let blocked = tasks
         .insert_task(
-            &mut tx,
+            mutation.conn(),
             project_id,
             &NewTask::new(project_id, "the blocked one").expect("the title parses"),
         )
@@ -586,7 +592,7 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
         .expect("the task inserts");
     tasks
         .insert_dependency(
-            &mut tx,
+            mutation.conn(),
             project_id,
             blocked.id,
             blocker.id,
@@ -596,7 +602,7 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
         .expect("the dependency inserts");
     tasks
         .insert_comment(
-            &mut tx,
+            mutation.conn(),
             project_id,
             &NewTaskComment::from_user(blocker.id, user.user.id, "implemented and pushed"),
         )
@@ -604,18 +610,10 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
         .expect("the comment inserts");
     // The board's own notification rows, which hang off the project rather
     // than off any task (`SPEC.md`, "TaskEvent").
-    tasks
-        .append_task_events(
-            &mut tx,
-            project_id,
-            &[NewTaskEvent::project_wide(
-                task_event_kind::STATES_CHANGED,
-                json!({ "states": [] }),
-            )],
-        )
-        .await
-        .expect("the task event appends");
-    tx.commit().await.expect("the transaction commits");
+    mutation
+        .emit_states_changed(&[])
+        .expect("the board event is emitted");
+    mutation.commit().await.expect("the mutation commits");
 
     // The `GIT_CREDENTIAL` the project was created with and the extra secret.
     let secrets: Vec<Uuid> =

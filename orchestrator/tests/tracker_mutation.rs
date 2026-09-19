@@ -166,15 +166,14 @@ async fn seed_task(pool: &PgPool, project_id: Uuid, state_id: Uuid, number: i32)
 /// Create the default state set in its own committed mutation.
 async fn seed_default_states(pool: &PgPool, project_id: Uuid) {
     let repository = TaskRepository::new(pool);
-    let mut tx = repository
-        .begin_mutation(project_id)
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
         .await
         .expect("the mutation opens");
     repository
-        .insert_default_states(&mut tx, project_id)
+        .insert_default_states(mutation.conn(), project_id)
         .await
         .expect("the default states insert");
-    tx.commit().await.expect("the transaction commits");
+    mutation.commit().await.expect("the mutation commits");
 }
 
 async fn state_id(pool: &PgPool, project_id: Uuid, name: &str) -> Uuid {
@@ -238,12 +237,13 @@ async fn assert_silent(listener: &mut PgListener) {
 /// Take the project lock and release it, which cannot return until every
 /// earlier transaction on that project has finished rolling back.
 async fn settle(pool: &PgPool, project_id: Uuid) {
-    let repository = TaskRepository::new(pool);
-    let tx = repository
-        .begin_mutation(project_id)
+    let mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
         .await
         .expect("the lock is free");
-    tx.commit().await.expect("the empty transaction commits");
+    mutation
+        .no_change()
+        .await
+        .expect("the empty mutation rolls back");
 }
 
 #[tokio::test]

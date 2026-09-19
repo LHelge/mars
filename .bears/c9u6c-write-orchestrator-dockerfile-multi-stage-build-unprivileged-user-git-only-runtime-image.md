@@ -1,10 +1,10 @@
 ---
 id: c9u6c
 title: "Write orchestrator/Dockerfile: multi-stage build, unprivileged user, git-only runtime image"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:41:16.123072042Z"
-updated: "2026-09-16T20:51:52.557185799Z"
+updated: "2026-09-19T15:53:01.410041629Z"
 tags:
   - infra
   - orchestrator
@@ -12,6 +12,7 @@ depends_on:
   - s52qg
   - "2f5u2"
 parent: "5czwa"
+attempts: 1
 ---
 
 ## Summary

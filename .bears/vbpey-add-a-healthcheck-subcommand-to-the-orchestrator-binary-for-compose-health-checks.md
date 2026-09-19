@@ -1,10 +1,10 @@
 ---
 id: vbpey
 title: Add a `healthcheck` subcommand to the orchestrator binary for compose health checks
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:40:34.048883391Z"
-updated: "2026-09-16T20:51:52.518436176Z"
+updated: "2026-09-19T15:53:00.317289805Z"
 tags:
   - orchestrator
   - infra
@@ -12,6 +12,7 @@ depends_on:
   - s52qg
   - "2f5u2"
 parent: "5czwa"
+attempts: 1
 ---
 
 ## Summary

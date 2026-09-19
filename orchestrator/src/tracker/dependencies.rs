@@ -46,6 +46,15 @@ use crate::tracker::{TaskDto, TrackerMutation};
 /// the answer does not depend on which check noticed first.
 pub(crate) const DEPENDENCY_SCOPE: &str = "dependency must reference tasks of the same project";
 
+/// What a removal of an edge that is not there is told (404).
+///
+/// Named rather than the generic `not found`, because the two tasks were both
+/// resolved before this point: the only thing missing is the edge, and a
+/// caller that asked for it to be gone can read this one as "it already is"
+/// instead of retrying against what it thinks is a vanished task (`SPEC.md`,
+/// "Tasks"). An unknown project, `{id}` or `{dep}` keeps `not found`.
+pub(crate) const DEPENDENCY_NOT_FOUND: &str = "dependency not found";
+
 /// The task a `depends_on` value names, wherever it is.
 ///
 /// A [`TaskRef::Number`] is a *per-project* number and is resolved inside this
@@ -152,8 +161,8 @@ pub async fn add_dependency(
 /// the kind is in the primary key (`ARCHITECTURE.md`, "Task tracker" →
 /// "Blocked is stored").
 ///
-/// An edge that is not there is [`Error::NotFound`]: nothing is written,
-/// nothing is emitted, and the mutation rolls back. Otherwise
+/// An edge that is not there is 404 [`DEPENDENCY_NOT_FOUND`]: nothing is
+/// written, nothing is emitted, and the mutation rolls back. Otherwise
 /// `dependency_removed` carries the dependant as it is after the delete, and a
 /// `blocks` removal recomputes its `blocked` flag — which unblocks it when no
 /// other open prerequisite and no open child remains, and leaves it alone when
@@ -174,7 +183,7 @@ pub async fn remove_dependency(
         .delete_dependency(m.conn(), project_id, task.id, depends_on.id, kind)
         .await?;
     if !removed {
-        return Err(Error::NotFound);
+        return Err(Error::Missing(DEPENDENCY_NOT_FOUND.into()));
     }
 
     let dependant = load(m, task.id).await?;

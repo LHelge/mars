@@ -642,9 +642,10 @@ async fn a_removal_needs_a_kind_and_refuses_an_edge_that_is_not_there() {
     );
 
     // The pair is joined by `blocks` alone, so the other two kinds are not
-    // there to remove.
+    // there to remove — and the body says so rather than the generic
+    // `not found` an unknown task gets.
     let response = delete_dependency(&app, &user, pid, &id, &dep, "?kind=related").await;
-    assert_error(&response, StatusCode::NOT_FOUND, "not found");
+    assert_error(&response, StatusCode::NOT_FOUND, "dependency not found");
 
     // And the edge survived all three refusals.
     let task = read_task(&app, &user, pid, &id).await;
@@ -652,6 +653,41 @@ async fn a_removal_needs_a_kind_and_refuses_an_edge_that_is_not_there() {
         task["depends_on"],
         json!([{ "task_id": prerequisite["id"], "kind": "blocks" }])
     );
+}
+
+/// The three 404s a removal can produce, told apart by their bodies.
+///
+/// A caller that asked for an edge to be gone has to know whether it was the
+/// edge that was absent — in which case its request already holds — or one of
+/// the two tasks, which means it named something wrong. The generic `not
+/// found` cannot say (`SPEC.md`, "Tasks"; `ARCHITECTURE.md`, "Orchestrator
+/// internals").
+#[tokio::test]
+async fn the_three_removal_404s_have_three_different_bodies() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let prerequisite = open_task(&app, &user, pid, "Ship the schema").await;
+    let dependant = open_task(&app, &user, pid, "Ship the routes").await;
+    let id = id_of(&dependant);
+    let dep = id_of(&prerequisite);
+    let unknown = Uuid::new_v4().to_string();
+
+    // Both tasks are real and nothing joins them: the edge is what is missing.
+    let response = delete_dependency(&app, &user, pid, &id, &dep, "?kind=blocks").await;
+    assert_error(&response, StatusCode::NOT_FOUND, "dependency not found");
+
+    // An unknown `{id}` and an unknown `{dep}` stay generic.
+    let response = delete_dependency(&app, &user, pid, &unknown, &dep, "?kind=blocks").await;
+    assert_error(&response, StatusCode::NOT_FOUND, "not found");
+
+    let response = delete_dependency(&app, &user, pid, &id, &unknown, "?kind=blocks").await;
+    assert_error(&response, StatusCode::NOT_FOUND, "not found");
+
+    // As does an unknown project, which never reaches either lookup.
+    let response = delete_dependency(&app, &user, Uuid::new_v4(), &id, &dep, "?kind=blocks").await;
+    assert_error(&response, StatusCode::NOT_FOUND, "not found");
 }
 
 // ---- concurrency ----

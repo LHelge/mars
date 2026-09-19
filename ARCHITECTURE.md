@@ -149,6 +149,7 @@ orchestrator/
 │   ├── session/               SessionOwner task, launcher (incl. launch-for-task), user action service (input, stop, end, retry, sync, delete), idle reaper, recovery
 │   ├── git/                   git binary wrapper, mirror + session clone ops, GitCredentialProvider
 │   ├── secrets/               envelope crypto, resolution, injection
+│   ├── tracker/               task-tracker domain service: mutation context, state changes, leases, graph rules, escalation
 │   ├── events/                AgentEvent / TaskEvent types, notify fan-out
 │   ├── email/                 EmailClient trait, Resend implementation, log fallback, mock
 │   └── cron/                  periodic jobs: mirror fetch, idle reaper, stuck-task reaper, token cleanup

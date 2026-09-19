@@ -35,9 +35,14 @@
 //! `task_states` and `profile_states`, and `events` holds `task_events`. They
 //! are one `impl TaskRepository` between them, so a caller sees one repository
 //! and the files stay the size of the table they are about.
+//!
+//! The one file that is not about a table is `dto`: the read-only loaders that
+//! assemble `SPEC.md`'s `Task` and `TaskDetail` out of several of them at
+//! once, without an N+1 per task.
 
 mod comments;
 mod dependencies;
+mod dto;
 mod events;
 mod handoffs;
 mod links;

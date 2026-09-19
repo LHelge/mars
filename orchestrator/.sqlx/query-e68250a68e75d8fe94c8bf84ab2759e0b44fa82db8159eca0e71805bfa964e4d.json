@@ -1,0 +1,172 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, task_id, source_session_id, source_branch, commit, comment_id,\n               review_status AS \"review_status: ReviewStatus\", reviewed_by_user_id,\n               reviewed_by_session_id, reviewed_at, created_by_user_id, created_by_session_id,\n               created_at\n        FROM task_handoffs\n        WHERE id = ANY($1)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "task_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "task_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "source_session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "source_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source_branch",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "source_branch"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "commit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "commit"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "comment_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "comment_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "review_status: ReviewStatus",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "review_status"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "reviewed_by_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "reviewed_by_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "reviewed_by_session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "reviewed_by_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "reviewed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "reviewed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "created_by_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "created_by_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "created_by_session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "created_by_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "e68250a68e75d8fe94c8bf84ab2759e0b44fa82db8159eca0e71805bfa964e4d"
+}

@@ -1,0 +1,399 @@
+//! The API-facing task shapes (`SPEC.md`, "Tasks").
+//!
+//! These structs *are* the wire format: field names are `snake_case` and match
+//! `SPEC.md` one for one, so `src/types/` in the frontend mirrors them
+//! literally. They are read-only projections — nothing here is ever
+//! deserialised from a request body or written to a table — assembled from the
+//! row types by the loaders in `repositories/tasks/dto.rs`.
+//!
+//! What the row types do *not* carry, and these do:
+//!
+//! - `state` is the state's **name**, not `state_id`; the board's columns are
+//!   named states (`SPEC.md`, "Task states");
+//! - `depends_on` is every outgoing edge with its kind, and `blocks` is the
+//!   reverse: the tasks that have a `blocks` dependency on this one;
+//! - `handoff` is the record `tasks.current_handoff_id` names, resolved, or
+//!   `null`.
+//!
+//! **Nullable fields are sent as `null`, never omitted.** The frontend types
+//! are exact, so `lease_since`, `closed_at`, `parent_id` and their like always
+//! appear. The one place omission is correct is `TaskEvent`'s optional
+//! sections, which `SPEC.md` writes with a `?` (see
+//! [`TaskEvent`](crate::events::TaskEvent)).
+//!
+//! `Deserialize` is derived all the same: a `TaskEvent` payload round-trips
+//! through `task_events.payload`, so a stored event has to read back as the
+//! task it described.
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::models::{
+    ReviewStatus, Task, TaskComment, TaskDependencyKind, TaskHandoff, TaskSession,
+};
+// The crate convention (`CLAUDE.md`, "Backend conventions").
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+/// One outgoing dependency edge: what this task depends on, and what that
+/// means (`SPEC.md`, "Tasks": `depends_on: {task_id, kind}[]`).
+///
+/// `task_id` is the *other* end — the prerequisite — because the owning task
+/// is the one the edge is listed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DependencyRef {
+    /// The prerequisite task.
+    pub task_id: Uuid,
+    /// What the edge means.
+    pub kind: TaskDependencyKind,
+}
+
+/// A comment as the API sends it (`SPEC.md`, "Tasks").
+///
+/// The `task_comments` row field for field; bodies are stored and displayed
+/// unredacted (ADR 0027).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentDto {
+    pub id: Uuid,
+    pub task_id: Uuid,
+    pub author_user_id: Option<Uuid>,
+    pub author_session_id: Option<Uuid>,
+    pub system: bool,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<TaskComment> for CommentDto {
+    fn from(row: TaskComment) -> Self {
+        Self {
+            id: row.id,
+            task_id: row.task_id,
+            author_user_id: row.author_user_id,
+            author_session_id: row.author_session_id,
+            system: row.system,
+            body: row.body,
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// A code hand-off as the API sends it (`SPEC.md`, "Code hand-offs and
+/// review").
+///
+/// The `task_handoffs` row field for field. Every actor is optional because
+/// deletion nulls the foreign keys while the branch, the commit and the review
+/// timestamp remain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffDto {
+    pub id: Uuid,
+    pub task_id: Uuid,
+    pub source_session_id: Option<Uuid>,
+    pub source_branch: String,
+    pub commit: String,
+    pub comment_id: Option<Uuid>,
+    pub review_status: ReviewStatus,
+    pub reviewed_by_user_id: Option<Uuid>,
+    pub reviewed_by_session_id: Option<Uuid>,
+    pub reviewed_at: Option<DateTime<Utc>>,
+    pub created_by_user_id: Option<Uuid>,
+    pub created_by_session_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<TaskHandoff> for HandoffDto {
+    fn from(row: TaskHandoff) -> Self {
+        Self {
+            id: row.id,
+            task_id: row.task_id,
+            source_session_id: row.source_session_id,
+            source_branch: row.source_branch,
+            commit: row.commit,
+            comment_id: row.comment_id,
+            review_status: row.review_status,
+            reviewed_by_user_id: row.reviewed_by_user_id,
+            reviewed_by_session_id: row.reviewed_by_session_id,
+            reviewed_at: row.reviewed_at,
+            created_by_user_id: row.created_by_user_id,
+            created_by_session_id: row.created_by_session_id,
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// One session's involvement with a task
+/// (`TaskDetail.sessions`, `SPEC.md`, "Tasks").
+///
+/// The `task_sessions` row without its `task_id`: the detail it hangs off
+/// already names the task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSessionLinkDto {
+    pub session_id: Uuid,
+    pub first_touched_at: DateTime<Utc>,
+    pub last_touched_at: DateTime<Utc>,
+}
+
+impl From<TaskSession> for TaskSessionLinkDto {
+    fn from(row: TaskSession) -> Self {
+        Self {
+            session_id: row.session_id,
+            first_touched_at: row.first_touched_at,
+            last_touched_at: row.last_touched_at,
+        }
+    }
+}
+
+/// A task as the API sends it (`SPEC.md`, "Tasks").
+///
+/// Assembled only through [`TaskDto::from_parts`], so every producer — the
+/// routes, the MCP tools and the `TaskEvent` payloads — puts the same four
+/// neighbours around the row and none of them can forget one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskDto {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub number: i32,
+    pub title: String,
+    pub description: String,
+    /// The state's name, not its id.
+    pub state: String,
+    /// 0 (critical) to 3 (low), as a JSON number.
+    pub priority: i16,
+    pub blocked: bool,
+    pub labels: Vec<String>,
+    pub parent_id: Option<Uuid>,
+    pub assignee_user_id: Option<Uuid>,
+    pub lease_holder_session_id: Option<Uuid>,
+    pub lease_since: Option<DateTime<Utc>>,
+    pub attempts: i16,
+    pub needs_human_reason: Option<String>,
+    /// The record `current_handoff_id` names, or `null` — including when the
+    /// column points nowhere because the record was deleted.
+    pub handoff: Option<HandoffDto>,
+    /// Every outgoing edge, with its kind.
+    pub depends_on: Vec<DependencyRef>,
+    /// The tasks that have a `blocks` dependency on this one.
+    pub blocks: Vec<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+}
+
+impl TaskDto {
+    /// The single assembly function: a row, its state's name, and its three
+    /// neighbouring lists.
+    ///
+    /// `created_by_user_id`, `created_by_session_id` and `state_id` are the
+    /// row columns deliberately left behind: `SPEC.md`'s `Task` does not carry
+    /// them.
+    pub fn from_parts(
+        task: &Task,
+        state_name: &str,
+        depends_on: Vec<DependencyRef>,
+        blocks: Vec<Uuid>,
+        handoff: Option<HandoffDto>,
+    ) -> Self {
+        Self {
+            id: task.id,
+            project_id: task.project_id,
+            number: task.number,
+            title: task.title.clone(),
+            description: task.description.clone(),
+            state: state_name.to_string(),
+            priority: task.priority,
+            blocked: task.blocked,
+            labels: task.labels.clone(),
+            parent_id: task.parent_id,
+            assignee_user_id: task.assignee_user_id,
+            lease_holder_session_id: task.lease_holder_session_id,
+            lease_since: task.lease_since,
+            attempts: task.attempts,
+            needs_human_reason: task.needs_human_reason.clone(),
+            handoff,
+            depends_on,
+            blocks,
+            created_at: task.created_at,
+            updated_at: task.updated_at,
+            closed_at: task.closed_at,
+        }
+    }
+}
+
+/// A task with everything the detail drawer shows
+/// (`TaskDetail = Task & { ... }`, `SPEC.md`, "Tasks").
+///
+/// The `Task` half is flattened, so the JSON is one object with the task's
+/// fields beside `comments`, `handoffs`, `children` and `sessions` — exactly
+/// what the `&` in the specification means.
+///
+/// Children are [`TaskDto`]s, never details: nesting is one level deep, so
+/// `children[].children` does not exist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskDetailDto {
+    /// The task itself, spread into this object.
+    #[serde(flatten)]
+    pub task: TaskDto,
+    /// Oldest first.
+    pub comments: Vec<CommentDto>,
+    /// Oldest first; the *current* one is [`TaskDto::handoff`], not the last
+    /// of these.
+    pub handoffs: Vec<HandoffDto>,
+    /// In board order: priority, then number.
+    pub children: Vec<TaskDto>,
+    /// In the order the sessions first touched the task.
+    pub sessions: Vec<TaskSessionLinkDto>,
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+    use serde_json::json;
+
+    use super::*;
+
+    fn at(seconds: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(seconds, 0).single().expect("a timestamp")
+    }
+
+    fn task(project_id: Uuid) -> Task {
+        Task {
+            id: Uuid::new_v4(),
+            project_id,
+            number: 7,
+            title: "Wire the tracker".to_string(),
+            description: String::new(),
+            state_id: Uuid::new_v4(),
+            priority: 2,
+            blocked: false,
+            labels: vec!["backend".to_string()],
+            parent_id: None,
+            assignee_user_id: None,
+            lease_holder_session_id: None,
+            lease_since: None,
+            attempts: 0,
+            needs_human_reason: None,
+            current_handoff_id: None,
+            created_by_user_id: None,
+            created_by_session_id: None,
+            created_at: at(1_700_000_000),
+            updated_at: at(1_700_000_000),
+            closed_at: None,
+        }
+    }
+
+    #[test]
+    fn a_task_carries_the_state_name_and_a_numeric_priority() {
+        let row = task(Uuid::new_v4());
+        let dto = TaskDto::from_parts(&row, "backlog", Vec::new(), Vec::new(), None);
+        let encoded = serde_json::to_value(&dto).unwrap();
+
+        assert_eq!(encoded["state"], json!("backlog"));
+        assert_eq!(encoded["priority"], json!(2));
+        assert!(encoded["priority"].is_number());
+        assert!(encoded.as_object().unwrap().get("state_id").is_none());
+    }
+
+    #[test]
+    fn nullable_fields_are_sent_as_null_rather_than_omitted() {
+        let row = task(Uuid::new_v4());
+        let dto = TaskDto::from_parts(&row, "backlog", Vec::new(), Vec::new(), None);
+        let encoded = serde_json::to_value(&dto).unwrap();
+        let object = encoded.as_object().unwrap();
+
+        for nullable in [
+            "parent_id",
+            "assignee_user_id",
+            "lease_holder_session_id",
+            "lease_since",
+            "needs_human_reason",
+            "handoff",
+            "closed_at",
+        ] {
+            assert_eq!(object.get(nullable), Some(&json!(null)), "{nullable}");
+        }
+    }
+
+    #[test]
+    fn dependencies_carry_their_kind_and_blocks_is_a_plain_id_list() {
+        let row = task(Uuid::new_v4());
+        let prerequisite = Uuid::new_v4();
+        let dependant = Uuid::new_v4();
+        let dto = TaskDto::from_parts(
+            &row,
+            "ready",
+            vec![
+                DependencyRef {
+                    task_id: prerequisite,
+                    kind: TaskDependencyKind::Blocks,
+                },
+                DependencyRef {
+                    task_id: prerequisite,
+                    kind: TaskDependencyKind::DiscoveredFrom,
+                },
+            ],
+            vec![dependant],
+            None,
+        );
+        let encoded = serde_json::to_value(&dto).unwrap();
+
+        assert_eq!(
+            encoded["depends_on"],
+            json!([
+                { "task_id": prerequisite, "kind": "blocks" },
+                { "task_id": prerequisite, "kind": "discovered_from" },
+            ])
+        );
+        assert_eq!(encoded["blocks"], json!([dependant]));
+    }
+
+    #[test]
+    fn a_detail_flattens_the_task_beside_its_lists() {
+        let row = task(Uuid::new_v4());
+        let detail = TaskDetailDto {
+            task: TaskDto::from_parts(&row, "backlog", Vec::new(), Vec::new(), None),
+            comments: Vec::new(),
+            handoffs: Vec::new(),
+            children: Vec::new(),
+            sessions: Vec::new(),
+        };
+        let encoded = serde_json::to_value(&detail).unwrap();
+
+        assert_eq!(encoded["id"], json!(row.id));
+        assert_eq!(encoded["state"], json!("backlog"));
+        assert_eq!(encoded["comments"], json!([]));
+        assert_eq!(encoded["children"], json!([]));
+        assert_eq!(encoded["sessions"], json!([]));
+        assert_eq!(encoded["handoffs"], json!([]));
+    }
+
+    #[test]
+    fn a_task_round_trips_so_a_stored_event_payload_reads_back() {
+        let row = task(Uuid::new_v4());
+        let dto = TaskDto::from_parts(
+            &row,
+            "review",
+            vec![DependencyRef {
+                task_id: Uuid::new_v4(),
+                kind: TaskDependencyKind::Related,
+            }],
+            vec![Uuid::new_v4()],
+            None,
+        );
+        let encoded = serde_json::to_value(&dto).unwrap();
+        assert_eq!(serde_json::from_value::<TaskDto>(encoded).unwrap(), dto);
+    }
+
+    #[test]
+    fn a_session_link_drops_the_task_id_the_detail_already_names() {
+        let link = TaskSession {
+            task_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            first_touched_at: at(1_700_000_000),
+            last_touched_at: at(1_700_000_100),
+        };
+        let encoded = serde_json::to_value(TaskSessionLinkDto::from(link)).unwrap();
+
+        assert_eq!(encoded["session_id"], json!(link.session_id));
+        assert!(encoded.as_object().unwrap().get("task_id").is_none());
+    }
+}

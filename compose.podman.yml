@@ -5,7 +5,10 @@
 # stays usable. Podman then sets the container user from the host uid, so no
 # `user:` is given here; the image works under any uid.
 #
-#   COMPOSE_FILE=compose.yml:compose.podman.yml
+#   -f compose.yml -f compose.podman.yml
+#
+# (or COMPOSE_FILE=compose.yml:compose.podman.yml, which podman-compose 1.6.0
+# reads only from the process environment, not from `.env`)
 #
 # This is the only line that differs from the Docker deployment.
 services:

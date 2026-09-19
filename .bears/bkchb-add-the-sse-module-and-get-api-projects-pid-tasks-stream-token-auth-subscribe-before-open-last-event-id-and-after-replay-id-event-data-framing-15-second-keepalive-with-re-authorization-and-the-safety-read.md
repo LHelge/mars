@@ -1,10 +1,10 @@
 ---
 id: bkchb
 title: "Add the sse module and GET /api/projects/{pid}/tasks/stream: token auth, subscribe-before-open, Last-Event-ID and ?after replay, id/event/data framing, 15-second keepalive with re-authorization and the safety read"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:46:05.224290171Z"
-updated: "2026-09-16T20:46:05.224290171Z"
+updated: "2026-09-19T21:42:54.127736490Z"
 tags:
   - orchestrator
   - realtime
@@ -13,6 +13,7 @@ depends_on:
   - nq4su
   - "22tk6"
 parent: h8kw9
+attempts: 1
 ---
 
 ## Summary

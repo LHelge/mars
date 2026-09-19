@@ -142,4 +142,55 @@ describe("AuthBootstrap", () => {
     // Only a 401 signs out; the token survives an outage.
     expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBe("fake-access-token");
   });
+
+  it("offers a retry instead of rendering without a user when the orchestrator answers 500", async () => {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: false,
+        status: 500,
+        statusText: "Internal Server Error",
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({ status: 500, error: "internal server error" }),
+          ),
+      } as unknown as Response),
+    );
+    globalThis.localStorage.setItem(TOKEN_KEY, "fake-access-token");
+
+    vi.resetModules();
+    const { createElement } = await import("react");
+    const { render, screen, waitFor, cleanup } = await import(
+      "@testing-library/react"
+    );
+    const { MemoryRouter } = await import("react-router");
+    const { QueryClient, QueryClientProvider } = await import(
+      "@tanstack/react-query"
+    );
+    const { AuthBootstrap } = await import("./AuthBootstrap");
+    teardown = cleanup;
+
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient() },
+        createElement(
+          MemoryRouter,
+          { initialEntries: ["/"] },
+          createElement(
+            AuthBootstrap,
+            null,
+            createElement("p", null, "application"),
+          ),
+        ),
+      ),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe(
+        "orchestrator unreachable",
+      );
+    });
+    expect(screen.queryByText("application")).toBeNull();
+    expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBe("fake-access-token");
+  });
 });

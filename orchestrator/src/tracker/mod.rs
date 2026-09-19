@@ -29,6 +29,7 @@ pub mod dependencies;
 pub mod dto;
 pub mod escalation;
 pub mod graph;
+pub mod hooks;
 pub mod leases;
 pub mod mutation;
 pub mod state;
@@ -43,6 +44,7 @@ pub use dto::{
 };
 pub use escalation::Escalation;
 pub use graph::{BlockedFlip, DeletionCapture};
+pub use hooks::{on_session_dead, session_ended_hook};
 pub use leases::{
     ReleaseReason, claim_for_launch, claim_for_profile, needs_human, ready_summaries,
     release_by_agent, release_by_user, release_leases_for_session,

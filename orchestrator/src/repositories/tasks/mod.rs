@@ -78,7 +78,7 @@ pub use graph::BlockedState;
 /// private like the helper that takes it: `rows` is a private module, so this
 /// re-export is how the tracker names the type at all.
 pub(crate) use rows::StateFields;
-pub use rows::TaskFilter;
+pub use rows::{TaskFilter, TaskSummaryRow};
 
 use crate::prelude::*;
 use crate::repositories::ProjectRepository;

@@ -29,6 +29,7 @@ pub mod dependencies;
 pub mod dto;
 pub mod escalation;
 pub mod graph;
+pub mod handoffs;
 pub mod hooks;
 pub mod leases;
 pub mod mutation;
@@ -52,6 +53,7 @@ pub use leases::{
 pub use mutation::{Locked, MutationOutcome, TrackerMutation};
 pub use state::{StateChangeOptions, StateChangeResult, StateEventKind};
 pub use tasks::{CreateTaskInput, CreatedBy, create_task};
+pub use tasks::{UpdateOutcome, UpdateTaskInput, delete_task, update_task};
 
 /// Commit a mutation and send the escalation emails it made due.
 ///

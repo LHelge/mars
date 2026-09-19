@@ -8,6 +8,8 @@
 //! | `POST /projects/{pid}/tasks` | a [`create_task`] mutation, 201 with the task |
 //! | `GET /projects/{pid}/tasks` | the board read, filtered and ordered by priority then number |
 //! | `GET /projects/{pid}/tasks/{id}` | the detail drawer's `TaskDetail` |
+//! | `PUT /projects/{pid}/tasks/{id}` | an [`update_task`] mutation, 200 with the task |
+//! | `DELETE /projects/{pid}/tasks/{id}` | a [`delete_task`] mutation, 204 |
 //! | `POST /projects/{pid}/tasks/{id}/dependencies` | one edge added, 200 with the dependant |
 //! | `DELETE /projects/{pid}/tasks/{id}/dependencies/{dep}?kind=` | one edge of that kind removed, 200 with the dependant |
 //! | `POST /projects/{pid}/tasks/{id}/comments` | one comment written, 201 with it |
@@ -28,6 +30,15 @@
 //! HTTP shape around it. `assignee_user_id` is deliberately not in the body:
 //! `SPEC.md` gives it to `PUT` alone.
 //!
+//! **The edit and the deletion do the same.** Which fields moved, what a
+//! different `state` implies, which events that owes and what a deletion has
+//! to recompute are
+//! [`tracker::tasks`](crate::tracker::tasks)'s, shared with the MCP `update`
+//! and `delete` tools; the `PUT` handler adds the body shape, the two
+//! hand-off input rules `SPEC.md`, "Code hand-offs and review" gives it, and
+//! the 400 an `assignee_user_id` naming nobody gets. A `PUT` that changes
+//! nothing still answers 200 with the task, having written nothing at all.
+//!
 //! **`{id}` and `?parent=` accept either reference.** A run of digits is a
 //! per-project number and anything else has to be a UUID
 //! ([`TaskRef`]); a value that is neither addresses no task and is therefore
@@ -40,7 +51,7 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
 use crate::events::TaskActor;
@@ -48,11 +59,13 @@ use crate::models::{Priority, Task, TaskDependencyKind, TaskRef, TaskStateKind};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskFilter, TaskRepository};
 use crate::routes::{CurrentUser, Path, Query};
-use crate::tracker::state::resolve_state_in_pool;
-use crate::tracker::tasks::{CreateTaskInput, CreatedBy, create_task};
+use crate::tracker::state::{resolve_state, resolve_state_in_pool};
+use crate::tracker::tasks::{
+    CreateTaskInput, CreatedBy, UpdateTaskInput, create_task, delete_task, update_task,
+};
 use crate::tracker::{
     CommentAuthor, CommentDto, TaskDetailDto, TaskDto, TrackerMutation, add_comment, dependencies,
-    release_by_user,
+    handoffs, release_by_user,
 };
 
 /// What `GET /tasks` without a `state_kind` is told (400).
@@ -85,7 +98,7 @@ pub fn routes() -> Router<AppState> {
 pub fn project_routes() -> Router<AppState> {
     Router::new()
         .route("/{pid}/tasks", get(list).post(create))
-        .route("/{pid}/tasks/{id}", get(detail))
+        .route("/{pid}/tasks/{id}", get(detail).put(update).delete(remove))
         .route("/{pid}/tasks/{id}/dependencies", post(add_dependency))
         .route(
             "/{pid}/tasks/{id}/dependencies/{dep}",
@@ -250,6 +263,195 @@ async fn detail(
         .ok_or(Error::NotFound)?;
 
     Ok(Json(detail))
+}
+
+// ---- update ----
+
+/// What a hand-off without a state change is told (400).
+///
+/// `SPEC.md`, "Code hand-offs and review": a `handoff` "requires a different
+/// target `state` in the same update (400 otherwise)". One message for both
+/// ways of failing it — no `state` at all, and the state the task is already
+/// in — because a hand-off that does not move the task is the same mistake
+/// either way.
+const HANDOFF_NEEDS_STATE: &str = "handoff requires a different target state";
+
+/// What a hand-off with an empty comment is told (400).
+///
+/// The same sentence requires "a non-empty `comment`": a hand-off is a message
+/// to the next agent, and one with nothing in it hands over nothing.
+const HANDOFF_COMMENT_EMPTY: &str = "handoff comment must not be empty";
+
+/// `PUT /projects/{pid}/tasks/{id}` (`SPEC.md`, "Tasks").
+///
+/// Every field is optional and an absent one leaves its column alone.
+/// `parent_id` and `assignee_user_id` are nullable, so they take a
+/// [`double_option`]: absent leaves the column, `null` clears it, a UUID sets
+/// it.
+///
+/// `deny_unknown_fields` for the reason `POST`'s body gives — a client sending
+/// a field this endpoint does not have has misunderstood it — with one
+/// deliberate exception inside [`HandoffRequest`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateTaskRequest {
+    title: Option<String>,
+    description: Option<String>,
+    state: Option<String>,
+    priority: Option<i16>,
+    labels: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    parent_id: Option<Option<Uuid>>,
+    #[serde(default, deserialize_with = "double_option")]
+    assignee_user_id: Option<Option<Uuid>>,
+    handoff: Option<HandoffRequest>,
+}
+
+/// `HandoffInput`, as far as this endpoint can type it yet.
+///
+/// `SPEC.md`, "Code hand-offs and review" gives it two variants with a commit
+/// or a hand-off id, and the Code hand-offs epic owns both — along with
+/// [`handoffs::publish`], which every request reaching it is currently refused
+/// by. What is typed here is the one field the *input* rules this route
+/// enforces are about, and unknown fields are deliberately accepted so that a
+/// correctly shaped `revision` or `forward` body is answered "not available
+/// yet" rather than "unknown field `commit`".
+///
+/// `comment` is an `Option` although the contract requires it, so that leaving
+/// it out is the documented [`HANDOFF_COMMENT_EMPTY`] rather than serde's own
+/// message about a missing field.
+#[derive(Debug, Deserialize)]
+struct HandoffRequest {
+    comment: Option<String>,
+}
+
+/// Tell "the field was absent" apart from "the field was `null`".
+///
+/// serde collapses both into `None` for an `Option<T>` field; with
+/// `#[serde(default, deserialize_with = "double_option")]` an absent field is
+/// `None` and an explicit `null` is `Some(None)`, which is what clearing a
+/// parent or an assignee has to be able to say.
+fn double_option<'de, D, T>(deserializer: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer).map(Some)
+}
+
+/// `PUT /projects/{pid}/tasks/{id}` → the task as it now is (200).
+///
+/// A user may set any state and is not bound by leases: a different state
+/// hands the task off — clearing the lease, resetting `attempts`, closing or
+/// reopening it — and the current state is a no-op that preserves all three
+/// while the other supplied fields still apply (`SPEC.md`, "Tasks"). A request
+/// with no effective change writes nothing, emits nothing and still answers
+/// 200 with the task.
+///
+/// 400 for an invalid title, priority or label, an unknown state, a parent
+/// rule broken by the re-parenting, an `assignee_user_id` naming no user, and
+/// each of the two hand-off input rules; 404 for an unknown project or task.
+/// The whole update is one mutation, so a refusal at any of those points
+/// leaves neither a column change nor an event.
+async fn update(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((pid, id)): Path<(Uuid, String)>,
+    Json(body): Json<UpdateTaskRequest>,
+) -> Result<Json<TaskDto>> {
+    let reference = task_ref(&id)?;
+
+    // The half of the hand-off rules that needs neither the lock nor the task.
+    if let Some(handoff) = body.handoff.as_ref() {
+        if body.state.is_none() {
+            return Err(Error::BadRequest(HANDOFF_NEEDS_STATE.into()));
+        }
+        if handoff
+            .comment
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            return Err(Error::BadRequest(HANDOFF_COMMENT_EMPTY.into()));
+        }
+    }
+
+    let mut mutation =
+        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+
+    let task = locked_task(&mut mutation, pid, reference).await?;
+
+    // The extension point the Code hand-offs epic replaces. The other half of
+    // the rules — that the target state differs from the one the task is in —
+    // is only answerable under the lock, and then publication is the epic's.
+    if let Some(handoff) = body.handoff.as_ref() {
+        let name = body.state.as_deref().unwrap_or_default();
+        if resolve_state(&mut mutation, name).await?.id == task.state_id {
+            return Err(Error::BadRequest(HANDOFF_NEEDS_STATE.into()));
+        }
+
+        handoffs::publish(
+            &mut mutation,
+            &task,
+            handoff.comment.as_deref().unwrap_or_default(),
+        )
+        .await?;
+    }
+
+    let input = UpdateTaskInput {
+        title: body.title,
+        description: body.description,
+        priority: body.priority,
+        labels: body.labels,
+        parent: body.parent_id,
+        assignee_user_id: body.assignee_user_id,
+        state: body.state,
+        // Only an escalation writes it, and a user's edit is not one.
+        needs_human_reason: None,
+    };
+
+    let outcome = update_task(&mut mutation, &task, input).await?;
+
+    if outcome.changed {
+        mutation.commit().await?;
+    } else {
+        mutation.no_change().await?;
+    }
+
+    Ok(Json(outcome.task))
+}
+
+// ---- delete ----
+
+/// `DELETE /projects/{pid}/tasks/{id}` → 204.
+///
+/// A held task can be deleted: a user is not bound by leases, and the session
+/// holding it learns about it the next time it calls a tool, which answers
+/// `not_found`. A claim racing this delete waits at the project lock and then
+/// finds no task (ADR 0021).
+///
+/// The row, its cascades, the surviving dependants' recomputed `blocked` flags
+/// and every event the deletion owes — `dependency_removed` per removed edge,
+/// the flips, and `deleted` last — commit together
+/// ([`delete_task`](crate::tracker::tasks::delete_task)). 404 for an unknown
+/// project, an unknown task and a reference that addresses no task at all.
+async fn remove(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((pid, id)): Path<(Uuid, String)>,
+) -> Result<StatusCode> {
+    let reference = task_ref(&id)?;
+
+    let mut mutation =
+        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+
+    let task = locked_task(&mut mutation, pid, reference).await?;
+    delete_task(&mut mutation, &task).await?;
+
+    mutation.commit().await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---- dependencies ----

@@ -1001,3 +1001,717 @@ async fn releasing_needs_a_token_a_project_and_a_task_that_exist() {
     let unresolvable = app.post_as(&user, &release_path(pid, "not-a-task")).await;
     unresolvable.assert_status(StatusCode::NOT_FOUND);
 }
+
+// ---- update ----
+//
+// `PUT /projects/{pid}/tasks/{id}` (`SPEC.md`, "Tasks"). What each rule *is* —
+// which columns a hand-off moves, what a re-parenting does to the `blocked`
+// flags — is asserted against the tracker and the repository in
+// `tests/tracker_state.rs`, `tests/tracker_graph.rs` and
+// `tests/repositories_tasks_rows.rs`. What is asserted here is the endpoint:
+// its statuses, its bodies, and the events an edit owes in the order it owes
+// them.
+
+/// The project's stream as `(kind, task_id, payload)`.
+///
+/// The `deleted` event is the reason this exists beside [`events`]: what it
+/// carries is the column, not the payload.
+async fn event_rows(app: &TestApp, pid: Uuid) -> Vec<(String, Option<Uuid>, Value)> {
+    TaskRepository::new(&app.pool)
+        .list_task_events_after(pid, 0, 100)
+        .await
+        .expect("the events read")
+        .into_iter()
+        .map(|row| (row.kind, row.task_id, row.payload))
+        .collect()
+}
+
+/// The kinds emitted after the first `skip` events, in order.
+async fn kinds_after(app: &TestApp, pid: Uuid, skip: usize) -> Vec<String> {
+    events(app, pid)
+        .await
+        .into_iter()
+        .skip(skip)
+        .map(|(kind, _)| kind)
+        .collect()
+}
+
+/// The `id` of a created task's body.
+fn id_of(task: &Value) -> Uuid {
+    serde_json::from_value(task["id"].clone()).expect("a task id")
+}
+
+/// `PUT` this body onto the task and expect it to succeed.
+async fn put_task(
+    app: &TestApp,
+    user: &AuthenticatedUser,
+    pid: Uuid,
+    id: Uuid,
+    body: Value,
+) -> Value {
+    let response = app
+        .put_as(user, &task_path(pid, &id.to_string()))
+        .json(&body)
+        .await;
+    response.assert_status(StatusCode::OK);
+    response.json::<Value>()
+}
+
+/// The task as the board sees it now.
+async fn read_task(app: &TestApp, user: &AuthenticatedUser, pid: Uuid, id: Uuid) -> Value {
+    let response = app.get_as(user, &task_path(pid, &id.to_string())).await;
+    response.assert_status(StatusCode::OK);
+    response.json::<Value>()
+}
+
+#[tokio::test]
+async fn updating_a_field_emits_updated_and_repeating_it_emits_nothing() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Wire the tracker" })).await;
+    let id = id_of(&task);
+    let before = events(&app, pid).await.len();
+
+    let updated = put_task(&app, &user, pid, id, json!({ "title": "Wire the board" })).await;
+    assert_eq!(updated["title"], json!("Wire the board"));
+    assert_eq!(updated["state"], json!("backlog"));
+
+    let stream = events(&app, pid).await;
+    assert_eq!(
+        kinds_after(&app, pid, before).await,
+        vec!["updated"],
+        "a field change is one `updated` and nothing else",
+    );
+    let (_, payload) = stream.last().expect("the update");
+    assert_eq!(payload["task"]["title"], json!("Wire the board"));
+
+    // The same title again changes no column, so it emits nothing at all
+    // (`SPEC.md`, "Tasks": "a request with no effective changes emits no task
+    // event").
+    let again = put_task(&app, &user, pid, id, json!({ "title": "Wire the board" })).await;
+    assert_eq!(again["title"], json!("Wire the board"));
+    assert_eq!(
+        events(&app, pid).await.len(),
+        before + 1,
+        "a no-op update writes no event",
+    );
+}
+
+#[tokio::test]
+async fn a_different_state_hands_the_task_off() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Wire the tracker" })).await;
+    let id = id_of(&task);
+    let session_id = session(&app, pid).await;
+    claim(&app, pid, id, session_id, user.user.id).await;
+    let before = events(&app, pid).await.len();
+
+    let moved = put_task(&app, &user, pid, id, json!({ "state": "ready" })).await;
+
+    // A user is not bound by the lease: the move clears it and resets the
+    // attempt the claim counted.
+    assert_eq!(moved["state"], json!("ready"));
+    assert_eq!(moved["lease_holder_session_id"], json!(null));
+    assert_eq!(moved["lease_since"], json!(null));
+    assert_eq!(moved["attempts"], json!(0));
+    assert_eq!(moved["closed_at"], json!(null));
+
+    let stream = events(&app, pid).await;
+    assert_eq!(kinds_after(&app, pid, before).await, vec!["state_changed"]);
+    let (_, payload) = stream.last().expect("the move");
+    assert_eq!(payload["from"], json!("backlog"));
+    assert_eq!(payload["to"], json!("ready"));
+}
+
+#[tokio::test]
+async fn the_current_state_is_a_no_op_that_keeps_the_lease_and_the_attempts() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Wire the tracker" })).await;
+    let id = id_of(&task);
+
+    // Two claims with a user release between them: the release keeps the
+    // attempts, so the task is held with `attempts = 2`.
+    let session_id = session(&app, pid).await;
+    claim(&app, pid, id, session_id, user.user.id).await;
+    app.post_as(&user, &release_path(pid, &id.to_string()))
+        .await
+        .assert_status(StatusCode::OK);
+    claim(&app, pid, id, session_id, user.user.id).await;
+
+    let before = events(&app, pid).await.len();
+
+    let same = put_task(&app, &user, pid, id, json!({ "state": "backlog" })).await;
+
+    assert_eq!(same["state"], json!("backlog"));
+    assert_eq!(
+        same["lease_holder_session_id"],
+        json!(session_id),
+        "a state no-op preserves the lease",
+    );
+    assert_eq!(same["attempts"], json!(2));
+    assert_eq!(
+        events(&app, pid).await.len(),
+        before,
+        "a state no-op emits no state-change event",
+    );
+}
+
+#[tokio::test]
+async fn fields_and_a_state_change_together_emit_updated_then_state_changed() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Wire the tracker" })).await;
+    let id = id_of(&task);
+    let before = events(&app, pid).await.len();
+
+    let moved = put_task(
+        &app,
+        &user,
+        pid,
+        id,
+        json!({ "title": "Wire the board", "state": "ready", "priority": 1 }),
+    )
+    .await;
+
+    assert_eq!(moved["title"], json!("Wire the board"));
+    assert_eq!(moved["priority"], json!(1));
+    assert_eq!(moved["state"], json!("ready"));
+
+    assert_eq!(
+        kinds_after(&app, pid, before).await,
+        vec!["updated", "state_changed"],
+        "the fields moved, then the task did",
+    );
+}
+
+#[tokio::test]
+async fn closing_a_task_stamps_closed_at_and_unblocks_its_dependant() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let prerequisite = create_task(&app, &user, pid, json!({ "title": "First this" })).await;
+    let dependant = create_task(
+        &app,
+        &user,
+        pid,
+        json!({ "title": "Then this", "depends_on": [prerequisite["id"]] }),
+    )
+    .await;
+    assert_eq!(dependant["blocked"], json!(true));
+
+    let before = events(&app, pid).await.len();
+    let closed = put_task(
+        &app,
+        &user,
+        pid,
+        id_of(&prerequisite),
+        json!({ "state": "done" }),
+    )
+    .await;
+
+    assert!(
+        closed["closed_at"].is_string(),
+        "a terminal state closes it"
+    );
+    assert_eq!(
+        kinds_after(&app, pid, before).await,
+        vec!["state_changed", "unblocked"],
+    );
+    assert_eq!(
+        read_task(&app, &user, pid, id_of(&dependant)).await["blocked"],
+        json!(false),
+    );
+
+    // Reopening clears `closed_at` and blocks the dependant again.
+    let before = events(&app, pid).await.len();
+    let reopened = put_task(
+        &app,
+        &user,
+        pid,
+        id_of(&prerequisite),
+        json!({ "state": "backlog" }),
+    )
+    .await;
+
+    assert_eq!(reopened["closed_at"], json!(null));
+    assert_eq!(
+        kinds_after(&app, pid, before).await,
+        vec!["state_changed", "blocked"],
+    );
+    assert_eq!(
+        read_task(&app, &user, pid, id_of(&dependant)).await["blocked"],
+        json!(true),
+    );
+}
+
+#[tokio::test]
+async fn re_parenting_recomputes_both_parents() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let first = create_task(&app, &user, pid, json!({ "title": "Epic one" })).await;
+    let second = create_task(&app, &user, pid, json!({ "title": "Epic two" })).await;
+    let child = create_task(
+        &app,
+        &user,
+        pid,
+        json!({ "title": "The work", "parent_id": first["id"] }),
+    )
+    .await;
+
+    // The open child already blocks its first parent.
+    assert_eq!(
+        read_task(&app, &user, pid, id_of(&first)).await["blocked"],
+        json!(true),
+    );
+
+    let before = events(&app, pid).await.len();
+    let moved = put_task(
+        &app,
+        &user,
+        pid,
+        id_of(&child),
+        json!({ "parent_id": second["id"] }),
+    )
+    .await;
+
+    assert_eq!(moved["parent_id"], second["id"]);
+    assert_eq!(
+        kinds_after(&app, pid, before).await,
+        vec!["updated", "unblocked", "blocked"],
+        "the child moved, the old parent was freed, the new one took it on",
+    );
+    assert_eq!(
+        read_task(&app, &user, pid, id_of(&first)).await["blocked"],
+        json!(false),
+    );
+    assert_eq!(
+        read_task(&app, &user, pid, id_of(&second)).await["blocked"],
+        json!(true),
+    );
+
+    // Clearing the parent makes the task top-level again and frees the second.
+    let before = events(&app, pid).await.len();
+    let orphaned = put_task(
+        &app,
+        &user,
+        pid,
+        id_of(&child),
+        json!({ "parent_id": null }),
+    )
+    .await;
+
+    assert_eq!(orphaned["parent_id"], json!(null));
+    assert_eq!(
+        kinds_after(&app, pid, before).await,
+        vec!["updated", "unblocked"],
+    );
+
+    // And clearing it again changes nothing at all.
+    let before = events(&app, pid).await.len();
+    put_task(
+        &app,
+        &user,
+        pid,
+        id_of(&child),
+        json!({ "parent_id": null }),
+    )
+    .await;
+    assert_eq!(events(&app, pid).await.len(), before);
+}
+
+#[tokio::test]
+async fn each_parent_rule_is_refused_with_its_own_message() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let parent = create_task(&app, &user, pid, json!({ "title": "Epic" })).await;
+    let child = create_task(
+        &app,
+        &user,
+        pid,
+        json!({ "title": "The work", "parent_id": parent["id"] }),
+    )
+    .await;
+    let loose = create_task(&app, &user, pid, json!({ "title": "Something else" })).await;
+
+    let path = |task: &Value| task_path(pid, task["id"].as_str().expect("an id"));
+
+    // An epic cannot become a child.
+    let nested = app
+        .put_as(&user, &path(&parent))
+        .json(&json!({ "parent_id": loose["id"] }))
+        .await;
+    assert_error(
+        &nested,
+        StatusCode::BAD_REQUEST,
+        "a task with children cannot get a parent",
+    );
+
+    // A child cannot receive children.
+    let deep = app
+        .put_as(&user, &path(&loose))
+        .json(&json!({ "parent_id": child["id"] }))
+        .await;
+    assert_error(
+        &deep,
+        StatusCode::BAD_REQUEST,
+        "a task with a parent cannot receive children",
+    );
+
+    // A parent that is not a task of this project.
+    let elsewhere = app
+        .put_as(&user, &path(&loose))
+        .json(&json!({ "parent_id": Uuid::new_v4() }))
+        .await;
+    assert_error(
+        &elsewhere,
+        StatusCode::BAD_REQUEST,
+        "parent must be a top-level task of the same project",
+    );
+
+    // And a task cannot be its own parent.
+    let itself = app
+        .put_as(&user, &path(&loose))
+        .json(&json!({ "parent_id": loose["id"] }))
+        .await;
+    assert_error(
+        &itself,
+        StatusCode::BAD_REQUEST,
+        "a task cannot be its own parent",
+    );
+}
+
+#[tokio::test]
+async fn an_assignee_that_is_not_a_user_is_refused() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Wire the tracker" })).await;
+    let id = id_of(&task);
+    let before = events(&app, pid).await.len();
+
+    let response = app
+        .put_as(&user, &task_path(pid, &id.to_string()))
+        .json(&json!({ "assignee_user_id": Uuid::new_v4() }))
+        .await;
+    assert_error(&response, StatusCode::BAD_REQUEST, "unknown assignee");
+    assert_eq!(
+        events(&app, pid).await.len(),
+        before,
+        "a refusal emits nothing",
+    );
+
+    // A user that exists is assigned, and `null` unassigns again.
+    let assigned = put_task(
+        &app,
+        &user,
+        pid,
+        id,
+        json!({ "assignee_user_id": user.user.id }),
+    )
+    .await;
+    assert_eq!(assigned["assignee_user_id"], json!(user.user.id));
+
+    let cleared = put_task(&app, &user, pid, id, json!({ "assignee_user_id": null })).await;
+    assert_eq!(cleared["assignee_user_id"], json!(null));
+}
+
+#[tokio::test]
+async fn a_hand_off_is_refused_by_its_input_rules_and_then_by_the_missing_epic() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Wire the tracker" })).await;
+    let path = task_path(pid, task["id"].as_str().expect("an id"));
+    let handoff = json!({
+        "kind": "revision",
+        "source_session_id": Uuid::new_v4(),
+        // Not a credential and not a real commit: an obviously fake object id.
+        "commit": "0000000000000000000000000000000000000000",
+        "comment": "Ready for review.",
+    });
+
+    // No state at all, and the state the task is already in: one message.
+    let stateless = app
+        .put_as(&user, &path)
+        .json(&json!({ "handoff": handoff }))
+        .await;
+    assert_error(
+        &stateless,
+        StatusCode::BAD_REQUEST,
+        "handoff requires a different target state",
+    );
+
+    let unmoved = app
+        .put_as(&user, &path)
+        .json(&json!({ "state": "backlog", "handoff": handoff }))
+        .await;
+    assert_error(
+        &unmoved,
+        StatusCode::BAD_REQUEST,
+        "handoff requires a different target state",
+    );
+
+    let mut blank = handoff.clone();
+    blank["comment"] = json!("   ");
+    let empty = app
+        .put_as(&user, &path)
+        .json(&json!({ "state": "review", "handoff": blank }))
+        .await;
+    assert_error(
+        &empty,
+        StatusCode::BAD_REQUEST,
+        "handoff comment must not be empty",
+    );
+
+    // A well-shaped hand-off waits for the Code hand-offs epic.
+    let unavailable = app
+        .put_as(&user, &path)
+        .json(&json!({ "state": "review", "handoff": handoff }))
+        .await;
+    assert_error(
+        &unavailable,
+        StatusCode::BAD_REQUEST,
+        "code hand-offs are not available yet",
+    );
+
+    // None of that moved the task.
+    assert_eq!(
+        read_task(&app, &user, pid, id_of(&task)).await["state"],
+        json!("backlog"),
+    );
+}
+
+#[tokio::test]
+async fn updating_needs_a_token_a_project_and_a_task_that_exist() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let anonymous = app
+        .server
+        .put(&task_path(pid, "1"))
+        .json(&json!({ "title": "Wire the tracker" }))
+        .await;
+    anonymous.assert_status(StatusCode::UNAUTHORIZED);
+    anonymous.assert_json(&unauthorized());
+
+    let elsewhere = app
+        .put_as(&user, &task_path(Uuid::new_v4(), "1"))
+        .json(&json!({ "title": "Wire the tracker" }))
+        .await;
+    elsewhere.assert_status(StatusCode::NOT_FOUND);
+
+    let missing = app
+        .put_as(&user, &task_path(pid, &Uuid::new_v4().to_string()))
+        .json(&json!({ "title": "Wire the tracker" }))
+        .await;
+    missing.assert_status(StatusCode::NOT_FOUND);
+}
+
+// ---- delete ----
+//
+// `DELETE /projects/{pid}/tasks/{id}` (`SPEC.md`, "Tasks"): 204, the cascades,
+// the surviving dependants' recomputed flags and a `deleted` event that keeps
+// the task's identity (ADR 0022).
+
+#[tokio::test]
+async fn deleting_a_prerequisite_removes_its_edges_and_keeps_its_identity() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let prerequisite = create_task(&app, &user, pid, json!({ "title": "First this" })).await;
+    let other = create_task(&app, &user, pid, json!({ "title": "And this" })).await;
+
+    // One dependant that also waits on `other`, and one that waits on nothing
+    // else and additionally records where it was discovered.
+    let waiting = create_task(
+        &app,
+        &user,
+        pid,
+        json!({
+            "title": "Still waiting",
+            "depends_on": [prerequisite["id"], other["id"]],
+        }),
+    )
+    .await;
+    let freed = create_task(
+        &app,
+        &user,
+        pid,
+        json!({ "title": "Freed by the delete", "depends_on": [prerequisite["id"]] }),
+    )
+    .await;
+    app.post_as(
+        &user,
+        &format!(
+            "{}/dependencies",
+            task_path(pid, freed["id"].as_str().expect("an id"))
+        ),
+    )
+    .json(&json!({ "depends_on": prerequisite["id"], "kind": "discovered_from" }))
+    .await
+    .assert_status(StatusCode::OK);
+
+    let deleted_id = id_of(&prerequisite);
+    let before = events(&app, pid).await.len();
+
+    let response = app
+        .delete_as(&user, &task_path(pid, &deleted_id.to_string()))
+        .await;
+    response.assert_status(StatusCode::NO_CONTENT);
+
+    let rows = event_rows(&app, pid).await;
+    let after = &rows[before..];
+
+    let removals: Vec<Uuid> = after
+        .iter()
+        .filter(|(kind, _, _)| kind == "dependency_removed")
+        .map(|(_, _, payload)| {
+            serde_json::from_value(payload["task"]["id"].clone()).expect("an id")
+        })
+        .collect();
+    assert_eq!(
+        removals.len(),
+        3,
+        "one per incident edge: two `blocks` and one `discovered_from`",
+    );
+    assert_eq!(
+        removals.iter().filter(|id| **id == id_of(&freed)).count(),
+        2,
+        "the dependant joined by both kinds loses both edges",
+    );
+    assert_eq!(
+        removals.iter().filter(|id| **id == id_of(&waiting)).count(),
+        1,
+    );
+
+    // Only the dependant with no other open prerequisite is unblocked.
+    let flips: Vec<(&str, Uuid)> = after
+        .iter()
+        .filter(|(kind, _, _)| kind == "unblocked" || kind == "blocked")
+        .map(|(kind, _, payload)| {
+            (
+                kind.as_str(),
+                serde_json::from_value(payload["task"]["id"].clone()).expect("an id"),
+            )
+        })
+        .collect();
+    assert_eq!(flips, vec![("unblocked", id_of(&freed))]);
+    assert_eq!(
+        read_task(&app, &user, pid, id_of(&waiting)).await["blocked"],
+        json!(true),
+        "a dependant with another open prerequisite stays blocked",
+    );
+
+    // The `deleted` event comes last, keeps the UUID and carries no task.
+    let (kind, task_id, payload) = after.last().expect("the deletion");
+    assert_eq!(kind, "deleted");
+    assert_eq!(*task_id, Some(deleted_id));
+    assert_eq!(payload.get("task"), None);
+    assert_eq!(
+        payload["actor"],
+        json!({ "kind": "user", "user_id": user.user.id }),
+    );
+
+    // The earlier events about the task still carry its id.
+    assert!(
+        rows.iter()
+            .any(|(kind, id, _)| kind == "created" && *id == Some(deleted_id)),
+        "history is not rewritten",
+    );
+
+    assert_eq!(task_count(&app.pool, pid).await, 3);
+}
+
+#[tokio::test]
+async fn deleting_a_parent_leaves_its_children_top_level_and_silent() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let parent = create_task(&app, &user, pid, json!({ "title": "Epic" })).await;
+    let child = create_task(
+        &app,
+        &user,
+        pid,
+        json!({ "title": "The work", "parent_id": parent["id"] }),
+    )
+    .await;
+    let before = events(&app, pid).await.len();
+
+    app.delete_as(
+        &user,
+        &task_path(pid, parent["id"].as_str().expect("an id")),
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        kinds_after(&app, pid, before).await,
+        vec!["deleted"],
+        "a child loses a parent, not a prerequisite, so it gets no event",
+    );
+
+    let orphan = read_task(&app, &user, pid, id_of(&child)).await;
+    assert_eq!(orphan["parent_id"], json!(null));
+    assert_eq!(orphan["blocked"], json!(false));
+}
+
+#[tokio::test]
+async fn a_held_task_can_be_deleted_by_a_user() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let task = create_task(&app, &user, pid, json!({ "title": "Wire the tracker" })).await;
+    let id = id_of(&task);
+    let session_id = session(&app, pid).await;
+    claim(&app, pid, id, session_id, user.user.id).await;
+
+    // By number, which is the other accepted form of the same address.
+    app.delete_as(&user, &task_path(pid, "1"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    assert_eq!(task_count(&app.pool, pid).await, 0);
+}
+
+#[tokio::test]
+async fn deleting_needs_a_token_a_project_and_a_task_that_exist() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "editor").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let anonymous = app.server.delete(&task_path(pid, "1")).await;
+    anonymous.assert_status(StatusCode::UNAUTHORIZED);
+    anonymous.assert_json(&unauthorized());
+
+    let elsewhere = app.delete_as(&user, &task_path(Uuid::new_v4(), "1")).await;
+    elsewhere.assert_status(StatusCode::NOT_FOUND);
+
+    let missing = app
+        .delete_as(&user, &task_path(pid, &Uuid::new_v4().to_string()))
+        .await;
+    missing.assert_status(StatusCode::NOT_FOUND);
+
+    let unresolvable = app.delete_as(&user, &task_path(pid, "not-a-task")).await;
+    unresolvable.assert_status(StatusCode::NOT_FOUND);
+}

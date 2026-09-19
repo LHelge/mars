@@ -25,22 +25,33 @@
 //!
 //! No route, no tool and no lock handling here: the caller opens the mutation,
 //! this fills it, and the caller commits it.
+//!
+//! The same module carries the other two whole-task changes, on the same
+//! terms: [`update_task`], which is `PUT /projects/{pid}/tasks/{id}` and the
+//! MCP `update` tool, and [`delete_task`], which is `DELETE` on the same path.
+//! Each one's own doc comment gives its order; what they share is that the
+//! caller supplies the row read under the lock and gets back a description of
+//! what moved, never a transaction of their own.
 
 use chrono::Utc;
 use uuid::Uuid;
 
 use crate::events::TaskEventKind;
-use crate::models::{Label, NewTask, Priority, TaskDependencyKind, TaskRef, TaskStateKind};
+use crate::models::{
+    Label, NewTask, Priority, Task, TaskDependencyKind, TaskRef, TaskStateKind, TaskTitle,
+    TaskUpdate,
+};
 use crate::prelude::*;
 use crate::repositories::TaskRepository;
+use crate::repositories::foreign_key_violation;
 use crate::repositories::tasks::StateFields;
 // What a `depends_on` entry naming nothing in this project is told (400).
 // Creation resolves every entry inside this project, so an id from another
 // project and an id from nowhere get the same answer here — the message the
 // dependency endpoint gives an out-of-project end, stated once.
 use crate::tracker::dependencies::DEPENDENCY_SCOPE;
-use crate::tracker::graph::{check_no_cycle, recompute_blocked};
-use crate::tracker::state::resolve_state;
+use crate::tracker::graph::{capture_before_delete, check_no_cycle, recompute_blocked};
+use crate::tracker::state::{StateChangeOptions, StateEventKind, change_state, resolve_state};
 use crate::tracker::{TaskDto, TrackerMutation};
 
 /// Who is creating the task (`docs/data-model.md`, `tasks`).
@@ -215,4 +226,293 @@ pub async fn create_task(m: &mut TrackerMutation<'_>, input: CreateTaskInput) ->
         .load_task_dto_in(m.conn(), project_id, inserted.id)
         .await?
         .ok_or(Error::NotFound)
+}
+
+/// What a `PUT` supplied, un-validated.
+///
+/// The sibling of [`CreateTaskInput`] for the edit surface `SPEC.md`, "Tasks"
+/// gives `PUT /projects/{pid}/tasks/{id}` and the MCP `update` tool: the REST
+/// body and the tool arguments both map onto this, and every rule — the
+/// title, the priority, the labels, the state name, the parent — is applied
+/// once, under the project lock, by [`update_task`].
+///
+/// **`Option<Option<T>>` is not an accident.** `parent_id` and
+/// `assignee_user_id` are nullable columns a caller may want to *clear*, so
+/// "the field was absent" and "the field was `null`" have to be different
+/// values: `None` leaves the column alone, `Some(None)` writes NULL and
+/// `Some(Some(id))` writes the id. The REST body says the same thing with
+/// `#[serde(default, deserialize_with = "double_option")]`.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateTaskInput {
+    /// The new title; trimmed and length-checked by the model.
+    pub title: Option<String>,
+    /// The new description; the empty string is a legitimate value.
+    pub description: Option<String>,
+    /// 0 (critical) to 3 (low).
+    pub priority: Option<i16>,
+    /// The whole new label set, replacing the stored one.
+    pub labels: Option<Vec<String>>,
+    /// The new parent, or `Some(None)` to make the task top-level again.
+    pub parent: Option<Option<Uuid>>,
+    /// The new assignee, or `Some(None)` to unassign.
+    pub assignee_user_id: Option<Option<Uuid>>,
+    /// The state's *name*; a different one is a hand-off, the current one is a
+    /// state no-op (`SPEC.md`, "Tasks").
+    pub state: Option<String>,
+    /// Written alongside a state change, for the callers that move a task into
+    /// the human state with a reason. Without `state` it does nothing: the
+    /// column is [`change_state`]'s to write, and there is no state change to
+    /// attach it to.
+    pub needs_human_reason: Option<String>,
+}
+
+/// What an update did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdateOutcome {
+    /// The task as it stands after everything the update asked for.
+    pub task: TaskDto,
+    /// Whether anything actually moved — a column, the state, or both.
+    ///
+    /// `false` is the documented no-op: a body naming only values the task
+    /// already had writes nothing, emits nothing and leaves the lease,
+    /// `attempts` and `closed_at` exactly as they were (`SPEC.md`, "Tasks":
+    /// "a request with no effective changes emits no task event"). The caller
+    /// still answers 200 with [`UpdateOutcome::task`].
+    pub changed: bool,
+}
+
+/// What an `assignee_user_id` naming nobody is told (400).
+///
+/// The column is a foreign key to `users`, so the refusal arrives as a foreign
+/// key violation rather than as a check this could run itself: running one
+/// would be a read the write then repeats, and a user deleted between the two
+/// would still land here.
+const UNKNOWN_ASSIGNEE: &str = "unknown assignee";
+
+/// Apply an update to a task inside an open mutation, with its events.
+///
+/// `task` must be the row as it is under this mutation's lock (read with
+/// `TaskRepository::find_task_for_update`). The order is `SPEC.md`, "Tasks"
+/// read from the top:
+///
+/// ```text
+/// update the columns (400: title, priority, label, parent rules, assignee)
+///   → emit `updated` if a column actually moved
+///   → recompute `blocked` for the old and the new parent, emitting the flips
+///   → resolve the state name (400) and hand the task off, which emits
+///     `state_changed` and the flips crossing the terminal line owes
+/// ```
+///
+/// **Events, in order**: `updated`, then a re-parenting's parent flips, then
+/// `state_changed`, then the flips the state change caused. The frontend only
+/// refreshes its snapshot when an event arrives (ADR 0022), so the order is
+/// about a readable history rather than about correctness; what it says is
+/// "the fields changed, then the task moved, and here is what that moved
+/// downstream". Nothing at all is emitted when nothing changed, and
+/// `task_sessions` is likewise only touched then (ADR 0030).
+///
+/// **A state no-op is not a refusal**: assigning the state the task is already
+/// in preserves the lease, `attempts` and `closed_at` and emits no state
+/// event, while the other supplied fields still apply ([`change_state`]).
+///
+/// The returned [`TaskDto`] is read after everything, so its `state`,
+/// `blocked` and `closed_at` are what the caller's 200 body should show.
+pub async fn update_task(
+    m: &mut TrackerMutation<'_>,
+    task: &Task,
+    input: UpdateTaskInput,
+) -> Result<UpdateOutcome> {
+    let project_id = m.project_id();
+
+    let update = TaskUpdate {
+        title: input.title.as_deref().map(TaskTitle::parse).transpose()?,
+        description: input.description,
+        priority: input.priority.map(Priority::try_from).transpose()?,
+        labels: input.labels.as_deref().map(Label::parse_list).transpose()?,
+        assignee_user_id: input.assignee_user_id,
+        parent_id: input.parent,
+    };
+
+    // (1) The columns. The repository decides what "changed" means — against
+    // the row under the lock, not against the number of rows the statement
+    // touched — and runs the one-level parent rules when the parent moves.
+    let updated = TaskRepository::new(m.pool())
+        .update_task(m.conn(), project_id, task.id, &update)
+        .await
+        .map_err(unknown_assignee)?;
+
+    // (2) `updated`, before anything a re-parenting or a hand-off sets off.
+    if updated.is_some() {
+        let dto = load(m, task.id).await?;
+        m.emit_task(TaskEventKind::Updated, &dto)?;
+    }
+
+    // (3) A child that moved changed what blocks each of the two parents: the
+    // old one lost an open child, the new one may have gained one. The task's
+    // own flag cannot move — a parent never blocked its children.
+    if let Some(moved) = updated
+        .as_ref()
+        .filter(|row| row.parent_id != task.parent_id)
+    {
+        let affected: Vec<Uuid> = [task.parent_id, moved.parent_id]
+            .into_iter()
+            .flatten()
+            .collect();
+        recompute_blocked(m, &affected).await?;
+    }
+
+    // (4) The state, as a hand-off. A user may set any state and is not bound
+    // by leases (`SPEC.md`, "Tasks"), so there is nothing to check here that
+    // [`resolve_state`] does not.
+    let state_changed = match input.state.as_deref() {
+        Some(name) => {
+            let target = resolve_state(m, name).await?;
+            // The row the move is applied to is the one the column update left
+            // behind, so a re-parenting in the same request is already stored
+            // when the parent-closure logic reads it.
+            let current = updated.as_ref().unwrap_or(task);
+            change_state(
+                m,
+                current,
+                &target,
+                StateChangeOptions {
+                    event: StateEventKind::StateChanged,
+                    needs_human_reason: input.needs_human_reason,
+                },
+            )
+            .await?
+            .changed
+        }
+        None => false,
+    };
+
+    let changed = updated.is_some() || state_changed;
+    if changed {
+        m.touch_actor(task.id);
+
+        info!(
+            project_id = %project_id,
+            task_id = %task.id,
+            fields = updated.is_some(),
+            state = state_changed,
+            "task updated",
+        );
+    }
+
+    // Read once more: the state change and the recomputations may have moved
+    // `blocked`, `closed_at` and the lease since the event payloads were
+    // taken, and the caller answers with this.
+    Ok(UpdateOutcome {
+        task: load(m, task.id).await?,
+        changed,
+    })
+}
+
+/// Delete a task inside an open mutation, with everything the deletion owes.
+///
+/// `task` must be the row as it is under this mutation's lock. The order is
+/// `docs/data-model.md`, `tasks`, which exists because the cascades destroy
+/// the evidence:
+///
+/// ```text
+/// capture the incoming edges, the parent and the children
+///   → delete the row (edges, comments, hand-offs and links cascade;
+///     the children's `parent_id` becomes NULL)
+///   → emit `dependency_removed` per captured `(dependant, kind)`
+///   → recompute `blocked` for the dependants and the parent, emitting flips
+///   → emit `deleted` last, carrying the original UUID
+/// ```
+///
+/// **The children get no event.** They lose a parent, not a prerequisite, and
+/// a parent never blocked its children, so their `blocked` flag cannot have
+/// moved; they simply become top-level tasks. **The parent is not closed** by
+/// losing its last open child either: closure is triggered by a state change
+/// (`ARCHITECTURE.md`, "Task tracker" → "Parents"), so what the parent gets
+/// here is an `unblocked` event and a person to decide the rest.
+///
+/// **`deleted` keeps the task's identity**: the id lives on in `task_events`,
+/// which has no foreign key to `tasks` for exactly this reason, and the
+/// earlier events about the task keep carrying it (ADR 0022). Its payload is
+/// the actor and nothing else — there is no task left to describe — and
+/// nothing links the deleted task to a session: the `task_sessions` rows went
+/// with the row, and a link written now would point at nothing.
+///
+/// **No git lock is taken here.** Hand-off ref cleanup is added by the Code
+/// hand-offs epic before this function is called, outside the project lock and
+/// therefore outside this mutation (`ARCHITECTURE.md`, "Task tracker": any git
+/// lock before any database lock).
+pub async fn delete_task(m: &mut TrackerMutation<'_>, task: &Task) -> Result<()> {
+    let project_id = m.project_id();
+
+    let capture = capture_before_delete(m, task.id).await?;
+
+    if !TaskRepository::new(m.pool())
+        .delete_task(m.conn(), project_id, task.id)
+        .await?
+    {
+        return Err(Error::NotFound);
+    }
+
+    // One event per edge that disappeared, kind and all, carrying the
+    // dependant as it is now that the edge is gone.
+    for (dependant_id, kind) in capture.dependants.clone() {
+        let Some(dependant) = TaskRepository::new(m.pool())
+            .load_task_dto_in(m.conn(), project_id, dependant_id)
+            .await?
+        else {
+            continue;
+        };
+
+        debug!(
+            project_id = %project_id,
+            task_id = %dependant_id,
+            depends_on_task_id = %task.id,
+            kind = ?kind,
+            "dependency removed with its prerequisite",
+        );
+        m.emit_task(TaskEventKind::DependencyRemoved, &dependant)?;
+    }
+
+    recompute_blocked(m, &capture.to_recompute()).await?;
+
+    m.emit_deleted(task.id)?;
+
+    info!(
+        project_id = %project_id,
+        task_id = %task.id,
+        number = task.number,
+        dependants = capture.dependants.len(),
+        children = capture.children.len(),
+        "task deleted",
+    );
+
+    Ok(())
+}
+
+/// This mutation's view of a task of this project, which must be there.
+///
+/// The row is under this mutation's own lock, so a miss is a broken invariant
+/// rather than something the caller did; [`Error::NotFound`] is what it maps
+/// to all the same, as it does everywhere else in the tracker.
+async fn load(m: &mut TrackerMutation<'_>, task_id: Uuid) -> Result<TaskDto> {
+    let project_id = m.project_id();
+
+    TaskRepository::new(m.pool())
+        .load_task_dto_in(m.conn(), project_id, task_id)
+        .await?
+        .ok_or(Error::NotFound)
+}
+
+/// Turn the assignee foreign key's complaint into the documented 400.
+///
+/// Every other failure passes through untouched, including the parent rules'
+/// own [`Error::BadRequest`]s, which the repository already phrases.
+fn unknown_assignee(error: Error) -> Error {
+    if let Error::Database(ref db_error) = error
+        && let Some("tasks_assignee_user_id_fkey") = foreign_key_violation(db_error)
+    {
+        return Error::BadRequest(UNKNOWN_ASSIGNEE.into());
+    }
+
+    error
 }

@@ -17,17 +17,18 @@
 //!    sent twice even before the client's own `seq` dedupe.
 //!
 //! Every outgoing frame goes through one `tokio::sync::mpsc` channel and a
-//! writer task that owns the sink. The main loop, and later the terminal
-//! reader, both hold a `Sender` and neither has to share the sink. A send that
-//! fails or times out ends the writer, which closes the channel, which is how
-//! the main loop learns to stop: after a failed write nothing further is
+//! writer task that owns the sink. The main loop is the only sender; a send
+//! that fails or times out ends the writer, which closes the channel, which is
+//! how the main loop learns to stop: after a failed write nothing further is
 //! written.
 //!
 //! The input, stop and terminal messages are parsed here and handed to
-//! [`handle_client_message`] and [`handle_binary`], the second of which is
-//! still the seam the terminal task fills in. The loop itself — the `select!`
-//! over the socket, the fan-out receiver, the safety read and the ping — is
-//! settled here.
+//! [`handle_client_message`] and [`handle_binary`]. The terminal itself is
+//! [`terminal::Terminal`], which owns the exec in a task of its own and talks
+//! to this loop over a channel: its output is the loop's fifth `select!` arm,
+//! and it is disposed of in [`run`], the one exit path every close goes
+//! through. The loop itself — the `select!` over the socket, the fan-out
+//! receiver, the safety read, the ping and the terminal — is settled here.
 //!
 //! Writing is authorized per message, not per socket: [`ensure_authorized`]
 //! re-runs the database half of the stream contract before every application
@@ -36,6 +37,7 @@
 
 mod input;
 pub mod protocol;
+pub mod terminal;
 
 use std::time::Duration;
 
@@ -52,7 +54,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use crate::engine::{ContainerId, EngineError};
 use crate::events::Notice;
+use crate::models::SessionState;
 use crate::prelude::*;
 use crate::repositories::SessionRepository;
 use crate::routes::{
@@ -60,6 +64,7 @@ use crate::routes::{
 };
 use crate::session::SessionService;
 use crate::ws::protocol::{ClientMessage, ServerMessage};
+use crate::ws::terminal::{NO_EXIT_CODE, TERMINAL_CMD, TERMINAL_USER, Terminal, TerminalOutput};
 
 /// What a socket for a session that does not exist is answered with (404).
 const SESSION_NOT_FOUND: &str = "session not found";
@@ -112,6 +117,15 @@ const CLOSE_LINGER: Duration = Duration::from_secs(5);
 /// Generous, because a replay fills it in a burst; a client that cannot drain
 /// it is handled by [`SEND_TIMEOUT`], not by the buffer.
 const OUTGOING_BUFFER: usize = 64;
+
+/// How many terminal outputs may be queued before the exec's owner task
+/// waits.
+///
+/// The consumer is the socket's own loop, which does nothing but hand each
+/// chunk to the writer; the buffer exists so a burst of PTY output — a `cat`
+/// of a long file — does not make the owner task ping-pong with the loop for
+/// every chunk.
+const TERMINAL_BUFFER: usize = 32;
 
 /// How many unanswered pings close the socket (`SPEC.md`, "WebSocket: session
 /// stream": "closes after two missed pongs").
@@ -197,20 +211,20 @@ struct SocketContext {
     principal: StreamPrincipal,
     cursor: i64,
     missed_pongs: u8,
-    /// The terminal exec, when one is open. Always `None` here: opening it is
-    /// the terminal task's, and this field is the seam it fills.
-    #[allow(dead_code, reason = "the terminal task opens and reads this")]
+    /// The terminal exec, while one is open (`SPEC.md`, "WebSocket: session
+    /// stream", the terminal). `None` is the socket with no terminal, which is
+    /// every socket until a `terminal_open` and every socket again after a
+    /// `terminal_closed`.
     terminal: Option<Terminal>,
+    /// The sending half of the terminal's output channel, kept for the whole
+    /// life of the socket.
+    ///
+    /// Held even with no terminal open, for two reasons: a `terminal_open`
+    /// needs one to hand the new attachment, and a channel whose last sender
+    /// were dropped would make the loop's terminal arm resolve immediately,
+    /// for ever.
+    terminal_out: mpsc::Sender<TerminalOutput>,
 }
-
-/// The PTY exec multiplexed onto this socket (`SPEC.md`, "WebSocket: session
-/// stream", the terminal).
-///
-/// A placeholder: the terminal task gives it the exec handle and the reader's
-/// join handle. It exists now so the shape of [`SocketContext`] does not have
-/// to change when it arrives.
-#[allow(dead_code, reason = "the terminal task constructs this")]
-struct Terminal;
 
 /// Why the socket task stopped.
 ///
@@ -274,6 +288,7 @@ async fn run(
     let mut rx = state.fanout.subscribe_session(session_id);
 
     let service = SessionService::new(&state);
+    let (terminal_out, mut terminal_rx) = mpsc::channel(TERMINAL_BUFFER);
     let mut context = SocketContext {
         state,
         session_id,
@@ -282,13 +297,23 @@ async fn run(
         cursor: after,
         missed_pongs: 0,
         terminal: None,
+        terminal_out,
     };
 
     let (sink, mut incoming) = socket.split();
     let (out, writer) = spawn_writer(sink);
 
-    let end = stream(&mut context, &mut rx, &out, &mut incoming).await;
+    let end = stream(&mut context, &mut rx, &out, &mut incoming, &mut terminal_rx).await;
     let closing = matches!(end, End::Close { .. });
+
+    // The one disposal, on every exit path there is: a revoked login, a client
+    // that went away, a failed write (`SPEC.md`, "Authentication": "Dispose of
+    // that socket's terminal attachment"). Before the close frame, so the exec
+    // is gone by the time the client learns the socket is.
+    if let Some(terminal) = context.terminal.take() {
+        let exit_code = terminal.close().await;
+        debug!(session_id = %session_id, exit_code, "the socket's terminal was disposed of");
+    }
 
     if let End::Close {
         code,
@@ -338,6 +363,7 @@ async fn stream(
     rx: &mut tokio::sync::broadcast::Receiver<Notice>,
     out: &mpsc::Sender<Message>,
     incoming: &mut SplitStream<WebSocket>,
+    terminal_rx: &mut mpsc::Receiver<TerminalOutput>,
 ) -> End {
     // One `session` before anything else, so the client has the current state
     // without a REST round trip (`SPEC.md`, "WebSocket: session stream").
@@ -362,6 +388,7 @@ async fn stream(
             _ = safety.tick() => drain(context, out).await,
             _ = ping.tick() => on_ping(context, out).await,
             frame = incoming.next() => on_frame(context, out, frame).await,
+            output = terminal_rx.recv() => on_terminal_output(context, out, output).await,
         };
 
         if let Err(end) = step {
@@ -599,28 +626,215 @@ async fn handle_client_message(
             input: sent,
         } => input::handle_input(context, out, client_id, sent).await,
         ClientMessage::Stop => input::handle_stop(context).await,
-        ClientMessage::TerminalOpen { .. }
-        | ClientMessage::TerminalResize { .. }
-        | ClientMessage::TerminalClose => {
-            debug!(session_id = %context.session_id, "session websocket received a terminal message with no terminal support yet");
+        ClientMessage::TerminalOpen { cols, rows } => {
+            handle_terminal_open(context, out, cols, rows).await
+        }
+        ClientMessage::TerminalResize { cols, rows } => {
+            handle_terminal_resize(context, cols, rows).await
+        }
+        ClientMessage::TerminalClose => handle_terminal_close(context, out).await,
+    }
+}
+
+/// `terminal_open { cols, rows }` (`SPEC.md`, "WebSocket: session stream":
+/// "session must be `running`").
+///
+/// A second `terminal_open` on a socket that already has one is ignored rather
+/// than refused: the protocol has one terminal per socket, and a client that
+/// asks twice is a client that has lost track, not one to close the stream on.
+///
+/// Everything that stops the terminal being opened answers `terminal_closed
+/// { exit_code: -1 }` and leaves the socket up. `error` is not available for
+/// it: `error` is followed by a close, and a terminal that could not open is
+/// not a reason to take the transcript down with it.
+async fn handle_terminal_open(
+    context: &mut SocketContext,
+    out: &mpsc::Sender<Message>,
+    cols: u16,
+    rows: u16,
+) -> std::result::Result<(), End> {
+    if context.terminal.is_some() {
+        debug!(session_id = %context.session_id, "a second terminal_open on a socket that already has one");
+        return Ok(());
+    }
+
+    // The row as it is now, not the snapshot this socket opened with: the
+    // session may have parked, ended or been relaunched since.
+    let session = SessionRepository::new(&context.state.pool)
+        .get(context.session_id)
+        .await
+        .map_err(|error| match error {
+            Error::NotFound => End::error(close_code::NORMAL, SESSION_NOT_FOUND),
+            error => {
+                error!(session_id = %context.session_id, %error, "a terminal could not read its session");
+                End::error(close_code::ERROR, INTERNAL)
+            }
+        })?;
+
+    let container = match (session.state, session.container_id) {
+        (SessionState::Running, Some(container_id)) => ContainerId(container_id),
+        (state, _) => {
+            debug!(
+                session_id = %context.session_id,
+                ?state,
+                "a terminal was asked for on a session with no running container",
+            );
+            return terminal_closed(out, NO_EXIT_CODE).await;
+        }
+    };
+
+    // Clamped here as well as in the adapter: a zero the engine would refuse
+    // never reaches it, and what the engine records is what a test can read.
+    let cmd: Vec<String> = TERMINAL_CMD
+        .iter()
+        .map(|part| (*part).to_string())
+        .collect();
+
+    match Terminal::open(
+        context.state.engine.as_ref(),
+        &container,
+        &cmd,
+        TERMINAL_USER,
+        cols.max(1),
+        rows.max(1),
+        context.terminal_out.clone(),
+    )
+    .await
+    {
+        Ok(terminal) => {
+            debug!(session_id = %context.session_id, container = %container, "a terminal opened");
+            context.terminal = Some(terminal);
             Ok(())
+        }
+        // The container stopped between the row and the exec, which is the
+        // same answer as a session that was not running when it was read.
+        Err(error @ (EngineError::Conflict(_) | EngineError::NotFound(_))) => {
+            debug!(session_id = %context.session_id, %error, "a terminal found no running container");
+            terminal_closed(out, NO_EXIT_CODE).await
+        }
+        Err(error) => {
+            error!(session_id = %context.session_id, %error, "a terminal exec could not be started");
+            terminal_closed(out, NO_EXIT_CODE).await
         }
     }
 }
 
+/// `terminal_resize { cols, rows }`.
+///
+/// Nothing is sent either way: a resize that the engine refuses leaves the
+/// shell at the size it had, which is a wrapped line and not a reason to take
+/// the terminal down.
+async fn handle_terminal_resize(
+    context: &mut SocketContext,
+    cols: u16,
+    rows: u16,
+) -> std::result::Result<(), End> {
+    let Some(terminal) = context.terminal.as_ref() else {
+        debug!(session_id = %context.session_id, "a terminal_resize with no terminal open");
+        return Ok(());
+    };
+
+    if let Err(error) = terminal.resize(cols.max(1), rows.max(1)).await {
+        debug!(session_id = %context.session_id, %error, "a terminal_resize was not applied");
+    }
+
+    Ok(())
+}
+
+/// `terminal_close {}`: the exec ends, the socket stays, and a later
+/// `terminal_open` starts a fresh shell.
+async fn handle_terminal_close(
+    context: &mut SocketContext,
+    out: &mpsc::Sender<Message>,
+) -> std::result::Result<(), End> {
+    let Some(terminal) = context.terminal.take() else {
+        debug!(session_id = %context.session_id, "a terminal_close with no terminal open");
+        return Ok(());
+    };
+
+    let exit_code = terminal.close().await;
+    terminal_closed(out, exit_code).await
+}
+
+/// One chunk, or one end, from the open terminal.
+///
+/// Anything that arrives for a terminal this socket no longer has is dropped:
+/// the exec's owner task and this loop are two tasks, so a chunk written just
+/// before a `terminal_close` can still be in the channel afterwards, and the
+/// client has already been told that terminal ended.
+async fn on_terminal_output(
+    context: &mut SocketContext,
+    out: &mpsc::Sender<Message>,
+    output: Option<TerminalOutput>,
+) -> std::result::Result<(), End> {
+    // Unreachable: the context holds a sender for as long as the socket lives.
+    let Some(output) = output else {
+        return Err(End::Gone);
+    };
+
+    if context.terminal.is_none() {
+        return Ok(());
+    }
+
+    match output {
+        TerminalOutput::Data(bytes) => out
+            .send(Message::Binary(bytes))
+            .await
+            .map_err(|_| End::Gone),
+        TerminalOutput::Closed { exit_code } => {
+            // The shell exited, or the container went away under it: the
+            // attachment is spent and a `terminal_open` may start another.
+            context.terminal = None;
+            terminal_closed(out, exit_code).await
+        }
+    }
+}
+
+/// One `terminal_closed { exit_code }`.
+async fn terminal_closed(
+    out: &mpsc::Sender<Message>,
+    exit_code: i64,
+) -> std::result::Result<(), End> {
+    send(out, ServerMessage::TerminalClosed { exit_code }).await
+}
+
 /// Bytes for the PTY (`SPEC.md`, "WebSocket: session stream", the terminal).
 ///
-/// The terminal task writes them to the exec; with no terminal open there is
-/// nowhere to put them and they are dropped.
+/// Re-authorized like every other application message: the specification names
+/// terminal bytes explicitly ("including terminal bytes"), and a revoked login
+/// must not keep typing into somebody's container.
+///
+/// With no terminal open there is nowhere to put the bytes and they are
+/// dropped — the client raced its own `terminal_close`, or never opened one.
+/// A write the exec refuses ends the terminal and tells the client so; the
+/// socket itself carries on.
 async fn handle_binary(
     context: &mut SocketContext,
     out: &mpsc::Sender<Message>,
     bytes: axum::body::Bytes,
 ) -> std::result::Result<(), End> {
-    let _ = (out, bytes);
-    debug!(session_id = %context.session_id, "session websocket received a binary frame with no terminal open");
+    ensure_authorized(context).await?;
 
-    Ok(())
+    let Some(terminal) = context.terminal.as_ref() else {
+        debug!(session_id = %context.session_id, "session websocket received a binary frame with no terminal open");
+        return Ok(());
+    };
+
+    // The length only, never the bytes: a terminal carries whatever was typed
+    // or pasted into it (rule 3).
+    let Err(error) = terminal.write(&bytes).await else {
+        return Ok(());
+    };
+
+    debug!(session_id = %context.session_id, bytes = bytes.len(), %error, "a terminal write did not reach the exec");
+
+    match context.terminal.take() {
+        Some(terminal) => {
+            let exit_code = terminal.close().await;
+            terminal_closed(out, exit_code).await
+        }
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

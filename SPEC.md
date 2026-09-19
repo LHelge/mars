@@ -302,6 +302,8 @@ type SessionInput =
 
 The terminal is an `exec` with a PTY into the session container running `/bin/bash -l` as the `agent` user, multiplexed onto the same socket with binary frames. It is an escape hatch for inspection; nothing it does is recorded as events.
 
+A `terminal_open` that cannot be honoured (session not `running`, container gone) answers `terminal_closed` with `exit_code: -1`. The socket stays open: `error` is followed by a close, and a terminal that could not start is not a reason to end the transcript stream. The same `exit_code: -1` is what a terminal that ended without the engine reporting a code carries. A second `terminal_open` while one is open, a `terminal_resize` or `terminal_close` with none open, and binary frames with none open are all ignored.
+
 ## SSE: task stream
 
 `GET /api/projects/{pid}/tasks/stream?token=<jwt>` with optional `Last-Event-ID: <seq>` header (or `?after=<seq>` for the first connection).

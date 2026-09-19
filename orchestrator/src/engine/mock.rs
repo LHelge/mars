@@ -161,7 +161,7 @@ fn wake(waiters: Vec<oneshot::Sender<Result<ExitStatus, EngineError>>>, code: i6
 ///
 /// A created or running container takes bytes; a container that has ended is
 /// one whose attachment the engine has closed, and a write to it fails
-/// (`ARCHITECTURE.md`, "Engine adapter", the attach row).
+/// (`ARCHITECTURE.md`, "Engine adapter", the stdin row).
 fn takes_stdin(state: &ContainerState) -> bool {
     matches!(state, ContainerState::Created | ContainerState::Running)
 }
@@ -860,7 +860,7 @@ impl ContainerEngine for MockEngine {
 /// A write after the container ended fails with the [`io::ErrorKind::BrokenPipe`]
 /// `BollardStdin` answers with, never a silent success: a lost input the session
 /// owner was told had gone through is the failure the rule exists for
-/// (`ARCHITECTURE.md`, "Engine adapter", the attach row). Bytes written before
+/// (`ARCHITECTURE.md`, "Engine adapter", the stdin row). Bytes written before
 /// the exit stay in the buffer, so [`MockEngine::stdin_bytes`] still reports
 /// them.
 #[derive(Debug)]
@@ -1015,7 +1015,6 @@ mod tests {
             network: "mars-sessions".to_string(),
             extra_hosts: Vec::new(),
             runtime: None,
-            open_stdin: true,
         }
     }
 

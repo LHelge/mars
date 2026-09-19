@@ -202,7 +202,6 @@ async fn create_container(app: &TestApp, fixture: &Fixture, label: &str) -> Cont
         network: "mars-sessions".to_string(),
         extra_hosts: Vec::new(),
         runtime: None,
-        open_stdin: true,
     };
 
     app.engine()
@@ -914,6 +913,69 @@ async fn an_attach_failure_parks_only_its_own_session() {
     app.session_registry().remove(adopted.session_id);
 }
 
+/// An attach refused as a conflict is a container that exited between the
+/// listing and the attach — the attach is an exec, which an engine refuses in a
+/// container that is not running (ADR 0034) — and that container is adopted
+/// like any exited one, without stdin, so its owner can drain the transcript and
+/// read the exit (`ARCHITECTURE.md`, "Restart procedure").
+#[tokio::test]
+async fn an_attach_refused_as_a_conflict_adopts_the_session_without_stdin() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let mut state = app.state.clone();
+    state.engine = Arc::new(RefusingAttach::with_conflict(
+        Arc::clone(&app.state.engine),
+        container,
+    )) as Arc<dyn ContainerEngine>;
+
+    let report = recover_with(&state).await;
+    assert_eq!(
+        report,
+        RecoveryReport {
+            adopted: 1,
+            parked: 0,
+            failed: 0
+        },
+    );
+    assert!(app.session_registry().is_live(fixture.session_id));
+
+    app.session_registry().remove(fixture.session_id);
+}
+
+/// An ephemeral session takes no input, so recovery never asks for its stdin:
+/// an engine that would refuse the attach does not fail the session
+/// (`ARCHITECTURE.md`, "Restart procedure").
+#[tokio::test]
+async fn an_ephemeral_session_is_adopted_without_a_stdin_attach() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture_of_kind(&app, ProfileKind::Ephemeral).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let mut state = app.state.clone();
+    state.engine = Arc::new(RefusingAttach::new(
+        Arc::clone(&app.state.engine),
+        container,
+    )) as Arc<dyn ContainerEngine>;
+
+    let report = recover_with(&state).await;
+    assert_eq!(
+        report,
+        RecoveryReport {
+            adopted: 1,
+            parked: 0,
+            failed: 0
+        },
+    );
+    let (state_column, _, _, _) = session_row(&app.pool, fixture.session_id).await;
+    assert_eq!(state_column, "running");
+
+    app.session_registry().remove(fixture.session_id);
+}
+
 /// `MockEngine` with one container whose `attach_stdin` fails, which is the one
 /// thing recovery has to survive that the mock has no way to arrange: every
 /// other call is the mock's own answer.
@@ -926,6 +988,8 @@ type EngineResult<T> = std::result::Result<T, EngineError>;
 struct RefusingAttach {
     inner: Arc<dyn ContainerEngine>,
     refuse: ContainerId,
+    /// Refuse as a conflict — "the container is not running" — instead.
+    conflict: bool,
 }
 
 impl RefusingAttach {
@@ -934,7 +998,21 @@ impl RefusingAttach {
     const MESSAGE: &'static str = "the container engine has no such object: attach refused";
 
     fn new(inner: Arc<dyn ContainerEngine>, refuse: ContainerId) -> Self {
-        Self { inner, refuse }
+        Self {
+            inner,
+            refuse,
+            conflict: false,
+        }
+    }
+
+    /// The refusal of an exec in a container that has just exited, which is
+    /// what the stdin attach is on a real engine (ADR 0034).
+    fn with_conflict(inner: Arc<dyn ContainerEngine>, refuse: ContainerId) -> Self {
+        Self {
+            inner,
+            refuse,
+            conflict: true,
+        }
     }
 }
 
@@ -998,7 +1076,11 @@ impl ContainerEngine for RefusingAttach {
 
     async fn attach_stdin(&self, id: &ContainerId) -> EngineResult<Box<dyn StdinWriter>> {
         if *id == self.refuse {
-            return Err(EngineError::NotFound("attach refused".to_string()));
+            return Err(if self.conflict {
+                EngineError::Conflict("the container is not running".to_string())
+            } else {
+                EngineError::NotFound("attach refused".to_string())
+            });
         }
 
         self.inner.attach_stdin(id).await

@@ -238,9 +238,15 @@ async fn recover_running(
     // drained to end of file and the lifecycle rule for that exit decides the
     // state (`ARCHITECTURE.md`, "Session owner task", step 3). No stdin is
     // attached, because there is no process left to write to.
-    let stdin = if container_state.is_running() {
+    //
+    // Nor for an ephemeral session, which takes no input at all, and nor for a
+    // container that exited between the listing and the attach: the attach is
+    // an exec (ADR 0034), an engine refuses one in a container that is not
+    // running with a conflict, and that container is the exited one above.
+    let stdin = if container_state.is_running() && session.kind != SessionKind::Ephemeral {
         match state.engine.attach_stdin(&container_id).await {
             Ok(stdin) => Some(stdin as Box<dyn tokio::io::AsyncWrite + Send + Unpin>),
+            Err(EngineError::Conflict(_)) => None,
             Err(err) => {
                 warn!(
                     session_id = %session.id,

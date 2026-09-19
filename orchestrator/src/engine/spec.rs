@@ -287,7 +287,6 @@ pub fn build_session_spec(input: &SessionSpecInput) -> Result<ContainerSpec, Eng
         network: input.network_internal.clone(),
         extra_hosts: input.extra_hosts.clone(),
         runtime: normalise_runtime(input.runtime.as_deref()),
-        open_stdin: true,
     })
 }
 
@@ -326,7 +325,6 @@ pub fn build_probe_spec(input: &ProbeSpecInput) -> ContainerSpec {
         network: input.network_internal.clone(),
         extra_hosts: input.extra_hosts.clone(),
         runtime: None,
-        open_stdin: false,
     }
 }
 
@@ -426,14 +424,15 @@ pub fn to_bollard(spec: &ContainerSpec, kind: EngineKind) -> ContainerCreateBody
                 )
                 .collect::<Vec<String>>(),
         ),
-        open_stdin: Some(spec.open_stdin),
-        // Stdin stays open for the CLI's whole life: the session owner writes
-        // every user message through it.
+        // The container's own stdin is never used: the entrypoint gives the CLI
+        // a FIFO it holds open itself, and the owner writes into that through
+        // an exec (ADR 0034), so no attach closing can reach the CLI as EOF.
+        open_stdin: Some(false),
         stdin_once: Some(false),
         tty: Some(false),
-        // Stdin only. Stdout and stderr are read from the transcript file, not
-        // the socket (`ARCHITECTURE.md`, "Agent process model").
-        attach_stdin: Some(spec.open_stdin),
+        // Nothing is attached. Stdout and stderr are read from the transcript
+        // file, not the socket (`ARCHITECTURE.md`, "Agent process model").
+        attach_stdin: Some(false),
         attach_stdout: Some(false),
         attach_stderr: Some(false),
         host_config: Some(host_config),
@@ -641,7 +640,6 @@ mod tests {
                 network: "mars-sessions".to_string(),
                 extra_hosts: vec!["host.containers.internal:host-gateway".to_string()],
                 runtime: None,
-                open_stdin: true,
             }
         );
     }
@@ -810,7 +808,6 @@ mod tests {
             vec!["host.containers.internal:host-gateway".to_string()]
         );
         assert_eq!(spec.runtime, None);
-        assert!(!spec.open_stdin, "the probe takes no input");
         assert!(spec.env.is_empty(), "the probe gets no MARS_* environment");
         assert!(spec.secret_env.is_empty(), "the probe gets no secrets");
         assert_eq!(
@@ -1007,10 +1004,10 @@ mod tests {
             body.cmd,
             Some(vec!["claude".to_string(), "--print".to_string()])
         );
-        assert_eq!(body.open_stdin, Some(true));
+        assert_eq!(body.open_stdin, Some(false));
         assert_eq!(body.stdin_once, Some(false));
         assert_eq!(body.tty, Some(false));
-        assert_eq!(body.attach_stdin, Some(true));
+        assert_eq!(body.attach_stdin, Some(false));
         assert_eq!(body.attach_stdout, Some(false));
         assert_eq!(body.attach_stderr, Some(false));
         assert_eq!(

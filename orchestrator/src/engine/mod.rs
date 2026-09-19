@@ -56,8 +56,8 @@ use self::probe::{ProbeInput, run_startup_probe};
 pub use error::EngineError;
 pub use types::{
     Bind, ContainerId, ContainerInfo, ContainerSpec, ContainerState, ContainerSummary, EngineKind,
-    ExecSession, ExitStatus, LABEL_PROFILE_ID, LABEL_PROJECT_ID, LABEL_SESSION_ID, Signal,
-    StdinWriter, session_container_name,
+    ExecSession, ExitStatus, LABEL_PROFILE_ID, LABEL_PROJECT_ID, LABEL_SESSION_ID, STDIN_FIFO,
+    Signal, StdinWriter, session_container_name,
 };
 
 /// The container engine, behind a trait so the API can be tested without one.
@@ -195,17 +195,22 @@ pub trait ContainerEngine: Send + Sync {
     /// A key nothing carries is an empty list, not an error.
     async fn list_by_label(&self, label_key: &str) -> Result<Vec<ContainerSummary>, EngineError>;
 
-    /// Attach to the container's stdin, with the TTY off.
+    /// A writer to the stdin of the container's main process.
     ///
-    /// Only stdin: stdout and stderr are not attached, because the CLI's
-    /// output is read from the transcript file, not the socket
-    /// (`ARCHITECTURE.md`, "Agent process model"). The session owner is the
-    /// only holder of the returned writer.
+    /// Not an attach to the container's own stdin: the adapter starts an exec
+    /// that relays into [`STDIN_FIFO`], which the image's entrypoint made and
+    /// the CLI holds open read-write, so dropping the writer — or losing the
+    /// orchestrator — ends the relay and is never an EOF for the CLI, and a
+    /// later call reaches the same process (ADR 0034; `ARCHITECTURE.md`,
+    /// "Restart procedure"). Only stdin: the CLI's output is read from the
+    /// transcript file, not the socket (`ARCHITECTURE.md`, "Agent process
+    /// model"). The session owner is the only holder of the returned writer.
     ///
-    /// A missing container is [`EngineError::NotFound`]; a write after the
+    /// A missing container is [`EngineError::NotFound`] and one with no FIFO to
+    /// relay into is [`EngineError::Unsupported`]; a write after the
     /// container exited returns an error, never a silent success, because a
     /// rootless Podman accepts and discards such writes (`ARCHITECTURE.md`,
-    /// "Engine adapter", the attach row).
+    /// "Engine adapter", the stdin row).
     async fn attach_stdin(&self, id: &ContainerId) -> Result<Box<dyn StdinWriter>, EngineError>;
 
     /// Start an exec with a PTY: the terminal view.

@@ -396,7 +396,6 @@ async fn the_recorded_spec_is_the_documented_table() {
     );
     assert_eq!(spec.user, "1000:1000");
     assert_eq!(spec.working_dir, "/session/work");
-    assert!(spec.open_stdin, "stdin must be open and attachable");
     assert_eq!(spec.runtime, None, "the profile names no runtime");
     assert_eq!(spec.network, app.state.config.session_network_internal);
     assert_eq!(spec.extra_hosts, app.state.config.session_extra_hosts);
@@ -1157,7 +1156,6 @@ fn stale_spec(session_id: Uuid, project_id: Uuid) -> ContainerSpec {
         network: "mars-sessions".to_string(),
         extra_hosts: Vec::new(),
         runtime: None,
-        open_stdin: true,
     }
 }
 

@@ -13,7 +13,7 @@ S=$(mktemp -d); mkdir -p $S/{work/.claude,work/src,work/docs,home,log,log2,log3,
 echo '{"permissions":{"deny":["Bash(curl:*)","WebFetch"]}}' > $S/work/.claude/settings.json
 echo '{"mcpServers":{"mars-orchestrator":{"type":"http","url":"http://127.0.0.1:1/mcp"}}}' > $S/mcp.json
 export CLAUDE_CODE_OAUTH_TOKEN   # or ANTHROPIC_API_KEY, never both; set in this shell only
-run() { log=$1; shift; podman run --rm -i --name mars-verify --user 1000:1000 \
+run() { log=$1; shift; podman run --rm --name mars-verify --user 1000:1000 \
   --userns=keep-id:uid=1000,gid=1000 --cap-drop ALL --security-opt no-new-privileges \
   -v $S/work:/session/work -v $S/home:/session/home -v $S/$log:/session/log \
   -v $S/config:/session/config -v $S/mcp.json:/session/mcp.json:ro \
@@ -22,19 +22,22 @@ run() { log=$1; shift; podman run --rm -i --name mars-verify --user 1000:1000 \
   --forward-subagent-text --system-prompt-snapshot off --permission-mode bypassPermissions \
   --permission-prompts none --mcp-config /session/mcp.json "$@"; }
 CONV="--input-format stream-json --include-partial-messages"
-# 1. Conversational: feed stdin from a FIFO, one user line per turn, the next one only after the
-#    previous `result` appears in $S/log/stream.jsonl; close the FIFO after the third `result`.
+# The entrypoint gives the CLI the FIFO /tmp/mars-stdin as stdin (ADR 0034); a line reaches it the
+# way the engine adapter's relay writes one. The CLI never sees EOF, so a run is ended with SIGINT.
+feed() { podman exec -i mars-verify sh -c 'exec cat >/tmp/mars-stdin'; }   # echo '<line>' | feed
+# 1. Conversational: one user line per turn through `feed`, the next one only after the previous
+#    `result` appears in $S/log/stream.jsonl; `podman kill --signal=SIGINT mars-verify` after the third.
 #    Line shape: {"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}
 #    Turn 1 "Read README.md and docs/CHANGELOG.md in full, then say what this project is."
 #    Turn 2 "Use a subagent to grep for `main`, then edit src/app.py and commit as \"Add greeting\"."
 #    Turn 3 "Run `curl -sS https://example.invalid/` once with the Bash tool. Do not retry."
-run log $CONV < $S/in
+run log $CONV &
 # 2. SIGINT: start a long turn ("Write a 1200 word essay ..."), wait for stream_event lines, then
-run log2 $CONV < $S/in &  podman kill --signal=SIGINT mars-verify; wait
+run log2 $CONV &  podman kill --signal=SIGINT mars-verify; wait
 # 3. Resume in a second container on the same config dir, with the session_id of run 1:
-run log3 $CONV --resume <session_id> < $S/in
-# 4. Ephemeral: the prompt as an argument, no --input-format, stdin closed:
-run log3 -p "Reply with exactly the word PONG." < /dev/null
+run log3 $CONV --resume <session_id> &
+# 4. Ephemeral: the prompt as an argument, no --input-format, nothing written to stdin:
+run log3 -p "Reply with exactly the word PONG."
 # 5. Scrub run 1 and install it (scrubber below), then check and test:
 python3 scrub.py < $S/log/stream.jsonl > images/stub/fixtures/default.jsonl
 grep -Ec 'sk-ant[-]|oauth|Bearer' images/stub/fixtures/default.jsonl   # must print 0
@@ -49,6 +52,7 @@ python3 -m unittest discover -s images/stub/tests && ENGINE=podman images/smoke-
 - [x] The unreachable MCP server is listed as `{"name":"mars-orchestrator","status":"failed","source":"dynamic"}` and the turn still runs.
 - [x] The bare stdin line shape works; `session_id` and `parent_tool_use_id` are not needed on it.
 - [x] All three turns produced `result` lines; closing stdin exits 0; `stderr.log` stayed empty.
+- [x] With stdin on the entrypoint's read-write FIFO (ADR 0034), a line written through `podman exec -i … cat >/tmp/mars-stdin` starts a turn, and the CLI is still PID 1 and running after that exec has ended: a writer leaving is not an EOF. (Observed without credentials, on the synthetic authentication-failure turn; "closing stdin exits 0" above was observed on a plain pipe, before the FIFO.)
 - [x] `result.total_cost_usd` is cumulative for the process (0.0727, 0.1448, 0.1633); `modelUsage` likewise. `num_turns` is per turn (3, 5, 2). A resumed process starts again from zero.
 - [x] SIGINT mid-turn: a `user` line with the text `[Request interrupted by user]`, then a `result` with `subtype: "error_during_execution"`, `is_error: true`, `terminal_reason: "aborted_streaming"`, exit 0 within seconds; the stub writes the same shape. PID 1 is `claude`; `Init: true` is not needed on rootless Podman.
 - [x] `--resume` in a second container continued the conversation (it recalled the commit message) and its `init` reported the same `session_id`; no `resumed`-like field exists in `init`.

@@ -446,10 +446,9 @@ async fn wait_for_state(app: &TestApp, fixture: &Fixture, id: Uuid, state: Sessi
 
 /// Wait until the session's state has stopped changing, and answer it.
 ///
-/// For the one question a state name cannot be asserted on beforehand: after a
-/// restart the adopted process may or may not still be reading stdin, and what
-/// the scenario needs is the state the session came to rest in rather than a
-/// particular one (see the restart scenario's documentation). "At rest" is one
+/// For the restart scenario, whose claim is that a state does *not* change: a
+/// process the restart had ended would take the owner a moment to notice, so
+/// `running` read once straight after recovery proves nothing. "At rest" is one
 /// state read twice a [`POLL`] apart, which is several times the interval the
 /// owner's own loop and drain run at.
 async fn wait_for_settled_state(app: &TestApp, id: Uuid) -> SessionState {
@@ -1028,23 +1027,17 @@ async fn an_ephemeral_session_replays_its_prompt_and_finishes_done() {
 }
 
 /// A restart adopts the session's container, keeps its token and goes on
-/// delivering input, with no duplicated events (`ARCHITECTURE.md`, "Restart
-/// procedure", "Durability and recovery").
+/// delivering input to the *same process*, with no duplicated events
+/// (`ARCHITECTURE.md`, "Restart procedure", "Durability and recovery").
 ///
-/// **What "adopted" can mean here depends on the engine**, and the assertions
-/// are the part that holds on either. Losing the owners closes the attach the
-/// last process held, and Podman passes that close on to the container as stdin
-/// EOF while Docker keeps stdin open ("Engine adapter", the attach row): on
-/// Podman the CLI therefore exits 0 the moment the restart happens and the
-/// adopting owner drains its transcript and parks the session, which is the
-/// documented handling of an adopted container that has exited; on Docker the
-/// same process is still reading stdin afterwards. So this asserts what the
-/// restart procedure owes a session either way — an owner was re-created for
-/// it, its MCP token was *not* rotated (ADR 0029), its transcript came through
-/// with no gap and no duplicate — and then that the session takes input again
-/// and replays a turn for it, through whichever of the two paths its state
-/// leaves open: delivery to the live process, or the relaunch a message to a
-/// parked session triggers.
+/// Losing the owners closes the connection the last process wrote stdin
+/// through. That connection is an exec relaying into a FIFO the CLI holds open
+/// itself (ADR 0034), so its end is not an EOF for the CLI on either engine —
+/// on a rootless Podman a closed *container* attach was, and the CLI exited on
+/// it within about 100 ms (Bears gg4ch). So the session is still `running`
+/// after recovery, in the container it was launched in, and the next message
+/// reaches the process that answered the first: the fixture's second turn is
+/// what replays, no second launch is recorded and no second `init` appears.
 #[tokio::test]
 async fn a_restart_adopts_the_session_container_and_keeps_its_token() {
     scenario(|app| async move {
@@ -1088,15 +1081,20 @@ async fn a_restart_adopts_the_session_container_and_keeps_its_token() {
             "the adopted session keeps the container it was launched with",
         );
 
-        // Whatever the engine did to the adopted process's stdin, the session
-        // is one a message may still be sent to: `running` if it is still
-        // reading, `parked` once the owner has read its exit. Both accept
-        // input; one delivers it and the other relaunches (`SPEC.md`,
-        // "Sessions", `POST /sessions/{id}/input`).
+        // The adopted process is still reading stdin: had the restart reached
+        // it as EOF it would have exited and the owner would have parked the
+        // session by the time its state came to rest.
         let settled = wait_for_settled_state(&app, id).await;
-        assert!(
-            matches!(settled, SessionState::Running | SessionState::Parked),
-            "an adopted session should be running or parked, not {settled}",
+        assert_eq!(
+            settled,
+            SessionState::Running,
+            "the restart ended the adopted process",
+        );
+        let container = inspect(id).await;
+        assert_eq!(
+            container.state.as_ref().and_then(|state| state.running),
+            Some(true),
+            "the adopted container is no longer running",
         );
 
         let response = app
@@ -1115,12 +1113,33 @@ async fn a_restart_adopts_the_session_container_and_keeps_its_token() {
             .last()
             .and_then(|event| event["cost_usd"].as_f64())
             .expect("the second turn ended with a result");
-        assert!(
+        assert_eq!(
             // The live process carries on into the fixture's second turn; a
-            // relaunched one starts the fixture again at its first.
-            replied == fixture.turn(2).cumulative_cost
-                || replied == fixture.turn(1).cumulative_cost,
-            "a turn of the fixture should have replayed, not {replied}",
+            // relaunched one would have started the fixture again at its first.
+            replied,
+            fixture.turn(2).cumulative_cost,
+            "the second message was not answered by the process that took the first",
+        );
+        assert_eq!(
+            of_kind(&after, "init").len(),
+            1,
+            "a second `init` means a second process: {:?}",
+            kinds(&after),
+        );
+        let launches = of_kind(&after, "state_change")
+            .into_iter()
+            .filter(|event| event["to"] == "running")
+            .count();
+        assert_eq!(
+            launches,
+            1,
+            "the session was relaunched: {:?}",
+            kinds(&after)
+        );
+        assert_eq!(
+            reload(&app, id).await.container_id,
+            adopted.container_id,
+            "the second turn ran in another container",
         );
 
         // No gap and no duplicate, in the table's own terms: one row per

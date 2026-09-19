@@ -224,7 +224,12 @@ pub async fn prepare(
             let current = TaskRepository::new(&state.pool)
                 .find_handoff(project_id, *handoff_id)
                 .await?
-                .ok_or(Error::NotFound)?;
+                // The pointer matched a moment ago, so a missing row is a
+                // deletion racing this read: the caller's id is stale, which
+                // is the documented 409, not a 404 for the task it addressed.
+                .ok_or_else(|| {
+                    Error::Conflict("handoff_id is not the task's current hand-off".into())
+                })?;
 
             let source_session_id = current.source_session_id;
             let source_branch = current.source_branch.clone();

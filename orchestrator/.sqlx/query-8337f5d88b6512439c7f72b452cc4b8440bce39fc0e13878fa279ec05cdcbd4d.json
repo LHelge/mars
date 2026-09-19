@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE tasks\n            SET blocked = $3, updated_at = NOW()\n            WHERE id = $1 AND project_id = $2 AND blocked <> $3\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8337f5d88b6512439c7f72b452cc4b8440bce39fc0e13878fa279ec05cdcbd4d"
+}

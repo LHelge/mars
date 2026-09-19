@@ -204,6 +204,22 @@ impl<'a> TrackerMutation<'a> {
         Locked(&mut self.tx)
     }
 
+    /// The pool this mutation's transaction came from.
+    ///
+    /// Only so that a function taking `&mut TrackerMutation` can build the
+    /// `TaskRepository` whose helpers it then calls with
+    /// [`TrackerMutation::conn`] — the tracker's own compositions take the
+    /// mutation and nothing else, so they have no other way to reach one. It
+    /// is deliberately not a way around the lock: every tracker *write* takes
+    /// a [`Locked`], so a repository built from this pool can only read, and a
+    /// read outside the mutation is the pool read it already was (ADR 0021).
+    ///
+    /// The borrow is the mutation's own `'a`, not `&self`'s, so holding the
+    /// repository does not stop the caller from taking the token.
+    pub fn pool(&self) -> &'a PgPool {
+        self.pool
+    }
+
     /// Who is making this change.
     pub fn actor(&self) -> TaskActor {
         self.actor

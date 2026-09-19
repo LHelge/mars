@@ -212,6 +212,15 @@ impl TestApp {
             keyring,
         );
 
+        // The hook `main` installs, so a test that ends a session through the
+        // real path also runs the real release of the tasks it held
+        // (`tracker::hooks`). A test that wants to observe the hook instead
+        // installs its own on a clone of the state, which replaces this one.
+        let state = {
+            let hook = mars_orchestrator::tracker::session_ended_hook(&state);
+            state.with_session_ended_hook(hook)
+        };
+
         // The library's own router, so tests exercise the real middleware
         // stack. Once the authentication epic adds them, the
         // `integration-tests`-only routes (`SPEC.md`, "Test-only routes") are

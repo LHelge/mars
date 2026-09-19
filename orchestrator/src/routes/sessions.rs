@@ -1,8 +1,12 @@
 //! `/api/projects/{pid}/sessions` and `/api/sessions` (`SPEC.md`, "Sessions").
 //!
-//! The two lists, the create, the read, the retitle, the event page, the five
-//! action verbs and the delete. `GET /sessions/{id}/tasks` is the task
-//! tracker's and lives with it; everything else in the table is here.
+//! The two lists, the create, the read, the retitle, the event page, the task
+//! list, the five action verbs and the delete: every row of the table.
+//!
+//! `GET /sessions/{id}/tasks` is the tracker's content under a session's path,
+//! and it is here rather than in [`crate::routes::tasks`] because the path is
+//! a session's: one implementation, which the launch-for-task work reuses
+//! rather than repeats.
 //!
 //! **The resource half** is a row read, a row write or one launch handed to
 //! [`crate::session::Launcher`].
@@ -87,11 +91,12 @@ use crate::models::{
     default_title, validate_launch_prompt, validate_title,
 };
 use crate::prelude::*;
-use crate::repositories::{MAX_EVENT_PAGE, ProjectRepository, SessionRepository};
+use crate::repositories::{MAX_EVENT_PAGE, ProjectRepository, SessionRepository, TaskRepository};
 use crate::routes::{CurrentUser, Path, Query};
 use crate::session::{
     LaunchMode, McpToken, Phase, QueuedInput, SessionRegistry, SessionService, SubmitResult,
 };
+use crate::tracker::TaskDto;
 
 /// What a create against a project that has no repository to clone is told
 /// (409).
@@ -142,6 +147,7 @@ pub fn routes() -> Router<AppState> {
         .route("/", get(list))
         .route("/{id}", get(fetch).put(update).delete(remove))
         .route("/{id}/events", get(events))
+        .route("/{id}/tasks", get(tasks))
         .route(
             "/{id}/input",
             post(input).layer(DefaultBodyLimit::max(MAX_INPUT_BODY)),
@@ -442,6 +448,32 @@ async fn fetch(
     let session = SessionRepository::new(&state.pool).get(id).await?;
 
     Ok(Json(session))
+}
+
+/// `GET /sessions/{id}/tasks` → the tasks this session touched, most recently
+/// touched first (404 unknown session).
+///
+/// "Touched" is the `task_sessions` link (`docs/data-model.md`): the tasks it
+/// claimed, commented on, created or handed back, whether or not it still
+/// holds any of them — the session view lists them beside the task it was
+/// launched for (`SPEC.md`, "Frontend" → "Task board"). Full `Task` DTOs, so
+/// the panel needs no second request per row.
+///
+/// The session is read first, which is both the 404 and where the project to
+/// load the DTOs under comes from: a session belongs to one project and so
+/// does every task it can have touched. A task that was deleted took its link
+/// with it and is simply not listed.
+async fn tasks(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<TaskDto>>> {
+    let session = SessionRepository::new(&state.pool).get(id).await?;
+
+    let tasks = TaskRepository::new(&state.pool);
+    let rows = tasks.list_tasks_for_session(session.id).await?;
+
+    Ok(Json(tasks.load_task_dtos(session.project_id, &rows).await?))
 }
 
 /// `PUT /sessions/{id}` (`{ title }`).

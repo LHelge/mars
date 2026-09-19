@@ -255,6 +255,16 @@ async fn serve(bootstrap: Bootstrap) {
         keyring,
     );
 
+    // The tracker's side of a session ending: every path that makes a session
+    // `done` or `failed` releases the tasks it held
+    // (`ARCHITECTURE.md`, "Task tracker" → "Liveness comes from the session,
+    // not from tool calls"). Installed before recovery runs, so a session
+    // recovery fails at startup releases its leases too.
+    let state = {
+        let hook = mars_orchestrator::tracker::session_ended_hook(&state);
+        state.with_session_ended_hook(hook)
+    };
+
     // Step 2 and 3 of the restart procedure, and before either listener accepts
     // a request: an owner adopted here must be in the registry before a launch
     // or a resume can race it (`ARCHITECTURE.md`, "Restart procedure"). The

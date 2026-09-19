@@ -7,12 +7,21 @@
 //! that describes them commit together or not at all (ADR 0021, 0028):
 //!
 //! ```text
-//! resolve the state (400) → insert the row with its allocated number
+//! resolve the state (400) → resolve the provenance (400/404, sessions only)
+//!   → insert the row with its allocated number
 //!   → per dependency: cycle check (409) → insert the `blocks` edge (400)
+//!   → insert the `discovered_from` edge, if there is one to record
 //!   → emit `created` (the task *after* the edges)
-//!   → emit one `dependency_added` per edge, in `depends_on` order
+//!   → emit one `dependency_added` per edge, in `depends_on` order, then one
+//!     for the `discovered_from` edge
 //!   → recompute `blocked` for the task and its parent, emitting the flips
 //! ```
+//!
+//! The provenance is resolved *before* the insert although its edge is written
+//! after it: what it validates — the origin exists, it is held by this caller,
+//! or the caller holds exactly one task to infer it from — decides whether
+//! there is to be a task at all, and a rejected creation leaves nothing behind
+//! (`ARCHITECTURE.md`, "Task tracker" → "Discovery provenance").
 //!
 //! The `created` payload is loaded after the edges are inserted rather than
 //! straight from the insert, because `SPEC.md`, "TaskEvent" says the payload
@@ -51,6 +60,7 @@ use crate::repositories::tasks::StateFields;
 // dependency endpoint gives an out-of-project end, stated once.
 use crate::tracker::dependencies::DEPENDENCY_SCOPE;
 use crate::tracker::graph::{capture_before_delete, check_no_cycle, recompute_blocked};
+use crate::tracker::provenance::resolve_origin;
 use crate::tracker::state::{StateChangeOptions, StateEventKind, change_state, resolve_state};
 use crate::tracker::{TaskDto, TrackerMutation};
 
@@ -95,6 +105,14 @@ pub struct CreateTaskInput {
     pub parent: Option<Uuid>,
     /// The prerequisites, each becoming a `blocks` edge, in this order.
     pub depends_on: Vec<TaskRef>,
+    /// The task this one was discovered from, for a session's creation.
+    ///
+    /// Only the MCP tool supplies it, because only a session has an origin to
+    /// name (`SPEC.md`, `create_task`); REST has no such input and a
+    /// [`CreatedBy::User`] creation ignores whatever is here. Omitted, it is
+    /// inferred from what the session holds — see
+    /// [`resolve_origin`](crate::tracker::provenance::resolve_origin).
+    pub discovered_from: Option<TaskRef>,
     /// Whose creation this is.
     pub created_by: CreatedBy,
 }
@@ -120,8 +138,14 @@ pub struct CreateTaskInput {
 ///   entries — including the same task named once by number and once by UUID —
 ///   are inserted once rather than answered with the primary key's `dependency
 ///   already exists`: a caller asking twice for the edge it wants gets it.
+/// - the **provenance** of a session's creation is [`resolve_origin`]'s: the
+///   sole held task when nothing is named, the named one when it is held, 400
+///   when several are held and none is named, 404 when the named one is not a
+///   task of this project. A user's creation has none — REST has no such
+///   input — and the field is ignored for it rather than refused.
 /// - **`blocked`** is recomputed for the new task and its parent, and each
-///   flip emits its own event ([`recompute_blocked`]).
+///   flip emits its own event ([`recompute_blocked`]). The `discovered_from`
+///   edge takes no part in it: it is informational, and only `blocks` blocks.
 ///
 /// The returned [`TaskDto`] is read after all of that, so its `blocked` and
 /// `depends_on` are what the caller's 201 body should show. Any failure leaves
@@ -132,6 +156,15 @@ pub async fn create_task(m: &mut TrackerMutation<'_>, input: CreateTaskInput) ->
     let state = match input.state.as_deref() {
         Some(name) => Some(resolve_state(m, name).await?),
         None => None,
+    };
+
+    // Under the lock and before the row: an ambiguous or unfounded origin
+    // fails the creation whole.
+    let origin = match input.created_by {
+        CreatedBy::Session(session_id) => {
+            resolve_origin(m, session_id, input.discovered_from, input.parent).await?
+        }
+        CreatedBy::User(_) => None,
     };
 
     let mut new_task = NewTask::new(project_id, &input.title)?;
@@ -192,6 +225,22 @@ pub async fn create_task(m: &mut TrackerMutation<'_>, input: CreateTaskInput) ->
         edges.push(prerequisite.id);
     }
 
+    // The provenance edge, after the prerequisites and beside them: the same
+    // pair may carry both kinds, and a `blocks` entry naming the origin does
+    // not replace the record of where the task came from (`docs/data-model.md`,
+    // `task_dependencies`).
+    if let Some(origin) = origin {
+        repository
+            .insert_dependency(
+                m.conn(),
+                project_id,
+                inserted.id,
+                origin,
+                TaskDependencyKind::DiscoveredFrom,
+            )
+            .await?;
+    }
+
     // After the edges: the payload of `created` describes the task as it is
     // once the creation is complete, prerequisites and all.
     let created = repository
@@ -203,6 +252,9 @@ pub async fn create_task(m: &mut TrackerMutation<'_>, input: CreateTaskInput) ->
     for _ in &edges {
         m.emit_task(TaskEventKind::DependencyAdded, &created)?;
     }
+    if origin.is_some() {
+        m.emit_task(TaskEventKind::DependencyAdded, &created)?;
+    }
 
     let mut affected = vec![inserted.id];
     if let Some(parent_id) = inserted.parent_id {
@@ -211,12 +263,20 @@ pub async fn create_task(m: &mut TrackerMutation<'_>, input: CreateTaskInput) ->
     recompute_blocked(m, &affected).await?;
 
     m.touch_actor(inserted.id);
+    if let CreatedBy::Session(session_id) = input.created_by {
+        // Creating a task is the session having worked on it, whatever actor
+        // the mutation carries (`docs/data-model.md`, `task_sessions`; ADR
+        // 0030). Recorded once: `touch` deduplicates the pair `touch_actor`
+        // just wrote.
+        m.touch(inserted.id, session_id);
+    }
 
     info!(
         project_id = %project_id,
         task_id = %inserted.id,
         number = inserted.number,
         dependencies = edges.len(),
+        discovered_from = origin.is_some(),
         "task created",
     );
 

@@ -632,7 +632,7 @@ Anything outside this table is not used without being verified on both engines f
 - `ensure_network` — a network that already exists is `Ok` and is left exactly as it is, including when its own `internal` flag or driver disagrees with what was asked for (a warning, never a failure) and when a concurrent creation is what made it exist.
 - `image_exists` — an absent image is `Ok(false)`, never an error; every other failure propagates instead of being reported as absence.
 - `pull_image` — every failure is `ImagePull`, including one the engine reports inside an otherwise successful response stream.
-- `create` — a name already in use is `Conflict`; an image the engine does not have is `NotFound` naming the image. At most one create per engine host is in flight (the `UsernsMode` row).
+- `create` — a name already in use is `Conflict` (Docker and Podman 6 answer 409, the Podman 4 series 500, and the adapter reports both as a conflict); an image the engine does not have is `NotFound` naming the image. At most one create per engine host is in flight (the `UsernsMode` row).
 - `connect_network` — a container already on the network is `Ok`, so connecting is idempotent; a missing container or network is `NotFound`.
 - `start` — a container that is already running is `Ok`: both engines answer 304 and the adapter reads it as success, so a start that races another start cannot fail on it. A missing container is `NotFound`.
 - `stop` — a container that is not running, whether it has already exited or was never started, is `Ok`, because being stopped is what the caller asked for and it already is: both engines answer 304 and the adapter reads it as success. A missing container is `NotFound`.

@@ -1,10 +1,10 @@
 ---
 id: htyzj
 title: "Link tasks and sessions: GET /sessions/{id}/tasks and installing release_leases_for_session in the session end and failure hooks"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:46:59.309167546Z"
-updated: "2026-09-17T04:58:18.266318490Z"
+updated: "2026-09-19T12:58:28.673028953Z"
 tags:
   - orchestrator
   - tracker
@@ -13,6 +13,7 @@ depends_on:
   - "2sjtz"
   - f3bjb
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

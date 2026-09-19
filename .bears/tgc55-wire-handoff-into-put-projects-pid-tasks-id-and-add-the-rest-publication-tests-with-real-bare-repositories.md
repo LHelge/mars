@@ -1,10 +1,10 @@
 ---
 id: tgc55
 title: Wire handoff into PUT /projects/{pid}/tasks/{id} and add the REST publication tests with real bare repositories
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:42:54.014236664Z"
-updated: "2026-09-16T20:42:54.014236664Z"
+updated: "2026-09-19T22:29:08.382283485Z"
 tags:
   - orchestrator
   - tracker
@@ -14,6 +14,7 @@ depends_on:
   - "89kct"
   - gnzhv
 parent: xjaah
+attempts: 1
 ---
 
 ## Summary

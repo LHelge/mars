@@ -14,6 +14,7 @@ export { NotFoundPage } from "./NotFoundPage";
 export { ResetPasswordPage } from "./ResetPasswordPage";
 
 export { SettingsPage } from "./SettingsPage";
+export { SecretsPage } from "./SecretsPage";
 
 export { PlaceholderPage } from "./PlaceholderPage";
 export type { PlaceholderPageProps } from "./PlaceholderPage";

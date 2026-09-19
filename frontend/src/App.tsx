@@ -10,17 +10,20 @@ import { Route, Routes } from "react-router";
 import { AdminRoute } from "./components/AdminRoute";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { DashboardPage } from "./pages/DashboardPage";
+import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
+import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 
 export function App() {
   return (
     <Routes>
       {/* Reached without a session. */}
-      <Route path="/login" element={<PlaceholderPage title="Sign in" layout="auth" />} />
+      <Route path="/login" element={<LoginPage />} />
       <Route path="/invite/:token" element={<PlaceholderPage title="Accept invitation" layout="auth" />} />
-      <Route path="/forgot-password" element={<PlaceholderPage title="Forgot your password?" layout="auth" />} />
-      <Route path="/reset-password/:token" element={<PlaceholderPage title="Choose a new password" layout="auth" />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 
       <Route element={<ProtectedRoute />}>
         <Route path="/change-password" element={<PlaceholderPage title="Change your password" layout="auth" />} />

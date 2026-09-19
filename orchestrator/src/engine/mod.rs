@@ -300,13 +300,20 @@ pub async fn bootstrap_engine(config: &Config) -> Result<Arc<dyn ContainerEngine
     Ok(Arc::new(engine))
 }
 
-/// The engine fixture for tests that exercise no engine behaviour at all.
+/// The engine fixture for the tests that must compile *without* the
+/// `integration-tests` feature, and so cannot reach `mock::MockEngine`.
 ///
-/// The binary builds a [`BollardEngine`] through [`bootstrap_engine`]; this is
-/// what stands in the state of a test that only needs *an* engine — the
-/// shutdown test, which compiles without the `integration-tests` feature and
-/// so cannot reach `mock::MockEngine`, and the unit tests around [`AppState`]
-/// and the router.
+/// The binary builds a [`BollardEngine`] through [`bootstrap_engine`], and a
+/// test that wants engine behaviour uses the mock. This exists for the callers
+/// that have neither available:
+///
+/// - `routes::tests::the_test_routes_exist_only_behind_the_integration_tests_feature`,
+///   which asserts both sides of the feature gate and therefore has to build
+///   an [`AppState`] in either configuration. This is the one caller that
+///   cannot be converted, and so the one that keeps this type alive.
+/// - `prelude::state`'s unit tests, `routes::health`'s unreachable-database
+///   test and `tests/shutdown.rs`, which only need *an* engine and stay on the
+///   placeholder so they keep running in a plain `cargo test`.
 ///
 /// It answers `ping` with `Ok(())`, so `GET /api/health` reports
 /// `engine: true`, and every real operation with

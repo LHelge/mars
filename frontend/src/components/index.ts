@@ -1,5 +1,7 @@
 // Barrel for the shared UI kit (`SPEC.md`, "Frontend", Structure).
 
+export { AdminRoute } from "./AdminRoute";
+
 export { Alert } from "./Alert";
 export type { AlertKind, AlertProps } from "./Alert";
 
@@ -17,6 +19,8 @@ export type { LoadingStateProps } from "./LoadingState";
 
 export { PageLayout } from "./PageLayout";
 export type { PageLayoutProps } from "./PageLayout";
+
+export { ProtectedRoute } from "./ProtectedRoute";
 
 export { SectionHeader } from "./SectionHeader";
 export type { SectionHeaderProps } from "./SectionHeader";

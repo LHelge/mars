@@ -32,3 +32,17 @@ export type { AuthState, SignOutHandler, SignOutReason } from "./auth";
 
 export { getHealth } from "./health";
 export type { Health } from "./health";
+
+export {
+  changePassword,
+  createInvite,
+  deleteUser,
+  getMe,
+  getUser,
+  listInvites,
+  listUsers,
+  resendInvite,
+  revokeInvite,
+  updateMe,
+  updateUser,
+} from "./users";

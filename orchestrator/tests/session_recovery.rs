@@ -413,6 +413,22 @@ async fn wait_for_state(pool: &PgPool, session_id: Uuid, expected: &str) {
     }
 }
 
+/// Wait until the session's `container_id` is cleared, or fail.
+async fn wait_for_no_container(pool: &PgPool, session_id: Uuid) {
+    let deadline = tokio::time::Instant::now() + COMMIT_WITHIN;
+    loop {
+        let (_, container_column, _, _) = session_row(pool, session_id).await;
+        if container_column.is_none() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the session still records container {container_column:?}",
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// Spawn the owner a launch would have spawned, to commit the first part of a
 /// transcript before the restart being simulated.
 ///
@@ -775,6 +791,10 @@ async fn an_exited_container_parks_the_session_through_the_exit_rule() {
     );
 
     wait_for_state(&app.pool, fixture.session_id, "parked").await;
+    // The owner commits the transition first and cleans up after it — the
+    // container removed, then `container_id` cleared — so the clean-up is waited
+    // for like the state was, not read the instant the state shows.
+    wait_for_no_container(&app.pool, fixture.session_id).await;
     let (_, container_column, error, _) = session_row(&app.pool, fixture.session_id).await;
     assert_eq!(container_column, None);
     assert_eq!(error, None);

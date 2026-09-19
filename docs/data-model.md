@@ -96,6 +96,8 @@ Opaque refresh tokens, stored hashed. The raw token is two UUIDs joined by `.`; 
 
 Indexes: `refresh_tokens_user_id_idx (user_id)`, `refresh_tokens_expires_at_idx (expires_at)`.
 
+Validity — `revoked_at IS NULL AND expires_at > NOW()` — is decided by the lookup query, never by a predicate in application code: the refresh path re-reads the token with that clause inside the transaction that holds the user row lock, so the revocation race has one answer and a caller cannot forget to apply it.
+
 ### `user_invites`
 
 An admin invites an email address; the invitee follows the emailed link, chooses a username and password, and the user row is created when the invite is accepted. Tokens are single-use and expire after 7 days.
@@ -114,9 +116,11 @@ An admin invites an email address; the invitee follows the emailed link, chooses
 
 Indexes: UNIQUE `user_invites_open_email_idx ON user_invites (email) WHERE accepted_at IS NULL`, `user_invites_expires_at_idx (expires_at)`. Inviting an email that already belongs to a user is refused with a conflict. A background reaper deletes expired, unaccepted invites.
 
+Validity — `accepted_at IS NULL AND expires_at > NOW()` — is decided by the lookup query, which is why every lookup that may return an invite to act on carries that clause and there is no equivalent predicate in application code.
+
 ### `password_reset_tokens`
 
-Single-use tokens sent by email, valid for 1 hour from issuance. Successful password changes and resets invalidate every outstanding reset token for that user by setting `used_at`; consuming a reset link, changing the password and revoking logins commit together. A token must be unexpired and have null `used_at` when revalidated under the user lock.
+Single-use tokens sent by email, valid for 1 hour from issuance. Successful password changes and resets invalidate every outstanding reset token for that user by setting `used_at`; consuming a reset link, changing the password and revoking logins commit together. A token must be unexpired and have null `used_at` when revalidated under the user lock, and that revalidation is the lookup query's `WHERE` clause — `used_at IS NULL AND expires_at > NOW()` — rather than a check on a row already read.
 
 | Column | Type | Constraints |
 | --- | --- | --- |

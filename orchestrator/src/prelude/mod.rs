@@ -23,7 +23,7 @@ pub mod telemetry;
 
 pub use claims::{Claims, ClaimsError};
 pub use config::{Config, ConfigError, SecretsMasterKeySource};
-pub use error::{Error, Json, Result};
+pub use error::{Error, Json, Path, Query, Result};
 pub use state::{AppState, SessionEndedHook};
 pub use telemetry::{TelemetryError, init_tracing};
 
@@ -69,3 +69,30 @@ pub const INVITE_TTL: TimeDelta = TimeDelta::days(7);
 /// Added to a clock in exactly one place,
 /// [`crate::repositories::password_reset_tokens::expires_at`].
 pub const PASSWORD_RESET_TTL: TimeDelta = TimeDelta::hours(1);
+
+/// The message every failed authentication answers with (`SPEC.md`,
+/// "Authentication").
+///
+/// Here for the same reason as the lifetimes above: the extractors, the
+/// credential service and any future authenticating path all have to answer
+/// with the *same* string, because it is a contract the frontend is allowed to
+/// match on, and a message that is spelled twice is a message that will
+/// disagree once.
+///
+/// One message for a missing header, a forged token, an expired token, a
+/// deleted user, a superseded `auth_version` and a missing or revoked refresh
+/// cookie alike: which of them a caller tripped is not something they get to
+/// learn.
+pub const AUTHENTICATION_REQUIRED: &str = "authentication required";
+
+/// The message the password-change gate answers with (`SPEC.md`,
+/// "Authentication"). The frontend routes on this exact string.
+pub const PASSWORD_CHANGE_REQUIRED: &str = "password change required";
+
+/// The message a route refused to a non-administrator answers with
+/// (`SPEC.md`, "Authentication").
+///
+/// Both the administrator-only extractor and the self-service-or-administrator
+/// handlers use it, so a caller cannot tell an administrator-only route from a
+/// route they aimed at somebody else.
+pub const ADMIN_REQUIRED: &str = "admin required";

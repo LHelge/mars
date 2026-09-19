@@ -100,7 +100,6 @@ async fn a_token_survives_an_insert_find_revoke_round_trip() {
         inserted.expires_at,
     );
     assert_eq!(inserted.revoked_at, None);
-    assert!(inserted.is_usable(Utc::now()));
 
     // The unlocked lookup a refresh starts from.
     assert_eq!(
@@ -119,7 +118,8 @@ async fn a_token_survives_an_insert_find_revoke_round_trip() {
             .is_none()
     );
 
-    // The authoritative re-read, under the user-row lock.
+    // The authoritative re-read, under the user-row lock. Validity is the
+    // statement's, so a live token comes back and nothing is checked in Rust.
     let mut tx = pool.begin().await.unwrap();
     UserRepository::new(&pool)
         .lock_user(&mut tx, ada.id)
@@ -128,7 +128,7 @@ async fn a_token_survives_an_insert_find_revoke_round_trip() {
         .expect("the user exists");
     assert_eq!(
         repository
-            .find_by_hash_for_user(&mut tx, &fake_token_hash("live"), ada.id)
+            .find_usable_by_hash_for_user(&mut tx, &fake_token_hash("live"), ada.id)
             .await
             .unwrap()
             .as_ref(),
@@ -146,7 +146,17 @@ async fn a_token_survives_an_insert_find_revoke_round_trip() {
         .unwrap()
         .expect("the row is revoked, not deleted");
     assert!(revoked.revoked_at.is_some());
-    assert!(!revoked.is_usable(Utc::now()));
+    // And the locked lookup no longer offers it: the revocation is in its
+    // `WHERE` clause.
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        repository
+            .find_usable_by_hash_for_user(&mut tx, &fake_token_hash("live"), ada.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    tx.commit().await.unwrap();
 
     // Revoking a token that never existed is `false` as well.
     let mut tx = pool.begin().await.unwrap();
@@ -155,31 +165,49 @@ async fn a_token_survives_an_insert_find_revoke_round_trip() {
 }
 
 #[tokio::test]
-async fn find_by_hash_for_user_ignores_another_users_token() {
+async fn find_usable_by_hash_for_user_ignores_another_user_and_every_unusable_row() {
     let (_postgres, pool) = common::db::test_pool().await;
     let repository = RefreshTokenRepository::new(&pool);
 
     let ada = user(&pool, "ada", "ada@example.com").await;
     let grace = user(&pool, "grace", "grace@example.com").await;
     token(&pool, ada.id, "ada", in_an_hour()).await;
+    let an_hour_ago = Utc::now() - TimeDelta::try_hours(1).unwrap();
+    token(&pool, ada.id, "expired", an_hour_ago).await;
+    let revoked = token(&pool, ada.id, "revoked", in_an_hour()).await;
 
     let mut tx = pool.begin().await.unwrap();
+    assert!(repository.revoke(&mut tx, revoked.id).await.unwrap());
+
     // The hash exists; it is simply not Grace's, and the scope is in the
     // `WHERE` clause rather than in a check after the read.
     assert!(
         repository
-            .find_by_hash_for_user(&mut tx, &fake_token_hash("ada"), grace.id)
+            .find_usable_by_hash_for_user(&mut tx, &fake_token_hash("ada"), grace.id)
             .await
             .unwrap()
             .is_none()
     );
     assert!(
         repository
-            .find_by_hash_for_user(&mut tx, &fake_token_hash("ada"), ada.id)
+            .find_usable_by_hash_for_user(&mut tx, &fake_token_hash("ada"), ada.id)
             .await
             .unwrap()
             .is_some()
     );
+    // Validity is in the same `WHERE` clause: an expired or revoked row of the
+    // right user is not found either, so there is nothing left for a caller to
+    // check afterwards.
+    for label in ["expired", "revoked", "never-issued"] {
+        assert!(
+            repository
+                .find_usable_by_hash_for_user(&mut tx, &fake_token_hash(label), ada.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "{label} came back from the usable lookup",
+        );
+    }
     tx.commit().await.unwrap();
 }
 
@@ -217,7 +245,7 @@ async fn revoke_by_hash_revokes_once_and_never_errors() {
         .await
         .unwrap()
         .expect("the row exists");
-    assert!(!revoked.is_usable(Utc::now()));
+    assert!(revoked.revoked_at.is_some());
 }
 
 #[tokio::test]
@@ -233,15 +261,20 @@ async fn revoke_all_for_user_stops_at_that_user() {
     let already = token(&pool, ada.id, "already", in_an_hour()).await;
     token(&pool, grace.id, "grace", in_an_hour()).await;
 
+    // The single revocation commits on its own, so the timestamp it wrote can
+    // be read back from the pool and compared with what survives the sweep.
     let mut tx = pool.begin().await.unwrap();
     assert!(repository.revoke(&mut tx, already.id).await.unwrap());
+    tx.commit().await.unwrap();
     let revoked_first_at = repository
-        .find_by_hash_for_user(&mut tx, &fake_token_hash("already"), ada.id)
+        .find_by_hash(&fake_token_hash("already"))
         .await
         .unwrap()
         .expect("the token exists")
         .revoked_at;
+    assert!(revoked_first_at.is_some());
 
+    let mut tx = pool.begin().await.unwrap();
     // Two of the three: the one revoked a moment ago is already out.
     assert_eq!(
         repository
@@ -266,7 +299,7 @@ async fn revoke_all_for_user_stops_at_that_user() {
             .await
             .unwrap()
             .expect("the row exists");
-        assert!(!stored.is_usable(Utc::now()), "{label} is still usable");
+        assert!(stored.revoked_at.is_some(), "{label} is still usable");
     }
     // The earlier revocation kept its own timestamp.
     assert_eq!(
@@ -285,7 +318,8 @@ async fn revoke_all_for_user_stops_at_that_user() {
             .await
             .unwrap()
             .expect("the row exists")
-            .is_usable(Utc::now())
+            .revoked_at
+            .is_none()
     );
 }
 
@@ -352,7 +386,7 @@ async fn a_refresh_waiting_on_the_user_lock_reads_the_revocation() {
         .await
         .unwrap()
         .expect("the token exists");
-    assert!(seen.is_usable(Utc::now()));
+    assert!(seen.revoked_at.is_none());
 
     // Meanwhile a password change takes the user row and revokes everything.
     let mut holder = pool.begin().await.unwrap();
@@ -375,7 +409,7 @@ async fn a_refresh_waiting_on_the_user_lock_reads_the_revocation() {
         // The documented order: the user row, then that user's token row.
         let user = users.lock_user(&mut tx, ada.id).await.unwrap();
         let token = tokens
-            .find_by_hash_for_user(&mut tx, &waiting_cookie, ada.id)
+            .find_usable_by_hash_for_user(&mut tx, &waiting_cookie, ada.id)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -400,12 +434,11 @@ async fn a_refresh_waiting_on_the_user_lock_reads_the_revocation() {
         1,
         "the refresh revalidated against a stale user row",
     );
-    let token = token.expect("the row is revoked, not deleted");
     assert!(
-        !token.is_usable(Utc::now()),
+        token.is_none(),
         "the refresh would have escaped revocation with a revoked token",
     );
     // The row read before waiting still says otherwise, which is exactly why
     // the re-read under the lock is the authoritative one.
-    assert!(seen.is_usable(Utc::now()));
+    assert!(seen.revoked_at.is_none());
 }

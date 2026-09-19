@@ -39,7 +39,7 @@
 //! they lose is [`AdminUser`].
 
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -314,14 +314,6 @@ async fn remove(
 
 // ---- password ----
 
-/// The 403 a non-administrator gets for aiming this route at somebody else.
-///
-/// The same string `routes::extractors` uses for an administrator-only route:
-/// this one is not administrator-only — it is self-service *or* administrator
-/// — so the check is in the handler rather than in [`AdminUser`], but a caller
-/// must not be able to tell the two situations apart.
-const ADMIN_REQUIRED: &str = "admin required";
-
 /// `POST /users/{id}/password` (`{ current_password?, password }`).
 ///
 /// `current_password` is required when `id` is the caller's own id and ignored
@@ -376,6 +368,10 @@ async fn change_password(
 
     if !own && !caller.admin {
         debug!(user_id = %id, actor_id = %caller.id, "password change refused: not an administrator");
+        // The prelude's one spelling, the same one [`AdminUser`] answers with:
+        // this route is self-service *or* administrator rather than
+        // administrator-only, so the check is here instead of in the
+        // extractor, but a caller must not be able to tell the two apart.
         return Err(Error::Forbidden(ADMIN_REQUIRED.to_string()));
     }
 

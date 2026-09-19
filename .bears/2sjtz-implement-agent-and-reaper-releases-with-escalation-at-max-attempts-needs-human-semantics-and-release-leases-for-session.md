@@ -1,10 +1,10 @@
 ---
 id: "2sjtz"
 title: Implement agent and reaper releases with escalation at max_attempts, needs_human semantics, and release_leases_for_session
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:45:32.563509460Z"
-updated: "2026-09-19T12:07:12.969796731Z"
+updated: "2026-09-19T12:44:36.086673219Z"
 tags:
   - orchestrator
   - tracker

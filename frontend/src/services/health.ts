@@ -1,5 +1,7 @@
-// Temporary: the Frontend foundation epic replaces this with `apiClient.ts`.
-// Components never call `fetch`; every request goes through `services/`.
+// `GET /api/health` — unauthenticated, like the invite lookup; every other
+// request carries the bearer token.
+
+import { apiGet } from "./apiClient";
 
 export interface Health {
   orchestrator: boolean;
@@ -7,10 +9,6 @@ export interface Health {
   engine: boolean;
 }
 
-export async function getHealth(): Promise<Health> {
-  const response = await fetch("/api/health");
-  if (!response.ok) {
-    throw new Error(`health check failed with ${String(response.status)}`);
-  }
-  return (await response.json()) as Health;
+export function getHealth(): Promise<Health> {
+  return apiGet<Health>("/health");
 }

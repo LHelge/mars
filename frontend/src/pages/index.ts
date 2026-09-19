@@ -1,6 +1,7 @@
 // Barrel for the route-level pages (`SPEC.md`, "Frontend", Structure).
 
 export { ChangePasswordPage } from "./ChangePasswordPage";
+export { AcceptInvitePage } from "./AcceptInvitePage";
 
 export { DashboardPage } from "./DashboardPage";
 export { ForgotPasswordPage } from "./ForgotPasswordPage";

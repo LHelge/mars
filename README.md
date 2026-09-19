@@ -163,7 +163,7 @@ mars/
 ├── .github/workflows/  CI: orchestrator, frontend, e2e, images
 ├── .env.example
 ├── images/             session container images (claude/, stub/)
-├── nginx/              (planned) nginx.conf and Dockerfile for the frontend image
+├── nginx/              nginx.conf and default.conf.template; (planned) Dockerfile for the frontend image
 └── compose.yml         (planned)
 ```
 

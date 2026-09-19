@@ -1,0 +1,94 @@
+# Mars frontend server block.
+#
+# The official nginx image renders /etc/nginx/templates/*.template with envsubst at
+# container start; the nginx Dockerfile copies this file to
+# /etc/nginx/templates/default.conf.template.
+#
+# The only substituted variables are ${ORCHESTRATOR_HOST} and ${API_PORT}. A template
+# has no default mechanism of its own, so the defaults (`orchestrator` and `7000`,
+# matching README.md "Configuration") belong in the image's ENV, set by the nginx
+# Dockerfile. That Dockerfile should also set
+# NGINX_ENVSUBST_FILTER='^(ORCHESTRATOR_HOST|API_PORT)$' so envsubst cannot touch
+# nginx's own $host, $uri, $http_upgrade and friends.
+#
+# TLS: v1 listens on plain HTTP inside the compose network. The operator terminates
+# TLS in front of this container (host reverse proxy, Caddy, cloud load balancer) or
+# replaces this template; PUBLIC_URL tells the orchestrator which scheme the browser
+# sees. No certificate is shipped here.
+#
+# The MCP listener is deliberately absent from every location below: it has its own
+# port and is reachable only over the internal mars-sessions network, because nginx
+# never forwards to it (ARCHITECTURE.md, "Networks").
+
+server {
+    listen 80;
+    server_name _;
+
+    server_tokens off;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Session WebSocket: GET /ws/sessions/{id}?after=&token=
+    location /ws/ {
+        proxy_pass http://${ORCHESTRATOR_HOST}:${API_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # The orchestrator pings every 30 s; an hour of read timeout is ample.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        access_log /var/log/nginx/access.log noquery;
+    }
+
+    # Task SSE: GET /api/projects/{pid}/tasks/stream?token=
+    # A regex location so it is matched before the /api/ prefix location (which is
+    # deliberately not marked ^~).
+    location ~ ^/api/projects/[^/]+/tasks/stream$ {
+        proxy_pass http://${ORCHESTRATOR_HOST}:${API_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Connection '';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding off;
+        proxy_read_timeout 3600s;
+        access_log /var/log/nginx/access.log noquery;
+    }
+
+    # REST API. The token travels in the Authorization header here, so the default
+    # `main` log format is fine.
+    location /api/ {
+        proxy_pass http://${ORCHESTRATOR_HOST}:${API_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        client_max_body_size 10m;
+    }
+
+    # Hashed Vite build output.
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # Client-side routes (SPEC.md, "Frontend") fall back to the SPA shell.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

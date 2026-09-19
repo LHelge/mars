@@ -1,10 +1,10 @@
 ---
 id: bq5mf
 title: "Verify diff by handoff_id end to end: project-scoped lookup through task_handoffs, no sync, pinned commit after the branch advanced"
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:43:43.810994158Z"
-updated: "2026-09-16T20:43:43.810994158Z"
+updated: "2026-09-19T23:34:22.125482690Z"
 tags:
   - orchestrator
   - git
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - tgc55
 parent: xjaah
+attempts: 1
 ---
 
 ## Summary

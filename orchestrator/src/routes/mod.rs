@@ -62,6 +62,11 @@ pub fn routes() -> Router<AppState> {
                 .merge(task_states::routes())
                 .merge(tasks::project_routes()),
         )
+        // `/projects/{pid}/tasks/stream`, spelled in full rather than nested:
+        // the `/projects` prefix above already has its one `nest`, and the SSE
+        // handler lives in `sse/` beside `ws/` rather than among the resource
+        // modules (`ARCHITECTURE.md`, "Orchestrator internals").
+        .merge(crate::sse::routes())
         .nest("/secrets", secrets::routes())
         .nest("/sessions", sessions::routes())
         .nest("/tasks", tasks::routes())

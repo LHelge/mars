@@ -1,10 +1,10 @@
 ---
 id: kc58a
 title: "One home per validity predicate, message constant and extractor wrapper: delete the dead model predicates and Config helper, move Path and Query wrappers into the prelude"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-17T20:03:18.554114346Z"
-updated: "2026-09-19T14:30:19.836837594Z"
+updated: "2026-09-19T14:53:11.059858860Z"
 tags:
   - orchestrator
   - auth

@@ -1,10 +1,10 @@
 ---
 id: f9jw3
 title: One home for secret scope, limit and name validity and one SecretMeta projection; trim the HTTP secrets tests to transport concerns
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-17T20:04:04.631008504Z"
-updated: "2026-09-17T20:04:04.631008504Z"
+updated: "2026-09-19T13:43:07.496176587Z"
 tags:
   - orchestrator
   - secrets
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - psybz
 parent: zeccj
+attempts: 1
 ---
 
 ## Summary

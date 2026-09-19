@@ -17,6 +17,7 @@ pub mod projects;
 pub mod secrets;
 pub mod sessions;
 pub mod shared_dirs;
+pub mod task_states;
 pub mod tasks;
 pub mod throttle;
 pub mod users;
@@ -53,6 +54,7 @@ pub fn routes() -> Router<AppState> {
                 .merge(profiles::routes())
                 .merge(sessions::project_routes())
                 .merge(shared_dirs::routes())
+                .merge(task_states::routes())
                 .merge(tasks::project_routes()),
         )
         .nest("/secrets", secrets::routes())

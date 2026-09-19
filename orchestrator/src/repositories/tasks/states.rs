@@ -129,20 +129,20 @@ impl TaskRepository<'_> {
     /// `name` breaks ties, which packed positions make impossible, but it
     /// keeps the order total for free.
     pub async fn list_states(&self, project_id: Uuid) -> Result<Vec<TaskState>> {
-        let states = sqlx::query_as!(
-            TaskState,
-            r#"
-            SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
-            FROM task_states
-            WHERE project_id = $1
-            ORDER BY position, name
-            "#,
-            project_id,
-        )
-        .fetch_all(self.pool)
-        .await?;
+        states_in_order(self.pool, project_id).await
+    }
 
-        Ok(states)
+    /// The same list, read under the caller's lock.
+    ///
+    /// What a board edit's `states_changed` payload is built from: the event
+    /// carries "the full list after the change" (`SPEC.md`, "TaskEvent"), and
+    /// the change is still uncommitted, so the pool read above cannot see it.
+    pub async fn list_states_in(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+    ) -> Result<Vec<TaskState>> {
+        states_in_order(&mut *tx, project_id).await
     }
 
     /// The state with this id in this project, or `None`.
@@ -173,20 +173,22 @@ impl TaskRepository<'_> {
         project_id: Uuid,
         name: &str,
     ) -> Result<Option<TaskState>> {
-        let state = sqlx::query_as!(
-            TaskState,
-            r#"
-            SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
-            FROM task_states
-            WHERE project_id = $1 AND name = $2
-            "#,
-            project_id,
-            name,
-        )
-        .fetch_optional(self.pool)
-        .await?;
+        state_by_name(self.pool, project_id, name).await
+    }
 
-        Ok(state)
+    /// The same lookup under the caller's lock.
+    ///
+    /// Every board edit addresses its state by name and then changes it, so
+    /// the resolution belongs inside the mutation: resolved from the pool, a
+    /// concurrent rename between the lookup and the change would send the edit
+    /// to whatever row now answers to that name.
+    pub async fn find_state_by_name_in(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        name: &str,
+    ) -> Result<Option<TaskState>> {
+        state_by_name(&mut *tx, project_id, name).await
     }
 
     /// Rename a state, keeping its id, kind and position.
@@ -596,6 +598,57 @@ impl TaskRepository<'_> {
 
         state.ok_or(Error::NotFound)
     }
+}
+
+/// The project's states in board order, from the pool or from inside a
+/// mutation.
+///
+/// One query text for both readers, so the board order is defined once and
+/// `.sqlx/` carries one entry for it.
+async fn states_in_order<'e, E>(executor: E, project_id: Uuid) -> Result<Vec<TaskState>>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let states = sqlx::query_as!(
+        TaskState,
+        r#"
+        SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
+        FROM task_states
+        WHERE project_id = $1
+        ORDER BY position, name
+        "#,
+        project_id,
+    )
+    .fetch_all(executor)
+    .await?;
+
+    Ok(states)
+}
+
+/// One state of this project by name, from the pool or from inside a
+/// mutation.
+async fn state_by_name<'e, E>(
+    executor: E,
+    project_id: Uuid,
+    name: &str,
+) -> Result<Option<TaskState>>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let state = sqlx::query_as!(
+        TaskState,
+        r#"
+        SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
+        FROM task_states
+        WHERE project_id = $1 AND name = $2
+        "#,
+        project_id,
+        name,
+    )
+    .fetch_optional(executor)
+    .await?;
+
+    Ok(state)
 }
 
 /// The one `INSERT` into `task_states`, shared by the default set and the

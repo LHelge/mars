@@ -205,7 +205,9 @@ jobs:
 
       # Both implementations interpolate ${DATA_DIR_HOST} and
       # ${ENGINE_SOCKET_HOST} from `.env`; the placeholder paths in
-      # `.env.example` need not exist for `config`, only be syntactically valid.
+      # `.env.example` need not exist for `config`, only be syntactically
+      # valid. ${DOCKER_GID} has no default and `compose.docker.yml` demands
+      # it, so `.env.example` carrying it is what keeps this job renderable.
       # The explicit `-f` flags override the COMPOSE_FILE in it.
       - name: Create .env from the example
         run: cp .env.example .env
@@ -241,15 +243,20 @@ jobs:
 
       # ARCHITECTURE.md, "Uid contract": rootless Podman maps the service user
       # onto the container uid with keep-id, Docker runs the container as uid
-      # 1000 outright. Each override exists for exactly that one line (ADR
-      # 0035), so losing it is the failure this job is here to catch.
+      # 1000 outright and needs the host `docker` group on top. Each override
+      # exists for exactly that (ADR 0035), so losing a line of it is the
+      # failure this job is here to catch.
       - name: The Podman override keeps the user namespace mapping
         run: |
           grep -q 'userns_mode: keep-id' "${RUNNER_TEMP}/podman-config.yml"
 
-      - name: The Docker override keeps uid 1000
+      - name: The Docker override keeps uid 1000 and the docker group
         run: |
           grep -qE 'user: "?1000:1000"?' "${RUNNER_TEMP}/docker-config.yml"
+          # Without group_add, uid 1000 cannot open the root:docker 0660 socket
+          # and the orchestrator restart-loops (ARCHITECTURE.md, "Uid
+          # contract"). DOCKER_GID comes from `.env`, here the example's 999.
+          grep -q 'group_add:' "${RUNNER_TEMP}/docker-config.yml"
 
       # ARCHITECTURE.md, "Networks": neither the API (7000) nor the MCP
       # listener (7001) is published to the host — everything from outside

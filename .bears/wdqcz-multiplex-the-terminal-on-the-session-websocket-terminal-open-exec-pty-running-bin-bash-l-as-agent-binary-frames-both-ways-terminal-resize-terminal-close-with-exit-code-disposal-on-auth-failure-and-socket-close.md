@@ -1,10 +1,10 @@
 ---
 id: wdqcz
 title: "Multiplex the terminal on the session WebSocket: terminal_open exec PTY running /bin/bash -l as agent, binary frames both ways, terminal_resize, terminal_close with exit code, disposal on auth failure and socket close"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:47:12.486453581Z"
-updated: "2026-09-19T22:25:56.868961076Z"
+updated: "2026-09-19T23:23:18.647718987Z"
 tags:
   - orchestrator
   - realtime

@@ -1,10 +1,10 @@
 ---
 id: "6f23c"
 title: Exercise the terminal exec contract in tests/engine.rs on both engines through the ws Terminal adapter
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-16T20:48:18.817672676Z"
-updated: "2026-09-16T20:48:18.817672676Z"
+updated: "2026-09-19T23:23:20.572941044Z"
 tags:
   - orchestrator
   - realtime
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - wdqcz
 parent: h8kw9
+attempts: 1
 ---
 
 ## Summary

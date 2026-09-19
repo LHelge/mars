@@ -16,6 +16,7 @@ pub mod health;
 pub mod profiles;
 pub mod projects;
 pub mod secrets;
+pub mod sessions;
 pub mod shared_dirs;
 pub mod throttle;
 pub mod users;
@@ -34,17 +35,19 @@ pub fn routes() -> Router<AppState> {
         .merge(health::routes())
         .nest("/auth", auth::routes())
         // One `nest` per prefix — axum panics on two at the same path — so the
-        // git, profile and shared-directory routes, which carry their own
-        // `{pid}/…` paths, are merged into the projects router rather than
-        // nested beside it.
+        // git, profile, shared-directory and project-scoped session routes,
+        // which carry their own `{pid}/…` paths, are merged into the projects
+        // router rather than nested beside it.
         .nest(
             "/projects",
             projects::routes()
                 .merge(git::routes())
                 .merge(profiles::routes())
+                .merge(sessions::project_routes())
                 .merge(shared_dirs::routes()),
         )
         .nest("/secrets", secrets::routes())
+        .nest("/sessions", sessions::routes())
         .nest("/users", users::routes());
 
     // The only routes with a prefix of their own, because `SPEC.md`,

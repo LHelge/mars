@@ -1,5 +1,6 @@
 //! A ready project with a real repository, for the code hand-off suites
-//! (`tests/tracker_handoffs.rs`, `tests/handoffs_service.rs`).
+//! (`tests/tracker_handoffs.rs`, `tests/handoffs_service.rs`,
+//! `tests/handoffs_api.rs`).
 //!
 //! The arrangement every hand-off case needs and none of it is the thing under
 //! test: a real bare upstream, a real project repository under the `TestApp`'s
@@ -28,7 +29,7 @@ use mars_orchestrator::repositories::{ProjectRepository, SessionRepository, Task
 use mars_orchestrator::tracker::TrackerMutation;
 use uuid::Uuid;
 
-use super::TestApp;
+use super::{AuthenticatedUser, TestApp};
 
 /// Not a real remote: the fixture value every project test stores (rule 3).
 const TEST_REMOTE: &str = "https://git.example.com/fake/repo.git";
@@ -181,6 +182,54 @@ impl Fixture {
         (session_id, commit)
     }
 
+    /// One more commit in a session's work clone, the way an agent's next
+    /// commit arrives: written, committed, and *not* fetched back.
+    pub async fn commit_in_work_clone(
+        &self,
+        session_id: Uuid,
+        file: &str,
+        content: &str,
+    ) -> String {
+        let work = self.paths().session_work(session_id);
+        std::fs::write(work.join(file), format!("{content}\n")).expect("the file is written");
+        run_git(&work, &["add", "--", file]).await;
+        run_git(&work, &["commit", "--quiet", "-m", content]).await;
+
+        run_git(&work, &["rev-parse", "HEAD"])
+            .await
+            .trim()
+            .to_string()
+    }
+
+    /// A session of a *different* project, for the cross-project refusals.
+    ///
+    /// The other project needs no repository: a source session that is not
+    /// this project's is refused before any git work happens.
+    pub async fn session_in_another_project(&self) -> Uuid {
+        let projects = ProjectRepository::new(&self.app.pool);
+
+        let new_project = NewProject::new(
+            &format!("other-{}", &Uuid::new_v4().simple().to_string()[..8]),
+            TEST_REMOTE,
+        )
+        .expect("the project is valid");
+
+        let mut tx = self.app.pool.begin().await.expect("a transaction begins");
+        let other = projects
+            .insert(&mut tx, &new_project)
+            .await
+            .expect("the project inserts");
+        let profile = NewAgentProfile::new(other.id, "default", "localhost/mars-session:test")
+            .expect("the profile is valid");
+        let profile = projects
+            .insert_profile(&mut tx, &profile)
+            .await
+            .expect("the profile inserts");
+        tx.commit().await.expect("the transaction commits");
+
+        self.seed_session_in(other.id, profile.id).await
+    }
+
     /// Fetch a session's branch into the project repository, as the revision
     /// publication that produced the hand-off being forwarded would have.
     pub async fn sync(&self, session_id: Uuid) {
@@ -290,6 +339,20 @@ impl Fixture {
         refs::list_handoffs(&self.paths().project_repo(self.project.id))
             .await
             .expect("the hand-off refs list")
+    }
+
+    /// The fixture's user, as the HTTP suites act: the same row with a valid
+    /// access token minted from the harness configuration.
+    ///
+    /// The refresh cookie is empty, as it is for every user this harness
+    /// created outside a route that sets one (`TestApp::create_gated_user`);
+    /// no hand-off scenario refreshes.
+    pub fn signed_in(&self) -> AuthenticatedUser {
+        AuthenticatedUser {
+            user: self.user.clone(),
+            access_token: self.app.token_for(&self.user),
+            refresh_cookie: String::new(),
+        }
     }
 
     pub fn user_caller(&self) -> HandoffCaller {

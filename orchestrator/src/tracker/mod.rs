@@ -34,6 +34,7 @@ pub mod hooks;
 pub mod leases;
 pub mod mutation;
 pub mod state;
+pub mod states;
 pub mod tasks;
 
 use crate::prelude::*;
@@ -52,6 +53,7 @@ pub use leases::{
 };
 pub use mutation::{Locked, MutationOutcome, TrackerMutation};
 pub use state::{StateChangeOptions, StateChangeResult, StateEventKind};
+pub use states::{NewStateInput, StateUpdate, create_state, delete_state, update_state};
 pub use tasks::{CreateTaskInput, CreatedBy, create_task};
 pub use tasks::{UpdateOutcome, UpdateTaskInput, delete_task, update_task};
 

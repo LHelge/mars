@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, project_id, name, kind as \"kind: TaskStateKind\", position, created_at\n            FROM task_states\n            WHERE project_id = $1\n            ORDER BY position, name\n            ",
+  "query": "\n        SELECT id, project_id, name, kind as \"kind: TaskStateKind\", position, created_at\n        FROM task_states\n        WHERE project_id = $1 AND name = $2\n        ",
   "describe": {
     "columns": [
       {
@@ -83,7 +83,8 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -95,5 +96,5 @@
       false
     ]
   },
-  "hash": "b5a17662375c322a7b3d98c45e7ac7dc23f9ba4a1efec43c013f9b55dca24442"
+  "hash": "2846df05b21b93b8b1099d82dc6a1680bb39aca48ecf9af4083eb919d04c6b69"
 }

@@ -31,7 +31,7 @@ use std::time::Duration;
 use common::TestApp;
 use mars_orchestrator::git::testutil::{TestUpstream, run_git, test_identity};
 use mars_orchestrator::git::{
-    DataPaths, DiffSelector, GitActor, GitError, GitRef, GitService, WorkTreeOutcome,
+    DataPaths, DiffSelector, GitActor, GitError, GitRef, GitService, PinnedSource, WorkTreeOutcome,
     create_work_clone, init_project_repo, refs, resolve_base,
 };
 use mars_orchestrator::models::{
@@ -428,8 +428,11 @@ async fn a_pinned_commit_is_merged_under_the_callers_own_lock_without_syncing() 
         service
             .merge_commit(
                 &guard,
-                &pinned,
-                &handoff_id.to_string(),
+                PinnedSource {
+                    commit: &pinned,
+                    label: &handoff_id.to_string(),
+                    participants: &[session_id],
+                },
                 "main",
                 Some("chore: merge the approved hand-off"),
                 &GitActor::Session(session_id),

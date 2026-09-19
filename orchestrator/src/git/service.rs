@@ -81,6 +81,7 @@ use crate::models::{
 };
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, SessionRepository, TaskRepository};
+use crate::tracker::handoffs::TaskHandoffVerifier;
 
 /// The `kind` column every outcome event is written under (`SPEC.md`,
 /// "AgentEvent").
@@ -133,8 +134,31 @@ pub enum DiffSelector {
 pub struct ApprovedHandoff {
     /// The full object id retained under `refs/handoffs/<id>` (ADR 0018).
     pub commit: String,
-    /// The branch the hand-off was published from, for the outcome event.
+    /// The branch the hand-off was published from, for the merge message.
     pub source_branch: String,
+    /// The session that published it, when it still exists: the one session
+    /// besides the caller that is told about the merge (`SPEC.md`,
+    /// "AgentEvent" — the event is written on every session whose work took
+    /// part). `None` once that session has been deleted.
+    pub source_session_id: Option<Uuid>,
+}
+
+/// The source half of [`GitService::merge_commit`]: a commit that is merged
+/// without resolving or syncing any branch.
+///
+/// Three values rather than three parameters, because they are one thing — a
+/// pinned source — and a merge already takes a guard, a target, a message and
+/// an actor.
+#[derive(Debug, Clone, Copy)]
+pub struct PinnedSource<'a> {
+    /// The full object id to merge.
+    pub commit: &'a str,
+    /// What the outcome event calls this source (`SPEC.md`, "AgentEvent"):
+    /// the hand-off id for a task merge.
+    pub label: &'a str,
+    /// The sessions whose work took part, which are told about the outcome
+    /// beside the calling one.
+    pub participants: &'a [Uuid],
 }
 
 /// Who decides whether a `{task_id, handoff_id}` pair may be merged.
@@ -168,12 +192,15 @@ pub trait HandoffVerifier: Send + Sync {
 /// What a task merge answers while no verifier is installed (409).
 const NO_HANDOFFS: &str = "task hand-offs are not available";
 
-/// The verifier a [`GitService`] carries until the hand-off epic injects its
-/// own with [`GitService::with_handoff_verifier`].
+/// The verifier a bare [`GitService::new`] carries until one is injected with
+/// [`GitService::with_handoff_verifier`].
 ///
 /// It refuses every task merge with the documented conflict rather than
 /// pretending to approve one: an orchestrator that cannot read a hand-off's
-/// review status must never merge on its behalf.
+/// review status must never merge on its behalf. Every production service is
+/// built by [`GitService::from_state`], which installs
+/// [`TaskHandoffVerifier`](crate::tracker::handoffs::TaskHandoffVerifier)
+/// instead, so this is what the git suite's own fixtures see.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoHandoffs;
 
@@ -227,10 +254,9 @@ impl GitService {
 
     /// The same service with `handoffs` deciding its task merges.
     ///
-    /// How "Code hand-offs and review" installs the real verifier without
-    /// another [`AppState`] field: the caller that has one builds the service
-    /// and wraps it, and every other call site keeps the [`NoHandoffs`]
-    /// default.
+    /// How the real verifier is installed without another [`AppState`] field:
+    /// [`GitService::from_state`] builds the service and wraps it, and every
+    /// other call site keeps the [`NoHandoffs`] default.
     #[must_use]
     pub fn with_handoff_verifier(mut self, handoffs: Arc<dyn HandoffVerifier>) -> Self {
         self.handoffs = handoffs;
@@ -238,7 +264,20 @@ impl GitService {
     }
 
     /// The service the handlers use: the same pool, the same lock table and
-    /// the same credential provider the rest of the process shares.
+    /// the same credential provider the rest of the process shares, with the
+    /// real hand-off verifier installed.
+    ///
+    /// The one composition point, rather than an [`AppState`] field: a
+    /// [`TaskHandoffVerifier`](crate::tracker::handoffs::TaskHandoffVerifier)
+    /// is a pool handle, so building one per request costs nothing, and every
+    /// production caller — the REST routes, the MCP tools, the session
+    /// endpoints, the launcher — reaches a service through here.
+    ///
+    /// It is also the only place `git/` names a `tracker::` type. The
+    /// dependency does not invert: [`HandoffVerifier`] and the merge are
+    /// entirely this module's, and the tracker's implementation of the trait
+    /// is chosen *here* rather than reached for from the merge, which is what
+    /// keeps the seam one-way (`ARCHITECTURE.md`, "Git model").
     pub fn from_state(state: &AppState) -> Self {
         Self::new(
             state.pool.clone(),
@@ -246,6 +285,7 @@ impl GitService {
             Arc::clone(&state.git_locks),
             Arc::clone(&state.git_credentials),
         )
+        .with_handoff_verifier(Arc::new(TaskHandoffVerifier::new(state.pool.clone())))
     }
 
     /// Fetch this project's upstream (`ARCHITECTURE.md`, "Git model", Project
@@ -529,13 +569,12 @@ impl GitService {
     /// rebase, push): the hand-off epic verifies under this very guard that
     /// the commit is the task's current, approved hand-off and then calls
     /// this, which is why nothing here syncs — the source is a commit, not a
-    /// branch that may have moved. `source_label` is what the outcome event
-    /// calls it, usually the hand-off id.
+    /// branch that may have moved. [`PinnedSource`] is the commit, the name
+    /// the outcome event gives it and the sessions it belongs to.
     pub async fn merge_commit(
         &self,
         guard: &ProjectGitGuard,
-        source_commit: &str,
-        source_label: &str,
+        source: PinnedSource<'_>,
         target: &str,
         message: Option<&str>,
         actor: &GitActor,
@@ -545,9 +584,9 @@ impl GitService {
 
         // Through the parser rather than trusted: it is the one place that
         // knows what an object id looks like, and this one reaches argv.
-        let source_ref = GitRef::parse(source_commit)?;
+        let source_ref = GitRef::parse(source.commit)?;
         let GitRef::Commit(commit) = source_ref else {
-            return Err(GitError::InvalidRef(source_commit.to_string()).into());
+            return Err(GitError::InvalidRef(source.commit.to_string()).into());
         };
 
         let resolved = ResolvedRef {
@@ -558,10 +597,10 @@ impl GitService {
             .run_merge(guard, &resolved, &target_ref, message, actor)
             .await?;
 
-        let targets = self.event_targets(&[], actor);
+        let targets = self.event_targets(source.participants, actor);
         self.record_merge(
             outcome,
-            source_label,
+            source.label,
             &target_ref.api_name(),
             actor,
             &targets,
@@ -580,8 +619,14 @@ impl GitService {
     /// hand-off pinned, not a branch that may have moved since.
     ///
     /// A stale or unapproved hand-off is 409 and leaves the target untouched;
-    /// the refusal comes from the [`HandoffVerifier`], which is
-    /// [`NoHandoffs`] until the hand-off epic installs its own.
+    /// the refusal comes from the [`HandoffVerifier`], which
+    /// [`GitService::from_state`] makes
+    /// [`TaskHandoffVerifier`](crate::tracker::handoffs::TaskHandoffVerifier).
+    ///
+    /// Without an explicit `message` the merge commit reads `Merge handoff
+    /// <id> (<source_branch>) into <target>`: the hand-off id is what the API
+    /// names this source by, and the branch beside it is what makes the
+    /// history readable (`SPEC.md`, "Git").
     pub async fn merge_handoff(
         &self,
         project_id: Uuid,
@@ -604,12 +649,35 @@ impl GitService {
             .approved_commit(project_id, task_id, handoff_id)
             .await?;
 
+        // Built here rather than left to the generic default, which would name
+        // the bare commit id: the hand-off and its branch are what a reader of
+        // the integration branch's history needs. A blank message is treated
+        // as none, exactly as `integrate::merge` treats it.
+        let message = message
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                format!(
+                    "Merge handoff {handoff_id} ({}) into {}",
+                    approved.source_branch,
+                    target_ref.api_name()
+                )
+            });
+
+        // The hand-off id, which is what the API calls this source
+        // (`SPEC.md`, "AgentEvent": "except a task merge's `source`, which is
+        // the hand-off id").
+        let label = handoff_id.to_string();
+
         self.merge_commit(
             &guard,
-            &approved.commit,
-            &handoff_id.to_string(),
+            PinnedSource {
+                commit: &approved.commit,
+                label: &label,
+                participants: approved.source_session_id.as_slice(),
+            },
             target,
-            message,
+            Some(&message),
             actor,
         )
         .await

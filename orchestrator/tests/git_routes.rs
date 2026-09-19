@@ -647,13 +647,13 @@ async fn a_merge_takes_either_a_source_or_a_task_hand_off() {
 }
 
 #[tokio::test]
-async fn a_task_merge_is_409_while_no_hand_off_verifier_is_installed() {
+async fn a_task_merge_for_a_task_this_project_does_not_have_is_404() {
     let fixture = Fixture::create("merge-task").await;
     let main_before = fixture.commit_of("main").await;
 
-    // The `NoHandoffs` default: until "Code hand-offs and review" installs a
-    // verifier, no hand-off can be shown to be current and approved, so the
-    // task form answers the documented conflict rather than merging.
+    // The route reaches `TaskHandoffVerifier`, which answers for the tracker:
+    // an unknown task is 404 and nothing is merged. The approval rules
+    // themselves are `tests/handoffs_merge.rs`'s.
     let response = fixture
         .app
         .post_as(&fixture.user, &fixture.path("merge"))
@@ -664,10 +664,8 @@ async fn a_task_merge_is_409_while_no_hand_off_verifier_is_installed() {
         }))
         .await;
 
-    response.assert_status(StatusCode::CONFLICT);
-    let body = response.json::<Value>();
-    assert_error_body(&body, StatusCode::CONFLICT);
-    assert_eq!(body["error"], "task hand-offs are not available");
+    response.assert_status(StatusCode::NOT_FOUND);
+    assert_error_body(&response.json::<Value>(), StatusCode::NOT_FOUND);
     assert_eq!(fixture.commit_of("main").await, main_before);
 }
 

@@ -74,6 +74,7 @@ use uuid::Uuid;
 
 pub use events::MAX_TASK_EVENT_PAGE;
 pub use graph::BlockedState;
+pub use handoffs::HandoffMergeCandidate;
 /// The state-column write `tracker/` composes its state moves out of. Crate-
 /// private like the helper that takes it: `rows` is a private module, so this
 /// re-export is how the tracker names the type at all.

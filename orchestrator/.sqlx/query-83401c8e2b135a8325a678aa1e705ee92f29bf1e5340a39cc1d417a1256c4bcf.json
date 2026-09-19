@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT t.current_handoff_id,\n                   h.commit AS \"commit?\",\n                   h.source_branch AS \"source_branch?\",\n                   h.source_session_id AS \"source_session_id?\",\n                   h.review_status AS \"review_status?: ReviewStatus\"\n            FROM tasks AS t\n            LEFT JOIN task_handoffs AS h ON h.id = $3 AND h.task_id = t.id\n            WHERE t.id = $2 AND t.project_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "current_handoff_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "current_handoff_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "commit?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "commit"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "source_branch?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "source_branch"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source_session_id?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "source_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "review_status?: ReviewStatus",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "review_status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "83401c8e2b135a8325a678aa1e705ee92f29bf1e5340a39cc1d417a1256c4bcf"
+}

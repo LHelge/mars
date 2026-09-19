@@ -1,10 +1,10 @@
 ---
 id: "6e4m6"
 title: Implement LoginPage, ForgotPasswordPage and ResetPasswordPage
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:41:42.942553996Z"
-updated: "2026-09-19T11:04:11.339588795Z"
+updated: "2026-09-19T11:13:43.807549174Z"
 tags:
   - frontend
   - auth

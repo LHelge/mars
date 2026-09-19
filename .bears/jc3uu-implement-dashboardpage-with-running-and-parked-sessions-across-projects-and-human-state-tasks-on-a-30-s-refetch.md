@@ -1,10 +1,10 @@
 ---
 id: jc3uu
 title: Implement DashboardPage with running and parked sessions across projects and human-state tasks on a 30 s refetch
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:43:04.756699001Z"
-updated: "2026-09-19T11:04:12.444596115Z"
+updated: "2026-09-19T11:13:44.941700424Z"
 tags:
   - frontend
   - sessions

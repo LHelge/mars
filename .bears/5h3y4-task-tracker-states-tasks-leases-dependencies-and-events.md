@@ -2,10 +2,10 @@
 id: "5h3y4"
 title: "Task tracker: states, tasks, leases, dependencies and events"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:13:45.794119246Z"
-updated: "2026-09-16T20:15:39.257849479Z"
+updated: "2026-09-19T18:51:43.757557926Z"
 tags:
   - orchestrator
   - tracker

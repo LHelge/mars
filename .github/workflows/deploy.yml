@@ -1,0 +1,262 @@
+# The deployment artefacts (README.md, "Deployment shape" and "Start"): the two
+# images a deployment runs (`orchestrator/Dockerfile`, `nginx/Dockerfile`) and
+# the compose files that wire them together (ADR 0035).
+#
+# Two jobs. `images` builds both images on Docker and on Podman and smoke-tests
+# them: `git` is present in the orchestrator image (ADR 0011), the healthcheck
+# subcommand runs under the read-only root filesystem compose gives it
+# (ARCHITECTURE.md, "Trust boundaries"), and the nginx server block renders and
+# passes `nginx -t`. `compose` renders `compose.yml` with each engine override
+# through both compose implementations and checks the three properties the
+# deployment depends on: the Podman override keeps `userns_mode: keep-id`, the
+# Docker override keeps `user: 1000:1000` (ARCHITECTURE.md, "Uid contract") and
+# neither publishes the API or MCP port to the host (ARCHITECTURE.md,
+# "Networks").
+#
+# This workflow is about packaging, not compilation: `orchestrator/src/**` is
+# deliberately absent from the `paths` filter below, because Orchestrator CI
+# already compiles and tests every source change and the image build is a cold
+# release build. Nothing is pushed to a registry and no secret is referenced;
+# v1 builds on the host (README.md, "Start").
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    # Repeated verbatim under pull_request: GitHub does not expand YAML
+    # anchors in workflow files.
+    paths:
+      - "orchestrator/Dockerfile"
+      - "orchestrator/.dockerignore"
+      - "nginx/**"
+      - "compose.yml"
+      - "compose.podman.yml"
+      - "compose.docker.yml"
+      - ".env.example"
+      - ".dockerignore"
+      - ".github/workflows/deploy.yml"
+  pull_request:
+    paths:
+      - "orchestrator/Dockerfile"
+      - "orchestrator/.dockerignore"
+      - "nginx/**"
+      - "compose.yml"
+      - "compose.podman.yml"
+      - "compose.docker.yml"
+      - ".env.example"
+      - ".dockerignore"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    name: Build and smoke the deployment images (${{ matrix.engine }})
+    runs-on: ubuntu-latest
+    # The orchestrator image compiles the whole crate in release mode and the
+    # nginx image runs `npm ci && npm run build`. The Docker leg reuses the
+    # Actions layer cache, the Podman leg always builds cold, so the budget is
+    # the cold one's. (The 30 minutes the task asked for is the compose job's
+    # budget; a cold release build does not reliably fit in it.)
+    timeout-minutes: 45
+    strategy:
+      # Each engine is its own evidence; a Docker failure must not hide the
+      # Podman result or the other way round.
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Report the Docker version
+        if: matrix.engine == 'docker'
+        run: docker version
+
+      # Ubuntu 24.04's own package, Podman 4.9.x, builds both Dockerfiles: no
+      # BuildKit-only syntax is used in either (nginx/Dockerfile says so), so
+      # the kubic/upstream repository is not needed. uidmap, slirp4netns and
+      # fuse-overlayfs are what rootless Podman needs on a hosted runner; the
+      # version is printed so a future incompatibility is visible in the log.
+      - name: Install Podman
+        if: matrix.engine == 'podman'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          podman version
+
+      # Rootless Podman keeps its runtime state here. A hosted runner has no
+      # login session, so the directory does not exist until it is made.
+      - name: Set XDG_RUNTIME_DIR
+        if: matrix.engine == 'podman'
+        run: |
+          dir="/run/user/$(id -u)"
+          sudo mkdir -p "${dir}"
+          sudo chown "$(id -u):$(id -g)" "${dir}"
+          sudo chmod 0700 "${dir}"
+          echo "XDG_RUNTIME_DIR=${dir}" >> "$GITHUB_ENV"
+
+      # Rootless Podman needs a sub-uid and sub-gid range for the runner user.
+      # GitHub's image normally has one; create it when it does not.
+      - name: Ensure sub-uid and sub-gid ranges
+        if: matrix.engine == 'podman'
+        run: |
+          if ! grep -q "^$(id -un):" /etc/subuid || ! grep -q "^$(id -un):" /etc/subgid; then
+            sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+            podman system migrate
+          fi
+          grep "^$(id -un):" /etc/subuid /etc/subgid
+
+      - name: Set up Buildx
+        if: matrix.engine == 'docker'
+        uses: docker/setup-buildx-action@v3
+
+      # `load: true` puts the result in the daemon's image store, where the
+      # smoke steps below look for it; nothing is pushed. The two images get
+      # their own cache scope so the Rust dependency layer and the npm layer do
+      # not evict each other. The cache is written only from a branch of this
+      # repository: a fork PR's token cannot write the Actions cache.
+      - name: Build the orchestrator image
+        if: matrix.engine == 'docker'
+        uses: docker/build-push-action@v6
+        with:
+          context: orchestrator
+          tags: mars-orchestrator:ci
+          load: true
+          push: false
+          cache-from: type=gha,scope=orchestrator
+          cache-to: ${{ !github.event.pull_request.head.repo.fork && 'type=gha,mode=max,scope=orchestrator' || '' }}
+
+      # The build context is the repository root, because the image needs both
+      # `frontend/` and `nginx/` (nginx/Dockerfile).
+      - name: Build the nginx image
+        if: matrix.engine == 'docker'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: nginx/Dockerfile
+          tags: mars-nginx:ci
+          load: true
+          push: false
+          cache-from: type=gha,scope=nginx
+          cache-to: ${{ !github.event.pull_request.head.repo.fork && 'type=gha,mode=max,scope=nginx' || '' }}
+
+      # Plain `podman build`: the point of this leg is that the Dockerfiles
+      # build with the engine ADR 0004 targets, using the same two commands
+      # README.md, "Development" → "Deployment images" gives a developer.
+      - name: Build the orchestrator image
+        if: matrix.engine == 'podman'
+        run: podman build -t mars-orchestrator:ci orchestrator
+
+      - name: Build the nginx image
+        if: matrix.engine == 'podman'
+        run: podman build -f nginx/Dockerfile -t mars-nginx:ci .
+
+      # ADR 0011: git is never a crate, so a runtime image without the binary
+      # would fail at the first clone rather than here. The image's ENTRYPOINT
+      # is the orchestrator binary, which would read `git` as a subcommand, so
+      # the entrypoint is overridden rather than appended to.
+      - name: The orchestrator image carries git
+        run: ${{ matrix.engine }} run --rm --entrypoint git mars-orchestrator:ci --version
+
+      # The probe compose declares (compose.yml, orchestrator healthcheck) with
+      # the filesystem compose gives it: read-only root, tmpfs at /tmp. Nothing
+      # is listening, so the expected outcome is exit 1, "connection refused" —
+      # any other code means the subcommand failed for a different reason (a
+      # missing variable, a filesystem it could not write) and is a failure.
+      # `set +e` around the run because the step shell is `bash -e`.
+      - name: The orchestrator healthcheck runs read-only
+        run: |
+          set +e
+          ${{ matrix.engine }} run --rm --read-only --tmpfs /tmp mars-orchestrator:ci healthcheck
+          status=$?
+          set -e
+          echo "healthcheck exited ${status}"
+          if [ "${status}" -ne 1 ]; then
+            echo "::error::healthcheck exited ${status}; expected 1 (connection refused) with nothing listening"
+            exit 1
+          fi
+
+      # The official nginx entrypoint renders /etc/nginx/templates/*.template
+      # with envsubst and then execs its arguments when the first one is
+      # `nginx`, so this tests the *rendered* server block, not the template.
+      # ORCHESTRATOR_HOST must resolve because nginx resolves `proxy_pass` hosts
+      # at configuration load; 127.0.0.1 always does.
+      - name: The nginx configuration renders and parses
+        run: ${{ matrix.engine }} run --rm -e ORCHESTRATOR_HOST=127.0.0.1 -e API_PORT=7000 mars-nginx:ci nginx -t
+
+  compose:
+    name: Validate the compose files
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      # Both implementations interpolate ${DATA_DIR_HOST} and
+      # ${ENGINE_SOCKET_HOST} from `.env`; the placeholder paths in
+      # `.env.example` need not exist for `config`, only be syntactically valid.
+      # The explicit `-f` flags override the COMPOSE_FILE in it.
+      - name: Create .env from the example
+        run: cp .env.example .env
+
+      - name: Validate the Docker deployment
+        run: docker compose -f compose.yml -f compose.docker.yml config -q
+
+      - name: Render the Docker deployment
+        run: docker compose -f compose.yml -f compose.docker.yml config > "${RUNNER_TEMP}/docker-config.yml"
+
+      # podman-compose shells out to `podman` for its version check, so the
+      # engine is installed here too. A plain `pip install` on Ubuntu 24.04
+      # refuses with "externally-managed-environment" (PEP 668), so it goes in
+      # a throwaway virtual environment; the version is printed because
+      # podman-compose's rendering has changed between releases and the greps
+      # below read that rendering.
+      - name: Install Podman and podman-compose
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman version
+          python3 -m venv "${RUNNER_TEMP}/podman-compose"
+          "${RUNNER_TEMP}/podman-compose/bin/pip" install --quiet podman-compose
+          "${RUNNER_TEMP}/podman-compose/bin/podman-compose" --version
+
+      # podman-compose prints the merged YAML on stdout and warns on stderr
+      # about keys it does not implement, so only the exit status is the
+      # verdict.
+      - name: Render the Podman deployment
+        run: |
+          "${RUNNER_TEMP}/podman-compose/bin/podman-compose" \
+            -f compose.yml -f compose.podman.yml config > "${RUNNER_TEMP}/podman-config.yml"
+
+      # ARCHITECTURE.md, "Uid contract": rootless Podman maps the service user
+      # onto the container uid with keep-id, Docker runs the container as uid
+      # 1000 outright. Each override exists for exactly that one line (ADR
+      # 0035), so losing it is the failure this job is here to catch.
+      - name: The Podman override keeps the user namespace mapping
+        run: |
+          grep -q 'userns_mode: keep-id' "${RUNNER_TEMP}/podman-config.yml"
+
+      - name: The Docker override keeps uid 1000
+        run: |
+          grep -qE 'user: "?1000:1000"?' "${RUNNER_TEMP}/docker-config.yml"
+
+      # ARCHITECTURE.md, "Networks": neither the API (7000) nor the MCP
+      # listener (7001) is published to the host — everything from outside
+      # arrives through nginx, and MCP is reachable only from the internal
+      # sessions network. Both rendered forms are matched: podman-compose
+      # prints the short `- 7001:7001`, Compose v5 the long `published: "7001"`.
+      - name: Neither deployment publishes the API or MCP port
+        run: |
+          for rendered in "${RUNNER_TEMP}/docker-config.yml" "${RUNNER_TEMP}/podman-config.yml"; do
+            if grep -nE '(^|[^0-9])700[01]:|published:[[:space:]]*"?700[01]"?' "${rendered}"; then
+              echo "::error::${rendered} publishes the API or MCP port to the host (ARCHITECTURE.md, \"Networks\")"
+              exit 1
+            fi
+          done

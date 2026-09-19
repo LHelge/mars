@@ -1,16 +1,17 @@
 ---
 id: t93cj
 title: Add scripts/verify-deployment.sh checking health, MCP isolation and token-free nginx logs on a running stack
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:44:09.455465426Z"
-updated: "2026-09-16T20:47:04.635331130Z"
+updated: "2026-09-19T16:33:32.818104443Z"
 tags:
   - infra
   - tests
 depends_on:
   - sgg2e
 parent: "5czwa"
+attempts: 1
 ---
 
 ## Summary

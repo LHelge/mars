@@ -23,7 +23,7 @@
 //! What this module does decide:
 //!
 //! - **one mutation, one transaction, project row locked first.**
-//!   [`TaskRepository::begin_mutation`] opens it and takes the lock, and an
+//!   [`TrackerMutation::begin`] opens it and takes the lock, and an
 //!   unknown project is its [`Error::NotFound`] before anything is written
 //!   (`docs/data-model.md`, "Tracker mutation transactions", which lists
 //!   profile served states among the mutations that belong under the lock).
@@ -51,10 +51,12 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use uuid::Uuid;
 
+use crate::events::TaskActor;
 use crate::models::{AgentProfile, ProfileInput};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::routes::{CurrentUser, Path};
+use crate::tracker::TrackerMutation;
 
 /// The router nested under `/api/projects`.
 ///
@@ -113,7 +115,7 @@ async fn list(
 /// link rows would serve nothing until someone edited it again.
 async fn create(
     State(state): State<AppState>,
-    CurrentUser(_): CurrentUser,
+    CurrentUser(user): CurrentUser,
     Path(pid): Path<Uuid>,
     Json(body): Json<ProfileInput>,
 ) -> Result<(StatusCode, Json<Profile>)> {
@@ -122,12 +124,16 @@ async fn create(
     let projects = ProjectRepository::new(&state.pool);
     let tasks = TaskRepository::new(&state.pool);
 
-    let mut tx = tasks.begin_mutation(pid).await?;
-    let inserted = projects.insert_profile(&mut tx, &profile).await?;
+    let actor = TaskActor::User { user_id: user.id };
+    let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
+    let mut locked = mutation.conn();
+    let inserted = projects.insert_profile(&mut locked, &profile).await?;
     tasks
-        .set_profile_states_by_name(&mut tx, pid, inserted.id, &profile.serves_states)
+        .set_profile_states_by_name(locked, pid, inserted.id, &profile.serves_states)
         .await?;
-    tx.commit().await?;
+    // Served states are a tracker mutation but not a board edit, so the batch
+    // is empty and the commit notifies nothing (`SPEC.md`, "TaskEvent").
+    mutation.commit().await?;
 
     info!(project_id = %pid, profile_id = %inserted.id, "profile created");
 
@@ -171,7 +177,7 @@ async fn fetch(
 /// current default is the documented 409 (`SPEC.md`, "Agent profiles").
 async fn update(
     State(state): State<AppState>,
-    CurrentUser(_): CurrentUser,
+    CurrentUser(user): CurrentUser,
     Path((pid, id)): Path<(Uuid, Uuid)>,
     Json(body): Json<ProfileInput>,
 ) -> Result<Json<Profile>> {
@@ -180,17 +186,19 @@ async fn update(
     let projects = ProjectRepository::new(&state.pool);
     let tasks = TaskRepository::new(&state.pool);
 
-    let mut tx = tasks.begin_mutation(pid).await?;
+    let actor = TaskActor::User { user_id: user.id };
+    let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
+    let mut locked = mutation.conn();
     // Before the states are resolved, so a profile of another project is a 404
     // and not the 400 an unknown state name would otherwise win.
     let updated = projects
-        .update_profile(&mut tx, pid, id, &resolved)
+        .update_profile(&mut locked, pid, id, &resolved)
         .await?
         .ok_or(Error::NotFound)?;
     tasks
-        .set_profile_states_by_name(&mut tx, pid, updated.id, &resolved.serves_states)
+        .set_profile_states_by_name(locked, pid, updated.id, &resolved.serves_states)
         .await?;
-    tx.commit().await?;
+    mutation.commit().await?;
 
     info!(project_id = %pid, profile_id = %id, "profile updated");
 
@@ -208,18 +216,21 @@ async fn update(
 /// count and the `DELETE`.
 async fn remove(
     State(state): State<AppState>,
-    CurrentUser(_): CurrentUser,
+    CurrentUser(user): CurrentUser,
     Path((pid, id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode> {
     let projects = ProjectRepository::new(&state.pool);
-    let tasks = TaskRepository::new(&state.pool);
 
-    let mut tx = tasks.begin_mutation(pid).await?;
-    if !projects.delete_profile(&mut tx, pid, id).await? {
-        // Dropping the transaction rolls it back and releases the lock.
+    let actor = TaskActor::User { user_id: user.id };
+    let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
+    if !projects
+        .delete_profile(&mut mutation.conn(), pid, id)
+        .await?
+    {
+        // Dropping the mutation rolls it back and releases the lock.
         return Err(Error::NotFound);
     }
-    tx.commit().await?;
+    mutation.commit().await?;
 
     info!(project_id = %pid, profile_id = %id, "profile deleted");
 

@@ -30,12 +30,15 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::models::{
     Label, NewSession, NewTask, NewTaskComment, NewTaskHandoff, Priority, ProfileKind,
     ReviewStatus, Task, TaskDependencyKind, TaskRef, TaskStateKind, TaskTitle, TaskUpdate,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::{SessionRepository, StateFields, TaskFilter, TaskRepository};
+use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
+use mars_orchestrator::repositories::{SessionRepository, TaskFilter, TaskRepository};
+use mars_orchestrator::tracker::{Locked, TrackerMutation};
 use tokio::time::sleep;
 use uuid::Uuid;
 
@@ -96,15 +99,14 @@ async fn seed_project(pool: &PgPool) -> Uuid {
         .expect("the project seeds");
 
     let repository = TaskRepository::new(pool);
-    let mut tx = repository
-        .begin_mutation(project_id)
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
         .await
         .expect("the mutation opens");
     repository
-        .insert_default_states(&mut tx, project_id)
+        .insert_default_states(mutation.conn(), project_id)
         .await
         .expect("the default states insert");
-    tx.commit().await.expect("the transaction commits");
+    mutation.commit().await.expect("the mutation commits");
 
     project_id
 }
@@ -160,9 +162,11 @@ async fn state_id(pool: &PgPool, project_id: Uuid, name: &str) -> Uuid {
 /// Insert `task` in its own committed tracker mutation.
 async fn insert(pool: &PgPool, project_id: Uuid, task: &NewTask) -> Result<Task> {
     let repository = TaskRepository::new(pool);
-    let mut tx = repository.begin_mutation(project_id).await?;
-    let inserted = repository.insert_task(&mut tx, project_id, task).await?;
-    tx.commit().await?;
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System).await?;
+    let inserted = repository
+        .insert_task(mutation.conn(), project_id, task)
+        .await?;
+    mutation.commit().await?;
 
     Ok(inserted)
 }
@@ -178,12 +182,12 @@ async fn insert_titled(pool: &PgPool, project_id: Uuid, title: &str) -> Task {
 /// Run `body` inside a committed tracker mutation.
 async fn in_mutation<T, F>(pool: &PgPool, project_id: Uuid, body: F) -> Result<T>
 where
-    F: AsyncFnOnce(&TaskRepository<'_>, &mut sqlx::PgConnection) -> Result<T>,
+    F: AsyncFnOnce(&TaskRepository<'_>, Locked<'_>) -> Result<T>,
 {
     let repository = TaskRepository::new(pool);
-    let mut tx = repository.begin_mutation(project_id).await?;
-    let outcome = body(&repository, &mut tx).await?;
-    tx.commit().await?;
+    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System).await?;
+    let outcome = body(&repository, mutation.conn()).await?;
+    mutation.commit().await?;
 
     Ok(outcome)
 }
@@ -807,10 +811,12 @@ async fn a_task_is_found_by_its_uuid_or_its_number_and_only_in_its_project() {
     );
 
     // The locking read answers the same questions.
-    let mut tx = repository.begin_mutation(project_id).await.unwrap();
+    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
+        .await
+        .unwrap();
     assert_eq!(
         repository
-            .find_task_for_update(&mut tx, project_id, TaskRef::Number(task.number))
+            .find_task_for_update(mutation.conn(), project_id, TaskRef::Number(task.number))
             .await
             .unwrap()
             .unwrap()
@@ -819,12 +825,12 @@ async fn a_task_is_found_by_its_uuid_or_its_number_and_only_in_its_project() {
     );
     assert!(
         repository
-            .find_task_for_update(&mut tx, project_id, TaskRef::Id(theirs.id))
+            .find_task_for_update(mutation.conn(), project_id, TaskRef::Id(theirs.id))
             .await
             .unwrap()
             .is_none()
     );
-    tx.rollback().await.unwrap();
+    mutation.no_change().await.unwrap();
 }
 
 #[tokio::test]
@@ -1340,9 +1346,9 @@ async fn publish_handoff(
     handoff.source_session_id = Some(session_id);
     handoff.created_by_session_id = Some(session_id);
 
-    in_mutation(pool, project_id, async |repository, tx| {
+    in_mutation(pool, project_id, async |repository, mut tx| {
         repository
-            .insert_comment(&mut *tx, project_id, &comment)
+            .insert_comment(tx.reborrow(), project_id, &comment)
             .await?;
         repository.insert_handoff(tx, project_id, &handoff).await
     })
@@ -1388,9 +1394,9 @@ async fn a_handoff_is_validated_against_its_task_comment_and_sessions() {
     forwarded.reviewed_by_user_id = Some(fixture.user_id);
     forwarded.reviewed_at = Some(chrono::Utc::now());
 
-    let forwarded_id = in_mutation(&pool, project_id, async |repository, tx| {
+    let forwarded_id = in_mutation(&pool, project_id, async |repository, mut tx| {
         repository
-            .insert_comment(&mut *tx, project_id, &review_comment)
+            .insert_comment(tx.reborrow(), project_id, &review_comment)
             .await?;
         repository.insert_handoff(tx, project_id, &forwarded).await
     })
@@ -1435,9 +1441,9 @@ async fn a_handoff_is_validated_against_its_task_comment_and_sessions() {
     let comment = NewTaskComment::from_user(task.id, fixture.user_id, "half a commit");
     let mut abbreviated = NewTaskHandoff::new(task.id, "session/x", &COMMIT[..7], comment.id);
     abbreviated.created_by_user_id = Some(fixture.user_id);
-    let error = in_mutation(&pool, project_id, async |repository, tx| {
+    let error = in_mutation(&pool, project_id, async |repository, mut tx| {
         repository
-            .insert_comment(&mut *tx, project_id, &comment)
+            .insert_comment(tx.reborrow(), project_id, &comment)
             .await?;
         repository
             .insert_handoff(tx, project_id, &abbreviated)
@@ -1457,9 +1463,9 @@ async fn a_handoff_is_validated_against_its_task_comment_and_sessions() {
         NewTaskComment::from_user(other_task.id, fixture.user_id, "about the other task");
     let mut wrong_comment = NewTaskHandoff::new(task.id, "session/x", COMMIT, elsewhere.id);
     wrong_comment.created_by_user_id = Some(fixture.user_id);
-    let error = in_mutation(&pool, project_id, async |repository, tx| {
+    let error = in_mutation(&pool, project_id, async |repository, mut tx| {
         repository
-            .insert_comment(&mut *tx, project_id, &elsewhere)
+            .insert_comment(tx.reborrow(), project_id, &elsewhere)
             .await?;
         repository
             .insert_handoff(tx, project_id, &wrong_comment)
@@ -1480,9 +1486,9 @@ async fn a_handoff_is_validated_against_its_task_comment_and_sessions() {
     let mut foreign_session = NewTaskHandoff::new(task.id, "session/x", COMMIT, comment.id);
     foreign_session.source_session_id = Some(their_session);
     foreign_session.created_by_user_id = Some(fixture.user_id);
-    let error = in_mutation(&pool, project_id, async |repository, tx| {
+    let error = in_mutation(&pool, project_id, async |repository, mut tx| {
         repository
-            .insert_comment(&mut *tx, project_id, &comment)
+            .insert_comment(tx.reborrow(), project_id, &comment)
             .await?;
         repository
             .insert_handoff(tx, project_id, &foreign_session)
@@ -1536,9 +1542,9 @@ async fn a_session_link_keeps_its_first_touch_and_advances_the_last() {
 
     // Twice in one transaction is one touch: `NOW()` is the transaction's
     // start time, so nothing moves the second time either.
-    let (first, again) = in_mutation(&pool, project_id, async |repository, tx| {
+    let (first, again) = in_mutation(&pool, project_id, async |repository, mut tx| {
         let first = repository
-            .touch_task_session(&mut *tx, task.id, session_id)
+            .touch_task_session(tx.reborrow(), task.id, session_id)
             .await?;
         let again = repository
             .touch_task_session(tx, task.id, session_id)

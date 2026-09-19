@@ -6,13 +6,24 @@
 //! mutation at a time per project**. Every writer begins a `READ COMMITTED`
 //! transaction, locks the project row, and only then reads authoritative state
 //! and validates. [`TaskRepository::begin_mutation`] is that opening move, and
-//! every other helper here documents that it must run inside such a
-//! transaction; a helper called outside one reads state nobody is holding
-//! still, and the answer may already be stale when it returns (ADR 0021).
+//! [`TrackerMutation`](crate::tracker::TrackerMutation) — its only caller — is
+//! what the rest of the crate opens instead.
+//!
+//! **The rule, stated once: every helper here that writes a tracker table, and
+//! every read that has to be authoritative, takes a
+//! [`Locked`](crate::tracker::Locked) rather than a `&mut PgConnection`, and
+//! only [`TrackerMutation::conn`](crate::tracker::TrackerMutation::conn) can
+//! produce one.** So a tracker write outside the project lock does not
+//! compile, and no helper below repeats a warning the type already carries. A
+//! helper that still takes a bare connection is a lock-free read — the board
+//! lists, the detail loaders, `ready` — and says so by its signature (ADR
+//! 0021).
 //!
 //! **Lock order.** Any git lock is acquired before any database lock, then the
 //! project row ([`TaskRepository::begin_mutation`]), then session rows, then
-//! task rows; never the other way round.
+//! task rows; never the other way round. A combined tracker/session operation
+//! takes its session connection from the same token, so the order holds by
+//! construction.
 //!
 //! The isolation level is left at the Postgres default, `READ COMMITTED`: the
 //! project row lock, not a stricter snapshot, is what serialises the tracker,
@@ -48,24 +59,27 @@ mod handoffs;
 mod links;
 mod rows;
 mod states;
+pub mod test_support;
 
-use sqlx::{PgConnection, PgPool, Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 pub use events::MAX_TASK_EVENT_PAGE;
-pub use rows::{StateFields, TaskFilter};
+pub use rows::TaskFilter;
 
 use crate::prelude::*;
 use crate::repositories::ProjectRepository;
+use crate::tracker::Locked;
 
 /// All SQL against the tracker tables (`ARCHITECTURE.md`, "Orchestrator
 /// internals").
 ///
 /// Reads that need no transaction go straight to the pool; everything that
 /// mutates, and everything that has to be read under the project lock to be
-/// authoritative, takes the caller's `&mut PgConnection`, so one transaction
-/// can hold a whole tracker mutation — the lock, the change, its dependency
-/// effects and its events — together.
+/// authoritative, takes the mutation's [`Locked`](crate::tracker::Locked)
+/// connection, so one transaction can hold a whole tracker mutation — the
+/// lock, the change, its dependency effects and its events — together, and so
+/// that there is no way to spell a write that is not inside one.
 pub struct TaskRepository<'a> {
     pool: &'a PgPool,
 }
@@ -95,7 +109,16 @@ impl<'a> TaskRepository<'a> {
     /// Concurrent calls for the same project queue at the lock; calls for
     /// different projects are independent. An operation spanning several
     /// projects opens them in UUID order.
-    pub async fn begin_mutation(&self, project_id: Uuid) -> Result<Transaction<'a, Postgres>> {
+    ///
+    /// `pub(crate)`, and called from
+    /// [`TrackerMutation::begin`](crate::tracker::TrackerMutation::begin)
+    /// alone: a raw transaction is not a token, and everything that needs one
+    /// needs the event batch, the session links and the escalations that come
+    /// with it.
+    pub(crate) async fn begin_mutation(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Transaction<'a, Postgres>> {
         let mut tx = self.pool.begin().await?;
         ProjectRepository::new(self.pool)
             .lock_project(&mut tx, project_id)
@@ -108,10 +131,9 @@ impl<'a> TaskRepository<'a> {
 /// Is there a task with this id in this project?
 ///
 /// The scope check shared by the helpers that accept a task id alongside the
-/// project they are mutating. **Call only inside a
-/// [`TaskRepository::begin_mutation`] transaction**: without the project lock
-/// the answer can change before the caller acts on it.
-async fn task_in_project(tx: &mut PgConnection, project_id: Uuid, task_id: Uuid) -> Result<bool> {
+/// project they are mutating. It takes the token because without the project
+/// lock the answer can change before the caller acts on it.
+async fn task_in_project(mut tx: Locked<'_>, project_id: Uuid, task_id: Uuid) -> Result<bool> {
     let exists = sqlx::query_scalar!(
         r#"SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND project_id = $2) AS "exists!""#,
         task_id,

@@ -32,6 +32,7 @@ use crate::models::{BranchName, NewProject, ProfileInput, Project};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::secrets::insert_project_git_credential;
+use crate::tracker::Locked;
 
 /// The name of the profile every project is created with
 /// (`docs/data-model.md`, `agent_profiles`).
@@ -89,9 +90,11 @@ impl std::fmt::Debug for NewProjectRequest {
 /// helpers ask for one (`docs/data-model.md`, "Tracker mutation
 /// transactions"). The row is being inserted here: it is invisible to every
 /// other transaction until this one commits, so there is no concurrent writer
-/// for a lock to serialise against, and [`TaskRepository::begin_mutation`]
-/// could not open this transaction anyway — the row it locks does not exist
-/// yet.
+/// for a lock to serialise against, and a [`TrackerMutation`] could not open
+/// this transaction anyway — the row it locks does not exist yet. This is the
+/// one place that mints its own [`Locked`] token, through
+/// [`Locked::during_project_creation`], which is named after this caller
+/// precisely so that a second one would stand out.
 ///
 /// No `task_events` row is written for the seeded states either. `states_changed`
 /// describes an *edit* to a board somebody is watching, and a project being
@@ -150,12 +153,14 @@ pub async fn create_project(
     drop(credential);
 
     let project = projects.insert(&mut tx, &new_project).await?;
-    tasks.insert_default_states(&mut tx, project.id).await?;
+    tasks
+        .insert_default_states(Locked::during_project_creation(&mut tx), project.id)
+        .await?;
 
     let inserted_profile = projects.insert_profile(&mut tx, &profile).await?;
     tasks
         .set_profile_states_by_name(
-            &mut tx,
+            Locked::during_project_creation(&mut tx),
             project.id,
             inserted_profile.id,
             &profile.serves_states,

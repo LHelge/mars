@@ -27,6 +27,7 @@ use crate::models::{NewTaskEvent, TaskEventRow, task_event_kind};
 use crate::prelude::*;
 use crate::repositories::tasks::{TaskRepository, task_in_project};
 use crate::repositories::unique_violation;
+use crate::tracker::Locked;
 
 /// The largest replay page `GET /projects/{pid}/tasks/stream?after=` will read
 /// in one query.
@@ -39,9 +40,10 @@ pub const MAX_TASK_EVENT_PAGE: u32 = 500;
 impl TaskRepository<'_> {
     /// Append a batch of events to the project's stream and announce it.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction,
-    /// together with the change the events describe.** The project lock, not
-    /// the insert, is what makes `MAX(seq) + 1` safe: a waiting writer reads
+    /// Called from
+    /// [`TrackerMutation::commit`](crate::tracker::TrackerMutation::commit)
+    /// alone, with the change the events describe. The project lock, not the
+    /// insert, is what makes `MAX(seq) + 1` safe: a waiting writer reads
     /// the previous writer's committed events only after it acquires the lock
     /// (`docs/data-model.md`, `task_events`). Appending outside the lock, or
     /// in a transaction of its own, breaks both the sequence and the rule that
@@ -58,9 +60,9 @@ impl TaskRepository<'_> {
     /// that are not there.
     ///
     /// Returns the allocated sequences, in the order the events were given.
-    pub async fn append_task_events(
+    pub(crate) async fn append_task_events(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         events: &[NewTaskEvent],
     ) -> Result<Vec<i64>> {
@@ -74,7 +76,7 @@ impl TaskRepository<'_> {
             // the deletion.
             if let Some(task_id) = event.task_id
                 && event.kind != task_event_kind::DELETED
-                && !task_in_project(&mut *tx, project_id, task_id).await?
+                && !task_in_project(tx.reborrow(), project_id, task_id).await?
             {
                 return Err(Error::NotFound);
             }
@@ -108,7 +110,7 @@ impl TaskRepository<'_> {
 
         // One notification per batch, carrying the highest sequence it wrote;
         // consumers read the rows themselves (ADR 0028).
-        notify_task_events(&mut *tx, &format!("{project_id}:{last_seq}")).await?;
+        notify_task_events(&mut tx, &format!("{project_id}:{last_seq}")).await?;
 
         // The count and the sequence, never the payloads: a payload may carry
         // a task title or a comment body, and event payloads are never logged

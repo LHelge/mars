@@ -28,6 +28,7 @@ use uuid::Uuid;
 use crate::models::{ReviewStatus, Task, TaskDependencyKind, TaskHandoff, TaskRef};
 use crate::prelude::*;
 use crate::repositories::TaskRepository;
+use crate::tracker::Locked;
 use crate::tracker::{
     CommentDto, DependencyRef, HandoffDto, TaskDetailDto, TaskDto, TaskSessionLinkDto,
 };
@@ -48,13 +49,13 @@ impl TaskRepository<'_> {
 
     /// The same, for a task being changed inside an open mutation.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction.**
-    /// An event payload describes the task *after* the change, which is only
-    /// visible on the connection that made it; the pool would still answer
-    /// with the row as it was before the transaction commits.
+    /// The one read here that takes the token. An event payload describes the
+    /// task *after* the change, which is only visible on the connection that
+    /// made it; the pool would still answer with the row as it was before the
+    /// transaction commits.
     pub async fn load_task_dto_in(
         &self,
-        conn: &mut PgConnection,
+        mut conn: Locked<'_>,
         project_id: Uuid,
         task_id: Uuid,
     ) -> Result<Option<TaskDto>> {
@@ -78,7 +79,7 @@ impl TaskRepository<'_> {
         };
 
         Ok(
-            assemble(conn, Some(project_id), std::slice::from_ref(&task))
+            assemble(&mut conn, Some(project_id), std::slice::from_ref(&task))
                 .await?
                 .pop(),
         )

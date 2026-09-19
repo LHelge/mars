@@ -17,20 +17,19 @@
 //! in this transaction. Both are compositions the tracker epic owns;
 //! [`TaskRepository::list_dependants`] is the read they walk.
 
-use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::models::{TaskDependency, TaskDependencyKind};
 use crate::prelude::*;
 use crate::repositories::tasks::TaskRepository;
 use crate::repositories::unique_violation;
+use crate::tracker::Locked;
 
 impl TaskRepository<'_> {
     /// Insert one dependency edge.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**,
-    /// and, for a `blocks` edge, after the cycle check and before the
-    /// `blocked` recomputation the same transaction owes.
+    /// For a `blocks` edge, called after the cycle check and before the
+    /// `blocked` recomputation the same mutation owes.
     ///
     /// A task cannot depend on itself ([`TaskError::SelfDependency`], 400,
     /// which `CHECK (task_id <> depends_on_task_id)` also refuses). Both ends
@@ -44,7 +43,7 @@ impl TaskRepository<'_> {
     /// [`TaskError::SelfDependency`]: crate::models::TaskError::SelfDependency
     pub async fn insert_dependency(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         task_id: Uuid,
         depends_on_task_id: Uuid,
@@ -90,8 +89,7 @@ impl TaskRepository<'_> {
 
     /// Remove one dependency edge; `false` when it was not there.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**,
-    /// which then recomputes the dependant's `blocked` flag and emits
+    /// The mutation then recomputes the dependant's `blocked` flag and emits
     /// `dependency_removed` (`SPEC.md`, "Tasks").
     ///
     /// `kind` is part of the identity, so this removes that kind and leaves
@@ -101,7 +99,7 @@ impl TaskRepository<'_> {
     /// an edge of another project is not this caller's to remove.
     pub async fn delete_dependency(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         task_id: Uuid,
         depends_on_task_id: Uuid,
@@ -206,13 +204,13 @@ impl TaskRepository<'_> {
 
     /// [`TaskRepository::list_dependants`] under the caller's lock.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction.**
     /// The recomputation that follows a terminal move, and the capture a
     /// deletion makes before the cascades erase the edges, both need the list
-    /// as it is inside this transaction, not as it was when the pool answered.
+    /// as it is inside the mutation, not as it was when the pool answered —
+    /// which is why this one takes the token and its sibling does not.
     pub async fn list_dependants_in_tx(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         task_id: Uuid,
         kind: TaskDependencyKind,

@@ -17,22 +17,23 @@
 //! hand-off epic makes under the project lock, together with the git ref, the
 //! state move and the lease release it publishes with.
 
-use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::models::{NewTaskHandoff, ReviewStatus, TaskHandoff};
 use crate::prelude::*;
 use crate::repositories::tasks::{TaskRepository, task_in_project};
+use crate::tracker::Locked;
 
 impl TaskRepository<'_> {
     /// Insert a hand-off record.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**,
-    /// together with its comment, the state change, the lease release and the
-    /// events, all of which commit together (`SPEC.md`, "Code hand-offs and
-    /// review"). The git ref that retains the commit is prepared *before* the
-    /// transaction opens: a git lock is never taken from inside a database one
-    /// (`ARCHITECTURE.md`, "Task tracker").
+    /// Written under the token, together with its comment, the state change,
+    /// the lease release and the events, all of which commit together
+    /// (`SPEC.md`, "Code hand-offs and review"). The git ref that retains the
+    /// commit is prepared *before* the mutation opens — the publication path
+    /// validates under the git lock first and needs the token only for the
+    /// database half — because a git lock is never taken from inside a
+    /// database one (`ARCHITECTURE.md`, "Task tracker").
     ///
     /// The model's own rules run first. Then: the task must belong to this
     /// project ([`Error::NotFound`]); the comment must belong to that task
@@ -46,13 +47,13 @@ impl TaskRepository<'_> {
     /// [`SecretUsePurpose`](crate::models::SecretUsePurpose) is.
     pub async fn insert_handoff(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         handoff: &NewTaskHandoff,
     ) -> Result<TaskHandoff> {
         handoff.validate()?;
 
-        if !task_in_project(&mut *tx, project_id, handoff.task_id).await? {
+        if !task_in_project(tx.reborrow(), project_id, handoff.task_id).await? {
             return Err(Error::NotFound);
         }
 

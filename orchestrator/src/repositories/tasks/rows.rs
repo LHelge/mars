@@ -23,8 +23,9 @@
 //!
 //! `blocked`, the lease and `closed_at` are not fields anybody sets one at a
 //! time either. They move together as a state change composes them, so they
-//! share one statement, [`TaskRepository::set_task_state_fields`], which the
-//! tracker epic builds claims, releases, hand-offs and escalations out of.
+//! share one statement, [`TaskRepository::set_task_state_fields`], which is
+//! `pub(crate)` and which `tracker/` builds claims, releases, hand-offs and
+//! escalations out of.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
@@ -34,6 +35,7 @@ use crate::models::{NewTask, Task, TaskError, TaskRef, TaskStateKind, TaskUpdate
 use crate::prelude::*;
 use crate::repositories::ProjectRepository;
 use crate::repositories::tasks::TaskRepository;
+use crate::tracker::Locked;
 
 /// The parent named by the caller is not a task of this project, or is not
 /// there at all.
@@ -67,6 +69,10 @@ pub struct TaskFilter {
 }
 
 /// The columns a state change, a claim, a release or an escalation moves.
+///
+/// `pub(crate)` and referenced only from `tracker/`: composing these — which
+/// combination each operation writes — is the tracker's job, so nothing
+/// outside it can write a half-composed state.
 ///
 /// One statement rather than one per field, because they never move alone:
 /// entering a terminal state sets `closed_at` and clears the lease, a claim
@@ -103,7 +109,6 @@ pub struct StateFields {
 impl TaskRepository<'_> {
     /// Insert a task, allocating its number and resolving its state.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction.**
     /// Everything the insert needs is a fact about the project as it is right
     /// now: the next number, the default state and whether the parent is a
     /// top-level task of this project. Without the lock two inserts could take
@@ -130,7 +135,7 @@ impl TaskRepository<'_> {
     /// it. [`TaskRepository::update_task`] is where it has to be checked.
     pub async fn insert_task(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         task: &NewTask,
     ) -> Result<Task> {
@@ -144,7 +149,7 @@ impl TaskRepository<'_> {
 
         let state_id = match task.state_id {
             Some(state_id) => {
-                if !state_in_project(&mut *tx, project_id, state_id).await? {
+                if !state_in_project(&mut tx, project_id, state_id).await? {
                     return Err(Error::BadRequest(
                         "state must belong to this project".into(),
                     ));
@@ -152,7 +157,7 @@ impl TaskRepository<'_> {
                 state_id
             }
             None => {
-                self.default_state(&mut *tx, project_id)
+                self.default_state(tx.reborrow(), project_id)
                     .await
                     // The only `NotFound` this read can produce is "no queue
                     // state"; the project itself was proved to exist by the
@@ -166,13 +171,13 @@ impl TaskRepository<'_> {
         };
 
         if let Some(parent_id) = task.parent_id
-            && parent_of(&mut *tx, project_id, parent_id).await?.is_some()
+            && parent_of(&mut tx, project_id, parent_id).await?.is_some()
         {
             return Err(Error::BadRequest(PARENT_NOT_TOP_LEVEL.into()));
         }
 
         let number = ProjectRepository::new(self.pool)
-            .allocate_task_number(&mut *tx, project_id)
+            .allocate_task_number(&mut tx, project_id)
             .await?;
 
         let labels = task.label_strings();
@@ -266,7 +271,6 @@ impl TaskRepository<'_> {
 
     /// [`TaskRepository::find_task`] with the task row locked as well.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction.**
     /// The project lock already serialises the project's writers, so the row
     /// lock adds nothing against them; what it adds is a stable row for the
     /// reads that follow within this transaction and a wait for any writer
@@ -276,7 +280,7 @@ impl TaskRepository<'_> {
     /// changed — starts here.
     pub async fn find_task_for_update(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         task_ref: TaskRef,
     ) -> Result<Option<Task>> {
@@ -326,8 +330,6 @@ impl TaskRepository<'_> {
 
     /// Apply the fields a `PUT` supplied, and say whether anything moved.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction.**
-    ///
     /// The return distinguishes the three outcomes ADR 0030 cares about. An
     /// unknown task is [`Error::NotFound`]. A task that exists but whose
     /// stored values already equal every supplied value is `Ok(None)`: nothing
@@ -351,13 +353,13 @@ impl TaskRepository<'_> {
     /// itself, is rejected as it is on insert.
     pub async fn update_task(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         id: Uuid,
         update: &TaskUpdate,
     ) -> Result<Option<Task>> {
         let current = self
-            .find_task_for_update(&mut *tx, project_id, TaskRef::Id(id))
+            .find_task_for_update(tx.reborrow(), project_id, TaskRef::Id(id))
             .await?
             .ok_or(Error::NotFound)?;
 
@@ -398,13 +400,13 @@ impl TaskRepository<'_> {
             if new_parent_id == id {
                 return Err(TaskError::SelfParent.into());
             }
-            if parent_of(&mut *tx, project_id, new_parent_id)
+            if parent_of(&mut tx, project_id, new_parent_id)
                 .await?
                 .is_some()
             {
                 return Err(Error::BadRequest(PARENT_IS_NESTED.into()));
             }
-            if has_children(&mut *tx, id).await? {
+            if has_children(&mut tx, id).await? {
                 return Err(Error::BadRequest(CHILD_HAS_CHILDREN.into()));
             }
         }
@@ -449,9 +451,11 @@ impl TaskRepository<'_> {
     /// Write the state, lease, attempt, closure, escalation, hand-off and
     /// blocked columns in one statement.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**,
-    /// together with the events the change owes the board and, where the actor
-    /// is a session, its [`TaskRepository::touch_task_session`] link.
+    /// Composed in `tracker/` and nowhere else, which is why this and
+    /// [`StateFields`] are `pub(crate)`: the coupling between the state's
+    /// kind, the lease, `attempts` and `closed_at` is decided once, in the
+    /// tracker's `change_state`, together with the events the change owes the
+    /// board and, where the actor is a session, its `touch_task_session` link.
     ///
     /// This helper decides nothing. Whether a release escalates, whether a
     /// state move resets `attempts`, whether a terminal state closes the task
@@ -466,15 +470,15 @@ impl TaskRepository<'_> {
     /// the caller composing a state move already knows what it is changing,
     /// and a claim that writes the same lease twice is a bug in the caller,
     /// not a no-op to absorb.
-    pub async fn set_task_state_fields(
+    pub(crate) async fn set_task_state_fields(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         id: Uuid,
         fields: &StateFields,
     ) -> Result<Task> {
         if let Some(state_id) = fields.state_id
-            && !state_in_project(&mut *tx, project_id, state_id).await?
+            && !state_in_project(&mut tx, project_id, state_id).await?
         {
             return Err(Error::BadRequest(
                 "state must belong to this project".into(),
@@ -482,7 +486,7 @@ impl TaskRepository<'_> {
         }
 
         if let Some(Some(handoff_id)) = fields.current_handoff_id
-            && !handoff_on_task(&mut *tx, id, handoff_id).await?
+            && !handoff_on_task(&mut tx, id, handoff_id).await?
         {
             return Err(Error::BadRequest(
                 "hand-off must belong to this task".into(),
@@ -658,8 +662,7 @@ impl TaskRepository<'_> {
 
     /// Delete a task; `false` when this project has no such task.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction,
-    /// and read what the deletion will destroy before calling.** The cascades
+    /// **Read what the deletion will destroy before calling.** The cascades
     /// take the task's dependency edges, comments, hand-offs and session links
     /// with it, and set its children's `parent_id` to NULL. Afterwards there
     /// is no way to find out who was waiting on it, so the caller captures the
@@ -673,7 +676,7 @@ impl TaskRepository<'_> {
     /// that it survives this (ADR 0022).
     pub async fn delete_task(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         id: Uuid,
     ) -> Result<bool> {

@@ -9,19 +9,19 @@
 //! Comment bodies are content, never a log line: nothing here logs a body at
 //! any level (`CLAUDE.md`, rule 3, and "Backend conventions").
 
-use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::models::{NewTaskComment, TaskComment};
 use crate::prelude::*;
 use crate::repositories::tasks::{TaskRepository, task_in_project};
+use crate::tracker::Locked;
 
 impl TaskRepository<'_> {
     /// Insert a comment on a task of this project.
     ///
-    /// **Call only inside a [`TaskRepository::begin_mutation`] transaction**,
-    /// together with the `commented` event it owes the board and, where a
-    /// session wrote it, its [`TaskRepository::touch_task_session`] link.
+    /// Written under the token, together with the `commented` event it owes
+    /// the board and, where a session wrote it, the session link the mutation
+    /// records.
     ///
     /// [`NewTaskComment::validate`] decides the body and the authorship, so a
     /// comment with two authors, no author, or an author while `system` is
@@ -32,13 +32,13 @@ impl TaskRepository<'_> {
     /// [`TaskError::InvalidCommentAuthor`]: crate::models::TaskError::InvalidCommentAuthor
     pub async fn insert_comment(
         &self,
-        tx: &mut PgConnection,
+        mut tx: Locked<'_>,
         project_id: Uuid,
         comment: &NewTaskComment,
     ) -> Result<TaskComment> {
         comment.validate()?;
 
-        if !task_in_project(&mut *tx, project_id, comment.task_id).await? {
+        if !task_in_project(tx.reborrow(), project_id, comment.task_id).await? {
             return Err(Error::NotFound);
         }
 

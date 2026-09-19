@@ -17,7 +17,7 @@ pub use secrets::{SecretListFilter, SecretRepository, UserFilter};
 pub use sessions::{
     AppendedRange, CostDelta, MAX_EVENT_PAGE, ProcessStart, SessionRepository, Transition,
 };
-pub use tasks::{StateFields, TaskFilter, TaskRepository};
+pub use tasks::{TaskFilter, TaskRepository};
 pub use user_invites::UserInviteRepository;
 pub use users::UserRepository;
 

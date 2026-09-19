@@ -148,6 +148,7 @@ orchestrator/
 │   ├── projects/              project layout on /data, clone job, deletion
 │   ├── session/               SessionOwner task, launcher (incl. launch-for-task), user action service (input, stop, end, retry, sync, delete), idle reaper, recovery
 │   ├── git/                   git binary wrapper, mirror + session clone ops, GitCredentialProvider
+│   ├── healthcheck.rs         the `healthcheck` subcommand's probe of the local /api/health
 │   ├── secrets/               envelope crypto, resolution, injection
 │   ├── tracker/               task-tracker domain service: mutation context, state changes, leases, graph rules, escalation
 │   ├── events/                AgentEvent / TaskEvent types, notify fan-out

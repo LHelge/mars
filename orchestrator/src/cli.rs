@@ -5,15 +5,38 @@
 //! contract is the process, its stdout line and its exit code, and the
 //! integration test spawns the built binary to assert exactly that.
 //!
-//! There is one subcommand today and no argument parser behind it. `main.rs`
-//! matches on the arguments itself; `clap` is deliberately not a dependency of
-//! this crate, and the crate table in `ARCHITECTURE.md`, "Orchestrator
-//! internals", is what would have to change first.
+//! There is no argument parser behind the subcommands. `main.rs` matches on
+//! the arguments itself; `clap` is deliberately not a dependency of this crate,
+//! and the crate table in `ARCHITECTURE.md`, "Orchestrator internals", is what
+//! would have to change first.
+//!
+//! `healthcheck` is the one whose body is not here: the probe lives in the
+//! library (`mars_orchestrator::healthcheck`) so it can be unit-tested without
+//! a process, and this module only resolves the port and forwards the code.
 
+use std::process::ExitCode;
+
+use mars_orchestrator::healthcheck;
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::secrets;
 
 use crate::{Bootstrap, EXIT_FAILURE};
+
+/// Ask the local API whether this orchestrator is healthy and exit 0 or 1.
+///
+/// What a compose `healthcheck:` runs, because the image has no `curl` and no
+/// `wget` (`ARCHITECTURE.md`, "Trust boundaries"; `README.md`, "Deployment
+/// shape"). Nothing is bootstrapped and nothing is logged: the whole output is
+/// one `healthcheck: <reason>` line on stderr when it fails, and silence when
+/// it does not.
+pub async fn healthcheck() -> ExitCode {
+    match healthcheck::api_port_from_env() {
+        Ok(api_port) => healthcheck::run_healthcheck(api_port).await,
+        // Already reported by the resolver, which is the only place that knows
+        // the reason.
+        Err(code) => code,
+    }
+}
 
 /// Rows were left behind the newest master key, so the operator (or the script
 /// that called this) has to run the sweep again before dropping the old key

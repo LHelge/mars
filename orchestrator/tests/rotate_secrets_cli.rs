@@ -425,7 +425,7 @@ async fn a_bogus_argument_prints_the_usage_line_and_exits_sixty_four() {
     assert_eq!(result.code, 64, "stdout: {}", result.stdout);
     assert_eq!(
         result.stderr.trim_end_matches('\n'),
-        "usage: mars-orchestrator [rotate-secrets]",
+        "usage: mars-orchestrator [healthcheck|rotate-secrets]",
     );
     assert!(result.stdout.is_empty(), "stdout: {}", result.stdout);
 }

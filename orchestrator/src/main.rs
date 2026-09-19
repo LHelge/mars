@@ -16,11 +16,16 @@
 //! a step the subcommand runs too, or it is below the split and deliberately
 //! server-only.
 //!
+//! `healthcheck` is the exception to that sharing: it runs none of the
+//! bootstrap, because all it does is ask the already-running orchestrator's own
+//! API how it is (`mars_orchestrator::healthcheck`).
+//!
 //! The serving itself lives in the library (`mars_orchestrator::run`), so the
 //! integration tests exercise the same router and the same shutdown path.
 
 mod cli;
 
+use std::process::ExitCode;
 use std::time::Duration;
 
 use futures_util::FutureExt;
@@ -56,7 +61,7 @@ const EXIT_USAGE: i32 = 64;
 
 /// The one line an unrecognised argument gets. No argument parser stands behind
 /// it (`cli`), so this is written out rather than generated.
-const USAGE: &str = "usage: mars-orchestrator [rotate-secrets]";
+const USAGE: &str = "usage: mars-orchestrator [healthcheck|rotate-secrets]";
 
 /// What [`bootstrap`] built: everything both paths need and nothing either one
 /// has to build for itself.
@@ -67,14 +72,21 @@ struct Bootstrap {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     // The dispatch is before the configuration on purpose: a mistyped argument
     // is answered the same way on a host with no `.env` at all, and an operator
     // who wanted `rotate-secrets` never starts a server by accident.
     let arguments: Vec<String> = std::env::args().skip(1).collect();
 
     match arguments.as_slice() {
-        [] => serve(bootstrap().await).await,
+        [] => {
+            serve(bootstrap().await).await;
+            ExitCode::SUCCESS
+        }
+        // No bootstrap at all on this arm: the probe needs one variable and
+        // one request, and a health check that failed on an unrelated missing
+        // variable would report the wrong thing (`crate::healthcheck`).
+        [subcommand] if subcommand == "healthcheck" => cli::healthcheck().await,
         [subcommand] if subcommand == "rotate-secrets" => {
             cli::rotate_secrets(bootstrap().await).await
         }

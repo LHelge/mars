@@ -77,8 +77,12 @@ export function SecretRow({
     onError: (caught: unknown) => {
       setError(secretErrorMessage(caught));
     },
+    // The mutation cache keeps `variables` — here the plaintext — for as long
+    // as the mutation lives, so it is dropped the moment the request settles.
+    gcTime: 0,
     onSettled: () => {
       setValue("");
+      replace.reset();
     },
   });
 

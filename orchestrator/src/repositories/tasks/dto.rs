@@ -186,16 +186,35 @@ async fn assemble(
             state,
             depends_on.remove(&task.id).unwrap_or_default(),
             blocks.remove(&task.id).unwrap_or_default(),
-            // A `current_handoff_id` pointing at a record that is gone — the
-            // column is `ON DELETE SET NULL`, but a batch read can still race
-            // one — simply has no hand-off.
-            task.current_handoff_id
-                .and_then(|id| handoffs.remove(&id))
-                .map(HandoffDto::from),
+            current_handoff(task, &mut handoffs),
         ));
     }
 
     Ok(dtos)
+}
+
+/// The record `tasks.current_handoff_id` names, taken out of the batch.
+///
+/// `Task.handoff` is "the record `current_handoff_id` names, resolved, or
+/// `null`" (`SPEC.md`, "Tasks"), and the pointer can only ever name a record
+/// of this same task: the insert checks it, and the column is `ON DELETE SET
+/// NULL`. So a pointer this batch found no record for is the two reads
+/// disagreeing — a delete landing between them — and never a caller's doing.
+/// The task is still sent, with `handoff: null`, and the disagreement is
+/// logged rather than swallowed.
+fn current_handoff(task: &Task, handoffs: &mut HashMap<Uuid, TaskHandoff>) -> Option<HandoffDto> {
+    let handoff_id = task.current_handoff_id?;
+
+    let Some(row) = handoffs.remove(&handoff_id) else {
+        warn!(
+            task_id = %task.id,
+            handoff_id = %handoff_id,
+            "a task's current hand-off names a record that is not there",
+        );
+        return None;
+    };
+
+    Some(HandoffDto::from(row))
 }
 
 /// The names of these states, scoped to `project_id` when there is one.

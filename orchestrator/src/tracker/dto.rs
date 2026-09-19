@@ -353,6 +353,73 @@ mod tests {
     }
 
     #[test]
+    fn a_handoff_carries_the_thirteen_documented_fields_and_nothing_else() {
+        // An obviously fake but well-formed object id (`CLAUDE.md`, rule 3).
+        const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+        let row = TaskHandoff {
+            id: Uuid::new_v4(),
+            task_id: Uuid::new_v4(),
+            source_session_id: Some(Uuid::new_v4()),
+            source_branch: "session/one".to_string(),
+            commit: COMMIT.to_string(),
+            comment_id: Some(Uuid::new_v4()),
+            review_status: ReviewStatus::ChangesRequested,
+            reviewed_by_user_id: Some(Uuid::new_v4()),
+            reviewed_by_session_id: None,
+            reviewed_at: Some(at(1_700_000_100)),
+            created_by_user_id: None,
+            created_by_session_id: Some(Uuid::new_v4()),
+            created_at: at(1_700_000_000),
+        };
+        let encoded = serde_json::to_value(HandoffDto::from(row.clone())).unwrap();
+        let object = encoded.as_object().unwrap();
+
+        // The thirteen `SPEC.md` names and no fourteenth; the encoder sorts
+        // the keys, so the set is what is asserted, not their order.
+        let mut documented = [
+            "id",
+            "task_id",
+            "source_session_id",
+            "source_branch",
+            "commit",
+            "comment_id",
+            "review_status",
+            "reviewed_by_user_id",
+            "reviewed_by_session_id",
+            "reviewed_at",
+            "created_by_user_id",
+            "created_by_session_id",
+            "created_at",
+        ];
+        documented.sort_unstable();
+        assert_eq!(
+            object.keys().map(String::as_str).collect::<Vec<_>>(),
+            documented,
+        );
+        assert_eq!(encoded["id"], json!(row.id));
+        assert_eq!(encoded["task_id"], json!(row.task_id));
+        assert_eq!(encoded["source_session_id"], json!(row.source_session_id));
+        assert_eq!(encoded["source_branch"], json!("session/one"));
+        assert_eq!(encoded["commit"], json!(COMMIT));
+        assert_eq!(encoded["comment_id"], json!(row.comment_id));
+        assert_eq!(encoded["review_status"], json!("changes_requested"));
+        // A deleted actor is `null`, never an omitted key.
+        assert_eq!(object.get("reviewed_by_session_id"), Some(&json!(null)));
+        assert_eq!(object.get("created_by_user_id"), Some(&json!(null)));
+        // RFC 3339 (`CLAUDE.md`, "API conventions").
+        assert_eq!(encoded["created_at"], json!("2023-11-14T22:13:20Z"));
+        assert_eq!(encoded["reviewed_at"], json!("2023-11-14T22:15:00Z"));
+
+        // The one conversion path, and it round-trips for a stored event
+        // payload.
+        assert_eq!(
+            serde_json::from_value::<HandoffDto>(encoded).unwrap(),
+            HandoffDto::from(row),
+        );
+    }
+
+    #[test]
     fn a_task_carries_the_state_name_and_a_numeric_priority() {
         let row = task(Uuid::new_v4());
         let dto = TaskDto::from_parts(&row, "backlog", Vec::new(), Vec::new(), None);

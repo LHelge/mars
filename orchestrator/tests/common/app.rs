@@ -30,10 +30,11 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
 use axum::http::StatusCode;
 use axum_extra::extract::cookie::Cookie;
-use axum_test::{TestRequest, TestResponse, TestServer};
+use axum_test::{TestRequest, TestResponse, TestServer, TestWebSocket};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{TimeDelta, Utc};
@@ -76,6 +77,14 @@ use super::db;
 /// itself.
 const FAKE_PASSWORD_HASH: &str = "$argon2id$fake$hash";
 
+/// The stream periods every [`TestApp`] runs on: fast enough to assert on,
+/// far enough apart to tell the three of them apart in a log.
+pub const TEST_TIMINGS: StreamTimings = StreamTimings {
+    ping: Duration::from_millis(200),
+    safety_read: Duration::from_millis(300),
+    sse_keepalive: Duration::from_millis(100),
+};
+
 const DELETE_SEEDED_ADMIN: &str =
     "DELETE FROM users WHERE id = '00000000-0000-0000-0000-000000000001'";
 
@@ -96,6 +105,15 @@ const INVITES: &str = "/api/users/invites";
 pub struct TestApp {
     /// The router under test, driven in-process by `axum-test`.
     pub server: TestServer,
+    /// The same router over a real HTTP transport on a random port.
+    ///
+    /// `server` uses `axum-test`'s mock transport, which a WebSocket upgrade
+    /// cannot travel over and which the rest of the suite relies on (it has no
+    /// peer address, which is what the throttle tests are written against), so
+    /// the streaming endpoints get a second server rather than a changed one.
+    /// Both serve the same [`AppState`], so a fixture arranged through one is
+    /// visible to the other.
+    pub http_server: TestServer,
     /// A pool on the same database the app uses, for arranging fixtures and
     /// asserting on rows.
     pub pool: PgPool,
@@ -266,11 +284,24 @@ impl TestApp {
             state.with_session_ended_hook(hook)
         };
 
+        // Milliseconds rather than the documented tens of seconds: a stream
+        // test asserts that a ping, a safety read or a keepalive *happens*,
+        // and waiting out the real period would cost a minute per scenario
+        // (`StreamTimings`).
+        let state = state.with_realtime_timings(TEST_TIMINGS);
+
         // The library's own router, so tests exercise the real middleware
         // stack. Once the authentication epic adds them, the
         // `integration-tests`-only routes (`SPEC.md`, "Test-only routes") are
         // part of `build_api_router` and reachable from here for free.
         let server = TestServer::new(build_api_router(state.clone()));
+
+        // The WebSocket and SSE endpoints, over a transport that can carry an
+        // upgrade and a streaming body. A random port, so parallel test
+        // binaries never collide.
+        let http_server = TestServer::builder()
+            .http_transport()
+            .build(build_api_router(state.clone()));
 
         // The shared listener `run` starts, started here for the same reason:
         // a test that subscribes to `state.fanout` is subscribing to the very
@@ -288,6 +319,7 @@ impl TestApp {
 
         TestApp {
             server,
+            http_server,
             pool,
             state,
             engine,
@@ -823,6 +855,50 @@ impl TestApp {
             .authorization_bearer(&user.access_token)
     }
 
+    /// Open the session WebSocket over the HTTP transport (`SPEC.md`,
+    /// "WebSocket: session stream").
+    ///
+    /// `token` goes in the query string, where a browser has to put it, and
+    /// `after` is the replay cursor. Asserts the upgrade succeeded, so it is
+    /// the arrangement step for tests about what the stream *sends*; a test
+    /// about a refused open requests the same path through
+    /// [`TestApp::ws_request`] and asserts on the status.
+    pub async fn ws(&self, session_id: Uuid, token: &str, after: i64) -> TestWebSocket {
+        self.ws_request(session_id, Some(token), Some(after))
+            .await
+            .into_websocket()
+            .await
+    }
+
+    /// The raw upgrade request the WebSocket is opened with, awaited but not
+    /// upgraded: the response a refused open answers with.
+    ///
+    /// `None` leaves the parameter out of the query string altogether, which
+    /// is how "no token" and "no cursor" are spelled.
+    pub async fn ws_request(
+        &self,
+        session_id: Uuid,
+        token: Option<&str>,
+        after: Option<i64>,
+    ) -> TestResponse {
+        self.http_server
+            .get_websocket(&ws_path(session_id, token, after.map(|a| a.to_string())))
+            .await
+    }
+
+    /// [`TestApp::ws_request`] with `after` exactly as the client spelled it,
+    /// for the cursors that are not numbers.
+    pub async fn ws_request_raw_after(
+        &self,
+        session_id: Uuid,
+        token: Option<&str>,
+        after: &str,
+    ) -> TestResponse {
+        self.http_server
+            .get_websocket(&ws_path(session_id, token, Some(after.to_string())))
+            .await
+    }
+
     /// The body of [`TestApp::create_user`] and [`TestApp::create_admin`].
     async fn create(
         &self,
@@ -918,6 +994,25 @@ pub struct Invitation {
     pub token: String,
     /// The `Invite` DTO the creation answered (`SPEC.md`, "Users").
     pub body: Value,
+}
+
+/// `/ws/sessions/{id}` with the parameters that were given.
+fn ws_path(session_id: Uuid, token: Option<&str>, after: Option<String>) -> String {
+    let mut path = format!("/ws/sessions/{session_id}");
+    let mut query: Vec<String> = Vec::new();
+
+    if let Some(after) = after {
+        query.push(format!("after={after}"));
+    }
+    if let Some(token) = token {
+        query.push(format!("token={token}"));
+    }
+    if !query.is_empty() {
+        path.push('?');
+        path.push_str(&query.join("&"));
+    }
+
+    path
 }
 
 /// A user and the credentials they were signed in with.

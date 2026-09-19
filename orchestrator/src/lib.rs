@@ -50,6 +50,12 @@ use crate::prelude::*;
 pub fn build_api_router(state: AppState) -> Router {
     Router::new()
         .nest("/api", routes::routes())
+        // At the root, not under `/api`: `SPEC.md` spells the session socket
+        // `/ws/sessions/{id}` and nginx proxies `location /ws/`
+        // (`ARCHITECTURE.md`, "Frontend architecture"). It is inside the trace
+        // layer below like every other route, which is why that layer leaves
+        // the query string out.
+        .merge(ws::routes())
         .with_state(state)
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request| {

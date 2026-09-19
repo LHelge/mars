@@ -24,7 +24,7 @@ pub mod telemetry;
 pub use claims::{Claims, ClaimsError};
 pub use config::{Config, ConfigError, SecretsMasterKeySource};
 pub use error::{Error, Json, Path, Query, Result};
-pub use state::{AppState, SessionEndedHook};
+pub use state::{AppState, SessionEndedHook, StreamTimings};
 pub use telemetry::{TelemetryError, init_tracing};
 
 pub use sqlx::PgPool;

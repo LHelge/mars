@@ -1179,6 +1179,63 @@ impl<'a> SessionRepository<'a> {
         into_session_events(self.list_events_after(session_id, after).await?)
     }
 
+    /// At most `limit` events after `after`, oldest first.
+    ///
+    /// The bounded form of [`SessionRepository::list_events_after`], for the
+    /// stream handlers: a client whose cursor is thousands of events behind is
+    /// caught up one page at a time rather than in one unbounded read that
+    /// would be buffered whole before a single frame is written. A caller
+    /// keeps reading until a page comes back short (`crate::ws`).
+    ///
+    /// `limit` is clamped to `1..=`[`MAX_EVENT_PAGE`] exactly as
+    /// [`SessionRepository::list_events`] clamps its own.
+    pub async fn list_events_after_page(
+        &self,
+        session_id: Uuid,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<EventRow>> {
+        let limit = limit.clamp(1, MAX_EVENT_PAGE);
+
+        let rows = sqlx::query_as!(
+            EventRow,
+            r#"
+            SELECT session_id, seq, ts, kind, payload
+            FROM events
+            WHERE session_id = $1 AND seq > $2
+            ORDER BY seq
+            LIMIT $3
+            "#,
+            session_id,
+            after,
+            i64::from(limit),
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    /// At most `limit` events after `after`, oldest first, as clients receive
+    /// them.
+    ///
+    /// The typed form of [`SessionRepository::list_events_after_page`] and the
+    /// read the session WebSocket's replay and every later cursor read are
+    /// made of (`ARCHITECTURE.md`, "Event delivery"); internal `_`-prefixed
+    /// fields are stripped as in [`SessionRepository::events_page`], so
+    /// `_offset` cannot reach a client through this path either.
+    pub async fn events_after_page(
+        &self,
+        session_id: Uuid,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<SessionEvent>> {
+        into_session_events(
+            self.list_events_after_page(session_id, after, limit)
+                .await?,
+        )
+    }
+
     /// The highest committed sequence of a session, or `0` when it has no
     /// events yet.
     ///

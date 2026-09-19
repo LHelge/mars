@@ -309,12 +309,6 @@ impl Config {
         })
     }
 
-    /// Whether `PUBLIC_URL` is https, which decides the `Secure` flag on the
-    /// refresh-token cookie (`SPEC.md`, "Authentication").
-    pub fn public_url_is_https(&self) -> bool {
-        self.public_url.starts_with("https://")
-    }
-
     /// Where `project_id` keeps its repository, its CLI state and its shared
     /// directories, in both views of the data volume
     /// ([`ProjectLayout`](crate::projects::ProjectLayout);
@@ -537,7 +531,6 @@ mod tests {
         let config = load(&required_only()).expect("a complete required set loads");
 
         assert_eq!(config.public_url, "https://mars.example.invalid");
-        assert!(config.public_url_is_https());
         assert_eq!(config.jwt_secret, "not-a-real-signing-secret");
         assert_eq!(
             config.database_url,
@@ -712,7 +705,6 @@ mod tests {
         );
         let config = load(&vars).expect("loads");
         assert_eq!(config.public_url, "http://localhost:8080");
-        assert!(!config.public_url_is_https());
     }
 
     #[test]

@@ -40,6 +40,7 @@ use common::app::TokenPair;
 use common::races::{
     IN_FLIGHT, RACE_ITERATIONS, RACE_TIMEOUT, hold_user_lock, unrevoked_refresh_tokens,
 };
+use mars_orchestrator::auth::REFRESH_COOKIE;
 use mars_orchestrator::models::User;
 use mars_orchestrator::models::user::hash_password;
 use mars_orchestrator::prelude::*;

@@ -9,7 +9,6 @@ use axum::Router;
 use crate::prelude::*;
 
 pub mod auth;
-pub mod cookies;
 pub mod extractors;
 pub mod git;
 pub mod health;

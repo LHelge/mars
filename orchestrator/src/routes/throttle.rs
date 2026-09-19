@@ -95,20 +95,17 @@ struct Entry {
 
 /// A key that is blocked, and until when.
 ///
-/// Returned by [`LoginThrottle::check`] so the caller can answer 429 and, if
-/// it wants to, say how long the block still has to run. The login route
-/// itself only needs to know that it must not verify the password.
+/// Returned by [`LoginThrottle::check`] so a failure is a value rather than a
+/// bare `bool`. Nothing converts it into a `Retry-After` header: `SPEC.md`,
+/// "Authentication" fixes the 429 as `too many login attempts` and nothing
+/// else, and telling a caller exactly when their block lifts is a schedule for
+/// the next round of guesses. [`crate::auth::Credentials::login`] only needs to
+/// know that it must not verify the password; the instant is here for logging
+/// and for the unit tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockedUntil {
     /// The instant the block lifts.
     pub until: Instant,
-}
-
-impl BlockedUntil {
-    /// How much of the block is left at `now`; zero once it has lifted.
-    pub fn retry_after(&self, now: Instant) -> Duration {
-        self.until.saturating_duration_since(now)
-    }
 }
 
 /// The login throttle: [`LOGIN_FAILURE_LIMIT`] failures per username or per
@@ -447,7 +444,7 @@ mod tests {
         let blocked = throttle
             .check("bob", addr(1))
             .expect_err("the tenth failure blocks the key");
-        assert_eq!(blocked.retry_after(clock.now()), LOGIN_BLOCK);
+        assert_eq!(blocked.until, clock.now() + LOGIN_BLOCK);
 
         // Still blocked one second before the block lifts.
         clock.advance(LOGIN_BLOCK - Duration::from_secs(1));

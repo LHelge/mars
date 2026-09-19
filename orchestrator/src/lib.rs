@@ -11,6 +11,7 @@
 pub mod prelude;
 
 pub mod agent;
+pub mod auth;
 pub mod cron;
 pub mod email;
 pub mod engine;

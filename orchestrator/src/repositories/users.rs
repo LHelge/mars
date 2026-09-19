@@ -25,6 +25,7 @@
 //! [`crate::repositories::RefreshTokenRepository`]. Every other token-table
 //! statement lives with its own table.
 
+use chrono::Utc;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
@@ -280,9 +281,13 @@ impl<'a> UserRepository<'a> {
     /// administrator's change and a reset link pass `None` and log nobody in
     /// (ADR 0025).
     ///
-    /// Every timestamp comes from the database's `NOW()`, which in Postgres is
-    /// the start of this transaction, so the revocations, the spent reset
-    /// tokens and the replacement's expiry are all measured from one clock.
+    /// The revocations and the spent reset tokens are stamped with the
+    /// database's `NOW()`, which in Postgres is the start of this transaction,
+    /// so they share one clock. The replacement's expiry is the one value that
+    /// does not come from SQL: it is `REFRESH_TOKEN_TTL` from the
+    /// orchestrator's clock, bound like every other parameter, so the thirty
+    /// days are written down once and the cookie's `Max-Age` cannot drift from
+    /// the row's `expires_at`.
     ///
     /// **Caller's contract.** Take
     /// [`UserRepository::lock_user`] first and revalidate against the row it
@@ -337,15 +342,21 @@ impl<'a> UserRepository<'a> {
 
         // After the revocation, never before it: a replacement inserted first
         // would revoke itself.
+        //
+        // The expiry is bound rather than written as an `INTERVAL` literal:
+        // [`REFRESH_TOKEN_TTL`] is the one place the thirty days are spelled,
+        // and a lifetime repeated in SQL is a lifetime that will disagree with
+        // the cookie's `Max-Age` one day.
         if let Some(token_hash) = replacement {
             sqlx::query!(
                 r#"
                 INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)
-                VALUES ($1, $2, $3, NOW() + INTERVAL '30 days')
+                VALUES ($1, $2, $3, $4)
                 "#,
                 Uuid::new_v4(),
                 id,
                 token_hash,
+                Utc::now() + REFRESH_TOKEN_TTL,
             )
             .execute(&mut *tx)
             .await?;

@@ -28,18 +28,13 @@
 //! locks the user row first (`docs/data-model.md`, "Users and
 //! authentication"; ADR 0025).
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::models::{Email, UserInvite};
 use crate::prelude::*;
 use crate::repositories::conflict_on;
-
-/// How long an invite stays valid, in days (`docs/data-model.md`,
-/// `user_invites`: "Creation time plus 7 days"; `SPEC.md`, "User-facing
-/// features").
-pub const INVITE_TTL_DAYS: i64 = 7;
 
 /// The partial unique index that enforces one open invite per address.
 const OPEN_EMAIL_INDEX: &str = "user_invites_open_email_idx";
@@ -50,14 +45,16 @@ const OPEN_INVITE_EXISTS: &str = "an open invite already exists for this email";
 /// The 409 message for inviting an address that is already a user.
 const EMAIL_BELONGS_TO_A_USER: &str = "email already belongs to a user";
 
-/// When an invite created at `now` expires.
+/// When an invite created at `now` expires (`docs/data-model.md`,
+/// `user_invites`: "Creation time plus 7 days").
 ///
 /// The expiry is a column rather than a rule the reader applies, so it is
-/// computed once here and passed to [`UserInviteRepository::insert`] and
-/// [`UserInviteRepository::rotate_token`]; the invite route and the resend
-/// route get the same 7 days without repeating the arithmetic.
+/// computed once here from the one [`INVITE_TTL`] and passed to
+/// [`UserInviteRepository::insert`] and [`UserInviteRepository::rotate_token`];
+/// issuing and resending get the same seven days without repeating the
+/// arithmetic, and the lifetime itself is written down once.
 pub fn expires_at(now: DateTime<Utc>) -> DateTime<Utc> {
-    now + TimeDelta::days(INVITE_TTL_DAYS)
+    now + INVITE_TTL
 }
 
 /// All SQL against `user_invites` (`ARCHITECTURE.md`, "Orchestrator
@@ -382,6 +379,6 @@ mod tests {
     #[test]
     fn an_invite_expires_seven_days_after_it_is_created() {
         let now = Utc::now();
-        assert_eq!(expires_at(now) - now, TimeDelta::days(7));
+        assert_eq!(expires_at(now) - now, chrono::TimeDelta::days(7));
     }
 }

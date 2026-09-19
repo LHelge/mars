@@ -1,10 +1,10 @@
 ---
 id: "72jr7"
 title: "Add PUT and DELETE /projects/{pid}/tasks/{id}: field updates, state as hand-off, re-parenting, and deletion with dependant recompute and a deleted event retaining identity"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:43:37.553652768Z"
-updated: "2026-09-16T20:43:37.553652768Z"
+updated: "2026-09-19T16:47:46.052781562Z"
 tags:
   - orchestrator
   - tracker
@@ -12,6 +12,7 @@ depends_on:
   - cuw5s
   - "6jycg"
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

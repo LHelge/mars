@@ -1,10 +1,10 @@
 ---
 id: rujpc
 title: Implement discovery-provenance resolution for session-created tasks (discovered_from inference, ambiguity rejection, parent-link suffices)
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-16T20:45:57.878683911Z"
-updated: "2026-09-16T20:45:57.878683911Z"
+updated: "2026-09-19T16:47:47.680583766Z"
 tags:
   - orchestrator
   - tracker
@@ -13,6 +13,7 @@ depends_on:
   - "6jycg"
   - cws3a
 parent: "5h3y4"
+attempts: 1
 ---
 
 ## Summary

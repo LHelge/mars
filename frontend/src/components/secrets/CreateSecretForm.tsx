@@ -48,9 +48,13 @@ export function CreateSecretForm({ scope, scopeId }: CreateSecretFormProps) {
     onError: (caught: unknown) => {
       setError(secretErrorMessage(caught));
     },
-    // Whatever happened, the plaintext goes now; the user retypes it.
+    // Whatever happened, the plaintext goes now; the user retypes it. The
+    // mutation cache keeps `variables` — the body with the value — for as long
+    // as the mutation lives, so that copy is dropped here too.
+    gcTime: 0,
     onSettled: () => {
       setValue("");
+      create.reset();
     },
   });
 

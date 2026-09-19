@@ -69,11 +69,12 @@ function user(overrides: Partial<User> = {}): User {
   };
 }
 
-function renderManager(scope: "project" | "user" = "project") {
+function renderManager(scope: "project" | "user" = "project"): QueryClient {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   render(
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-    >
+    <QueryClientProvider client={client}>
       <MemoryRouter>
         {scope === "project" ? (
           <SecretsManager scope="project" scopeId={PROJECT_ID} />
@@ -83,6 +84,7 @@ function renderManager(scope: "project" | "user" = "project") {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return client;
 }
 
 function fillCreateForm(name: string, value: string) {
@@ -142,7 +144,7 @@ describe("SecretsManager", () => {
   it("creates a secret and keeps no value afterwards", async () => {
     vi.mocked(createSecret).mockResolvedValue(secret({ name: "MY_TOKEN_2" }));
 
-    renderManager();
+    const client = renderManager();
     await screen.findByRole("button", { name: "Add secret" });
 
     fillCreateForm("my_token_2", FAKE_VALUE);
@@ -163,6 +165,19 @@ describe("SecretsManager", () => {
       ).toBe("");
     });
     expect(screen.getByLabelText<HTMLInputElement>(/^Name/).value).toBe("");
+
+    // The mutation cache holds a mutation's variables, which here is the body
+    // with the plaintext: nothing may be left of it once the request settled.
+    await waitFor(() => {
+      expect(
+        JSON.stringify(
+          client
+            .getMutationCache()
+            .getAll()
+            .map((mutation) => mutation.state.variables),
+        ),
+      ).not.toContain(FAKE_VALUE);
+    });
   });
 
   it("refuses a name the column would refuse without calling the API", async () => {

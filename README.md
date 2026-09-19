@@ -214,7 +214,7 @@ podman build -t mars-session-stub:latest images/stub
 
 The claude image's version tag is the CLI version pinned in `images/claude/Dockerfile` and `mars-session-claude:latest` is an alias for that same build, which is what `SESSION_IMAGE_DEFAULT` points at; the stub image replays a recorded transcript instead of calling a model, so tests run on it without credentials. `ENGINE=podman images/smoke-test.sh` checks both. With Docker, run the same two commands with `docker build`.
 
-`orchestrator/tests/session_e2e.rs` runs the session lifecycle on real containers and needs the stub image; it takes the tag from `MARS_STUB_IMAGE` and defaults to `localhost/mars-session-stub:dev`, so either build it under that tag (`podman build -t localhost/mars-session-stub:dev images/stub`) or point the variable at the tag you have. Like the rest of the engine suite it runs only with `DOCKER_HOST` set.
+`orchestrator/tests/session_e2e.rs` runs the session lifecycle on real containers and needs the stub image; it takes the tag from `MARS_STUB_IMAGE` and defaults to `localhost/mars-session-stub:dev`, so either build it under that tag (`podman build -t localhost/mars-session-stub:dev images/stub`) or point the variable at the tag you have. Like the rest of the engine suite it runs only with `DOCKER_HOST` set. The test suite starts its own Postgres through testcontainers; on an engine that cannot publish a port to it, set `MARS_TEST_POSTGRES_URL` (`postgres://user:password@host:port`, no database name) to a throw-away server and the suite uses that instead, rebuilding its template database there.
 
 **Frontend**:
 
@@ -240,7 +240,7 @@ npm run test:e2e             # starts the dev server itself, or reuses a running
 | Workflow | Triggers on | Checks |
 | --- | --- | --- |
 | Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests with `SQLX_OFFLINE=true`; a second job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
-| Engine | `orchestrator/**` or `images/**` | `tests/engine.rs` against the runner's Docker daemon and against rootless Podman via its compatible socket; then the stub session image is built with that engine and `tests/session_e2e.rs` runs the session lifecycle on real containers (on Docker the runner's uid is not 1000, so that binary reports the uid contract and returns) |
+| Engine | `orchestrator/**` or `images/**` | `tests/engine.rs` against the runner's Docker daemon and against rootless Podman via its compatible socket; then the stub session image is built with that engine and `tests/session_e2e.rs` runs the session lifecycle on real containers, with a `postgres:18` service container as its database through `MARS_TEST_POSTGRES_URL` (on Docker the runner's uid is not 1000, so that binary reports the uid contract and returns) |
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright; the real orchestrator, Postgres and stub session image are added by their own epics |
 | Images | `images/**` | Lint the entrypoint, Dockerfiles and stub; build both session images on Docker and Podman; run `images/smoke-test.sh` |

@@ -104,6 +104,18 @@ const ADMIN_DATABASE: &str = "postgres";
 /// `pg_locks` dump is never ambiguous.
 const CREATE_DATABASE_LOCK_KEY: i64 = 0x4D41_5253_5445_5354;
 
+/// Names a Postgres server the suite should use instead of starting its own:
+/// `postgres://user:password@host:port`, with no database name.
+///
+/// For a run whose engine cannot give `testcontainers` a published port — the
+/// Engine workflow's rootless Podman 4 answers `PortNotExposed` — and which
+/// therefore brings a server of its own (a CI service container). The server
+/// must be this run's alone: the template database is dropped and rebuilt on
+/// it, and no container is started or removed. Unset, which is every local run
+/// and Orchestrator CI, the suite starts its own server as the module
+/// documentation describes.
+pub const EXTERNAL_SERVER_ENV: &str = "MARS_TEST_POSTGRES_URL";
+
 /// How long the removal hook's single engine request may take, in seconds.
 const REMOVE_TIMEOUT_SECS: u64 = 30;
 
@@ -122,7 +134,8 @@ struct SharedPostgres {
     /// Never read; it keeps the container guard alive for the whole process so
     /// that `testcontainers` cannot remove the server under a running test.
     /// Removal is the `atexit` hook's job (see the module documentation).
-    _container: ContainerAsync<Postgres>,
+    /// `None` on a server the run brought itself ([`EXTERNAL_SERVER_ENV`]).
+    _container: Option<ContainerAsync<Postgres>>,
 }
 
 static SHARED: OnceLock<SharedPostgres> = OnceLock::new();
@@ -159,6 +172,17 @@ fn shared() -> &'static SharedPostgres {
 
 /// Start the container, register its removal and build the template.
 async fn boot(runtime: Handle) -> SharedPostgres {
+    if let Some(base_url) = external_server() {
+        drop_template(&base_url).await;
+        create_template(&base_url).await;
+
+        return SharedPostgres {
+            base_url,
+            runtime,
+            _container: None,
+        };
+    }
+
     let container = Postgres::default()
         .with_tag(POSTGRES_TAG)
         .with_cmd(SERVER_ARGS)
@@ -185,8 +209,37 @@ async fn boot(runtime: Handle) -> SharedPostgres {
     SharedPostgres {
         base_url,
         runtime,
-        _container: container,
+        _container: Some(container),
     }
+}
+
+/// The server [`EXTERNAL_SERVER_ENV`] names, without a trailing slash.
+fn external_server() -> Option<String> {
+    let url = std::env::var(EXTERNAL_SERVER_ENV).ok()?;
+    let url = url.trim().trim_end_matches('/');
+
+    (!url.is_empty()).then(|| url.to_string())
+}
+
+/// Remove a template an earlier binary of the same run left on an external
+/// server, so that this binary's migrations are the ones its tests clone.
+async fn drop_template(base_url: &str) {
+    let mut admin = admin_connection(base_url).await;
+    execute(
+        &mut admin,
+        format!(
+            "UPDATE pg_database SET datistemplate = false WHERE datname = '{TEMPLATE_DATABASE}'"
+        ),
+    )
+    .await
+    .expect("the old template database is unmarked");
+    execute(
+        &mut admin,
+        format!("DROP DATABASE IF EXISTS \"{TEMPLATE_DATABASE}\""),
+    )
+    .await
+    .expect("the old template database is dropped");
+    let _ = admin.close().await;
 }
 
 /// Create [`TEMPLATE_DATABASE`], migrate it and mark it a template.

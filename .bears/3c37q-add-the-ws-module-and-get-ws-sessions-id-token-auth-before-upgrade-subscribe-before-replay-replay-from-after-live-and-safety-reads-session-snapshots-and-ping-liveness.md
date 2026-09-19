@@ -1,10 +1,10 @@
 ---
 id: "3c37q"
 title: "Add the ws module and GET /ws/sessions/{id}: token auth before upgrade, subscribe-before-replay, replay from ?after, live and safety reads, session snapshots and ping liveness"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:45:35.510083978Z"
-updated: "2026-09-16T20:45:35.510083978Z"
+updated: "2026-09-19T21:01:09.998322943Z"
 tags:
   - orchestrator
   - realtime
@@ -13,6 +13,7 @@ depends_on:
   - nq4su
   - "22tk6"
 parent: h8kw9
+attempts: 1
 ---
 
 ## Summary

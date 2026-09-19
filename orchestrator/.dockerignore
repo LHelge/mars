@@ -1,0 +1,8 @@
+# Build context for orchestrator/Dockerfile. Only what bloats the context or
+# leaks a secret is excluded; `tests/fixtures/**` is deliberately kept, since it
+# is small and the builder simply never copies `tests/`.
+target/
+data/
+.env
+.env.*
+*.log

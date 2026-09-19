@@ -56,7 +56,10 @@ pub use task::{
 pub use task_comment::{NewTaskComment, TaskComment};
 pub use task_dependency::{TaskDependency, TaskDependencyKind};
 pub use task_event::{NewTaskEvent, TaskEventRow, kind as task_event_kind};
-pub use task_handoff::{NewTaskHandoff, ReviewStatus, TaskHandoff, is_commit_id};
+pub use task_handoff::{
+    HandoffCaller, HandoffInput, NewTaskHandoff, ReviewDecision, ReviewStatus, TaskHandoff,
+    ValidatedHandoff, is_commit_id,
+};
 pub use task_session::TaskSession;
 pub use task_state::{
     DEFAULT_TASK_STATES, MAX_STATE_NAME_CHARS, NewTaskState, TaskState, TaskStateKind,

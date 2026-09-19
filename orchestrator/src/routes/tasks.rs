@@ -55,7 +55,7 @@ use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
 use crate::events::TaskActor;
-use crate::models::{Priority, Task, TaskDependencyKind, TaskRef, TaskStateKind};
+use crate::models::{Priority, Task, TaskDependencyKind, TaskError, TaskRef, TaskStateKind};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskFilter, TaskRepository};
 use crate::routes::{CurrentUser, Path, Query};
@@ -270,21 +270,6 @@ async fn detail(
 
 // ---- update ----
 
-/// What a hand-off without a state change is told (400).
-///
-/// `SPEC.md`, "Code hand-offs and review": a `handoff` "requires a different
-/// target `state` in the same update (400 otherwise)". One message for both
-/// ways of failing it — no `state` at all, and the state the task is already
-/// in — because a hand-off that does not move the task is the same mistake
-/// either way.
-const HANDOFF_NEEDS_STATE: &str = "handoff requires a different target state";
-
-/// What a hand-off with an empty comment is told (400).
-///
-/// The same sentence requires "a non-empty `comment`": a hand-off is a message
-/// to the next agent, and one with nothing in it hands over nothing.
-const HANDOFF_COMMENT_EMPTY: &str = "handoff comment must not be empty";
-
 /// `PUT /projects/{pid}/tasks/{id}` (`SPEC.md`, "Tasks").
 ///
 /// Every field is optional and an absent one leaves its column alone.
@@ -315,13 +300,16 @@ struct UpdateTaskRequest {
 /// `SPEC.md`, "Code hand-offs and review" gives it two variants with a commit
 /// or a hand-off id, and the Code hand-offs epic owns both — along with
 /// [`handoffs::publish`], which every request reaching it is currently refused
-/// by. What is typed here is the one field the *input* rules this route
+/// by. The typed contract both callers converge on is
+/// [`HandoffInput`](crate::models::HandoffInput), which this route will
+/// deserialise into once publication exists; until then what is typed here is
+/// the one field the *input* rules this route
 /// enforces are about, and unknown fields are deliberately accepted so that a
 /// correctly shaped `revision` or `forward` body is answered "not available
 /// yet" rather than "unknown field `commit`".
 ///
 /// `comment` is an `Option` although the contract requires it, so that leaving
-/// it out is the documented [`HANDOFF_COMMENT_EMPTY`] rather than serde's own
+/// it out is the documented [`TaskError::EmptyComment`] rather than serde's own
 /// message about a missing field.
 #[derive(Debug, Deserialize)]
 struct HandoffRequest {
@@ -367,7 +355,7 @@ async fn update(
     // The half of the hand-off rules that needs neither the lock nor the task.
     if let Some(handoff) = body.handoff.as_ref() {
         if body.state.is_none() {
-            return Err(Error::BadRequest(HANDOFF_NEEDS_STATE.into()));
+            return Err(TaskError::HandoffRequiresStateChange.into());
         }
         if handoff
             .comment
@@ -376,7 +364,7 @@ async fn update(
             .trim()
             .is_empty()
         {
-            return Err(Error::BadRequest(HANDOFF_COMMENT_EMPTY.into()));
+            return Err(TaskError::EmptyComment.into());
         }
     }
 
@@ -391,7 +379,7 @@ async fn update(
     if let Some(handoff) = body.handoff.as_ref() {
         let name = body.state.as_deref().unwrap_or_default();
         if resolve_state(&mut mutation, name).await?.id == task.state_id {
-            return Err(Error::BadRequest(HANDOFF_NEEDS_STATE.into()));
+            return Err(TaskError::HandoffRequiresStateChange.into());
         }
 
         handoffs::publish(

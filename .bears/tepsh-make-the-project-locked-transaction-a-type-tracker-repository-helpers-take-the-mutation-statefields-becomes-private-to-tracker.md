@@ -1,10 +1,10 @@
 ---
 id: tepsh
 title: "Make the project-locked transaction a type: tracker repository helpers take the mutation, StateFields becomes private to tracker/"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-17T20:00:15.388889008Z"
-updated: "2026-09-19T09:24:51.535199142Z"
+updated: "2026-09-19T10:19:47.383557139Z"
 tags:
   - orchestrator
   - tracker

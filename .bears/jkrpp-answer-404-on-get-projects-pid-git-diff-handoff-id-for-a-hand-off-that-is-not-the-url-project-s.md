@@ -1,10 +1,10 @@
 ---
 id: jkrpp
 title: Answer 404 on GET /projects/{pid}/git/diff?handoff_id= for a hand-off that is not the URL project's
-status: open
+status: done
 priority: P2
 created: "2026-09-18T02:39:21.825207561Z"
-updated: "2026-09-18T02:39:21.825207561Z"
+updated: "2026-09-19T23:34:22.165415791Z"
 tags:
   - orchestrator
   - git

@@ -1,10 +1,10 @@
 ---
 id: x55fb
 title: Remove hand-off refs on task deletion under the project git lock and verify project deletion drops them with the mirror
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:44:05.955094700Z"
-updated: "2026-09-16T20:44:05.955094700Z"
+updated: "2026-09-19T23:34:22.104659294Z"
 tags:
   - orchestrator
   - tracker
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - tgc55
 parent: xjaah
+attempts: 1
 ---
 
 ## Summary

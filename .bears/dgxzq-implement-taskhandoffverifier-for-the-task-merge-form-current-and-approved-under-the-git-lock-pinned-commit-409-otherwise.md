@@ -1,10 +1,10 @@
 ---
 id: dgxzq
 title: "Implement TaskHandoffVerifier for the task merge form: current and approved under the git lock, pinned commit, 409 otherwise"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:43:25.886302639Z"
-updated: "2026-09-16T20:43:25.886302639Z"
+updated: "2026-09-19T23:34:22.083574964Z"
 tags:
   - orchestrator
   - tracker
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - tgc55
 parent: xjaah
+attempts: 1
 ---
 
 ## Summary

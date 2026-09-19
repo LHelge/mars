@@ -1,10 +1,10 @@
 ---
 id: rz6bj
 title: "Add end-to-end launch-for-task tests through published hand-offs: handoff_id and commit base_ref, explicit base override, generated message disclosure"
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:44:27.350431730Z"
-updated: "2026-09-16T20:44:27.350431730Z"
+updated: "2026-09-19T23:34:22.145707670Z"
 tags:
   - orchestrator
   - sessions
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - tgc55
 parent: xjaah
+attempts: 1
 ---
 
 ## Summary

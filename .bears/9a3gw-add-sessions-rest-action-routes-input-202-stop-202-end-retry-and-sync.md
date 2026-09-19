@@ -1,10 +1,10 @@
 ---
 id: "9a3gw"
 title: "Add sessions REST action routes: input (202), stop (202), end, retry and sync"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:34:24.967648834Z"
-updated: "2026-09-19T01:23:11.320499797Z"
+updated: "2026-09-19T02:02:23.044086212Z"
 tags:
   - orchestrator
   - sessions

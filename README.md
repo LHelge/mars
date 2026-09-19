@@ -57,7 +57,7 @@ These steps have been walked through end to end on rootless Podman 6.1.2 with `p
 - A Linux host with rootless Podman 4.9+ (or Docker 24+); the engine tests run on Podman 4.9.3 and 6.1.2 and on Docker 28.0.4.
 - `podman-compose` or `docker compose`. They differ in one place that matters here — whether `COMPOSE_FILE` is read from `.env` — so "Start" gives the command that works on both.
 - A directory for persistent data, for example `/srv/mars/data`, owned by the service user (uid 1000 under Docker). It is `DATA_DIR_HOST` and must exist before the first start: compose bind-mounts it, and the orchestrator's startup probe fails if it is missing or not writable.
-- `git` is **not** needed on the host: the orchestrator image ships it, and it is the only thing that runs `git`.
+- `git` is **not** needed on the host: the orchestrator image ships it, and it is the only thing that runs `git`. The one exception is the host-run fallback under "Podman setup", where the orchestrator is a host process and uses the host's `git`.
 - For private repositories: a fine-grained GitHub personal access token scoped to the repository.
 - Model credentials: an `ANTHROPIC_API_KEY`, or a `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (requires a Pro or Max subscription). Never both for the same session.
 
@@ -81,7 +81,7 @@ echo "unix://$XDG_RUNTIME_DIR/podman/podman.sock"
 
 `systemctl --user` and `$XDG_RUNTIME_DIR` need a real session for that user. `sudo -u <user> …` does not give you one, so run the block from a login shell of the service user (`machinectl shell <user>@` or `ssh <user>@localhost`).
 
-The compose file runs the orchestrator with `userns_mode: keep-id` and mounts that socket, so the orchestrator's uid inside the container matches the service user on the host. Session containers run with `keep-id:uid=1000,gid=1000`, which maps the service user to the image's `agent` user (uid 1000) whatever the service user's uid is; the orchestrator verifies this at startup with a probe container and refuses to start if Podman does not honour it. That form of `keep-id` needs Podman 4.3 or newer, and the engine tests have verified it through the compatibility API on Podman 4.9.3 and 6.1.2. Podman resolves `keep-id` through the non-thread-safe `libsubid`, so it cannot do it for two containers at once: with twenty creates in flight on Podman 6.1.2 about one container in fourteen comes out with a broken uid mapping and then fails to start (`doesn't map UID 0`, `write to uid_map: Operation not permitted`), and the API service occasionally crashes in that call and is restarted by its socket unit. No fixed version is known, so the orchestrator creates containers one at a time per host: its engine adapter holds a lock across each container creation and releases it again before starting the container, so two sessions launched at once simply take turns creating their containers. The `podman` CLI is unaffected, because each invocation is its own process. If the compatibility API cannot apply `keep-id` to the orchestrator container, it can run as a plain user systemd service. Session containers still require `keep-id:uid=1000,gid=1000` support and must pass the startup probe.
+The compose file runs the orchestrator with `userns_mode: keep-id` and mounts that socket, so the orchestrator's uid inside the container matches the service user on the host. Session containers run with `keep-id:uid=1000,gid=1000`, which maps the service user to the image's `agent` user (uid 1000) whatever the service user's uid is; the orchestrator verifies this at startup with a probe container and refuses to start if Podman does not honour it. That form of `keep-id` needs Podman 4.3 or newer, and the engine tests have verified it through the compatibility API on Podman 4.9.3 and 6.1.2. Podman resolves `keep-id` through the non-thread-safe `libsubid`, so it cannot do it for two containers at once: with twenty creates in flight on Podman 6.1.2 about one container in fourteen comes out with a broken uid mapping and then fails to start (`doesn't map UID 0`, `write to uid_map: Operation not permitted`), and the API service occasionally crashes in that call and is restarted by its socket unit. No fixed version is known, so the orchestrator creates containers one at a time per host: its engine adapter holds a lock across each container creation and releases it again before starting the container, so two sessions launched at once simply take turns creating their containers. The `podman` CLI is unaffected, because each invocation is its own process. If the compatibility API cannot apply `keep-id` to the orchestrator container, run the orchestrator on the host instead — "Running the orchestrator on the host" below. Session containers still require `keep-id:uid=1000,gid=1000` support and must pass the startup probe either way; that fallback is about the orchestrator's own container and nothing else.
 
 `podman-compose` 1.6.0 does apply `userns_mode: keep-id` to the orchestrator container. To check it on your own host, note that `podman inspect` does not echo the word back — it reports the namespace Podman ended up creating:
 
@@ -93,6 +93,45 @@ podman exec <project>_orchestrator_1 id   # uid must equal the service user's ui
 ```
 
 The `1000:0:1` entry is the mapping that matters: container uid 1000 is the service user. Without it the container runs as a sub-uid, cannot open the bind-mounted engine socket, and the orchestrator exits with `the container engine is unreachable; refusing to start`.
+
+#### Running the orchestrator on the host
+
+The fallback for a host where the compose implementation does not apply the override: the orchestrator runs as a user systemd service and compose starts only postgres and nginx around it. `deploy/mars-orchestrator.service` is that unit — a **user** unit, so the process keeps the service user's uid and the `keep-id` question never arises for it. The host needs `git` in this mode, which the compose deployment does not.
+
+```bash
+# One binary, no runtime beyond git and CA certificates.
+(cd orchestrator && cargo build --release)     # -> orchestrator/target/release/mars-orchestrator
+
+mkdir -p ~/mars/bin ~/mars/data
+install -m 0755 orchestrator/target/release/mars-orchestrator ~/mars/bin/
+install -m 0600 .env ~/mars/.env
+install -Dm 0644 deploy/mars-orchestrator.service ~/.config/systemd/user/mars-orchestrator.service
+systemctl --user daemon-reload
+systemctl --user enable --now mars-orchestrator
+
+# postgres and nginx around it -- one of the two, whichever you have. This
+# pair of files renders on podman-compose 1.6.0 and on docker compose alike.
+podman-compose -f compose.yml -f compose.hostrun.yml up -d
+docker compose  -f compose.yml -f compose.hostrun.yml up -d
+```
+
+`compose.hostrun.yml` replaces the engine override: it disables the `orchestrator` service (a `profiles` entry, plus `depends_on: !reset {}` on nginx so the dependency goes with it), points nginx at `host.containers.internal` and publishes postgres on `127.0.0.1:5432` for the host-run process. `compose.podman.yml`/`compose.docker.yml` are **not** named alongside it — the single line they carry applies to the orchestrator service, which is not started. `loginctl enable-linger` from the top of this section is what keeps the unit running without an active login session.
+
+The `.env` is the same file, with five values this mode needs (`Configuration`):
+
+| Variable | Value on the host |
+| --- | --- |
+| `DATABASE_URL` | `postgres://<POSTGRES_USER>:<POSTGRES_PASSWORD>@127.0.0.1:5432/<POSTGRES_DB>` — compose no longer sets it, so this one is read as written. |
+| `DATA_DIR`, `DATA_DIR_HOST` | The same absolute host path, `~/mars/data` written out in full (`%h` is not expanded inside `.env`). The unit's `ReadWritePaths=` names that path; change it too if you use another. |
+| `DOCKER_HOST` | `unix://$XDG_RUNTIME_DIR/podman/podman.sock`, resolved. The unit already sets it from `%U`, so it can be left out. |
+| `MCP_URL` | `http://host.containers.internal:7001/mcp`: sessions reach the listener through the host gateway, not through compose DNS. |
+| `SESSION_EXTRA_HOSTS` | `host.containers.internal:host-gateway`. The internal session network has no gateway, so the name has to come from the egress network's; Podman does not add it by itself there. |
+
+`ENGINE_SOCKET_HOST` is unused in this mode — nothing mounts the socket any more — and `HTTP_PORT` still belongs to nginx.
+
+**Firewall the MCP port.** The compose deployment publishes nothing but `HTTP_PORT`; a host-run orchestrator binds `API_PORT` and `MCP_PORT` on all of the host's interfaces, so on a machine with a public interface the MCP listener is exposed. It answers an unauthenticated request with a bearer challenge and nothing more, but that is one layer, not two: restrict both ports to the Podman bridge with the host firewall. (Binding the listeners to a single address instead is not a v1 option; the orchestrator takes no bind address.) `HOSTRUN=1 scripts/verify-deployment.sh` checks this deployment: it expects the two ports open on the loopback address, probes the orchestrator from `mars-frontend` through the host gateway, and skips the `mars-sessions` check, which has no orchestrator on it in this mode.
+
+**The trade-off.** The orchestrator is no longer in a container, so the read-only root filesystem, the tmpfs `/tmp` and the minimal image are gone; what is left is the systemd hardening in the unit — `ProtectSystem=strict` with `ReadWritePaths=` for the data directory only, `PrivateTmp=yes` (the git wrapper needs a writable `/tmp`) and `NoNewPrivileges=yes`. That is a partial replacement, not an equal one, which is why this is the fallback and the compose deployment is the supported shape. `TimeoutStopSec=40` in the unit must stay above `STOP_GRACE_SECS` (default 20) plus margin, or systemd kills the orchestrator in the middle of stopping its sessions.
 
 For Docker, use the daemon's socket (`unix:///var/run/docker.sock`) and a user in the `docker` group. The supported Docker deployment uses the default uid mapping, so the orchestrator service runs as uid 1000 (`user: "1000:1000"` in the compose file) and the data directory must be owned by uid 1000. The session uid and data-directory ownership requirements still apply.
 
@@ -142,7 +181,7 @@ Pass the same `-f` pair to every later `ps`, `logs`, `build`, `exec` and `down`;
 
 After `up -d`, `scripts/verify-deployment.sh` checks health, network isolation and log hygiene against the running stack: it prints one `ok`/`warn`/`FAIL` line per check and exits non-zero on any failure. It finds the compose command itself; set `COMPOSE_CMD` when yours needs the `-f` pair.
 
-The first start builds both images, the orchestrator and nginx, which takes a while; a build failure leaves nothing running. After pulling changes, rebuild explicitly with `compose build` — and then recreate, because `up -d --build` rebuilds the image but leaves an already-running container on the old one (`up -d --force-recreate orchestrator`). nginx then listens on `HTTP_PORT` (default 8080) and nothing else is published: neither the API (`API_PORT`) nor the MCP listener (`MCP_PORT`) is reachable from the host.
+The first start builds both images, the orchestrator and nginx, which takes a while; a build failure leaves nothing running. After pulling changes, rebuild explicitly with `compose build` — and then recreate, because `up -d --build` rebuilds the image but leaves an already-running container on the old one (`up -d --force-recreate orchestrator`). nginx then listens on `HTTP_PORT` (default 8080) and nothing else is published: neither the API (`API_PORT`) nor the MCP listener (`MCP_PORT`) is reachable from the host. The host-run fallback ("Podman setup" → "Running the orchestrator on the host") is the exception, and says what to do about it.
 
 `compose ps` reports a health state for postgres and the orchestrator. nginx has no healthcheck, so it shows none; `Up` is all you get for it, and `scripts/verify-deployment.sh` is what actually proves it serves.
 
@@ -205,8 +244,11 @@ mars/
 ├── .env.example
 ├── images/             session container images (claude/, stub/)
 ├── nginx/              nginx.conf, default.conf.template and Dockerfile for the frontend image
+├── deploy/             mars-orchestrator.service, the user unit for the host-run fallback
+├── scripts/            verify-deployment.sh, the smoke test for a started stack
 ├── compose.yml         the deployment: postgres, orchestrator, nginx
-└── compose.podman.yml, compose.docker.yml   one-line engine overrides
+├── compose.podman.yml, compose.docker.yml   one-line engine overrides
+└── compose.hostrun.yml override for the host-run orchestrator ("Podman setup")
 ```
 
 Working conventions, code-quality commands and test expectations are in `CLAUDE.md`.

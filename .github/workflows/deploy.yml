@@ -11,7 +11,9 @@
 # deployment depends on: the Podman override keeps `userns_mode: keep-id`, the
 # Docker override keeps `user: 1000:1000` (ARCHITECTURE.md, "Uid contract") and
 # neither publishes the API or MCP port to the host (ARCHITECTURE.md,
-# "Networks").
+# "Networks"). It then renders `compose.hostrun.yml`, the host-run fallback,
+# through both as well: that file disables the orchestrator service with keys
+# the two implementations do not treat alike (README.md, "Podman setup").
 #
 # This workflow is about packaging, not compilation: `orchestrator/src/**` is
 # deliberately absent from the `paths` filter below, because Orchestrator CI
@@ -32,6 +34,7 @@ on:
       - "compose.yml"
       - "compose.podman.yml"
       - "compose.docker.yml"
+      - "compose.hostrun.yml"
       - ".env.example"
       - ".dockerignore"
       - ".github/workflows/deploy.yml"
@@ -43,6 +46,7 @@ on:
       - "compose.yml"
       - "compose.podman.yml"
       - "compose.docker.yml"
+      - "compose.hostrun.yml"
       - ".env.example"
       - ".dockerignore"
       - ".github/workflows/deploy.yml"
@@ -257,6 +261,40 @@ jobs:
           for rendered in "${RUNNER_TEMP}/docker-config.yml" "${RUNNER_TEMP}/podman-config.yml"; do
             if grep -nE '(^|[^0-9])700[01]:|published:[[:space:]]*"?700[01]"?' "${rendered}"; then
               echo "::error::${rendered} publishes the API or MCP port to the host (ARCHITECTURE.md, \"Networks\")"
+              exit 1
+            fi
+          done
+
+      # README.md, "Podman setup" -> "Running the orchestrator on the host":
+      # the fallback deployment is `compose.yml` plus `compose.hostrun.yml`
+      # alone, and it has to render on both implementations, because the
+      # `!reset` tag that clears nginx's `depends_on` and the `profiles` entry
+      # that disables the orchestrator service are exactly where they differ.
+      - name: Render the host-run deployment on both implementations
+        run: |
+          docker compose -f compose.yml -f compose.hostrun.yml config \
+            > "${RUNNER_TEMP}/docker-hostrun.yml"
+          "${RUNNER_TEMP}/podman-compose/bin/podman-compose" \
+            -f compose.yml -f compose.hostrun.yml config \
+            > "${RUNNER_TEMP}/podman-hostrun.yml"
+
+      # The orchestrator service is gone (systemd runs it), postgres is
+      # published on the loopback address for it, and the API and MCP ports are
+      # still not published by compose — the host-run process binds those
+      # itself, which is what the README says to firewall.
+      - name: The host-run override disables the orchestrator service
+        run: |
+          for rendered in "${RUNNER_TEMP}/docker-hostrun.yml" "${RUNNER_TEMP}/podman-hostrun.yml"; do
+            if grep -qE '^  orchestrator:' "${rendered}"; then
+              echo "::error::${rendered} still starts the orchestrator service"
+              exit 1
+            fi
+            if ! grep -qE '127\.0\.0\.1' "${rendered}"; then
+              echo "::error::${rendered} does not publish postgres on the loopback address"
+              exit 1
+            fi
+            if grep -nE '(^|[^0-9])700[01]:|published:[[:space:]]*"?700[01]"?' "${rendered}"; then
+              echo "::error::${rendered} publishes the API or MCP port to the host"
               exit 1
             fi
           done

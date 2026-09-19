@@ -1,0 +1,44 @@
+# Host-run orchestrator override (README.md, "Podman setup" -> "Running the
+# orchestrator on the host").
+#
+# For a host whose compose implementation does not apply `userns_mode: keep-id`
+# to the orchestrator container. The orchestrator then runs on the host as a
+# user systemd service (`deploy/mars-orchestrator.service`) and compose starts
+# only the two services around it:
+#
+#   podman-compose -f compose.yml -f compose.hostrun.yml up -d
+#   docker compose  -f compose.yml -f compose.hostrun.yml up -d
+#
+# `compose.podman.yml`/`compose.docker.yml` are not named here: the only line
+# they carry applies to the orchestrator service, which this file disables.
+services:
+  # Not started: the host's systemd runs this process. Verified honoured by
+  # podman-compose 1.6.0 and docker compose v5.5.1.
+  orchestrator:
+    profiles: ["disabled"]
+
+  nginx:
+    # An override cannot delete a key by writing an empty value -- compose
+    # merges mappings -- so the spec's `!reset` tag is what removes the
+    # dependency on the now-disabled orchestrator service. Both podman-compose
+    # 1.6.0 and docker compose v5.5.1 honour it; without it docker compose
+    # refuses the project ("depends on undefined service"). On an older
+    # implementation that rejects the tag, drop these two lines and name the
+    # services instead: `up -d postgres nginx`.
+    depends_on: !reset {}
+    # The orchestrator is on the host now, reached through the gateway of the
+    # frontend network rather than by compose DNS.
+    environment:
+      ORCHESTRATOR_HOST: host.containers.internal
+    # Podman adds `host.containers.internal` itself on a network with a gateway,
+    # Docker does not; naming it here works on both.
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+
+  postgres:
+    # In the compose deployment nothing outside the frontend network reaches the
+    # database. A host-run orchestrator is outside it, so the port is published
+    # -- on the loopback address only, which is what DATABASE_URL then names
+    # (README.md, "Podman setup").
+    ports:
+      - "127.0.0.1:5432:5432"

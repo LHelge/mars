@@ -62,7 +62,7 @@ use std::task::{Context, Poll};
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::io::AsyncWrite;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 use uuid::Uuid;
 
 use super::{
@@ -267,6 +267,12 @@ struct MockState {
     exec_resizes: BTreeMap<String, Vec<(u16, u16)>>,
     /// The containers whose exec session was closed.
     exec_closed: BTreeSet<String>,
+    /// Woken whenever a parked [`MockExecSession::read`] may have something
+    /// new to report: output was scripted, or a container stopped running.
+    ///
+    /// An [`Arc`] inside the state rather than a field beside it, so a reader
+    /// can clone it out under the lock and park on it with the guard gone.
+    exec_wake: Arc<Notify>,
     /// Whether [`ContainerEngine::ping`] fails.
     unhealthy: bool,
     /// How many pings the mock was asked for, healthy or not.
@@ -460,6 +466,7 @@ impl MockEngine {
         };
 
         wake(waiters, code);
+        self.wake_execs();
         true
     }
 
@@ -482,6 +489,7 @@ impl MockEngine {
             .entry(id.0.clone())
             .or_default()
             .push_back(bytes.into());
+        self.wake_execs();
     }
 
     /// The images [`ContainerEngine::image_exists`] answers `false` for; every
@@ -515,6 +523,18 @@ impl MockEngine {
         self.state.lock().expect("the mock engine lock is healthy")
     }
 
+    /// Wake every parked [`MockExecSession::read`], so it re-reads the table.
+    ///
+    /// Called after anything that gives a PTY something to say: new scripted
+    /// output, or a container that has stopped running and whose exec the
+    /// engine would therefore have torn down. The clone is taken under the
+    /// lock and the notification sent with the guard gone, like every other
+    /// wake-up in this module.
+    fn wake_execs(&self) {
+        let wake = Arc::clone(&self.lock().exec_wake);
+        wake.notify_waiters();
+    }
+
     /// Drop a container and fail everyone parked on it, which is what both
     /// [`ContainerEngine::remove`] and [`vanish`](Self::vanish) do to the
     /// table; they differ only in what they check first.
@@ -526,6 +546,8 @@ impl MockEngine {
                 for waiter in container.exit_waiters {
                     let _ = waiter.send(Err(EngineError::NotFound(id.0.clone())));
                 }
+                // A container that is gone takes its exec with it.
+                self.wake_execs();
                 true
             }
             None => false,
@@ -680,6 +702,7 @@ impl ContainerEngine for MockEngine {
         };
 
         wake(waiters, code);
+        self.wake_execs();
         Ok(())
     }
 
@@ -712,6 +735,7 @@ impl ContainerEngine for MockEngine {
 
         if let Some((code, waiters)) = ended {
             wake(waiters, code);
+            self.wake_execs();
         }
         Ok(())
     }
@@ -911,13 +935,19 @@ impl AsyncWrite for MockStdin {
 }
 
 /// A scripted PTY: it reads out whatever [`MockEngine::script_exec_output`]
-/// queued, then echoes whatever was written to it, then reports end of stream.
+/// queued, then echoes whatever was written to it, and parks while the
+/// container runs and there is nothing to say.
 ///
 /// Echoing is what makes a terminal test meaningful without a shell: the
 /// frontend's keystrokes come back as output frames, so the WebSocket's round
-/// trip is exercised end to end (`SPEC.md`, "WebSocket: session stream"). An
-/// empty PTY answers `None` rather than parking, so a reader loop in a test
-/// ends instead of hanging.
+/// trip is exercised end to end (`SPEC.md`, "WebSocket: session stream").
+///
+/// Parking on an empty PTY is what a real one does — a shell at its prompt
+/// produces nothing until somebody types — and the terminal's reader reads
+/// [`Ok(None)`](Option::None) as "the shell exited", so a mock that reported
+/// end of stream the moment it ran dry could never be written to at all. End
+/// of stream is therefore the container no longer running, which is what
+/// really ends an exec.
 #[derive(Debug)]
 pub struct MockExecSession {
     /// The mock's table, shared with the engine that started this exec.
@@ -931,20 +961,53 @@ pub struct MockExecSession {
 
 #[async_trait]
 impl ExecSession for MockExecSession {
+    /// Cancel-safe: everything it might hand back stays in
+    /// [`MockState::exec_output`] or [`Self::echo`] until it is returned, and
+    /// the park is a [`Notify`] whose permit is re-checked from scratch on the
+    /// next call. Dropping this future mid-`await` therefore loses no bytes,
+    /// which is what the terminal's `select!` over `read` and its command
+    /// channel relies on (`ws::terminal`).
     async fn read(&mut self) -> Result<Option<Bytes>, EngineError> {
-        let scripted = {
-            let mut state = self.state.lock().expect("the mock engine lock is healthy");
-            state
-                .exec_output
-                .get_mut(&self.id.0)
-                .and_then(VecDeque::pop_front)
-        };
+        loop {
+            // Registered *before* the table is looked at, so a writer between
+            // the look and the park cannot be missed.
+            let wake = Arc::clone(
+                &self
+                    .state
+                    .lock()
+                    .expect("the mock engine lock is healthy")
+                    .exec_wake,
+            );
+            let notified = wake.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
 
-        if scripted.is_some() {
-            return Ok(scripted);
+            let (scripted, running) = {
+                let mut state = self.state.lock().expect("the mock engine lock is healthy");
+                let scripted = state
+                    .exec_output
+                    .get_mut(&self.id.0)
+                    .and_then(VecDeque::pop_front);
+                let running = state
+                    .containers
+                    .get(&self.id.0)
+                    .is_some_and(|container| container.state.is_running());
+
+                (scripted, running)
+            };
+
+            if scripted.is_some() {
+                return Ok(scripted);
+            }
+            if let Some(echoed) = self.echo.pop_front() {
+                return Ok(Some(echoed));
+            }
+            if !running {
+                return Ok(None);
+            }
+
+            notified.await;
         }
-
-        Ok(self.echo.pop_front())
     }
 
     async fn write(&mut self, data: &[u8]) -> Result<(), EngineError> {
@@ -1665,15 +1728,28 @@ mod tests {
             exec.read().await.expect("the write echoes back"),
             Some(Bytes::from_static(b"ls\n"))
         );
-        assert_eq!(
-            exec.read().await.expect("nothing is queued"),
-            None,
-            "a drained PTY reports end of stream"
+
+        // A drained PTY on a running container parks rather than reporting end
+        // of stream: a shell at its prompt says nothing until it is typed at.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), exec.read())
+                .await
+                .is_err(),
+            "a drained PTY on a running container must park",
         );
 
         exec.resize(100, 30).await.expect("the mock resizes");
         exec.resize(80, 24).await.expect("the mock resizes");
         assert_eq!(engine.exec_resizes(&id), vec![(100, 30), (80, 24)]);
+
+        // The container ending is what a real exec's PTY sees as end of
+        // stream, and is what the terminal reads as "the shell exited".
+        engine.exit(&id, 0);
+        assert_eq!(
+            exec.read().await.expect("the container has ended"),
+            None,
+            "an exec in a container that is not running is at end of stream",
+        );
 
         assert!(!engine.exec_closed(&id));
         assert_eq!(

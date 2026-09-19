@@ -1,10 +1,10 @@
 ---
 id: "7erm7"
 title: "Add the login-credential module: issue, rotate and revoke under the user lock with lifetimes, cookie and claims in one place; routes become HTTP translation"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-17T20:01:08.063968601Z"
-updated: "2026-09-17T20:05:21.188594614Z"
+updated: "2026-09-19T11:42:57.533083814Z"
 tags:
   - orchestrator
   - auth
@@ -14,6 +14,7 @@ depends_on:
   - "48ke5"
   - trxaf
 parent: wju32
+attempts: 1
 ---
 
 ## Summary

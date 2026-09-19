@@ -1,16 +1,17 @@
 ---
 id: st478
 title: "Implement AcceptInvitePage at /invite/:token with invite lookup, username and password choice"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:42:05.860658839Z"
-updated: "2026-09-16T20:42:05.860658839Z"
+updated: "2026-09-19T11:13:51.831770421Z"
 tags:
   - frontend
   - auth
 depends_on:
   - "66w65"
 parent: "2f5u2"
+attempts: 1
 ---
 
 ## Summary

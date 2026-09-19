@@ -1,16 +1,17 @@
 ---
 id: hwebm
 title: Implement ChangePasswordPage and the reusable PasswordChangeForm installing the replacement token pair
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:42:35.079485420Z"
-updated: "2026-09-16T20:42:35.079485420Z"
+updated: "2026-09-19T11:13:50.711768839Z"
 tags:
   - frontend
   - auth
 depends_on:
   - "66w65"
 parent: "2f5u2"
+attempts: 1
 ---
 
 ## Summary

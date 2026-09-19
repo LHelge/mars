@@ -1,16 +1,17 @@
 ---
 id: b4t6r
 title: "Implement AdminPage: user list, admin toggle, delete, invites with create, resend and revoke, last-admin errors surfaced"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:43:37.613511505Z"
-updated: "2026-09-16T20:43:37.613511505Z"
+updated: "2026-09-19T11:13:53.085612551Z"
 tags:
   - frontend
   - auth
 depends_on:
   - "66w65"
 parent: "2f5u2"
+attempts: 1
 ---
 
 ## Summary

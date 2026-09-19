@@ -99,8 +99,10 @@ enum Command {
     Close(oneshot::Sender<i64>),
 }
 
-/// Why the owner task left its loop.
-enum Outcome {
+/// What the owner task does next: carry on, or leave its loop this way.
+enum Next {
+    /// Nothing is settled; keep reading and serving commands.
+    Continue,
     /// The exec ended on its own, or failed: the client is owed a
     /// `terminal_closed`.
     Ended,
@@ -200,6 +202,17 @@ impl Terminal {
 /// The `select!` yields a value rather than acting in its arms, so the borrow
 /// of `session` the read future holds is over before a command handler takes
 /// its own.
+///
+/// **Commands are served while a chunk is waiting for the socket, too.** A
+/// shell that is producing faster than the client drains — `yes`, a runaway
+/// `cat` — keeps the output channel full, and an owner parked in a plain
+/// `send` would not be reading its inbox. The `close` behind it would then
+/// wait out its whole timeout while the socket loop that should be draining
+/// the channel is itself waiting on that close: a deadlock broken only by the
+/// timeout, with the socket frozen for its duration and the exec never closed.
+/// So the delivery is a `select!` of its own, over a
+/// [`reserve`](mpsc::Sender::reserve) — cancel-safe, and it takes the slot
+/// before the chunk is given up — and the command channel.
 async fn own(
     mut session: Box<dyn ExecSession>,
     mut commands: mpsc::Receiver<Command>,
@@ -211,57 +224,120 @@ async fn own(
         Command(Option<Command>),
     }
 
-    let outcome = loop {
+    let outcome = 'own: loop {
         let step = tokio::select! {
             chunk = session.read() => Step::Read(chunk),
             command = commands.recv() => Step::Command(command),
         };
 
-        match step {
+        let next = match step {
             Step::Read(Ok(Some(bytes))) => {
                 // The length only: the bytes are whatever is on the person's
                 // screen, which may be anything they pasted (rule 3).
                 debug!(container = %container, bytes = bytes.len(), "terminal output");
 
-                if out.send(TerminalOutput::Data(bytes)).await.is_err() {
-                    break Outcome::Detached;
+                // Held here until a slot is reserved for it, or until a
+                // command settles what happens to it instead.
+                let mut pending = Some(bytes);
+
+                loop {
+                    let Some(bytes) = pending.take() else {
+                        break Next::Continue;
+                    };
+
+                    let command = tokio::select! {
+                        permit = out.reserve() => match permit {
+                            Ok(permit) => {
+                                permit.send(TerminalOutput::Data(bytes));
+                                None
+                            }
+                            // Nobody is reading the terminal's output any
+                            // more, which is the socket having gone.
+                            Err(_) => break 'own Next::Detached,
+                        },
+                        command = commands.recv() => {
+                            // A write or a resize does not cost the chunk: it
+                            // is put back and delivered after.
+                            pending = Some(bytes);
+                            Some(command)
+                        }
+                    };
+
+                    let Some(command) = command else {
+                        continue;
+                    };
+
+                    // A close discards whatever was pending: the client has
+                    // said it is done with this terminal, and the socket is on
+                    // its way out behind it.
+                    match apply(&mut session, &container, command).await {
+                        Next::Continue => {}
+                        settled => break 'own settled,
+                    }
                 }
             }
-            Step::Read(Ok(None)) => break Outcome::Ended,
+            Step::Read(Ok(None)) => Next::Ended,
             Step::Read(Err(error)) => {
                 debug!(container = %container, %error, "the terminal exec stopped reading");
-                break Outcome::Ended;
+                Next::Ended
             }
-            Step::Command(Some(Command::Write(bytes))) => {
-                let len = bytes.len();
-                if let Err(error) = session.write(&bytes).await {
-                    debug!(container = %container, bytes = len, %error, "the terminal exec refused a write");
-                    break Outcome::Ended;
-                }
-            }
-            Step::Command(Some(Command::Resize { cols, rows })) => {
-                // A refused resize is cosmetic: the shell keeps running at the
-                // size it had, and closing the terminal over it would be worse
-                // than the wrapped line it costs.
-                if let Err(error) = session.resize(cols, rows).await {
-                    debug!(container = %container, cols, rows, %error, "the terminal exec refused a resize");
-                }
-            }
-            Step::Command(Some(Command::Close(reply))) => break Outcome::Requested(reply),
-            Step::Command(None) => break Outcome::Detached,
+            Step::Command(command) => apply(&mut session, &container, command).await,
+        };
+
+        match next {
+            Next::Continue => {}
+            settled => break settled,
         }
     };
+
+    // No command will be served again, so anybody who sends one now should
+    // learn immediately rather than wait out a timeout on an owner that is
+    // already disposing of the exec.
+    drop(commands);
 
     let code = end(session, &container).await;
 
     match outcome {
-        Outcome::Ended => {
+        Next::Ended => {
             let _ = out.send(TerminalOutput::Closed { exit_code: code }).await;
         }
-        Outcome::Requested(reply) => {
+        Next::Requested(reply) => {
             let _ = reply.send(code);
         }
-        Outcome::Detached => {}
+        // `Continue` never leaves the loop; it is here because the loop's
+        // break value and one command's answer are the same type.
+        Next::Detached | Next::Continue => {}
+    }
+}
+
+/// Act on one command from the [`Terminal`], and say what it leaves the owner
+/// to do.
+async fn apply(
+    session: &mut Box<dyn ExecSession>,
+    container: &ContainerId,
+    command: Option<Command>,
+) -> Next {
+    match command {
+        Some(Command::Write(bytes)) => {
+            let len = bytes.len();
+            if let Err(error) = session.write(&bytes).await {
+                debug!(container = %container, bytes = len, %error, "the terminal exec refused a write");
+                return Next::Ended;
+            }
+            Next::Continue
+        }
+        Some(Command::Resize { cols, rows }) => {
+            // A refused resize is cosmetic: the shell keeps running at the
+            // size it had, and closing the terminal over it would be worse
+            // than the wrapped line it costs.
+            if let Err(error) = session.resize(cols, rows).await {
+                debug!(container = %container, cols, rows, %error, "the terminal exec refused a resize");
+            }
+            Next::Continue
+        }
+        Some(Command::Close(reply)) => Next::Requested(reply),
+        // The `Terminal` was dropped without a close: disposal all the same.
+        None => Next::Detached,
     }
 }
 
@@ -378,8 +454,16 @@ mod tests {
 
     /// A terminal over a fresh fake, with the receiving half of its output.
     fn terminal() -> (Terminal, Arc<Fake>, mpsc::Receiver<TerminalOutput>) {
+        terminal_with_buffer(16)
+    }
+
+    /// The same, with the output channel's capacity chosen: a small one is how
+    /// a client that is not draining is written.
+    fn terminal_with_buffer(
+        buffer: usize,
+    ) -> (Terminal, Arc<Fake>, mpsc::Receiver<TerminalOutput>) {
         let fake = Arc::new(Fake::default());
-        let (out, outputs) = mpsc::channel(16);
+        let (out, outputs) = mpsc::channel(buffer);
         let (commands, inbox) = mpsc::channel(COMMAND_BUFFER);
 
         let session: Box<dyn ExecSession> = Box::new(FakeExec {
@@ -466,6 +550,42 @@ mod tests {
         let state = fake.lock();
         assert_eq!(state.written, vec![Bytes::from_static(b"ls\n")]);
         assert_eq!(state.resizes, vec![(100, 40)]);
+    }
+
+    /// A terminal whose output nobody is draining must still take commands:
+    /// this is the case where the socket loop is itself inside
+    /// [`Terminal::close`] and therefore not reading the output channel, so an
+    /// owner parked in a plain `send` would deadlock until the timeout and
+    /// leave the exec unclosed.
+    #[tokio::test]
+    async fn a_close_gets_through_while_a_chunk_waits_for_a_client_that_is_not_reading() {
+        // One slot, and the receiving half is never read from: the first chunk
+        // fills the channel and the second is left pending in the owner.
+        let (terminal, fake, _outputs) = terminal_with_buffer(1);
+
+        fake.script(b"yes\r\n");
+        fake.script(b"yes\r\n");
+        fake.script(b"yes\r\n");
+
+        // A write still reaches the PTY with a chunk pending: the delivery
+        // does not stop the owner serving its inbox.
+        tokio::time::timeout(Duration::from_secs(1), terminal.write(b"q"))
+            .await
+            .expect("the write is taken while a chunk is pending")
+            .expect("the terminal is open");
+
+        let code = tokio::time::timeout(Duration::from_secs(1), terminal.close())
+            .await
+            .expect("the close is answered well inside the close timeout");
+
+        assert_eq!(
+            code, FAKE_EXIT_CODE,
+            "the exec was closed properly, not abandoned on a timeout",
+        );
+
+        let state = fake.lock();
+        assert!(state.closed, "the exec is closed, not merely dropped");
+        assert_eq!(state.written, vec![Bytes::from_static(b"q")]);
     }
 
     #[tokio::test]

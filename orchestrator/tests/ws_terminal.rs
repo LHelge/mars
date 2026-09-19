@@ -365,7 +365,10 @@ async fn a_container_that_stops_under_an_open_terminal_ends_it() {
     .await
     .expect("the terminal opens within the window");
 
-    assert!(app.engine().exit(&fixture.container, 0), "the container ends");
+    assert!(
+        app.engine().exit(&fixture.container, 0),
+        "the container ends"
+    );
 
     let frame = next_json(&mut socket).await;
     assert_eq!(frame["type"], "terminal_closed", "{frame}");

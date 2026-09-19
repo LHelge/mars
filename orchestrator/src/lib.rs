@@ -25,6 +25,7 @@ pub mod routes;
 pub mod secrets;
 pub mod session;
 pub mod sse;
+pub mod tracker;
 pub mod ws;
 
 use std::future::Future;

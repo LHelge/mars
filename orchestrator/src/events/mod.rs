@@ -2,14 +2,17 @@
 //!
 //! `agent_event` is the session transcript's one schema across backends
 //! (`SPEC.md`, "AgentEvent"), `input` is what a client may send back
-//! (`SPEC.md`, "WebSocket: session stream"). `TaskEvent` joins them in
-//! `task_event.rs` with the tracker epic.
+//! (`SPEC.md`, "WebSocket: session stream"). `task_event` is the tracker's
+//! stream (`SPEC.md`, "TaskEvent"): the delivered shape and its round trip
+//! with the stored `task_events` row.
 
 pub mod agent_event;
 pub mod input;
+pub mod task_event;
 
 pub use agent_event::{
     AgentEvent, AgentEventBody, GitOp, McpServerStatus, SessionEvent, StopSignal,
     TOOL_RESULT_MAX_BYTES,
 };
 pub use input::{EMPTY_TEXT, LONG_TEXT, MAX_TEXT_BYTES, SessionInput};
+pub use task_event::{TaskActor, TaskEvent, TaskEventKind, TaskEventPayload, TaskEventRowParts};

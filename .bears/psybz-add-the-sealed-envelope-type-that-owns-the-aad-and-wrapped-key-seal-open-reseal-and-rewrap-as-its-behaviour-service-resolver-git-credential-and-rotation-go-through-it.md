@@ -1,10 +1,10 @@
 ---
 id: psybz
 title: "Add the sealed-envelope type that owns the AAD and wrapped key: seal, open, reseal and rewrap as its behaviour; service, resolver, git credential and rotation go through it"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-17T20:01:32.567263006Z"
-updated: "2026-09-17T20:05:26.226113779Z"
+updated: "2026-09-19T11:42:58.671215769Z"
 tags:
   - orchestrator
   - secrets
@@ -14,6 +14,7 @@ depends_on:
   - "48ke5"
   - trxaf
 parent: zeccj
+attempts: 1
 ---
 
 ## Summary

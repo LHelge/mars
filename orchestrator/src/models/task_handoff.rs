@@ -395,8 +395,9 @@ impl HandoffInput {
     /// names: a name that differs only in case or whitespace is a *different*
     /// state name, and fails later as an unknown state.
     ///
-    /// The route and the MCP `update` tool call this before any git work, so
-    /// that a doomed request never syncs or retains a commit.
+    /// `HandoffService::update_with_handoff` — the one path the REST route and
+    /// the MCP `update` tool both reach — calls this before taking the git
+    /// lock, so that a doomed request never syncs or retains a commit.
     pub fn require_state_change(
         target_state: Option<&str>,
         current_state_name: &str,

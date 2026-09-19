@@ -34,10 +34,20 @@
 //! different `state` implies, which events that owes and what a deletion has
 //! to recompute are
 //! [`tracker::tasks`](crate::tracker::tasks)'s, shared with the MCP `update`
-//! and `delete` tools; the `PUT` handler adds the body shape, the two
-//! hand-off input rules `SPEC.md`, "Code hand-offs and review" gives it, and
-//! the 400 an `assignee_user_id` naming nobody gets. A `PUT` that changes
-//! nothing still answers 200 with the task, having written nothing at all.
+//! and `delete` tools; the `PUT` handler adds the body shape and the 400 an
+//! `assignee_user_id` naming nobody gets. A `PUT` that changes nothing still
+//! answers 200 with the task, having written nothing at all.
+//!
+//! **A `PUT` carrying a `handoff` is a different mutation.** Publishing code
+//! takes the project git lock *before* the project row
+//! ([`HandoffService::update_with_handoff`]), so the handler dispatches to the
+//! service instead of opening a mutation of its own: a route holding the
+//! project row while waiting for the git lock is the one order
+//! `ARCHITECTURE.md`, "Git model" → Serialization forbids. Every hand-off rule
+//! — the different target state, the comment, the source session, the tip, a
+//! stale `handoff_id`, the project's readiness — is the service's, shared with
+//! the MCP `update` tool; what this module adds is the body shape and the
+//! caller identity.
 //!
 //! **`{id}` and `?parent=` accept either reference.** A run of digits is a
 //! per-project number and anything else has to be a UUID
@@ -55,17 +65,19 @@ use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
 use crate::events::TaskActor;
-use crate::models::{Priority, Task, TaskDependencyKind, TaskError, TaskRef, TaskStateKind};
+use crate::models::{
+    HandoffCaller, HandoffInput, Priority, Task, TaskDependencyKind, TaskRef, TaskStateKind,
+};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskFilter, TaskRepository};
 use crate::routes::{CurrentUser, Path, Query};
-use crate::tracker::state::{resolve_state, resolve_state_in_pool};
+use crate::tracker::state::resolve_state_in_pool;
 use crate::tracker::tasks::{
     CreateTaskInput, CreatedBy, UpdateTaskInput, create_task, delete_task, update_task,
 };
 use crate::tracker::{
-    CommentAuthor, CommentDto, TaskDetailDto, TaskDto, TrackerMutation, add_comment, dependencies,
-    handoffs, release_by_user,
+    CommentAuthor, CommentDto, HandoffService, TaskDetailDto, TaskDto, TrackerMutation,
+    add_comment, dependencies, release_by_user,
 };
 
 /// What `GET /tasks` without a `state_kind` is told (400).
@@ -278,8 +290,12 @@ async fn detail(
 /// it.
 ///
 /// `deny_unknown_fields` for the reason `POST`'s body gives — a client sending
-/// a field this endpoint does not have has misunderstood it — with one
-/// deliberate exception inside [`HandoffRequest`].
+/// a field this endpoint does not have has misunderstood it. `handoff` is the
+/// shared [`HandoffInput`], which accepts unknown fields of its own, as
+/// `SPEC.md`, "Code hand-offs and review" says; a body with an unknown `kind`
+/// or a missing required field is rejected by the extractor, which answers the
+/// API's `{status, error}` 400 like every other malformed body
+/// ([`Error::BadRequest`]).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UpdateTaskRequest {
@@ -292,28 +308,7 @@ struct UpdateTaskRequest {
     parent_id: Option<Option<Uuid>>,
     #[serde(default, deserialize_with = "double_option")]
     assignee_user_id: Option<Option<Uuid>>,
-    handoff: Option<HandoffRequest>,
-}
-
-/// `HandoffInput`, as far as this endpoint can type it yet.
-///
-/// `SPEC.md`, "Code hand-offs and review" gives it two variants with a commit
-/// or a hand-off id, and the Code hand-offs epic owns both — along with
-/// [`handoffs::publish`], which every request reaching it is currently refused
-/// by. The typed contract both callers converge on is
-/// [`HandoffInput`](crate::models::HandoffInput), which this route will
-/// deserialise into once publication exists; until then what is typed here is
-/// the one field the *input* rules this route
-/// enforces are about, and unknown fields are deliberately accepted so that a
-/// correctly shaped `revision` or `forward` body is answered "not available
-/// yet" rather than "unknown field `commit`".
-///
-/// `comment` is an `Option` although the contract requires it, so that leaving
-/// it out is the documented [`TaskError::EmptyComment`] rather than serde's own
-/// message about a missing field.
-#[derive(Debug, Deserialize)]
-struct HandoffRequest {
-    comment: Option<String>,
+    handoff: Option<HandoffInput>,
 }
 
 /// Tell "the field was absent" apart from "the field was `null`".
@@ -341,9 +336,16 @@ where
 ///
 /// 400 for an invalid title, priority or label, an unknown state, a parent
 /// rule broken by the re-parenting, an `assignee_user_id` naming no user, and
-/// each of the two hand-off input rules; 404 for an unknown project or task.
+/// each of the hand-off input rules; 404 for an unknown project or task; 409
+/// for a hand-off whose commit is not the source session's tip, whose
+/// `handoff_id` is not the task's current one, or whose project is not `ready`.
 /// The whole update is one mutation, so a refusal at any of those points
 /// leaves neither a column change nor an event.
+///
+/// A body with a `handoff` is dispatched to
+/// [`HandoffService::update_with_handoff`] *before* any mutation is opened, for
+/// the lock-order reason the module documentation gives; the ordinary path
+/// below is untouched by it.
 async fn update(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
@@ -351,44 +353,6 @@ async fn update(
     Json(body): Json<UpdateTaskRequest>,
 ) -> Result<Json<TaskDto>> {
     let reference = task_ref(&id)?;
-
-    // The half of the hand-off rules that needs neither the lock nor the task.
-    if let Some(handoff) = body.handoff.as_ref() {
-        if body.state.is_none() {
-            return Err(TaskError::HandoffRequiresStateChange.into());
-        }
-        if handoff
-            .comment
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .is_empty()
-        {
-            return Err(TaskError::EmptyComment.into());
-        }
-    }
-
-    let mut mutation =
-        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
-
-    let task = locked_task(&mut mutation, pid, reference).await?;
-
-    // The extension point the Code hand-offs epic replaces. The other half of
-    // the rules — that the target state differs from the one the task is in —
-    // is only answerable under the lock, and then publication is the epic's.
-    if let Some(handoff) = body.handoff.as_ref() {
-        let name = body.state.as_deref().unwrap_or_default();
-        if resolve_state(&mut mutation, name).await?.id == task.state_id {
-            return Err(TaskError::HandoffRequiresStateChange.into());
-        }
-
-        handoffs::publish(
-            &mut mutation,
-            &task,
-            handoff.comment.as_deref().unwrap_or_default(),
-        )
-        .await?;
-    }
 
     let input = UpdateTaskInput {
         title: body.title,
@@ -401,6 +365,28 @@ async fn update(
         // Only an escalation writes it, and a user's edit is not one.
         needs_human_reason: None,
     };
+
+    // The hand-off path: the service owns the ordering, the git lock and every
+    // rule, so the handler parses, dispatches and maps. A user is not bound by
+    // leases here either (`SPEC.md`, "Code hand-offs and review").
+    if let Some(handoff) = body.handoff {
+        let published = HandoffService::from_state(&state)
+            .update_with_handoff(
+                pid,
+                reference,
+                input,
+                handoff,
+                HandoffCaller::User { user_id: user.id },
+            )
+            .await?;
+
+        return Ok(Json(published));
+    }
+
+    let mut mutation =
+        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+
+    let task = locked_task(&mut mutation, pid, reference).await?;
 
     let outcome = update_task(&mut mutation, &task, input).await?;
 

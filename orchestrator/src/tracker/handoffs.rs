@@ -56,11 +56,6 @@
 //! database half is one transaction, and the ref the git half pinned is
 //! discarded when that transaction does not commit (`SPEC.md`, "Tasks";
 //! ADR 0021).
-//!
-//! **What is still missing**: the route that reaches the service. [`publish`]
-//! — the extension point `PUT /projects/{pid}/tasks/{id}` still calls — is the
-//! stub it has been since the tracker epic and refuses every hand-off with
-//! [`HANDOFFS_UNAVAILABLE`] until that rewiring lands.
 
 use chrono::Utc;
 use uuid::Uuid;
@@ -78,9 +73,6 @@ use crate::repositories::{ProjectRepository, SessionRepository, TaskRepository, 
 use crate::tracker::state::{resolve_state, resolve_state_in_pool};
 use crate::tracker::tasks::{UpdateTaskInput, update_task};
 use crate::tracker::{CommentDto, TaskDto, TrackerMutation, commit_and_notify};
-
-/// What a `handoff` is answered with until the database half lands.
-pub const HANDOFFS_UNAVAILABLE: &str = "code hand-offs are not available yet";
 
 /// The review status a prepared hand-off will be written with.
 ///
@@ -156,8 +148,8 @@ pub struct PreparedHandoff {
 ///   [`HandoffCaller::User`] is not lease-bound;
 /// - `target_state` must differ from `current_state`
 ///   ([`TaskError::HandoffRequiresStateChange`](crate::models::TaskError)).
-///   The routes check this before any git work; it is re-checked here so that
-///   the rule holds for every caller.
+///   [`HandoffService::update_with_handoff`] checks this before taking the git
+///   lock; it is re-checked here so that the rule holds for every caller.
 ///
 /// Then, per kind:
 ///
@@ -348,22 +340,6 @@ fn comment_of(validated: &ValidatedHandoff) -> &str {
             comment
         }
     }
-}
-
-/// Publish a hand-off for this task inside the caller's mutation.
-///
-/// The stub: every call is [`Error::BadRequest`] with
-/// [`HANDOFFS_UNAVAILABLE`], and nothing is written — the caller's mutation
-/// rolls back with the refusal, so a rejected hand-off leaves neither a task
-/// change nor an event (ADR 0021).
-///
-/// The signature is deliberately the shape the real one needs: the open
-/// mutation, the task as it is under the lock, and the caller's comment. What
-/// replaces it takes the [`PreparedHandoff`] beside these rather than instead
-/// of them.
-#[allow(unused_variables)]
-pub async fn publish(m: &mut TrackerMutation<'_>, task: &Task, comment: &str) -> Result<()> {
-    Err(Error::BadRequest(HANDOFFS_UNAVAILABLE.into()))
 }
 
 /// What a task that moved between [`prepare`] and publication is told (409).

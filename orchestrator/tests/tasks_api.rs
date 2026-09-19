@@ -1439,7 +1439,7 @@ async fn an_assignee_that_is_not_a_user_is_refused() {
 }
 
 #[tokio::test]
-async fn a_hand_off_is_refused_by_its_input_rules_and_then_by_the_missing_epic() {
+async fn a_hand_off_is_refused_by_its_input_rules_before_any_git_work() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "editor").await;
     let pid = project(&app, &user, "mars").await;
@@ -1487,16 +1487,15 @@ async fn a_hand_off_is_refused_by_its_input_rules_and_then_by_the_missing_epic()
         "comment body must not be empty",
     );
 
-    // A well-shaped hand-off waits for the Code hand-offs epic.
-    let unavailable = app
+    // A well-shaped hand-off gets past the input rules and is refused by the
+    // first rule that needs the project: this one has never cloned, so its
+    // repository cannot be locked (`SPEC.md`, "Code hand-offs and review").
+    // What a *ready* project's publication does is `tests/handoffs_api.rs`.
+    let not_ready = app
         .put_as(&user, &path)
         .json(&json!({ "state": "review", "handoff": handoff }))
         .await;
-    assert_error(
-        &unavailable,
-        StatusCode::BAD_REQUEST,
-        "code hand-offs are not available yet",
-    );
+    assert_error(&not_ready, StatusCode::CONFLICT, "project is not ready");
 
     // None of that moved the task.
     assert_eq!(

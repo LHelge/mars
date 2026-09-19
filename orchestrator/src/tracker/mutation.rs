@@ -225,6 +225,23 @@ impl<'a> TrackerMutation<'a> {
         self.actor
     }
 
+    /// Make the events emitted from here on carry a different actor, and
+    /// return the one they carried before.
+    ///
+    /// For the one change nobody asked for: when the last open child of a
+    /// non-terminal parent closes, the same transaction closes the parent and
+    /// its `state_changed` carries actor `system`, whoever closed the child
+    /// (`ARCHITECTURE.md`, "Task tracker" → "Parents"). The change is the
+    /// orchestrator's, not the caller's, so the event says so.
+    ///
+    /// Crate-private and paired: the caller restores the previous actor as
+    /// soon as the nested change is done, so the override covers exactly the
+    /// events the orchestrator authored. `touch_actor` follows it too, which
+    /// is correct — the session did not work on the parent.
+    pub(crate) fn set_actor(&mut self, actor: TaskActor) -> TaskActor {
+        std::mem::replace(&mut self.actor, actor)
+    }
+
     /// The project row, read under the lock.
     pub fn project(&self) -> &Project {
         &self.project

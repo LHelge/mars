@@ -146,6 +146,45 @@ impl TaskRepository<'_> {
         Ok(changed)
     }
 
+    /// Has this task any child in a non-terminal state?
+    ///
+    /// The question automatic parent closure turns on: "when the last
+    /// non-terminal child of a non-terminal parent enters a terminal state,
+    /// the same transaction moves the parent" (`docs/data-model.md`, `tasks`;
+    /// `ARCHITECTURE.md`, "Task tracker" → "Parents"). It is deliberately not
+    /// the parent's `blocked` flag, which is also true while a `blocks`
+    /// prerequisite is open — a parent whose children have all closed is
+    /// closed even if something else still blocks it.
+    ///
+    /// Takes the token because the caller asks it in the middle of closing one
+    /// of those children: the answer must include the row this transaction has
+    /// just written and nobody else's uncommitted ones.
+    pub async fn has_open_children_in_tx(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        parent_id: Uuid,
+    ) -> Result<bool> {
+        let open = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM tasks AS c
+                JOIN task_states AS cs ON cs.id = c.state_id
+                WHERE c.project_id = $1
+                  AND c.parent_id = $2
+                  AND cs.kind <> 'terminal'::task_state_kind
+            ) AS "open!"
+            "#,
+            project_id,
+            parent_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        Ok(open)
+    }
+
     /// Is `target` reachable from `from` by following `blocks` edges?
     ///
     /// The cycle check's one question, as the recursive CTE

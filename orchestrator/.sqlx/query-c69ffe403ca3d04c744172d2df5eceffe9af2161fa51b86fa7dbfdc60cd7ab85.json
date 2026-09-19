@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (\n                SELECT 1\n                FROM tasks AS c\n                JOIN task_states AS cs ON cs.id = c.state_id\n                WHERE c.project_id = $1\n                  AND c.parent_id = $2\n                  AND cs.kind <> 'terminal'::task_state_kind\n            ) AS \"open!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "open!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c69ffe403ca3d04c744172d2df5eceffe9af2161fa51b86fa7dbfdc60cd7ab85"
+}

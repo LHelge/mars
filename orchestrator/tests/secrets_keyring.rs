@@ -12,10 +12,10 @@
 //! stores the wrapping in a row, and then verifies with a different keyring —
 //! which is exactly the shape of a restart with the wrong environment.
 //!
-//! The value bytes are never opened here, so the ciphertext columns are
-//! obviously fake; the wrapping columns are real output of `wrap_data_key`,
-//! because that is what the check reads. Every key in this file is an
-//! obviously fake constant (`CLAUDE.md`, rule 3).
+//! The value bytes are never opened here, but every row is sealed for real
+//! under the keyring that carries its version, because the wrapping columns
+//! are what the check reads. Every key and every value in this file is
+//! obviously fake (`CLAUDE.md`, rule 3).
 //!
 //! Needs a container engine (`DOCKER_HOST`); see `tests/common/db.rs`.
 
@@ -24,9 +24,9 @@
 mod common;
 
 use common::TestApp;
-use mars_orchestrator::models::{EncryptedValue, NewSecret, ScopeRef, SecretName};
+use mars_orchestrator::models::{NewSecret, ScopeRef, SecretName};
 use mars_orchestrator::repositories::SecretRepository;
-use mars_orchestrator::secrets::{DATA_KEY_LEN, MASTER_KEY_LEN, SecretsKeyring};
+use mars_orchestrator::secrets::{MASTER_KEY_LEN, SealedSecret, SecretIdentity, SecretsKeyring};
 
 /// The version that exists in the table but not, by default, in the
 /// environment.
@@ -36,8 +36,31 @@ const STORED_VERSION: i32 = 99;
 const KEY_99: [u8; MASTER_KEY_LEN] = [0x99; MASTER_KEY_LEN];
 const OTHER_KEY_99: [u8; MASTER_KEY_LEN] = [0x77; MASTER_KEY_LEN];
 
-/// Obviously fake data key; nothing decrypts a value in this file.
-const DATA_KEY: [u8; DATA_KEY_LEN] = [0x42; DATA_KEY_LEN];
+/// Obviously fake value; nothing decrypts a value in this file.
+const FAKE_VALUE: &[u8] = b"not-a-real-token";
+
+/// One global row, sealed under `wrapping` so its `key_version` is that
+/// keyring's newest.
+fn sealed_under(wrapping: &SecretsKeyring, raw_name: &str) -> SealedSecret {
+    let name = SecretName::parse(raw_name).expect("the test secret name is valid");
+
+    SealedSecret::seal(
+        wrapping,
+        SecretIdentity::new(&ScopeRef::global(), &name),
+        FAKE_VALUE,
+    )
+    .expect("the test value seals")
+}
+
+/// Insert one already-sealed row in its own committed transaction.
+async fn insert(app: &TestApp, sealed: SealedSecret) {
+    let mut tx = app.pool.begin().await.expect("a transaction begins");
+    SecretRepository::new(&app.pool)
+        .insert(&mut tx, &NewSecret::new(sealed))
+        .await
+        .expect("the secret inserts");
+    tx.commit().await.expect("the transaction commits");
+}
 
 /// The test keyring plus a key for [`STORED_VERSION`].
 ///
@@ -60,35 +83,13 @@ fn keyring_with_99(app: &TestApp, key_99: [u8; MASTER_KEY_LEN]) -> SecretsKeyrin
 
 /// Store one secret whose data key is wrapped under [`STORED_VERSION`].
 async fn insert_row_wrapped_under_99(app: &TestApp, wrapping: &SecretsKeyring) {
-    let wrapped = wrapping
-        .wrap_data_key(&DATA_KEY)
-        .expect("the wrap succeeds");
+    let sealed = sealed_under(wrapping, "OLD_VERSION_TOKEN");
     assert_eq!(
-        wrapped.version, STORED_VERSION,
+        sealed.wrapped.version, STORED_VERSION,
         "the wrapping keyring must use its highest version"
     );
 
-    let value = EncryptedValue {
-        // Never opened by this test: the check reads the wrapping only.
-        ciphertext: b"fake-ciphertext".to_vec(),
-        nonce: b"fake-nonce12".to_vec(),
-        data_key_wrapped: wrapped.wrapped,
-        data_key_nonce: wrapped.nonce.to_vec(),
-        key_version: wrapped.version,
-    };
-
-    let secret = NewSecret::new(
-        ScopeRef::global(),
-        SecretName::parse("OLD_VERSION_TOKEN").expect("the test secret name is valid"),
-        value,
-    );
-
-    let mut tx = app.pool.begin().await.expect("a transaction begins");
-    SecretRepository::new(&app.pool)
-        .insert(&mut tx, &secret)
-        .await
-        .expect("the secret inserts");
-    tx.commit().await.expect("the transaction commits");
+    insert(app, sealed).await;
 }
 
 #[tokio::test]
@@ -166,27 +167,7 @@ async fn every_bad_version_is_named_in_one_message() {
     let other_version: u32 = 42;
     let other = SecretsKeyring::from_entries(vec![(other_version, [0x42; MASTER_KEY_LEN])])
         .expect("one entry is a valid keyring");
-    let wrapped = other.wrap_data_key(&DATA_KEY).expect("the wrap succeeds");
-
-    let mut tx = app.pool.begin().await.expect("a transaction begins");
-    SecretRepository::new(&app.pool)
-        .insert(
-            &mut tx,
-            &NewSecret::new(
-                ScopeRef::global(),
-                SecretName::parse("OLDER_TOKEN").expect("the test secret name is valid"),
-                EncryptedValue {
-                    ciphertext: b"fake-ciphertext".to_vec(),
-                    nonce: b"fake-nonce12".to_vec(),
-                    data_key_wrapped: wrapped.wrapped,
-                    data_key_nonce: wrapped.nonce.to_vec(),
-                    key_version: wrapped.version,
-                },
-            ),
-        )
-        .await
-        .expect("the secret inserts");
-    tx.commit().await.expect("the transaction commits");
+    insert(&app, sealed_under(&other, "OLDER_TOKEN")).await;
 
     let message = app
         .state

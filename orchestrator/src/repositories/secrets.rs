@@ -3,9 +3,8 @@
 //! `docs/data-model.md`, "Secrets" is the column contract and
 //! `ARCHITECTURE.md`, "Secrets" is the design. This file moves the encrypted
 //! columns and nothing else: it never wraps, unwraps, encrypts or decrypts,
-//! never touches the keyring and never sees a value in the clear. The
-//! envelope-crypto epic hands it an already-built
-//! [`crate::models::EncryptedValue`] and reads the bytes back out again.
+//! never touches the keyring and never sees a value in the clear. It is handed
+//! an already-built [`SealedSecret`] and reads the bytes back out again.
 //!
 //! Three compositions are deliberately *not* here, because each is a policy
 //! rather than a statement:
@@ -19,9 +18,9 @@
 //! - *Renaming.* A rename re-encrypts the value under the new additional
 //!   authenticated data, because the name is part of it
 //!   (`docs/data-model.md`, `secrets`). [`SecretRepository::rename`] writes
-//!   the new name and the re-encrypted columns in one statement; deciding what
-//!   those bytes are, and doing it in one transaction with the decrypt, is the
-//!   caller's.
+//!   the re-sealed envelope and the name it is bound to in one statement;
+//!   deciding what those bytes are, and doing it in one transaction with the
+//!   decrypt, is the caller's.
 //! - *Rotation.* [`SecretRepository::list_for_rotation`] selects a batch and
 //!   [`SecretRepository::rewrap`] writes one row back; the unwrap/re-wrap
 //!   between them, and the loop around them, belong to the `rotate-secrets`
@@ -35,19 +34,11 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::models::{
-    EncryptedValue, KeyVersionSample, NewSecret, ScopeRef, Secret, SecretMeta, SecretName,
-    SecretScope, SecretUse, SecretUsePurpose,
+    NewSecret, ScopeRef, Secret, SecretMeta, SecretName, SecretScope, SecretUse, SecretUsePurpose,
 };
 use crate::prelude::*;
 use crate::repositories::unique_violation;
-
-/// How many rows one rotation sweep takes at a time (`ARCHITECTURE.md`,
-/// "Secrets", Rotation: "in batches of 100").
-///
-/// Rust has no default arguments, so this is the value the `rotate-secrets`
-/// subcommand passes to [`SecretRepository::list_for_rotation`]; tests pass a
-/// smaller one to exercise the bound.
-pub const ROTATION_BATCH: i64 = 100;
+use crate::secrets::{KeyVersionSample, SealedSecret};
 
 /// Which user-scoped secrets one listing is allowed to show.
 ///
@@ -102,12 +93,18 @@ impl<'a> SecretRepository<'a> {
 
     /// Insert a new secret and return the stored row.
     ///
+    /// The scope and the name are bound from the envelope's identity rather
+    /// than from fields beside it, so the row's naming columns are by
+    /// construction the ones its ciphertext was sealed under
+    /// (`docs/data-model.md`, `secrets`).
+    ///
     /// A second secret of the same name in the same scope is the caller's
     /// mistake, not an internal failure, so the unique constraint maps to
     /// [`Error::Conflict`] and the 409 `SPEC.md`, "Secrets" promises. Because
     /// the index is `NULLS NOT DISTINCT`, that includes two `global` secrets
     /// of the same name, whose `scope_id` is NULL in both rows.
     pub async fn insert(&self, tx: &mut PgConnection, secret: &NewSecret) -> Result<Secret> {
+        let sealed = &secret.sealed;
         let inserted = sqlx::query_as!(
             Secret,
             r#"
@@ -120,14 +117,14 @@ impl<'a> SecretRepository<'a> {
                       created_by, created_at, updated_at
             "#,
             secret.id,
-            secret.scope.scope() as SecretScope,
-            secret.scope.scope_id(),
-            secret.name.as_str(),
-            secret.value.ciphertext.as_slice(),
-            secret.value.nonce.as_slice(),
-            secret.value.data_key_wrapped.as_slice(),
-            secret.value.data_key_nonce.as_slice(),
-            secret.value.key_version,
+            sealed.identity.scope() as SecretScope,
+            sealed.identity.scope_id(),
+            sealed.identity.name(),
+            sealed.ciphertext.as_slice(),
+            sealed.nonce.as_slice(),
+            sealed.wrapped.wrapped.as_slice(),
+            sealed.wrapped.nonce.as_slice(),
+            sealed.wrapped.version,
             secret.orchestrator_only,
             secret.created_by,
         )
@@ -443,7 +440,7 @@ impl<'a> SecretRepository<'a> {
         &self,
         tx: &mut PgConnection,
         id: Uuid,
-        value: &EncryptedValue,
+        sealed: &SealedSecret,
     ) -> Result<Option<Secret>> {
         let updated = sqlx::query_as!(
             Secret,
@@ -461,11 +458,11 @@ impl<'a> SecretRepository<'a> {
                       created_by, created_at, updated_at
             "#,
             id,
-            value.ciphertext.as_slice(),
-            value.nonce.as_slice(),
-            value.data_key_wrapped.as_slice(),
-            value.data_key_nonce.as_slice(),
-            value.key_version,
+            sealed.ciphertext.as_slice(),
+            sealed.nonce.as_slice(),
+            sealed.wrapped.wrapped.as_slice(),
+            sealed.wrapped.nonce.as_slice(),
+            sealed.wrapped.version,
         )
         .fetch_optional(&mut *tx)
         .await?;
@@ -480,10 +477,16 @@ impl<'a> SecretRepository<'a> {
     /// One `UPDATE`, not two, because the name is part of the additional
     /// authenticated data: a row that had the new name and the old ciphertext,
     /// even briefly, could not be decrypted (`docs/data-model.md`, `secrets`).
-    /// Producing `value` — decrypt under the old AAD, re-encrypt under the new
-    /// one, inside the caller's transaction — is the caller's; this method
-    /// writes exactly what it is given and does not care whether `name`
-    /// differs from the stored one.
+    /// Re-sealing the value under the new identity, inside the caller's
+    /// transaction, is the caller's
+    /// ([`SealedSecret::reseal`](crate::secrets::SealedSecret::reseal)); this
+    /// method writes exactly what it is given and does not care whether the
+    /// name differs from the stored one.
+    ///
+    /// The new name comes from the envelope's own identity rather than beside
+    /// it, so there is no way to write a name the ciphertext was not sealed
+    /// under — which is the one mistake this statement exists to make
+    /// impossible.
     ///
     /// A name already taken in the same scope maps to [`Error::Conflict`], the
     /// same way [`SecretRepository::insert`] does.
@@ -491,8 +494,7 @@ impl<'a> SecretRepository<'a> {
         &self,
         tx: &mut PgConnection,
         id: Uuid,
-        name: &SecretName,
-        value: &EncryptedValue,
+        sealed: &SealedSecret,
     ) -> Result<Option<Secret>> {
         let renamed = sqlx::query_as!(
             Secret,
@@ -511,18 +513,23 @@ impl<'a> SecretRepository<'a> {
                       created_by, created_at, updated_at
             "#,
             id,
-            name.as_str(),
-            value.ciphertext.as_slice(),
-            value.nonce.as_slice(),
-            value.data_key_wrapped.as_slice(),
-            value.data_key_nonce.as_slice(),
-            value.key_version,
+            sealed.identity.name(),
+            sealed.ciphertext.as_slice(),
+            sealed.nonce.as_slice(),
+            sealed.wrapped.wrapped.as_slice(),
+            sealed.wrapped.nonce.as_slice(),
+            sealed.wrapped.version,
         )
         .fetch_optional(&mut *tx)
         .await
         .map_err(map_duplicate)?;
 
-        debug!(secret_id = %id, name = %name, renamed = renamed.is_some(), "secret renamed");
+        debug!(
+            secret_id = %id,
+            name = %sealed.identity.name(),
+            renamed = renamed.is_some(),
+            "secret renamed"
+        );
 
         Ok(renamed)
     }
@@ -657,8 +664,9 @@ impl<'a> SecretRepository<'a> {
     /// Re-wrap one row's data key under a newer master key.
     ///
     /// One statement, and `ciphertext` and `nonce` are deliberately absent
-    /// from it: rotation changes which master key protects the data key, never
-    /// the data key itself and never the encryption of the value
+    /// from it although `sealed` carries them: rotation changes which master
+    /// key protects the data key, never the data key itself and never the
+    /// encryption of the value
     /// (`ARCHITECTURE.md`, "Secrets", Rotation). Returns whether a row
     /// matched, so a sweep can notice a secret deleted between the batch and
     /// the write instead of failing.
@@ -676,9 +684,7 @@ impl<'a> SecretRepository<'a> {
         tx: &mut PgConnection,
         id: Uuid,
         expected_key_version: i32,
-        data_key_wrapped: &[u8],
-        data_key_nonce: &[u8],
-        key_version: i32,
+        sealed: &SealedSecret,
     ) -> Result<bool> {
         let result = sqlx::query!(
             r#"
@@ -691,9 +697,9 @@ impl<'a> SecretRepository<'a> {
             "#,
             id,
             expected_key_version,
-            data_key_wrapped,
-            data_key_nonce,
-            key_version,
+            sealed.wrapped.wrapped.as_slice(),
+            sealed.wrapped.nonce.as_slice(),
+            sealed.wrapped.version,
         )
         .execute(&mut *tx)
         .await?;
@@ -702,7 +708,7 @@ impl<'a> SecretRepository<'a> {
         debug!(
             secret_id = %id,
             expected_key_version,
-            key_version,
+            key_version = sealed.wrapped.version,
             rewrapped,
             "secret data key re-wrapped"
         );
@@ -932,12 +938,6 @@ fn map_duplicate(err: sqlx::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_rotation_batch_is_the_documented_hundred() {
-        // `ARCHITECTURE.md`, "Secrets": "in batches of 100".
-        assert_eq!(ROTATION_BATCH, 100);
-    }
 
     #[test]
     fn a_duplicate_secret_is_a_conflict_only_for_the_known_constraint() {

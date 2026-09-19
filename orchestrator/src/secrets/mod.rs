@@ -3,19 +3,20 @@
 //! The master keyring ([`keyring`]) holds the versioned keys, wraps and
 //! unwraps per-row data keys and verifies at startup that every `key_version`
 //! present in the table can still be unwrapped (`ARCHITECTURE.md`, "Secrets").
-//! [`crypto`] is the layer above it: sealing a value under a fresh data key
-//! bound to its row, opening it again, re-sealing it when the row is renamed
-//! and re-wrapping its data key when the master key rotates. The resolution
-//! order and the injection into a session are the rest of the secrets epic.
+//! [`envelope`] is the layer above it, and the only one: a [`SealedSecret`] is
+//! one row's encrypted identity, and sealing a value, opening it, re-sealing it
+//! when the row is renamed and re-wrapping its data key when the master key
+//! rotates are its four methods. The resolution order and the injection into a
+//! session are the rest of the secrets epic.
 
-pub mod crypto;
+pub mod envelope;
 pub mod git_credential;
 pub mod keyring;
 pub mod resolve;
 pub mod rotation;
 pub mod service;
 
-pub use crypto::{VALUE_NONCE_LEN, aad, aad_for, open, reseal, rewrap, seal};
+pub use envelope::{KeyVersionSample, SealedSecret, SecretIdentity, VALUE_NONCE_LEN};
 pub use git_credential::{
     GIT_CREDENTIAL_NAME, GitUseContext, has_project_git_credential, insert_project_git_credential,
     project_git_credential, set_project_git_credential,
@@ -24,7 +25,7 @@ pub use keyring::{
     DATA_KEY_LEN, MASTER_KEY_LEN, SecretsError, SecretsKeyring, WRAP_NONCE_LEN, WrappedKey,
 };
 pub use resolve::{LaunchScope, ResolvedSecrets, resolve_for_launch};
-pub use rotation::{RotationReport, rewrap_outdated};
+pub use rotation::{ROTATION_BATCH, RotationReport, rewrap_outdated};
 pub use service::{
     Actor, CreateSecret, DEFAULT_USES_LIMIT, MAX_USES_LIMIT, PatchSecret, SecretsService,
 };

@@ -23,13 +23,13 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use mars_orchestrator::models::{
-    AgentBackend, BranchName, EncryptedValue, MaxAttempts, NewAgentProfile, NewProject, NewSecret,
-    NewSharedDir, ProfileKind, ProfileUpdate, Project, ProjectName, ProjectStatus, ProjectUpdate,
-    RemoteUrl, ScopeRef, SecretName,
+    AgentBackend, BranchName, MaxAttempts, NewAgentProfile, NewProject, NewSecret, NewSharedDir,
+    ProfileKind, ProfileUpdate, Project, ProjectName, ProjectStatus, ProjectUpdate, RemoteUrl,
+    ScopeRef, SecretName,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{ProjectRepository, SecretRepository, SessionRepository};
-use mars_orchestrator::secrets::GIT_CREDENTIAL_NAME;
+use mars_orchestrator::secrets::{GIT_CREDENTIAL_NAME, SealedSecret, SecretIdentity, WrappedKey};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
@@ -125,16 +125,19 @@ async fn seed_session(pool: &PgPool, project_id: Uuid, profile_id: Uuid) -> Uuid
     id
 }
 
-/// Not key material: an obviously fake stand-in for the four encrypted
-/// columns of a secret this file only ever asks `EXISTS` about (`CLAUDE.md`,
-/// rule 3).
-fn fake_encrypted_value() -> EncryptedValue {
-    EncryptedValue {
+/// Not key material and not a real envelope: an obviously fake stand-in for
+/// the encrypted columns of a secret this file only ever asks `EXISTS` about
+/// (`CLAUDE.md`, rule 3). Nothing here opens one, so nothing here seals one.
+fn fake_sealed(scope: ScopeRef, name: &str) -> SealedSecret {
+    SealedSecret {
+        identity: SecretIdentity::new(&scope, &SecretName::parse(name).unwrap()),
         ciphertext: b"fake-ciphertext".to_vec(),
         nonce: b"fake-nonce".to_vec(),
-        data_key_wrapped: b"fake-wrapped-data-key".to_vec(),
-        data_key_nonce: b"fake-wrap-nonce".to_vec(),
-        key_version: 1,
+        wrapped: WrappedKey {
+            wrapped: b"fake-wrapped-data-key".to_vec(),
+            nonce: b"fake-wrap-nonce".to_vec(),
+            version: 1,
+        },
     }
 }
 
@@ -478,11 +481,10 @@ async fn a_project_reports_whether_it_has_a_git_credential() {
 
     let secrets = SecretRepository::new(&pool);
     let mut tx = pool.begin().await.unwrap();
-    let mut credential = NewSecret::new(
+    let mut credential = NewSecret::new(fake_sealed(
         ScopeRef::project(inserted.id),
-        SecretName::parse(GIT_CREDENTIAL_NAME).unwrap(),
-        fake_encrypted_value(),
-    );
+        GIT_CREDENTIAL_NAME,
+    ));
     credential.orchestrator_only = true;
     secrets.insert(&mut tx, &credential).await.unwrap();
     tx.commit().await.unwrap();
@@ -534,11 +536,7 @@ async fn a_project_reports_whether_it_has_a_git_credential() {
     secrets
         .insert(
             &mut tx,
-            &NewSecret::new(
-                ScopeRef::project(other.id),
-                SecretName::parse("NPM_TOKEN").unwrap(),
-                fake_encrypted_value(),
-            ),
+            &NewSecret::new(fake_sealed(ScopeRef::project(other.id), "NPM_TOKEN")),
         )
         .await
         .unwrap();

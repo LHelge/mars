@@ -29,14 +29,13 @@ mod common;
 
 use common::TestApp;
 use mars_orchestrator::models::{
-    EncryptedValue, NewProject, NewSecret, ScopeRef, Secret, SecretName, SecretScope,
-    SecretUsePurpose, User,
+    NewProject, NewSecret, ScopeRef, Secret, SecretName, SecretScope, SecretUsePurpose, User,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{
     ProjectRepository, SecretListFilter, SecretRepository, UserFilter,
 };
-use mars_orchestrator::secrets::{aad_for, open, seal};
+use mars_orchestrator::secrets::{SealedSecret, SecretIdentity, WrappedKey};
 use uuid::Uuid;
 
 /// Not a real remote: the fixture the project tests use (rule 3).
@@ -45,15 +44,19 @@ const TEST_REMOTE: &str = "https://git.example.com/fake/repo.git";
 /// The SQLSTATE `FOR UPDATE NOWAIT` raises when the row is already locked.
 const LOCK_NOT_AVAILABLE: &str = "55P03";
 
-/// Not key material: an obviously fake stand-in for the four encrypted
-/// columns, for the rows no test ever opens. `tag` tells one from another.
-fn fake_value(tag: &str, key_version: i32) -> EncryptedValue {
-    EncryptedValue {
+/// Not key material and not a real envelope: an obviously fake stand-in for
+/// the encrypted columns, for the rows no test ever opens. `tag` tells one
+/// from another (`CLAUDE.md`, rule 3).
+fn fake_sealed(scope: ScopeRef, raw_name: &str, tag: &str, key_version: i32) -> SealedSecret {
+    SealedSecret {
+        identity: SecretIdentity::new(&scope, &name(raw_name)),
         ciphertext: format!("fake-ciphertext-{tag}").into_bytes(),
         nonce: format!("fake-nonce-{tag}").into_bytes(),
-        data_key_wrapped: format!("fake-wrapped-data-key-{tag}").into_bytes(),
-        data_key_nonce: format!("fake-wrap-nonce-{tag}").into_bytes(),
-        key_version,
+        wrapped: WrappedKey {
+            wrapped: format!("fake-wrapped-data-key-{tag}").into_bytes(),
+            nonce: format!("fake-wrap-nonce-{tag}").into_bytes(),
+            version: key_version,
+        },
     }
 }
 
@@ -62,7 +65,7 @@ fn name(raw: &str) -> SecretName {
 }
 
 fn new_secret(scope: ScopeRef, raw_name: &str, tag: &str) -> NewSecret {
-    NewSecret::new(scope, name(raw_name), fake_value(tag, 1))
+    NewSecret::new(fake_sealed(scope, raw_name, tag, 1))
 }
 
 /// Insert `secret` in its own committed transaction.
@@ -107,10 +110,14 @@ async fn a_sealed_value_round_trips_and_its_metadata_never_carries_it() {
     let secret_name = name("ANTHROPIC_API_KEY");
 
     // The real envelope, under the harness's fixed test key.
-    let aad = aad_for(&scope, &secret_name);
-    let sealed = seal(&app.state.keyring, &aad, b"fake-api-key-value").expect("the value seals");
+    let sealed = SealedSecret::seal(
+        &app.state.keyring,
+        SecretIdentity::new(&scope, &secret_name),
+        b"fake-api-key-value",
+    )
+    .expect("the value seals");
 
-    let mut new = NewSecret::new(scope, secret_name.clone(), sealed);
+    let mut new = NewSecret::new(sealed);
     new.created_by = Some(ada.id);
     let inserted = insert(&app.pool, &new).await;
 
@@ -121,15 +128,10 @@ async fn a_sealed_value_round_trips_and_its_metadata_never_carries_it() {
         .await
         .unwrap()
         .expect("the secret exists");
-    let value = EncryptedValue {
-        ciphertext: stored.ciphertext.clone(),
-        nonce: stored.nonce.clone(),
-        data_key_wrapped: stored.data_key_wrapped.clone(),
-        data_key_nonce: stored.data_key_nonce.clone(),
-        key_version: stored.key_version,
-    };
     assert_eq!(
-        open(&app.state.keyring, &aad, &value)
+        stored
+            .sealed()
+            .open(&app.state.keyring)
             .expect("the stored row opens")
             .as_slice(),
         b"fake-api-key-value"
@@ -471,16 +473,22 @@ async fn a_rotation_write_with_a_stale_expected_version_changes_nothing() {
     let scope = ScopeRef::global();
 
     let mut older = new_secret(scope, "OLD_ONE", "one");
-    older.value.key_version = 1;
+    older.sealed.wrapped.version = 1;
     let older = insert(&app.pool, &older).await;
 
     let mut second = new_secret(scope, "OLD_TWO", "two");
-    second.value.key_version = 1;
+    second.sealed.wrapped.version = 1;
     let second = insert(&app.pool, &second).await;
 
     let mut newest = new_secret(scope, "NEWEST", "three");
-    newest.value.key_version = 2;
+    newest.sealed.wrapped.version = 2;
     let newest = insert(&app.pool, &newest).await;
+
+    // The wrapping a rotation sweep would write: the same row, its data key
+    // wrapped under a newer master key. Fake bytes, like every envelope in
+    // this file (rule 3).
+    let rewrapped = fake_sealed(scope, "OLD_ONE", "rewrapped", 3);
+    let stale = fake_sealed(scope, "OLD_ONE", "stale", 3);
 
     assert_eq!(repository.count_below_version(1).await.unwrap(), 0);
     assert_eq!(repository.count_below_version(2).await.unwrap(), 2);
@@ -492,14 +500,7 @@ async fn a_rotation_write_with_a_stale_expected_version_changes_nothing() {
     let mut tx = app.pool.begin().await.unwrap();
     assert!(
         !repository
-            .rewrap(
-                &mut tx,
-                older.id,
-                99,
-                b"fake-rewrapped-data-key",
-                b"fake-rewrap-nonce",
-                3,
-            )
+            .rewrap(&mut tx, older.id, 99, &rewrapped)
             .await
             .unwrap(),
         "a stale expected version is skipped, not an error"
@@ -515,21 +516,14 @@ async fn a_rotation_write_with_a_stale_expected_version_changes_nothing() {
     let mut tx = app.pool.begin().await.unwrap();
     assert!(
         repository
-            .rewrap(
-                &mut tx,
-                older.id,
-                1,
-                b"fake-rewrapped-data-key",
-                b"fake-rewrap-nonce",
-                3,
-            )
+            .rewrap(&mut tx, older.id, 1, &rewrapped)
             .await
             .unwrap()
     );
     tx.commit().await.unwrap();
 
     let rotated = repository.find(older.id).await.unwrap().unwrap();
-    assert_eq!(rotated.data_key_wrapped, b"fake-rewrapped-data-key");
+    assert_eq!(rotated.data_key_wrapped, rewrapped.wrapped.wrapped);
     assert_eq!(rotated.key_version, 3);
     assert_eq!(
         rotated.ciphertext, older.ciphertext,
@@ -540,14 +534,7 @@ async fn a_rotation_write_with_a_stale_expected_version_changes_nothing() {
     let mut tx = app.pool.begin().await.unwrap();
     assert!(
         !repository
-            .rewrap(
-                &mut tx,
-                older.id,
-                1,
-                b"fake-stale-data-key",
-                b"fake-stale-nonce",
-                3,
-            )
+            .rewrap(&mut tx, older.id, 1, &stale)
             .await
             .unwrap()
     );
@@ -559,7 +546,7 @@ async fn a_rotation_write_with_a_stale_expected_version_changes_nothing() {
             .unwrap()
             .unwrap()
             .data_key_wrapped,
-        b"fake-rewrapped-data-key"
+        rewrapped.wrapped.wrapped
     );
 
     assert_eq!(repository.count_below_version(3).await.unwrap(), 2);

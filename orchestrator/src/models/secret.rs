@@ -7,10 +7,12 @@
 //!
 //! What this module does **not** do is any cryptography. It has no master key,
 //! it never builds the additional authenticated data and it never decrypts:
-//! the four byte columns arrive already encrypted, as an [`EncryptedValue`],
-//! and leave the same way. Producing one is the envelope-crypto epic's job
-//! (`ARCHITECTURE.md`, "Secrets"). What this module does guarantee is the
-//! *shape* of a row the unique index and the `CHECK` depend on — an
+//! the encrypted columns arrive already sealed, as a [`SealedSecret`], and
+//! leave the same way. Producing and opening one is
+//! [`crate::secrets::envelope`]'s job (`ARCHITECTURE.md`, "Secrets") — which is
+//! also where [`Secret::sealed`] lives, so that not even the conversion from a
+//! stored row to its envelope is written here. What this module guarantees is
+//! the *shape* of a row the unique index and the `CHECK` depend on — an
 //! environment-variable style [`SecretName`] and a [`ScopeRef`] whose
 //! `scope_id` is present exactly when the scope is not `global` — so a row can
 //! never reach the database in a form the schema would have to reject.
@@ -37,6 +39,7 @@ use uuid::Uuid;
 use crate::models::agent_profile::is_secret_name;
 #[allow(unused_imports)]
 use crate::prelude::*;
+use crate::secrets::SealedSecret;
 
 /// Every way a secret model can reject its input.
 ///
@@ -259,44 +262,6 @@ impl std::fmt::Display for SecretName {
     }
 }
 
-/// The four encrypted columns and the master-key version that wrapped them.
-///
-/// Every write that changes what is stored moves all five together: replacing
-/// a value re-encrypts it, and renaming re-encrypts it too, because the name
-/// is part of the additional authenticated data (`docs/data-model.md`,
-/// `secrets`). Bundling them is what keeps a caller from updating a ciphertext
-/// and leaving the nonce behind.
-///
-/// Built by the envelope-crypto epic and never inspected here. `Debug` and
-/// serialisation are both refused: there is nothing in this struct that is
-/// safe to print (`CLAUDE.md`, rule 3).
-#[derive(Clone, PartialEq, Eq)]
-pub struct EncryptedValue {
-    /// AES-256-GCM ciphertext of the value, including the 16-byte tag.
-    pub ciphertext: Vec<u8>,
-    /// 12-byte nonce for `ciphertext`.
-    pub nonce: Vec<u8>,
-    /// The per-row data key, AES-256-GCM wrapped by the master key.
-    pub data_key_wrapped: Vec<u8>,
-    /// 12-byte nonce for the wrap.
-    pub data_key_nonce: Vec<u8>,
-    /// Which master key wrapped `data_key_wrapped`.
-    pub key_version: i32,
-}
-
-impl std::fmt::Debug for EncryptedValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The key version is operational detail and safe; nothing else is.
-        f.debug_struct("EncryptedValue")
-            .field("ciphertext", &"<redacted>")
-            .field("nonce", &"<redacted>")
-            .field("data_key_wrapped", &"<redacted>")
-            .field("data_key_nonce", &"<redacted>")
-            .field("key_version", &self.key_version)
-            .finish()
-    }
-}
-
 /// A `secrets` row, column for column (`docs/data-model.md`, `secrets`).
 ///
 /// The four byte columns are `#[serde(skip)]` and redacted by `Debug`: the API
@@ -357,42 +322,21 @@ impl Secret {
         ScopeRef::new(self.scope, self.scope_id)
             .expect("a stored row satisfies the scope/scope_id check")
     }
-
-    /// The five encrypted columns of this row, as the crypto layer takes them.
-    ///
-    /// A [`Secret`] is the whole row and the cipher wants only the envelope,
-    /// so the columns are gathered here rather than in each of the resolver,
-    /// the git credential helpers and the secrets service, which each had
-    /// their own private copy of exactly this function. The clone is of
-    /// ciphertext and wrapping, never of a plaintext — this module still
-    /// decrypts nothing.
-    ///
-    /// An inherent method rather than `impl From<&Secret> for EncryptedValue`:
-    /// every call site already holds a `&Secret` and reads better as
-    /// `row.encrypted_value()` than as `EncryptedValue::from(row)`, and a
-    /// `From` would also make the conversion available by inference in places
-    /// that did not ask for it, which is not something a ciphertext should get.
-    pub fn encrypted_value(&self) -> EncryptedValue {
-        EncryptedValue {
-            ciphertext: self.ciphertext.clone(),
-            nonce: self.nonce.clone(),
-            data_key_wrapped: self.data_key_wrapped.clone(),
-            data_key_nonce: self.data_key_nonce.clone(),
-            key_version: self.key_version,
-        }
-    }
 }
 
 /// The caller-supplied half of a new secret.
+///
+/// The scope and the name are not fields of their own: they are the
+/// [`SealedSecret`]'s identity, which is what its ciphertext is bound to, so a
+/// row cannot be inserted under a name its value was not sealed under
+/// (`docs/data-model.md`, `secrets`).
 ///
 /// The id is generated up front so the caller knows it before the insert. The
 /// repository fills in the timestamps from the column defaults.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewSecret {
     pub id: Uuid,
-    pub scope: ScopeRef,
-    pub name: SecretName,
-    pub value: EncryptedValue,
+    pub sealed: SealedSecret,
     pub orchestrator_only: bool,
     pub created_by: Option<Uuid>,
 }
@@ -401,12 +345,10 @@ impl NewSecret {
     /// A secret with a fresh id, injected into containers, created by nobody.
     ///
     /// The remaining fields are public: callers set what they were given.
-    pub fn new(scope: ScopeRef, name: SecretName, value: EncryptedValue) -> Self {
+    pub fn new(sealed: SealedSecret) -> Self {
         Self {
             id: Uuid::new_v4(),
-            scope,
-            name,
-            value,
+            sealed,
             orchestrator_only: false,
             created_by: None,
         }
@@ -434,36 +376,6 @@ pub struct SecretMeta {
     /// The newest `secret_uses.at` for this secret, or `None` if it has never
     /// been used.
     pub last_used_at: Option<DateTime<Utc>>,
-}
-
-/// One stored row per distinct `key_version`, for the startup check.
-///
-/// [`crate::secrets::SecretsKeyring::verify_against_db`] unwraps one sample
-/// per version present in the table before the orchestrator serves anything,
-/// so a master key missing from the environment is found at boot rather than
-/// at a session launch (`ARCHITECTURE.md`, "Secrets", Keyring).
-///
-/// The two byte fields are the wrapping of a data key rather than a value,
-/// but they are still key material: `Debug` shows the version and nothing
-/// else, and there is no `Serialize` (`CLAUDE.md`, rule 3).
-#[derive(Clone, PartialEq, Eq)]
-pub struct KeyVersionSample {
-    /// The version every row in this group is wrapped under.
-    pub key_version: i32,
-    /// The sampled row's wrapped data key.
-    pub data_key_wrapped: Vec<u8>,
-    /// The nonce that wrap used.
-    pub data_key_nonce: Vec<u8>,
-}
-
-impl std::fmt::Debug for KeyVersionSample {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KeyVersionSample")
-            .field("key_version", &self.key_version)
-            .field("data_key_wrapped", &"<redacted>")
-            .field("data_key_nonce", &"<redacted>")
-            .finish()
-    }
 }
 
 /// Why a secret was read (`docs/data-model.md`, `secret_uses`).
@@ -532,16 +444,24 @@ pub struct SecretUse {
 mod tests {
     use super::*;
     use crate::models::agent_profile::MAX_SECRET_NAME_CHARS;
+    use crate::secrets::{SecretIdentity, WrappedKey};
 
-    /// Not key material: obviously fake bytes wherever a test needs the
-    /// encrypted half of a row (`CLAUDE.md`, rule 3).
-    fn fake_value() -> EncryptedValue {
-        EncryptedValue {
+    /// Not key material and not a real envelope: obviously fake bytes wherever
+    /// a test needs the encrypted half of a row (`CLAUDE.md`, rule 3). Nothing
+    /// in this module opens one, so nothing here needs a keyring.
+    fn fake_sealed() -> SealedSecret {
+        SealedSecret {
+            identity: SecretIdentity::new(
+                &ScopeRef::global(),
+                &SecretName::parse("GIT_CREDENTIAL").unwrap(),
+            ),
             ciphertext: b"fake-ciphertext".to_vec(),
             nonce: b"fake-nonce12".to_vec(),
-            data_key_wrapped: b"fake-wrapped-data-key".to_vec(),
-            data_key_nonce: b"fake-wrap-no".to_vec(),
-            key_version: 1,
+            wrapped: WrappedKey {
+                wrapped: b"fake-wrapped-data-key".to_vec(),
+                nonce: b"fake-wrap-no".to_vec(),
+                version: 1,
+            },
         }
     }
 
@@ -750,13 +670,12 @@ mod tests {
 
     #[test]
     fn a_new_secret_starts_with_the_documented_defaults() {
-        let scope = ScopeRef::global();
-        let name = SecretName::parse("GIT_CREDENTIAL").unwrap();
-        let secret = NewSecret::new(scope, name, fake_value());
+        let secret = NewSecret::new(fake_sealed());
 
-        assert_eq!(secret.scope, scope);
-        assert_eq!(secret.name.as_str(), "GIT_CREDENTIAL");
-        assert_eq!(secret.value.key_version, 1);
+        assert_eq!(secret.sealed.identity.scope(), SecretScope::Global);
+        assert_eq!(secret.sealed.identity.scope_id(), None);
+        assert_eq!(secret.sealed.identity.name(), "GIT_CREDENTIAL");
+        assert_eq!(secret.sealed.wrapped.version, 1);
         assert!(!secret.orchestrator_only);
         assert_eq!(secret.created_by, None);
     }
@@ -817,8 +736,10 @@ mod tests {
     }
 
     #[test]
-    fn an_encrypted_value_debug_redacts_everything_but_the_key_version() {
-        let rendered = format!("{:?}", fake_value());
+    fn a_new_secret_debug_redacts_the_envelope_it_holds() {
+        // `NewSecret` derives `Debug` and holds a `SealedSecret`, whose own
+        // `Debug` redacts everything but the identity and the key version.
+        let rendered = format!("{:?}", NewSecret::new(fake_sealed()));
 
         for bytes in [
             "fake-ciphertext",
@@ -828,16 +749,8 @@ mod tests {
         ] {
             assert!(!rendered.contains(bytes), "{bytes} leaked: {rendered}");
         }
-        assert!(rendered.contains("key_version: 1"), "{rendered}");
-
-        // `NewSecret` derives `Debug` and holds one, so it inherits this.
-        let secret = NewSecret::new(
-            ScopeRef::global(),
-            SecretName::parse("TOKEN").unwrap(),
-            fake_value(),
-        );
-        let rendered = format!("{secret:?}");
-        assert!(!rendered.contains("fake-ciphertext"), "leaked: {rendered}");
+        assert!(rendered.contains("GIT_CREDENTIAL"), "{rendered}");
+        assert!(rendered.contains("version: 1"), "{rendered}");
     }
 
     #[test]
@@ -849,18 +762,21 @@ mod tests {
     #[test]
     fn a_row_hands_over_exactly_its_five_encrypted_columns() {
         let row = fake_row();
-        let value = row.encrypted_value();
+        let sealed = row.sealed();
 
-        assert_eq!(value.ciphertext, row.ciphertext);
-        assert_eq!(value.nonce, row.nonce);
-        assert_eq!(value.data_key_wrapped, row.data_key_wrapped);
-        assert_eq!(value.data_key_nonce, row.data_key_nonce);
-        assert_eq!(value.key_version, row.key_version);
+        assert_eq!(sealed.identity.scope(), row.scope);
+        assert_eq!(sealed.identity.scope_id(), row.scope_id);
+        assert_eq!(sealed.identity.name(), row.name);
+        assert_eq!(sealed.ciphertext, row.ciphertext);
+        assert_eq!(sealed.nonce, row.nonce);
+        assert_eq!(sealed.wrapped.wrapped, row.data_key_wrapped);
+        assert_eq!(sealed.wrapped.nonce, row.data_key_nonce);
+        assert_eq!(sealed.wrapped.version, row.key_version);
 
         // A copy, not a borrow: the row is untouched and mutating the envelope
         // cannot reach back into it.
-        let mut value = value;
-        value.ciphertext.clear();
+        let mut sealed = sealed;
+        sealed.ciphertext.clear();
         assert_eq!(row.ciphertext, b"fake-ciphertext".to_vec());
     }
 }

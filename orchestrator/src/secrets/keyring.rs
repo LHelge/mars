@@ -19,9 +19,9 @@ use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use rand::Rng;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::models::KeyVersionSample;
 use crate::prelude::*;
 use crate::repositories::SecretRepository;
+use crate::secrets::envelope::KeyVersionSample;
 
 /// The length every master key has, fixed by AES-256-GCM.
 pub const MASTER_KEY_LEN: usize = 32;
@@ -89,14 +89,22 @@ impl SecretsError {
 /// (`docs/data-model.md`, `secrets`). `wrapped` is ciphertext with its
 /// 16-byte tag appended, so it is [`DATA_KEY_LEN`] + 16 bytes long.
 ///
+/// Both byte fields are `Vec<u8>` rather than fixed-width arrays because this
+/// type is also how a *stored* row's wrapping is carried
+/// ([`crate::secrets::SealedSecret`]): every wrap this module produces has a
+/// [`WRAP_NONCE_LEN`] nonce, but a corrupt row can hold any width, and a type
+/// that could not represent one would have to panic or truncate on the way out
+/// of the database instead of failing the unwrap.
+///
 /// `Debug` shows the version only: the wrapping is not a plaintext key, but it
 /// is still key material and nothing in it belongs in a log line (rule 3).
 #[derive(Clone, PartialEq, Eq)]
 pub struct WrappedKey {
     /// The wrapped data key, tag included.
     pub wrapped: Vec<u8>,
-    /// The nonce the wrap used; unique per wrap.
-    pub nonce: [u8; WRAP_NONCE_LEN],
+    /// The nonce the wrap used; unique per wrap, [`WRAP_NONCE_LEN`] bytes for
+    /// anything this module wrapped.
+    pub nonce: Vec<u8>,
     /// The master key version that wrapped it, as `key_version` stores it.
     pub version: i32,
 }
@@ -298,7 +306,7 @@ impl SecretsKeyring {
 
         Ok(WrappedKey {
             wrapped,
-            nonce,
+            nonce: nonce.to_vec(),
             version,
         })
     }
@@ -712,7 +720,7 @@ mod tests {
             Err(SecretsError::Decrypt)
         ));
 
-        let mut nonce = wrapped.nonce;
+        let mut nonce = wrapped.nonce.clone();
         nonce[0] ^= 0xFF;
         assert!(matches!(
             keyring.unwrap_data_key(&wrapped.wrapped, &nonce, wrapped.version),

@@ -43,7 +43,7 @@ use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{
     ProjectRepository, SecretRepository, SessionRepository, Transition,
 };
-use mars_orchestrator::secrets::{aad_for, seal};
+use mars_orchestrator::secrets::{SealedSecret, SecretIdentity};
 use mars_orchestrator::session::{
     BOTH_CREDENTIALS_ERROR, LaunchMode, Launcher, McpToken, Phase, SessionDirs, initial_token,
     write_mcp_json,
@@ -197,16 +197,16 @@ async fn seed_ready_project(app: &TestApp, name: &str, upstream: &TestUpstream) 
 /// Seal `value` for `scope` and commit the row.
 async fn seed_secret(app: &TestApp, scope: ScopeRef, raw_name: &str, value: &str) -> Secret {
     let secret_name = SecretName::parse(raw_name).expect("the test secret name is valid");
-    let sealed = seal(
+    let sealed = SealedSecret::seal(
         &app.state.keyring,
-        &aad_for(&scope, &secret_name),
+        SecretIdentity::new(&scope, &secret_name),
         value.as_bytes(),
     )
     .expect("the value seals");
 
     let mut tx = app.pool.begin().await.expect("a transaction begins");
     let inserted = SecretRepository::new(&app.pool)
-        .insert(&mut tx, &NewSecret::new(scope, secret_name, sealed))
+        .insert(&mut tx, &NewSecret::new(sealed))
         .await
         .expect("the secret inserts");
     tx.commit().await.expect("the transaction commits");

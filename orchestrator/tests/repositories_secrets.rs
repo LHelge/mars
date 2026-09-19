@@ -20,25 +20,30 @@ mod common;
 
 use axum::http::StatusCode;
 use mars_orchestrator::models::{
-    EncryptedValue, NewSecret, ScopeRef, Secret, SecretName, SecretScope, SecretUsePurpose,
+    NewSecret, ScopeRef, Secret, SecretName, SecretScope, SecretUsePurpose,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::SecretRepository;
+use mars_orchestrator::secrets::{SealedSecret, SecretIdentity, WrappedKey};
 use uuid::Uuid;
 
 /// The administrator the `users` migration seeds (`docs/data-model.md`).
 const SEEDED_ADMIN: Uuid = Uuid::from_u128(1);
 
-/// Not key material: an obviously fake stand-in for the four encrypted
-/// columns. `tag` distinguishes one fake value from another so a test can tell
-/// which one it is looking at.
-fn fake_value(tag: &str, key_version: i32) -> EncryptedValue {
-    EncryptedValue {
+/// Not key material and not a real envelope: an obviously fake stand-in for
+/// the encrypted columns. `tag` distinguishes one fake value from another so a
+/// test can tell which one it is looking at (`CLAUDE.md`, rule 3). Nothing in
+/// this file opens a row, so nothing in it needs a keyring.
+fn fake_sealed(scope: ScopeRef, raw_name: &str, tag: &str, key_version: i32) -> SealedSecret {
+    SealedSecret {
+        identity: SecretIdentity::new(&scope, &name(raw_name)),
         ciphertext: format!("fake-ciphertext-{tag}").into_bytes(),
         nonce: format!("fake-nonce-{tag}").into_bytes(),
-        data_key_wrapped: format!("fake-wrapped-data-key-{tag}").into_bytes(),
-        data_key_nonce: format!("fake-wrap-nonce-{tag}").into_bytes(),
-        key_version,
+        wrapped: WrappedKey {
+            wrapped: format!("fake-wrapped-data-key-{tag}").into_bytes(),
+            nonce: format!("fake-wrap-nonce-{tag}").into_bytes(),
+            version: key_version,
+        },
     }
 }
 
@@ -47,7 +52,7 @@ fn name(raw: &str) -> SecretName {
 }
 
 fn new_secret(scope: ScopeRef, raw_name: &str, tag: &str) -> NewSecret {
-    NewSecret::new(scope, name(raw_name), fake_value(tag, 1))
+    NewSecret::new(fake_sealed(scope, raw_name, tag, 1))
 }
 
 /// Insert `secret` in its own committed transaction.
@@ -147,7 +152,7 @@ async fn a_secret_survives_an_insert_find_list_update_delete_round_trip() {
     );
 
     // Replacing the value moves all five encrypted fields and `updated_at`.
-    let replacement = fake_value("two", 2);
+    let replacement = fake_sealed(scope, "GIT_CREDENTIAL", "two", 2);
     let mut tx = pool.begin().await.unwrap();
     let updated = repository
         .update_value(&mut tx, new.id, &replacement)
@@ -165,11 +170,12 @@ async fn a_secret_survives_an_insert_find_list_update_delete_round_trip() {
     assert_eq!(updated.created_at, inserted.created_at);
     assert!(updated.updated_at >= inserted.updated_at);
 
-    // Renaming writes the new name and the re-encrypted value together.
-    let renamed_value = fake_value("three", 2);
+    // Renaming writes the new name and the re-encrypted value together, and
+    // the name comes from the envelope's own identity.
+    let renamed_value = fake_sealed(scope, "FORGE_TOKEN", "three", 2);
     let mut tx = pool.begin().await.unwrap();
     let renamed = repository
-        .rename(&mut tx, new.id, &name("FORGE_TOKEN"), &renamed_value)
+        .rename(&mut tx, new.id, &renamed_value)
         .await
         .unwrap()
         .expect("the secret exists");
@@ -216,14 +222,22 @@ async fn a_missing_secret_is_none_rather_than_an_error_on_every_write() {
     let mut tx = pool.begin().await.unwrap();
     assert!(
         repository
-            .update_value(&mut tx, missing, &fake_value("one", 1))
+            .update_value(
+                &mut tx,
+                missing,
+                &fake_sealed(ScopeRef::global(), "TOKEN", "one", 1),
+            )
             .await
             .unwrap()
             .is_none()
     );
     assert!(
         repository
-            .rename(&mut tx, missing, &name("TOKEN"), &fake_value("one", 1))
+            .rename(
+                &mut tx,
+                missing,
+                &fake_sealed(ScopeRef::global(), "TOKEN", "one", 1),
+            )
             .await
             .unwrap()
             .is_none()
@@ -237,7 +251,12 @@ async fn a_missing_secret_is_none_rather_than_an_error_on_every_write() {
     );
     assert!(
         !repository
-            .rewrap(&mut tx, missing, 1, b"fake-wrapped", b"fake-nonce", 2)
+            .rewrap(
+                &mut tx,
+                missing,
+                1,
+                &fake_sealed(ScopeRef::global(), "TOKEN", "one", 2),
+            )
             .await
             .unwrap()
     );
@@ -316,8 +335,7 @@ async fn renaming_onto_a_taken_name_is_a_conflict() {
         .rename(
             &mut tx,
             first.id,
-            &name("FORGE_TOKEN"),
-            &fake_value("one", 1),
+            &fake_sealed(scope, "FORGE_TOKEN", "one", 1),
         )
         .await
         .expect_err("renaming onto a taken name is rejected");
@@ -337,7 +355,11 @@ async fn renaming_to_the_same_name_writes_exactly_what_it_is_given() {
 
     let mut tx = pool.begin().await.unwrap();
     let renamed = repository
-        .rename(&mut tx, secret.id, &name("TOKEN"), &fake_value("two", 1))
+        .rename(
+            &mut tx,
+            secret.id,
+            &fake_sealed(ScopeRef::global(), "TOKEN", "two", 1),
+        )
         .await
         .unwrap()
         .expect("the secret exists");
@@ -505,16 +527,19 @@ async fn rotation_selects_only_older_rows_and_rewraps_without_touching_the_ciphe
     assert!(repository.distinct_key_versions().await.unwrap().is_empty());
 
     let mut old_one = new_secret(scope, "OLD_ONE", "one");
-    old_one.value.key_version = 1;
+    old_one.sealed.wrapped.version = 1;
     let old_one = insert(&pool, &old_one).await;
 
     let mut old_two = new_secret(scope, "OLD_TWO", "two");
-    old_two.value.key_version = 2;
+    old_two.sealed.wrapped.version = 2;
     let old_two = insert(&pool, &old_two).await;
 
     let mut newest = new_secret(scope, "NEWEST", "three");
-    newest.value.key_version = 3;
+    newest.sealed.wrapped.version = 3;
     let newest = insert(&pool, &newest).await;
+
+    // The wrapping a rotation sweep would write: fake bytes under version 3.
+    let rewrapped = fake_sealed(scope, "OLD_ONE", "rewrapped", 3);
 
     assert_eq!(repository.distinct_key_versions().await.unwrap(), [1, 2, 3]);
 
@@ -540,22 +565,15 @@ async fn rotation_selects_only_older_rows_and_rewraps_without_touching_the_ciphe
     let mut tx = pool.begin().await.unwrap();
     assert!(
         repository
-            .rewrap(
-                &mut tx,
-                old_one.id,
-                1,
-                b"fake-rewrapped-data-key",
-                b"fake-rewrap-nonce",
-                3,
-            )
+            .rewrap(&mut tx, old_one.id, 1, &rewrapped)
             .await
             .unwrap()
     );
     tx.commit().await.unwrap();
 
     let rotated = repository.find(old_one.id).await.unwrap().unwrap();
-    assert_eq!(rotated.data_key_wrapped, b"fake-rewrapped-data-key");
-    assert_eq!(rotated.data_key_nonce, b"fake-rewrap-nonce");
+    assert_eq!(rotated.data_key_wrapped, rewrapped.wrapped.wrapped);
+    assert_eq!(rotated.data_key_nonce, rewrapped.wrapped.nonce);
     assert_eq!(rotated.key_version, 3);
     // The value itself is untouched (`ARCHITECTURE.md`, "Secrets", Rotation).
     assert_eq!(rotated.ciphertext, old_one.ciphertext);
@@ -569,14 +587,7 @@ async fn rotation_selects_only_older_rows_and_rewraps_without_touching_the_ciphe
 
     let mut tx = pool.begin().await.unwrap();
     repository
-        .rewrap(
-            &mut tx,
-            old_two.id,
-            2,
-            b"fake-rewrapped-data-key",
-            b"fake-rewrap-nonce",
-            3,
-        )
+        .rewrap(&mut tx, old_two.id, 2, &rewrapped)
         .await
         .unwrap();
     tx.commit().await.unwrap();

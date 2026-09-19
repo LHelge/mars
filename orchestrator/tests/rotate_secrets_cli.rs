@@ -38,10 +38,12 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use common::TestApp;
-use mars_orchestrator::models::{EncryptedValue, NewSecret, ScopeRef, Secret, SecretName};
+use mars_orchestrator::models::{NewSecret, ScopeRef, Secret, SecretName};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::SecretRepository;
-use mars_orchestrator::secrets::{MASTER_KEY_LEN, SecretsKeyring, aad_for, open, seal};
+use mars_orchestrator::secrets::{
+    MASTER_KEY_LEN, SealedSecret, SecretIdentity, SecretsKeyring, WrappedKey,
+};
 
 /// The version the sweep moves rows onto: one above the harness's own keyring,
 /// which is version 1 (`SecretsKeyring::test_key`).
@@ -56,15 +58,20 @@ fn fake_master_key(byte: u8) -> [u8; MASTER_KEY_LEN] {
     [byte; MASTER_KEY_LEN]
 }
 
-/// Not key material: an obviously fake stand-in for the four encrypted columns
-/// of a row nothing ever opens (rule 3).
-fn fake_value(key_version: i32) -> EncryptedValue {
-    EncryptedValue {
+/// Not key material and not a real envelope: an obviously fake stand-in for
+/// the encrypted columns of a row nothing ever opens (rule 3).
+fn fake_sealed(raw_name: &str, key_version: i32) -> SealedSecret {
+    let name = SecretName::parse(raw_name).expect("the test name is valid");
+
+    SealedSecret {
+        identity: SecretIdentity::new(&ScopeRef::global(), &name),
         ciphertext: b"fake-ciphertext-absent-version".to_vec(),
         nonce: b"fake-nonce-absent-version".to_vec(),
-        data_key_wrapped: b"fake-wrapped-data-key-absent-version".to_vec(),
-        data_key_nonce: b"fake-wrap-nonce-absent-version".to_vec(),
-        key_version,
+        wrapped: WrappedKey {
+            wrapped: b"fake-wrapped-data-key-absent-version".to_vec(),
+            nonce: b"fake-wrap-nonce-absent-version".to_vec(),
+            version: key_version,
+        },
     }
 }
 
@@ -103,10 +110,14 @@ async fn seed(pool: &PgPool, keyring: &SecretsKeyring, count: usize) -> Vec<Secr
         let scope = ScopeRef::global();
         let name =
             SecretName::parse(&format!("FAKE_ROTATE_{index:04}")).expect("the test name is valid");
-        let aad = aad_for(&scope, &name);
-        let sealed = seal(keyring, &aad, plaintext(index).as_bytes()).expect("the value seals");
+        let sealed = SealedSecret::seal(
+            keyring,
+            SecretIdentity::new(&scope, &name),
+            plaintext(index).as_bytes(),
+        )
+        .expect("the value seals");
 
-        let new = NewSecret::new(scope, name, sealed);
+        let new = NewSecret::new(sealed);
         rows.push(
             repository
                 .insert(&mut tx, &new)
@@ -126,12 +137,8 @@ fn plaintext(index: usize) -> String {
 }
 
 /// Insert one row whose encrypted columns are given verbatim.
-async fn insert_raw(pool: &PgPool, raw_name: &str, value: EncryptedValue) {
-    let new = NewSecret::new(
-        ScopeRef::global(),
-        SecretName::parse(raw_name).expect("the test name is valid"),
-        value,
-    );
+async fn insert_raw(pool: &PgPool, sealed: SealedSecret) {
+    let new = NewSecret::new(sealed);
 
     let mut tx = pool.begin().await.expect("a transaction begins");
     SecretRepository::new(pool)
@@ -319,16 +326,10 @@ async fn rotate_secrets_rewraps_every_row_and_exits_zero() {
             .await
             .expect("the row reads")
             .expect("the row is still there");
-        let value = EncryptedValue {
-            ciphertext: stored.ciphertext.clone(),
-            nonce: stored.nonce.clone(),
-            data_key_wrapped: stored.data_key_wrapped.clone(),
-            data_key_nonce: stored.data_key_nonce.clone(),
-            key_version: stored.key_version,
-        };
-        let name = SecretName::parse(&stored.name).expect("the stored name is valid");
-        let aad = aad_for(&stored.scope_ref(), &name);
-        let opened = open(&rotated, &aad, &value).expect("the rotated value opens");
+        let opened = stored
+            .sealed()
+            .open(&rotated)
+            .expect("the rotated value opens");
 
         assert_eq!(
             String::from_utf8(opened.to_vec()).expect("the plaintext is utf-8"),
@@ -360,7 +361,11 @@ async fn rotate_secrets_exits_one_when_a_row_is_under_an_unconfigured_version() 
     let (old_version, old_key) = harness_key(&app);
 
     seed(&app.pool, &app.state.keyring, 2).await;
-    insert_raw(&app.pool, "FAKE_ABSENT_VERSION", fake_value(ABSENT_VERSION)).await;
+    insert_raw(
+        &app.pool,
+        fake_sealed("FAKE_ABSENT_VERSION", ABSENT_VERSION),
+    )
+    .await;
 
     let result = run(
         &app,

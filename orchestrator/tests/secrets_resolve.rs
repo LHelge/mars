@@ -33,7 +33,9 @@ use mars_orchestrator::models::{
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{ProjectRepository, SecretRepository, SessionRepository};
-use mars_orchestrator::secrets::{LaunchScope, ResolvedSecrets, aad_for, resolve_for_launch, seal};
+use mars_orchestrator::secrets::{
+    LaunchScope, ResolvedSecrets, SealedSecret, SecretIdentity, resolve_for_launch,
+};
 use uuid::Uuid;
 
 /// Not a real remote: the fixture the project tests use (rule 3).
@@ -123,14 +125,14 @@ async fn seed_secret(
     orchestrator_only: bool,
 ) -> Secret {
     let secret_name = SecretName::parse(raw_name).expect("the test secret name is valid");
-    let sealed = seal(
+    let sealed = SealedSecret::seal(
         &app.state.keyring,
-        &aad_for(&scope, &secret_name),
+        SecretIdentity::new(&scope, &secret_name),
         value.as_bytes(),
     )
     .expect("the value seals");
 
-    let mut new = NewSecret::new(scope, secret_name, sealed);
+    let mut new = NewSecret::new(sealed);
     new.orchestrator_only = orchestrator_only;
 
     let mut tx = app.pool.begin().await.expect("a transaction begins");

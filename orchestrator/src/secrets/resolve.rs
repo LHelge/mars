@@ -50,7 +50,6 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use super::crypto::{aad, open};
 use super::keyring::SecretsKeyring;
 use crate::models::{Secret, SecretName, SecretScope, SecretUsePurpose};
 use crate::prelude::*;
@@ -266,15 +265,15 @@ pub async fn resolve_for_launch(
     let mut tx = pool.begin().await?;
 
     for winner in &injected {
-        let plaintext = open(
-            keyring,
-            &aad(winner.scope, winner.scope_id, &winner.name),
-            &winner.encrypted_value(),
-        )
-        .map_err(|_| {
+        let plaintext = winner.sealed().open(keyring).map_err(|err| {
+            // The error distinguishes a master key the environment no longer
+            // carries from a row that will not verify, which is what an
+            // operator reading this line needs; the client is told only that
+            // the launch failed.
             error!(
                 secret_name = %winner.name,
                 key_version = winner.key_version,
+                error = %err,
                 "a secret could not be decrypted at launch"
             );
             Error::Internal("a secret could not be decrypted".to_string())

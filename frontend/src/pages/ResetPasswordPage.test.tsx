@@ -97,6 +97,22 @@ describe("ResetPasswordPage", () => {
     ).toBe("/forgot-password");
   });
 
+  it("shows any other 400 verbatim and keeps the form", async () => {
+    resetMock.mockRejectedValue(
+      new ApiError(400, "password must be 10-128 characters"),
+    );
+
+    renderPage();
+    fill("correct horse battery");
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe(
+        "password must be 10-128 characters",
+      );
+    });
+    expect(screen.queryByRole("link", { name: "Request a new link" })).toBeNull();
+  });
+
   it("shows the invalid-link alert immediately without a token", () => {
     renderPage("/reset-password");
 

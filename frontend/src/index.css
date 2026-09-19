@@ -1,17 +1,35 @@
 @import "tailwindcss";
 
-/* Operator-console base tokens. Later UI work extends these rather than
-   replacing them; see CLAUDE.md, "Frontend conventions". */
+/* Operator-console tokens. Later UI work extends these rather than
+   replacing them; see CLAUDE.md, "Frontend conventions".
+
+   The palette is one cool slate ramp (hue 260) from `bg` up through
+   `surface`/`raised` to `text`, one accent (`--color-console-accent`, a cool
+   teal at hue 215, kept clear of every state hue) and nothing else. Colour is
+   information: the four state tokens are the only hues that appear on data, and
+   the accent appears only on focus, the active nav item and the primary action.
+   Type is two families — a plain UI sans for chrome and prose, the mono for
+   anything that is an identifier, a path, a log line or code. Dark is the
+   native scheme; `prefers-color-scheme: light` re-points the same variables at
+   a light ramp, so no component knows which scheme it is in. */
 @theme {
+  --font-sans:
+    ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
   --font-mono:
     ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas,
     "Liberation Mono", monospace;
 
   --color-console-bg: oklch(0.18 0.01 260);
   --color-console-surface: oklch(0.23 0.012 260);
+  --color-console-raised: oklch(0.27 0.013 260);
   --color-console-border: oklch(0.32 0.014 260);
   --color-console-text: oklch(0.92 0.005 260);
   --color-console-muted: oklch(0.68 0.012 260);
+
+  /* The single accent: focus, the active nav item, the primary action. */
+  --color-console-accent: oklch(0.72 0.11 215);
+  --color-console-accent-contrast: oklch(0.18 0.03 215);
 
   /* Quiet colour, reserved for state. */
   --color-state-running: oklch(0.74 0.14 150);
@@ -24,6 +42,29 @@
   color-scheme: dark;
 }
 
+/* The same variables, re-pointed for a light room. Contrast, not a new
+   palette: the ramp inverts and the state hues darken to stay legible. */
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --color-console-bg: oklch(0.97 0.004 260);
+    --color-console-surface: oklch(1 0 0);
+    --color-console-raised: oklch(0.94 0.005 260);
+    --color-console-border: oklch(0.87 0.008 260);
+    --color-console-text: oklch(0.25 0.012 260);
+    --color-console-muted: oklch(0.5 0.014 260);
+
+    --color-console-accent: oklch(0.52 0.1 215);
+    --color-console-accent-contrast: oklch(0.99 0.01 215);
+
+    --color-state-running: oklch(0.52 0.13 150);
+    --color-state-parked: oklch(0.55 0.12 85);
+    --color-state-failed: oklch(0.52 0.19 25);
+    --color-state-human: oklch(0.5 0.15 265);
+  }
+}
+
 html,
 body,
 #root {
@@ -34,8 +75,24 @@ body {
   margin: 0;
   background-color: var(--color-console-bg);
   color: var(--color-console-text);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 0.875rem;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+/* One focus treatment everywhere, so a keyboard is never lost on this UI. */
+:focus-visible {
+  outline: 2px solid var(--color-console-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

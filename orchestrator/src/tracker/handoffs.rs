@@ -762,6 +762,174 @@ impl HandoffService {
     }
 }
 
+/// Delete a task and, with the same git lock held, its retained hand-off refs.
+///
+/// The deletion counterpart of [`HandoffService::update_with_handoff`], and
+/// what `DELETE /projects/{pid}/tasks/{id}` calls instead of
+/// [`delete_task`](crate::tracker::tasks::delete_task) alone. A free function
+/// rather than a method because it composes the *tracker's* deletion with the
+/// git half and publishes nothing, so nothing it does belongs to the
+/// publishing service beyond the lock order it shares with it.
+///
+/// In order (`ARCHITECTURE.md`, "Git model" → Serialization: "Task deletion
+/// also acquires this lock before removing hand-off refs"):
+///
+/// 1. the project **git lock**, taken before any database lock and held to the
+///    end, so that a publication or a task merge for this task either finishes
+///    before the deletion or finds the task gone;
+/// 2. [`TrackerMutation::begin`]: the project row lock;
+/// 3. the task, `FOR UPDATE` — [`Error::NotFound`] for an unknown one;
+/// 4. its `task_handoffs` rows, whose ids name the refs, read before the
+///    deletion cascades them away;
+/// 5. [`delete_task`](crate::tracker::tasks::delete_task): the row, its
+///    cascades, the dependant recompute and the events;
+/// 6. the commit, with the escalation mail it may owe;
+/// 7. `refs/handoffs/<id>` for each captured id, under the still-held lock;
+/// 8. the lock is released.
+///
+/// The lock is taken even when the task turns out to have no hand-offs: one
+/// code path, and the ref work is decided by step 4's result rather than by a
+/// second lock decision. The transaction of steps 2 to 6 never waits for the
+/// git lock, which step 1 already holds (ADR 0021).
+///
+/// **After the commit nothing can fail the request.** The task is deleted and
+/// the 204 is owed; a ref that could not be removed is warned about with the
+/// project, the task and the hand-off, and left to the orphan-cleanup job,
+/// which removes `refs/handoffs/*` without a matching row under this same lock
+/// (`docs/data-model.md`, `task_handoffs`).
+#[instrument(skip_all, fields(project_id = %project_id))]
+pub async fn delete_task_with_refs(
+    state: &AppState,
+    project_id: Uuid,
+    task: TaskRef,
+    actor: TaskActor,
+) -> Result<()> {
+    // (1) The git lock, before the mutation opens and held through step 7.
+    let guard = state.git_locks.lock(project_id).await;
+
+    // (2) to (6).
+    let (task_id, handoff_ids) = delete_in_transaction(state, project_id, task, actor).await?;
+
+    // (7) The refs the deleted rows named. Nothing here can change the answer
+    // the caller gets.
+    remove_task_refs(state, &guard, task_id, &handoff_ids).await;
+
+    // (8) The guard is dropped here, after the last ref command.
+    Ok(())
+}
+
+/// Steps 2 to 6: the tracker transaction, returning what the refs need.
+///
+/// Split out of [`delete_task_with_refs`] for the reason
+/// [`HandoffService::publish`] is split out of `update_with_handoff`: the
+/// caller then has one `Result` covering the whole database half, including
+/// the commit, and the ref work sits plainly after it.
+async fn delete_in_transaction(
+    state: &AppState,
+    project_id: Uuid,
+    task: TaskRef,
+    actor: TaskActor,
+) -> Result<(Uuid, Vec<Uuid>)> {
+    let mut mutation = TrackerMutation::begin(&state.pool, project_id, actor).await?;
+
+    let deleted = async {
+        // (3) The task the reference names, resolved under the project row:
+        // `TaskRef::Number` is resolved here rather than before the lock, so a
+        // number is read against the same row the deletion writes.
+        let repository = TaskRepository::new(mutation.pool());
+        let task = repository
+            .find_task_for_update(mutation.conn(), project_id, task)
+            .await?
+            .ok_or(Error::NotFound)?;
+
+        // (4) The ids before the cascade takes the rows: `task_handoffs.task_id`
+        // is `ON DELETE CASCADE`, so after step 5 nothing names these refs
+        // (`docs/data-model.md`, `task_handoffs`).
+        let handoffs = repository.list_handoffs(project_id, task.id).await?;
+
+        // (5) The tracker's own deletion, unchanged: events, dependant
+        // recompute and all.
+        crate::tracker::tasks::delete_task(&mut mutation, &task).await?;
+
+        Ok((task.id, handoffs.into_iter().map(|h| h.id).collect()))
+    }
+    .await;
+
+    match deleted {
+        Ok(deleted) => {
+            // (6) The commit, and the escalation mail a dependant's flip may
+            // have made due.
+            commit_and_notify(mutation, state).await?;
+            Ok(deleted)
+        }
+        Err(err) => {
+            // Rolled back explicitly, for the reason `publish` gives: the
+            // caller waiting on the project row should have it back before this
+            // returns, and a rollback failure never replaces the refusal.
+            if let Err(rollback) = mutation.no_change().await {
+                warn!(
+                    project_id = %project_id,
+                    error = %rollback,
+                    "a refused task deletion's transaction could not be rolled back",
+                );
+            }
+            Err(err)
+        }
+    }
+}
+
+/// Step 7: remove the deleted task's hand-off refs, lock still held.
+///
+/// [`refs::remove_handoff`] is idempotent, so a ref a previous attempt already
+/// removed is a success. Only the objects' *refs* go: the commits stay
+/// reachable through `refs/sessions/<sid>` and nothing here runs `gc`
+/// (ADR 0018).
+///
+/// A project whose repository is not on disk — one that never finished
+/// cloning, or one being deleted — has no ref to remove, so the whole step is
+/// skipped with a `debug!`; the tracker deletion above has already happened
+/// either way.
+async fn remove_task_refs(
+    state: &AppState,
+    guard: &ProjectGitGuard,
+    task_id: Uuid,
+    handoff_ids: &[Uuid],
+) {
+    if handoff_ids.is_empty() {
+        return;
+    }
+
+    let project_id = guard.project_id();
+    let mirror = DataPaths::from_config(&state.config).project_repo(project_id);
+    if !mirror.is_dir() {
+        debug!(
+            project_id = %project_id,
+            task_id = %task_id,
+            handoffs = handoff_ids.len(),
+            "the project has no repository on disk; no hand-off refs to remove",
+        );
+        return;
+    }
+
+    for handoff_id in handoff_ids {
+        match refs::remove_handoff(&mirror, *handoff_id).await {
+            Ok(()) => debug!(
+                project_id = %project_id,
+                task_id = %task_id,
+                handoff_id = %handoff_id,
+                "hand-off ref removed with its task",
+            ),
+            Err(err) => warn!(
+                project_id = %project_id,
+                task_id = %task_id,
+                handoff_id = %handoff_id,
+                error = %err,
+                "a deleted task's hand-off ref could not be removed; orphan cleanup will take it",
+            ),
+        }
+    }
+}
+
 /// The tracker actor a hand-off caller acts as.
 fn actor(caller: &HandoffCaller) -> TaskActor {
     match caller {

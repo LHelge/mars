@@ -9,7 +9,7 @@
 //! | `GET /projects/{pid}/tasks` | the board read, filtered and ordered by priority then number |
 //! | `GET /projects/{pid}/tasks/{id}` | the detail drawer's `TaskDetail` |
 //! | `PUT /projects/{pid}/tasks/{id}` | an [`update_task`] mutation, 200 with the task |
-//! | `DELETE /projects/{pid}/tasks/{id}` | a [`delete_task`] mutation, 204 |
+//! | `DELETE /projects/{pid}/tasks/{id}` | a [`delete_task_with_refs`] mutation and its hand-off refs, 204 |
 //! | `POST /projects/{pid}/tasks/{id}/dependencies` | one edge added, 200 with the dependant |
 //! | `DELETE /projects/{pid}/tasks/{id}/dependencies/{dep}?kind=` | one edge of that kind removed, 200 with the dependant |
 //! | `POST /projects/{pid}/tasks/{id}/comments` | one comment written, 201 with it |
@@ -71,9 +71,10 @@ use crate::models::{
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskFilter, TaskRepository};
 use crate::routes::{CurrentUser, Path, Query};
+use crate::tracker::handoffs::delete_task_with_refs;
 use crate::tracker::state::resolve_state_in_pool;
 use crate::tracker::tasks::{
-    CreateTaskInput, CreatedBy, UpdateTaskInput, create_task, delete_task, update_task,
+    CreateTaskInput, CreatedBy, UpdateTaskInput, create_task, update_task,
 };
 use crate::tracker::{
     CommentAuthor, CommentDto, HandoffService, TaskDetailDto, TaskDto, TrackerMutation,
@@ -413,6 +414,13 @@ async fn update(
 /// the flips, and `deleted` last — commit together
 /// ([`delete_task`](crate::tracker::tasks::delete_task)). 404 for an unknown
 /// project, an unknown task and a reference that addresses no task at all.
+///
+/// Like a `PUT` carrying a `handoff`, this handler opens no mutation of its
+/// own: the task's retained hand-off refs go with its rows, which means the
+/// project git lock before the project row, so the whole order is
+/// [`delete_task_with_refs`]'s (`ARCHITECTURE.md`, "Git model" →
+/// Serialization). Refs that could not be removed are logged and left to the
+/// orphan-cleanup job; the answer is 204 either way.
 async fn remove(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
@@ -420,13 +428,7 @@ async fn remove(
 ) -> Result<StatusCode> {
     let reference = task_ref(&id)?;
 
-    let mut mutation =
-        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
-
-    let task = locked_task(&mut mutation, pid, reference).await?;
-    delete_task(&mut mutation, &task).await?;
-
-    mutation.commit().await?;
+    delete_task_with_refs(&state, pid, reference, TaskActor::User { user_id: user.id }).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

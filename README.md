@@ -126,6 +126,8 @@ podman-compose up -d        # or: docker compose up -d
 
 If a compose implementation ignores `COMPOSE_FILE` from `.env`, pass the files instead: `-f compose.yml -f compose.podman.yml`.
 
+After `up -d`, `scripts/verify-deployment.sh` checks health, network isolation and log hygiene against the running stack: it prints one `ok`/`FAIL` line per check and exits non-zero on any failure.
+
 The first start builds both images, the orchestrator and nginx, which takes a while; a build failure leaves nothing running. After pulling changes, rebuild explicitly with `compose build`. nginx then listens on `HTTP_PORT` (default 8080) and nothing else is published: neither the API (`API_PORT`) nor the MCP listener (`MCP_PORT`) is reachable from the host.
 
 TLS is terminated in front of nginx by the operator — a host reverse proxy or a load balancer — and `PUBLIC_URL` must be the `https://` URL users actually open, because the session cookie is marked `Secure` exactly when `PUBLIC_URL` is https.

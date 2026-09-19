@@ -170,6 +170,21 @@ describe("AcceptInvitePage", () => {
     await screen.findByLabelText("Username");
   });
 
+  it("offers a retry, not the dead end, when the lookup answers 500", async () => {
+    lookupMock.mockRejectedValueOnce(
+      new ApiError(500, "internal server error"),
+    );
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe(
+        "Orchestrator unreachable",
+      );
+    });
+    expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
+  });
+
   it("shows the dead-end alert without a request when the token is missing", () => {
     renderPage("/invite");
 

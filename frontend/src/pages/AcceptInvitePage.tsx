@@ -128,9 +128,9 @@ export function AcceptInvitePage() {
   }
 
   if (lookup.error !== null) {
-    // A rejected token is a dead end; anything that never reached the
-    // orchestrator is worth retrying.
-    if (lookup.error instanceof ApiError && lookup.error.status !== 0) {
+    // A rejected token (400) is a dead end; a network failure or a 5xx says
+    // nothing about the invite and is worth retrying.
+    if (lookup.error instanceof ApiError && lookup.error.status === 400) {
       return <DeadEnd />;
     }
     return (

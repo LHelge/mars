@@ -218,6 +218,35 @@ impl<'a> UserRepository<'a> {
         Ok(users)
     }
 
+    /// Every administrator who still wants email, for an escalation that has
+    /// no assignee to send to.
+    ///
+    /// `ARCHITECTURE.md`, "Task tracker" → "Notification": a move into the
+    /// human state goes to the task's assignee if it has one, "otherwise to
+    /// every admin, skipping users whose `notify_email` is off". Both
+    /// conditions are in the `WHERE` clause rather than in a filter over
+    /// [`UserRepository::list`], so the sender never holds a row it must not
+    /// write to.
+    ///
+    /// Ordered by username like the listing, so a test asserting several
+    /// recipients reads them in a fixed order.
+    pub async fn list_admin_recipients(&self) -> Result<Vec<User>> {
+        let users = sqlx::query_as!(
+            User,
+            r#"
+            SELECT id, username, email, password_hash, auth_version,
+                   must_change_password, admin, notify_email, created_at, updated_at
+            FROM users
+            WHERE admin AND notify_email
+            ORDER BY username
+            "#,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(users)
+    }
+
     /// Apply the set fields of `update` and return the stored row, or `None`
     /// when no user has this id (the route decides whether that is a 404).
     ///

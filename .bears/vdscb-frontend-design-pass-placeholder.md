@@ -5,7 +5,7 @@ type: epic
 status: open
 priority: P2
 created: "2026-09-17T07:01:33.989747596Z"
-updated: "2026-09-17T07:01:33.989747596Z"
+updated: "2026-09-20T15:46:09.045131186Z"
 tags:
   - frontend
   - design
@@ -18,6 +18,8 @@ depends_on:
 
 Placeholder for a frontend design pass once the foundation, project/session views, and task board/detail/hand-off controls are implemented and can be reviewed together in the browser.
 
-This is an intentional checkpoint before the End-to-end tests with Playwright epic. When it becomes ready, pause for a design review with the user and decide the scope then. Do not plan, break down, or implement this epic in advance; keep it open as a blocker until that review and the resulting agreed work are complete.
+Decided by the user on 2026-09-20: the design review comes last, after the End-to-end tests with Playwright epic (6s8j7), so the user can first test the app manually. When it becomes ready, pause for a design review with the user and decide the scope then. Do not plan, break down, or implement this epic in advance beyond the small findings already filed under it.
 
-Reference: `SPEC.md`, "Frontend"; `CLAUDE.md`, "Frontend conventions". No design decisions or implementation tasks are defined yet.
+Because the E2E specs exist by then, the design pass keeps them green: a change to a label, role or structure a spec selects on updates that spec in the same commit.
+
+Reference: `SPEC.md`, "Frontend"; `CLAUDE.md`, "Frontend conventions". No design decisions are defined yet.

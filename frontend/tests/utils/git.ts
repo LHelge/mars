@@ -242,3 +242,18 @@ export function createBareRepoAt(
     branch,
   };
 }
+
+/**
+ * `git -C <repoPath> log -1 --format=<format> <ref>`, for the facts about a
+ * commit that no interface returns: who authored it and what trailers it
+ * carries (`ARCHITECTURE.md`, "Git model", "Commit identity" — a merge the
+ * orchestrator made is the bot's, with a `Requested-By:` trailer naming the
+ * actor).
+ */
+export function gitLogLast(
+  repoPath: string,
+  format: string,
+  ref: string,
+): string {
+  return git(repoPath, ["log", "-1", `--format=${format}`, ref]);
+}

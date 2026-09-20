@@ -44,6 +44,7 @@ export {
   sessionWorkPath,
   type BareRepo,
   type CreateBareRepoOptions,
+  createBareRepoAt,
 } from "./git";
 
 export { logOffset, readLoggedLink, type LoggedLinkKind } from "./log";

@@ -202,3 +202,43 @@ export function gitIsAncestor(
     return false;
   }
 }
+
+/**
+ * [`createBareRepo`] at a path the caller chose, for the one scenario that has
+ * to name the remote *before* the repository exists: a project whose clone
+ * failed against `file://<path>` is retried after the repository appears
+ * exactly there (`SPEC.md`, "Projects": `POST /projects/{id}/retry-clone`).
+ *
+ * `path` is created, with its parents; everything else is [`createBareRepo`].
+ */
+export function createBareRepoAt(
+  path: string,
+  opts: CreateBareRepoOptions = {},
+): BareRepo {
+  const branch = opts.branch ?? "main";
+  const parent = dirname(path);
+  mkdirSync(parent, { recursive: true });
+  git(parent, ["init", "--bare", "-b", branch, path]);
+
+  const work = mkdtempSync(join(tmpdir(), "mars-e2e-repo-at-"));
+  try {
+    git(work, ["init", "-b", branch, "."]);
+    writeFiles(work, {
+      "README.md": "# fixture\n\nAn end-to-end fixture repository.\n",
+      ...(opts.files ?? {}),
+    });
+    git(work, ["add", "-A"]);
+    git(work, [...COMMITTER, "commit", "-m", "Initial commit"]);
+    git(work, ["push", path, `HEAD:refs/heads/${branch}`]);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+
+  git(path, ["symbolic-ref", "HEAD", `refs/heads/${branch}`]);
+  return {
+    path,
+    url: `file://${path}`,
+    initialCommit: git(path, ["rev-parse", branch]),
+    branch,
+  };
+}

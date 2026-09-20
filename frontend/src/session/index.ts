@@ -9,6 +9,9 @@ export { SessionHeader } from "./SessionHeader";
 export type { SessionHeaderProps } from "./SessionHeader";
 // `SessionActions` itself is not re-exported: the store's action interface
 // already owns that name here, and only the header ever renders the buttons.
+export { ChangesFileList } from "./ChangesFileList";
+export type { ChangesFileListProps } from "./ChangesFileList";
+export { ChangesPanel } from "./ChangesPanel";
 export { SidePanel } from "./SidePanel";
 export type { SidePanelProps } from "./SidePanel";
 export { TasksPanel } from "./TasksPanel";

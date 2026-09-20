@@ -147,4 +147,54 @@ describe("parseUnifiedPatch", () => {
   it("answers an empty list for a patch with no files", () => {
     expect(parseUnifiedPatch("")).toEqual([]);
   });
+
+  it("marks a text file as not binary", () => {
+    expect(parseUnifiedPatch(TWO_FILE_PATCH).map((file) => file.binary)).toEqual(
+      [false, false],
+    );
+  });
+
+  it("marks a file git refused to diff as binary, with no hunks", () => {
+    const files = parseUnifiedPatch(
+      `diff --git a/assets/logo.png b/assets/logo.png
+index 1111111..2222222 100644
+Binary files a/assets/logo.png and b/assets/logo.png differ
+`,
+    );
+    expect(files).toEqual([
+      { path: "assets/logo.png", hunks: [], binary: true },
+    ]);
+  });
+
+  it("marks a --binary patch's literal payload as binary too", () => {
+    const [file] = parseUnifiedPatch(
+      `diff --git a/assets/logo.png b/assets/logo.png
+new file mode 100644
+index 0000000..2222222
+GIT binary patch
+literal 8
+`,
+    );
+    expect(file.binary).toBe(true);
+  });
+
+  it("names a renamed file by its new path", () => {
+    const files = parseUnifiedPatch(
+      `diff --git a/src/old.ts b/src/new.ts
+similarity index 95%
+rename from src/old.ts
+rename to src/new.ts
+--- a/src/old.ts
++++ b/src/new.ts
+@@ -1,1 +1,1 @@
+-const a = 1;
++const a = 2;
+`,
+    );
+    expect(files.map((file) => file.path)).toEqual(["src/new.ts"]);
+    expect(files[0].hunks[0].lines).toEqual([
+      { type: "del", text: "const a = 1;", oldNo: 1 },
+      { type: "add", text: "const a = 2;", newNo: 1 },
+    ]);
+  });
 });

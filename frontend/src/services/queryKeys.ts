@@ -33,6 +33,13 @@ export const queryKeys = {
     /** The mirror's refs (`GET /projects/{id}/branches`). */
     branches: (id: string) => ["projects", id, "branches"] as const,
     /**
+     * One diff (`GET /projects/{id}/git/diff`), as the Changes panel reads it.
+     * Without a `base` the server compares against the project's default
+     * branch, which is a key of its own: the answer is not the same query.
+     */
+    diff: (id: string, head: string, base?: string) =>
+      ["projects", id, "git", "diff", { head, base: base ?? null }] as const,
+    /**
      * One project's sessions. A state filter extends the key with a further
      * element, so invalidating this base key covers every filter at once.
      */

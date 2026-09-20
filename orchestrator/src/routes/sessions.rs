@@ -883,11 +883,12 @@ async fn stop(
     Ok(StatusCode::ACCEPTED)
 }
 
-/// `POST /sessions/{id}/end` → the ended session (409 from `creating`, `done`
-/// and `failed`, 404 unknown).
+/// `POST /sessions/{id}/end` → the ended session (409 from `done` and
+/// `failed`, 404 unknown).
 ///
-/// Not a 202: unlike a stop, this one waits — for the run to end, for the
-/// fetch-back and for the container to go — and answers the row it produced.
+/// Not a 202: unlike a stop, this one waits — for a launch it cancelled to let
+/// go of the session or for the run to end, for the fetch-back and for the
+/// container to go — and answers the row it produced.
 /// That row is `done` for a conversational session; a run that ended badly while
 /// the stop was in flight comes back `failed`, because the lifecycle has no
 /// `failed → done` edge (`SPEC.md`, "Sessions"; [`SessionService::end`]).

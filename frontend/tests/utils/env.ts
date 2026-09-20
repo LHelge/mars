@@ -15,7 +15,8 @@ type StackVariable =
   | "PLAYWRIGHT_ORCHESTRATOR_LOG"
   | "PLAYWRIGHT_DATA_DIR"
   | "PLAYWRIGHT_REPOS_DIR"
-  | "PLAYWRIGHT_STUB_IMAGE";
+  | "PLAYWRIGHT_STUB_IMAGE"
+  | "PLAYWRIGHT_ENGINE";
 
 function requireEnv(name: StackVariable): string {
   const value = process.env[name];
@@ -58,6 +59,11 @@ export function reposDir(): string {
 /** The stub session image the stack built and the profiles run. */
 export function stubImage(): string {
   return requireEnv("PLAYWRIGHT_STUB_IMAGE");
+}
+
+/** The container engine binary the stack runs on: `podman` or `docker`. */
+export function engineBinary(): string {
+  return requireEnv("PLAYWRIGHT_ENGINE");
 }
 
 /** Eight hexadecimal characters; collision-free enough for one test run. */

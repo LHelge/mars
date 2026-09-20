@@ -23,8 +23,9 @@
 //!   race instead of overwriting it (ADR 0021).
 //!
 //! **Ending is not forcing `done`.** `end` ends the run and then moves the
-//! session to `done` from `running` or `parked`, which are the only two edges
-//! the lifecycle diagram has into it. A run that ended `failed` while the stop
+//! session to `done` from `creating`, `running` or `parked`, which are the
+//! three edges the lifecycle diagram has into it. A run that ended `failed`
+//! while the stop
 //! was in flight — which is every ephemeral session, because an ephemeral
 //! session is never parked (ADR 0003) — stays `failed`: the diagram has no
 //! `failed → done` edge, and inventing one in the service would make the state
@@ -70,6 +71,18 @@ const RETRIED_REASON: &str = "retried by user";
 /// one that adopted the container. 100 ms is well inside what a stop takes and
 /// costs a handful of queries.
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How long `end` waits for a launch it cancelled to let go of the session.
+///
+/// The launch checks the cancellation between its steps, so the wait is one
+/// step of the launch sequence and not the whole of it: the longest of them is
+/// an image pull or a clone of a large repository. Past this bound the `end`
+/// stops waiting and closes the session anyway, removing whatever container the
+/// row names — the launch then finds its own `creating → running` transition
+/// refused, and its failure path removes anything it created after that
+/// (`ARCHITECTURE.md`, "Session lifecycle", "A session ended while it is
+/// creating").
+const LAUNCH_CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How much longer than the stop's own grace period `end` waits before it kills
 /// the container itself.
@@ -178,13 +191,28 @@ impl SessionService {
     /// close it (`SPEC.md`, "Sessions", `POST /sessions/{id}/end`;
     /// `ARCHITECTURE.md`, "Stop semantics").
     ///
-    /// Allowed from `running` and `parked` only. From `running` it is the stop
+    /// Allowed from `creating`, `running` and `parked`. From `creating` the
+    /// launch is cancelled first: the flag goes into the registry, the launch
+    /// stops at its next checkpoint and removes whatever container it had got as
+    /// far as creating, and this waits [`LAUNCH_CANCEL_TIMEOUT`] for it to let
+    /// go of the session before re-reading the row — which is what makes the
+    /// `done` this answers a session with nothing left running behind it
+    /// (`ARCHITECTURE.md`, "Session lifecycle", "A session ended while it is
+    /// creating"). A launch that reached `running` first is then ended the
+    /// ordinary way, because the row read after the wait is the one that
+    /// decides.
+    ///
+    /// From `running` it is the stop
     /// followed by a bounded wait for the owner's own transition, and a
     /// `SIGKILL` and forced removal if that wait runs out. Then, whatever state
     /// the run ended in, the session branch is fetched into the mirror under the
     /// project git lock and the outcome recorded as `git { op: "sync" }` — a
     /// failure there is recorded, never fatal, because the session did run and
-    /// what is left to say is that its branch did not arrive.
+    /// what is left to say is that its branch did not arrive. A session ended
+    /// during `creating` goes through the same fetch-back: it has a work clone
+    /// if its launch got that far, and if it did not, [`GitService::sync_session`]
+    /// refuses a session with no work tree without an event, which is the
+    /// documented no-op rather than a failure.
     ///
     /// The session then moves to `done`, and the module documentation says why a
     /// run that ended `failed` is left `failed` instead: the lifecycle diagram
@@ -196,7 +224,22 @@ impl SessionService {
     pub async fn end(&self, session_id: Uuid) -> Result<Session> {
         let repository = SessionRepository::new(&self.state.pool);
         let session = repository.get(session_id).await?;
-        require_state(&session, &[SessionState::Running, SessionState::Parked])?;
+        require_state(
+            &session,
+            &[
+                SessionState::Creating,
+                SessionState::Running,
+                SessionState::Parked,
+            ],
+        )?;
+
+        // The row after the cancelled launch has let go of the session; a
+        // launch that reached `running` first is ended from there.
+        let session = if session.state == SessionState::Creating {
+            self.cancel_launch(&session).await?
+        } else {
+            session
+        };
 
         if session.state == SessionState::Running {
             self.stop_and_wait(&session).await;
@@ -324,6 +367,55 @@ impl SessionService {
         Ok(())
     }
 
+    /// Cancel the launch of a session that is still `creating` and return the
+    /// row as it reads once that launch has let go of it.
+    ///
+    /// The cancellation is a flag in the registry; the launch reads it at its
+    /// checkpoints, stops where it is and removes the container if it created
+    /// one. Waiting for it to release its claim is what this adds: until it
+    /// does, it may still be about to create a container, and closing the
+    /// session before then would be the leak this exists to prevent
+    /// (`ARCHITECTURE.md`, "Session lifecycle", "A session ended while it is
+    /// creating").
+    ///
+    /// A launch that is not answering within [`LAUNCH_CANCEL_TIMEOUT`] is
+    /// logged and left: the end carries on, removes whatever container the row
+    /// names, and the launch's own `creating → running` transition is then
+    /// refused as a conflict, whose failure path removes what it created. No
+    /// launch in progress at all — a `creating` row a crashed launch left
+    /// behind — waits for nothing.
+    async fn cancel_launch(&self, session: &Session) -> Result<Session> {
+        let session_id = session.id;
+        let repository = SessionRepository::new(&self.state.pool);
+
+        if !self.state.session_registry.cancel_launch(session_id) {
+            debug!(
+                session_id = %session_id,
+                "no launch is in progress for the session being ended",
+            );
+            return repository.get(session_id).await;
+        }
+
+        let deadline = tokio::time::Instant::now() + LAUNCH_CANCEL_TIMEOUT;
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(EXIT_POLL_INTERVAL).await;
+
+            if !self.state.session_registry.is_launching(session_id) {
+                info!(
+                    session_id = %session_id,
+                    "the launch of the session being ended was cancelled",
+                );
+                return repository.get(session_id).await;
+            }
+        }
+
+        warn!(
+            session_id = %session_id,
+            "the cancelled launch did not let go of the session in time; ending it anyway",
+        );
+        repository.get(session_id).await
+    }
+
     /// Ask the owner to stop and wait until the session leaves `running`.
     ///
     /// Bounded by the stop's own grace period plus [`EXIT_GRACE_MARGIN`],
@@ -440,14 +532,15 @@ impl SessionService {
     /// idle reaper parking the session is the documented race — so a conflict
     /// re-reads the row once and transitions from the state it actually has.
     /// `failed` and `done` are returned untouched; see the module
-    /// documentation.
+    /// documentation. `creating` is the session whose launch this `end` just
+    /// cancelled, and takes the `creating → done` edge.
     async fn close(&self, session_id: Uuid) -> Result<Session> {
         let repository = SessionRepository::new(&self.state.pool);
 
         for attempt in 0..2 {
             let session = repository.get(session_id).await?;
             match session.state {
-                SessionState::Running | SessionState::Parked => {}
+                SessionState::Creating | SessionState::Running | SessionState::Parked => {}
                 // `done` is already there and `failed` has no edge into it.
                 _ => return Ok(session),
             }

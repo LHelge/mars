@@ -182,6 +182,16 @@ struct State {
     /// session is registered — that is the point of it — and a resume is taken
     /// for a parked session that a restart left with no entry at all.
     launching: HashSet<Uuid>,
+    /// The sessions whose launch a user's `end` has cancelled.
+    ///
+    /// Set by [`SessionRegistry::cancel_launch`] and read by the launcher at
+    /// each of its checkpoints, which is what stops a session the user ended
+    /// while it was still `creating` from reaching `running` with a container
+    /// nothing will remove (`ARCHITECTURE.md`, "Session lifecycle", "A session
+    /// ended while it is creating"). A flag beside `launching` rather than a
+    /// field of `Entry` because a launch is claimed before the session is
+    /// registered, so the `end` that cancels it may find no entry at all.
+    cancelled: HashSet<Uuid>,
 }
 
 /// The handles to the running session owner tasks (`ARCHITECTURE.md`,
@@ -365,12 +375,53 @@ impl SessionRegistry {
         entry.queue.len()
     }
 
+    /// Cancel the launch of a session that is being ended while it is still
+    /// `creating`, and say whether one is in fact in progress.
+    ///
+    /// The flag is sticky until the launch that reads it finishes or the
+    /// session is forgotten, so a launch that is between two of its checkpoints
+    /// when this is called still sees it. `true` means a launch holds the
+    /// claim and the caller waits for it to let go before it removes anything
+    /// itself; `false` means there is nothing to wait for — a launch that has
+    /// already finished, or a `creating` row a crashed one left behind
+    /// (`ARCHITECTURE.md`, "Session lifecycle", "A session ended while it is
+    /// creating").
+    pub fn cancel_launch(&self, session_id: Uuid) -> bool {
+        let mut state = self.state();
+        state.cancelled.insert(session_id);
+        let launching = state.launching.contains(&session_id);
+
+        debug!(
+            session_id = %session_id,
+            launching,
+            "the launch of this session is cancelled",
+        );
+        launching
+    }
+
+    /// Whether the launch of this session has been cancelled by an `end`.
+    ///
+    /// What the launcher asks at each checkpoint of the launch sequence: `true`
+    /// means it stops where it is, removes whatever container it created and
+    /// leaves the state change to the `end` that is waiting for it.
+    pub fn launch_cancelled(&self, session_id: Uuid) -> bool {
+        self.state().cancelled.contains(&session_id)
+    }
+
     /// Forget a session entirely: it ended, failed or was deleted.
     ///
     /// Anything still queued is dropped. The count is logged, never the text
     /// (rule 3).
     pub fn remove(&self, session_id: Uuid) {
-        let Some(entry) = self.state().sessions.remove(&session_id) else {
+        let removed = {
+            let mut state = self.state();
+            // A cancellation outlives its launch only until the session is
+            // forgotten; the `end` that set it always gets here.
+            state.cancelled.remove(&session_id);
+            state.sessions.remove(&session_id)
+        };
+
+        let Some(entry) = removed else {
             return;
         };
 
@@ -550,8 +601,11 @@ impl SessionRegistry {
         })
     }
 
-    /// Whether a launch or resume of this session is in progress. Test and
-    /// diagnostic use only.
+    /// Whether a launch or resume of this session is in progress.
+    ///
+    /// What [`crate::session::SessionService::end`] polls while a launch it
+    /// cancelled lets go of the session, and what a test reads to see that a
+    /// claim was taken or released.
     pub fn is_launching(&self, session_id: Uuid) -> bool {
         self.state().launching.contains(&session_id)
     }
@@ -759,11 +813,16 @@ impl LaunchGuard {
 
 impl Drop for LaunchGuard {
     fn drop(&mut self) {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .launching
-            .remove(&self.session_id);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        state.launching.remove(&self.session_id);
+        // A cancellation cancels *this* launch; once the launch has let go of
+        // the session the flag has done its work, and leaving it set would
+        // cancel a later relaunch of the same session for no reason.
+        state.cancelled.remove(&self.session_id);
     }
 }
 
@@ -1161,6 +1220,41 @@ mod tests {
             "the guard releases the claim on drop"
         );
         drop(other);
+    }
+
+    /// The claim an `end` during `creating` cancels: the flag says whether
+    /// there is a launch to wait for, and it lives exactly as long as that
+    /// launch does (task `qhyhw`).
+    #[tokio::test]
+    async fn a_cancelled_launch_is_flagged_until_the_launch_lets_go() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+
+        assert!(
+            !registry.cancel_launch(session),
+            "there is no launch to wait for",
+        );
+        assert!(registry.launch_cancelled(session));
+
+        // Forgetting the session forgets the cancellation with it, so a
+        // session id that came round again would not be cancelled by it.
+        registry.remove(session);
+        assert!(!registry.launch_cancelled(session));
+
+        let guard = registry
+            .try_begin_launch(session)
+            .expect("nothing else is launching this session");
+        assert!(
+            registry.cancel_launch(session),
+            "a launch holds the claim and the caller waits for it",
+        );
+        assert!(registry.launch_cancelled(session));
+
+        // The launch reads the flag until it releases the claim, and not
+        // afterwards: a later relaunch is not this launch.
+        drop(guard);
+        assert!(!registry.launch_cancelled(session));
+        assert!(!registry.is_launching(session));
     }
 
     #[tokio::test]

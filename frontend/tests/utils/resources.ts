@@ -254,26 +254,15 @@ export async function setProfileIdleTimeout(
  * running outlives the test, and `tests/e2e-stack.sh down` would be the only
  * thing to remove it.
  *
- * A session that is still `creating` is waited out first. The orchestrator
- * answers such an end 409 `session is creating`, and the launch it refused then
- * starts a container nothing will remove — so ending has to wait until the
- * session has an owner to carry it out.
+ * A session that is still `creating` is ended as it is: the orchestrator
+ * cancels its launch and removes whatever container it had got as far as
+ * creating (`SPEC.md`, "Sessions"; task `qhyhw`), so there is nothing to wait
+ * out and nothing left behind.
  */
 export async function endSession(
   client: Api,
   sessionId: string,
 ): Promise<void> {
-  const session = await client.get<Session>(`/sessions/${sessionId}`, {
-    allow: [404],
-  });
-  if (session !== undefined && session.state === "creating") {
-    await waitForSessionState(
-      client,
-      sessionId,
-      ["running", "parked", "done", "failed"],
-      90_000,
-    ).catch(() => undefined);
-  }
   await client.send("POST", `/sessions/${sessionId}/end`, undefined, {
     allow: [404, 409],
   });

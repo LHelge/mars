@@ -82,12 +82,18 @@ impl SessionState {
     /// a transition: parking an already parked session is a caller bug, not a
     /// no-op. `done` is final; `failed` leads back to `parked` only, which is
     /// what a conversational retry does before relaunching.
+    ///
+    /// `creating → done` is the user who ends a session they have just
+    /// launched: the launch is cancelled, whatever container it had got as far
+    /// as creating is removed, and the session closes without ever having run
+    /// (`ARCHITECTURE.md`, "Session lifecycle"; task `qhyhw`).
     pub fn can_transition_to(self, to: SessionState) -> bool {
         use SessionState::*;
 
         matches!(
             (self, to),
             (Creating, Running)
+                | (Creating, Done)
                 | (Creating, Failed)
                 | (Running, Parked)
                 | (Running, Failed)
@@ -587,6 +593,7 @@ mod tests {
         // the test fails if the function changes.
         let allowed = [
             (Creating, Running),
+            (Creating, Done),
             (Creating, Failed),
             (Running, Parked),
             (Running, Failed),

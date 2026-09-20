@@ -49,6 +49,18 @@
 //! directory has gone is a retry of a session that failed during creation, and
 //! runs the git sequence.
 //!
+//! **A launch can be cancelled.** A user who ends a session that is still
+//! `creating` cancels its launch through the registry
+//! ([`SessionRegistry::cancel_launch`](crate::session::SessionRegistry::cancel_launch)),
+//! and the sequence reads that flag at three checkpoints: before the git work,
+//! before any container is created, and after the stdin attach, immediately
+//! before the transition into `running`. At any of them it stops where it is,
+//! [`cancelled`] removes the container if one was created and clears
+//! `container_id`, and nothing else is touched: the state change, the registry
+//! entry and the end-of-session hook are the waiting `end`'s, which is what
+//! keeps one session from being closed twice (`ARCHITECTURE.md`, "Session
+//! lifecycle", "A session ended while it is creating").
+//!
 //! **Every failure lands in one place.** [`fail`] removes the container if one
 //! was created, clears `container_id`, transitions the session to `failed` with
 //! the message in `sessions.error`, forgets the registry entry (dropping the
@@ -267,13 +279,25 @@ async fn run(state: AppState, guard: LaunchGuard, mode: LaunchMode) {
 
     let mut created: Option<ContainerId> = None;
     match launch(&state, &session, from, mode, commands, &mut created).await {
-        Ok(()) => {}
+        Ok(Launched::Running) => {}
+        Ok(Launched::Cancelled) => cancelled(&state, session_id, created.as_ref()).await,
         Err(failure) => fail(&state, &session, from, &failure, created.as_ref()).await,
     }
 
     // Explicit, so the reason the guard lives this long is on the page: it is
     // released only once the owner is attached or the session has failed.
     drop(guard);
+}
+
+/// How a launch sequence that did not fail ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Launched {
+    /// The container is up, the owner is attached and the session is
+    /// `running`.
+    Running,
+    /// An `end` cancelled the launch at one of its checkpoints; the session is
+    /// still `creating` and the `end` closes it.
+    Cancelled,
 }
 
 /// The documented sequence. Every `Err` is a launch failure with its message.
@@ -284,7 +308,7 @@ async fn launch(
     mode: LaunchMode,
     commands: OwnerRx,
     created: &mut Option<ContainerId>,
-) -> std::result::Result<(), Failure> {
+) -> std::result::Result<Launched, Failure> {
     let session_id = session.id;
     let project_id = session.project_id;
     let sessions = SessionRepository::new(&state.pool);
@@ -338,6 +362,12 @@ async fn launch(
             None
         }
     };
+
+    // Before the git work, which is the long half of a fresh launch: a session
+    // ended this early never clones anything.
+    if cancelled_at(state, session_id, "before the session clone") {
+        return Ok(Launched::Cancelled);
+    }
 
     // A resume keeps its checkout; one that has none is the retry of a session
     // that failed during creation and gets the fresh sequence.
@@ -415,6 +445,12 @@ async fn launch(
         .map_err(|err| Failure::new(err.to_string()))?
     };
 
+    // The last moment at which no container of this launch exists: past it a
+    // cancellation costs a create and a remove rather than nothing.
+    if cancelled_at(state, session_id, "before the container was created") {
+        return Ok(Launched::Cancelled);
+    }
+
     // A crash between a create and a remove leaves a container holding this
     // session's name, which the next create would collide with.
     discard_stale_containers(state, session_id).await;
@@ -480,6 +516,13 @@ async fn launch(
     } else {
         0
     };
+
+    // The last checkpoint, and the one this whole mechanism is for: past the
+    // transition the session is `running` with an owner attached, and the end
+    // that is waiting stops it the ordinary way instead.
+    if cancelled_at(state, session_id, "with its container created") {
+        return Ok(Launched::Cancelled);
+    }
 
     // Committed before the owner exists, because the owner of an adopted
     // process reads this very event to reconstruct what it took over
@@ -554,7 +597,24 @@ async fn launch(
         "session launched",
     );
 
-    Ok(())
+    Ok(Launched::Running)
+}
+
+/// Whether the `end` of a session that is still `creating` has cancelled this
+/// launch, saying where the launch was when it noticed.
+///
+/// `where_it_stopped` is a fixed sentence per checkpoint, so the log reads as
+/// the sequence's own account of how far it got.
+fn cancelled_at(state: &AppState, session_id: Uuid, where_it_stopped: &'static str) -> bool {
+    if !state.session_registry.launch_cancelled(session_id) {
+        return false;
+    }
+
+    info!(
+        session_id = %session_id,
+        "the launch was cancelled by an end of the session {where_it_stopped}",
+    );
+    true
 }
 
 /// The mirror fetch, the base resolution and the work clone: everything a fresh
@@ -857,6 +917,52 @@ async fn discard_stale_containers(state: &AppState, session_id: Uuid) {
                 "a container left behind by a previous launch could not be removed",
             ),
         }
+    }
+}
+
+/// Everything a cancelled launch owes the session: the container, and nothing
+/// else.
+///
+/// The `end` that cancelled it is waiting for this task to release the launch
+/// claim and then writes the `creating → done` transition, forgets the registry
+/// entry and runs the end-of-session hook. Doing any of that here as well would
+/// close the session twice and release its tasks twice, so all this does is
+/// leave no container behind and clear the `container_id` the create recorded
+/// (`ARCHITECTURE.md`, "Session lifecycle", "A session ended while it is
+/// creating").
+async fn cancelled(state: &AppState, session_id: Uuid, created: Option<&ContainerId>) {
+    let Some(container_id) = created else {
+        info!(session_id = %session_id, "the cancelled launch had created no container");
+        return;
+    };
+
+    match state.engine.remove(container_id, true).await {
+        Ok(()) | Err(EngineError::NotFound(_)) => info!(
+            session_id = %session_id,
+            container_id = %container_id,
+            "removed the container of a cancelled launch",
+        ),
+        // The row keeps pointing at it, so the `end` that is waiting removes it
+        // once this task lets go of the session: a failure here is not the last
+        // word.
+        Err(err) => {
+            warn!(
+                session_id = %session_id,
+                container_id = %container_id,
+                error = %err,
+                "the container of a cancelled launch could not be removed; \
+                 leaving it to the end that cancelled it",
+            );
+            return;
+        }
+    }
+
+    if let Err(err) = set_container_id(state, session_id, None).await {
+        error!(
+            session_id = %session_id,
+            error = %err,
+            "the container id of a cancelled launch could not be cleared",
+        );
     }
 }
 

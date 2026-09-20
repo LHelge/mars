@@ -10,6 +10,7 @@ export {
   apiBaseUrl,
   baseUrl,
   dataDir,
+  engineBinary,
   orchestratorLogPath,
   randomSuffix,
   reposDir,
@@ -47,6 +48,8 @@ export {
   createBareRepoAt,
   gitLogLast,
 } from "./git";
+
+export { sessionContainers } from "./engine";
 
 export { logOffset, readLoggedLink, type LoggedLinkKind } from "./log";
 

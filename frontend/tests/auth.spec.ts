@@ -109,10 +109,10 @@ test.describe("the seeded administrator", () => {
   // `auth.spec.ts` first, and serial mode keeps the block itself in order.
   test.describe.configure({ mode: "serial" });
 
-  test("must change password before anything else", async ({
-    page,
-    request,
-  }) => {
+  test("must change password before anything else", async (
+    { page, request },
+    testInfo,
+  ) => {
     // A rerun against a stack that is already up finds the seeded password
     // spent, because this very test changed it. `npm run test:e2e:up` starts
     // from an empty database and brings it back.
@@ -120,10 +120,24 @@ test.describe("the seeded administrator", () => {
       data: { username: SEEDED_USERNAME, password: SEEDED_PASSWORD },
       failOnStatusCode: false,
     });
+    const fresh = probe.status() === 200;
+
+    // Only the *first* attempt may skip. A retry (CI runs with `retries: 1`)
+    // that finds the seeded password spent found it spent because the attempt
+    // being retried changed it and then failed somewhere after: skipping there
+    // would report a real failure as a pass. The first attempt cannot be in
+    // that position — had the password been spent before it, it would have
+    // skipped and there would be no retry.
     test.skip(
-      probe.status() !== 200,
+      !fresh && testInfo.retry === 0,
       "admin/changeme no longer signs in: this stack is not fresh, run `npm run test:e2e:up` first",
     );
+    if (!fresh) {
+      throw new Error(
+        "the seeded password was already changed by the attempt being retried: " +
+          "this is a failure of that attempt, not a stack that was never fresh",
+      );
+    }
 
     await page.goto("/login");
     await submitLogin(page, SEEDED_USERNAME, SEEDED_PASSWORD);

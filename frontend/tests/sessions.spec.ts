@@ -367,9 +367,20 @@ test("interject mid-turn", async ({
   sessions,
 }) => {
   await loginViaToken(context, user);
-  await stubKnobs(api, project.id, { MARS_STUB_LINE_DELAY_MS: "400" });
+  // 200 ms a line paces the fixture's first turn (58 lines) over about twelve
+  // seconds, which is the window the interjection has to be typed and sent in
+  // — ample, and roughly half the wall-clock the scenario used to spend
+  // replaying both turns at 400 ms (`images/stub/claude`,
+  // `MARS_STUB_LINE_DELAY_MS`).
+  await stubKnobs(api, project.id, { MARS_STUB_LINE_DELAY_MS: "200" });
 
-  const sessionId = await launchFromUi(page, sessions, api, project, "hello stub");
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
   await expectState(page, "running");
 
   // While the turn streams the composer's button is `Interject`.

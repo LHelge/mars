@@ -1,16 +1,17 @@
 ---
 id: k4esd
 title: "Build the TaskDetail drawer: route, detail query, description, comments, dependencies, children, sessions and Copy link"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:43:12.018839044Z"
-updated: "2026-09-16T20:43:12.018839044Z"
+updated: "2026-09-20T10:51:24.130486834Z"
 tags:
   - frontend
   - tracker
 depends_on:
   - "347vr"
 parent: gn4y2
+attempts: 1
 ---
 
 ## Summary

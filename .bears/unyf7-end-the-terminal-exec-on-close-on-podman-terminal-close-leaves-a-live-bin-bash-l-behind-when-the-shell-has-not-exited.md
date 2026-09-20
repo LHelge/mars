@@ -1,10 +1,10 @@
 ---
 id: unyf7
 title: "End the terminal exec on close on Podman: Terminal::close leaves a live /bin/bash -l behind when the shell has not exited"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-20T00:20:46.260032178Z"
-updated: "2026-09-20T10:06:17.408345902Z"
+updated: "2026-09-20T10:51:25.343028527Z"
 tags:
   - orchestrator
   - engine

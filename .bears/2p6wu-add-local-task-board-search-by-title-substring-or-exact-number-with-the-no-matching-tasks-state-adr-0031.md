@@ -1,16 +1,17 @@
 ---
 id: "2p6wu"
 title: "Add local task-board search by title substring or exact #number with the No matching tasks state (ADR 0031)"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:42:41.327883489Z"
-updated: "2026-09-16T20:42:41.327883489Z"
+updated: "2026-09-20T10:51:22.962709150Z"
 tags:
   - frontend
   - tracker
 depends_on:
   - "347vr"
 parent: gn4y2
+attempts: 1
 ---
 
 ## Summary

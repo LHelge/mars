@@ -21,6 +21,7 @@ import { memo } from "react";
 import { Link } from "react-router";
 
 import type { Task } from "../types";
+import { taskCardTestId } from "../utils/testIds";
 import { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
 import { useTaskStore } from "./taskStore";
 import { selectTaskById } from "./taskStore";
@@ -47,7 +48,7 @@ function TaskCardView({ task, selected }: TaskCardProps) {
   return (
     <article
       // The end-to-end suite addresses a card by its per-project number.
-      data-testid={`task-card-${String(task.number)}`}
+      data-testid={taskCardTestId(task.number)}
       aria-current={selected ? "true" : undefined}
       className={`bg-console-surface hover:border-console-accent/60 rounded border transition-colors ${selected ? "border-console-accent" : "border-console-border"}`}
     >

@@ -10,6 +10,7 @@ import { useCallback, useLayoutEffect, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { EmptyState } from "../components/EmptyState";
+import { TRANSCRIPT_SCROLL } from "../utils/testIds";
 import { Spinner } from "../components/Spinner";
 import { MessageRow } from "./messages/MessageRow";
 import { useSessionStore } from "./sessionStore";
@@ -135,7 +136,7 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        data-testid="transcript-scroll"
+        data-testid={TRANSCRIPT_SCROLL}
         className="min-h-0 flex-1 overflow-y-auto px-4 py-2"
       >
         {order.length === 0 ? (

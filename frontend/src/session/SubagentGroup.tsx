@@ -9,6 +9,7 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 
+import { SUBAGENT_CHILDREN } from "../utils/testIds";
 import type { ToolMessage } from "./sessionStore";
 
 export interface SubagentGroupProps {
@@ -51,7 +52,7 @@ export function SubagentGroup({ message, children }: SubagentGroupProps) {
       </button>
       {open && (
         <div
-          data-testid="subagent-children"
+          data-testid={SUBAGENT_CHILDREN}
           className="border-console-border ml-4 space-y-2 border-l pt-1 pb-2 pl-3"
         >
           {children}

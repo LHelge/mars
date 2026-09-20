@@ -1,16 +1,17 @@
 ---
 id: dxunp
 title: "Build ProjectPage shell: header with fetch/retry/delete/settings, tab navigation and states/secrets/board tab mounting"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:42:34.326842377Z"
-updated: "2026-09-16T20:42:34.326842377Z"
+updated: "2026-09-20T07:46:35.538882400Z"
 tags:
   - frontend
   - projects
 depends_on:
   - "2txez"
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

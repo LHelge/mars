@@ -129,8 +129,8 @@ export const test = base.extend<E2EOptions & E2EFixtures>({
     await use(tracker);
 
     for (const session of launched) {
-      // Best effort, newest first: a scenario that already ended its session is
-      // fine, and one that failed must still not leave a container behind.
+      // Best effort: a scenario that already ended its session is fine, and one
+      // that failed must still not leave a container behind.
       await endSession(session.client, session.id).catch(() => undefined);
     }
   },

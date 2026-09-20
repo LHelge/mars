@@ -73,7 +73,7 @@ The two clippy invocations are what the Orchestrator CI workflow runs, so a lint
 - **MCP tests** drive the tool handlers through the `rmcp` server in-process with a session bearer token from `TestApp`.
 - **Session owner tests** feed a transcript file line by line, kill and restart the owner mid-file, and assert `events` has no gaps and no duplicates.
 - **Frontend unit tests** use Vitest; test files sit beside the module as `*.test.ts`.
-- **Frontend E2E** (Playwright, `workers: 1`) runs against a real orchestrator started with `--features integration-tests`, creates fresh users per test through the test-only `/api/test/users` endpoint, uses helpers from `tests/utils/test-helpers.ts`, and runs sessions on a stub image that replays a fixture transcript.
+- **Frontend E2E** (Playwright, `workers: 1`) runs against a real orchestrator started with `--features integration-tests`, creates fresh users per test through the test-only `/api/test/users` endpoint, and runs sessions on a stub image that replays a fixture transcript. A scenario arranges through the fixtures of `tests/utils/fixtures.ts` — `user`, `api`, `repo`, `project` and a `sessions` tracker that ends what it launched — and the helpers of `tests/utils/test-helpers.ts`; `frontend/tests/README.md` is the suite's document and carries the coverage table over `SPEC.md`, "User-facing features" and "Frontend", which `npm run test:e2e` checks before and after every run. A new scenario adds its row there; a new `data-testid` is a constant in `src/utils/testIds.ts`, re-exported from `tests/utils/test-ids.ts`. Nothing sleeps for a fixed period.
 
 ## Git workflow
 

@@ -385,7 +385,9 @@ npm run test:e2e:status      # what is up right now
 
 `up` writes `frontend/.e2e/env`, which `playwright.config.ts` reads and copies into the environment for any variable that is not already set, so the suite needs no hand-set variables. The file carries `PLAYWRIGHT_BASE_URL`, `PLAYWRIGHT_API_URL`, `PLAYWRIGHT_ORCHESTRATOR_LOG` (the log the invite scenarios read the `LogEmailClient` links from — `RUST_LOG=info`, no `RESEND_API_KEY`), `PLAYWRIGHT_DATA_DIR` (`DATA_DIR`, equal to `DATA_DIR_HOST`, so tests can read the session work clones and the mirrors at `projects/<id>/repo.git`), `PLAYWRIGHT_REPOS_DIR` (scratch bare repositories), `PLAYWRIGHT_STUB_IMAGE` and `PLAYWRIGHT_ENGINE`. The rest of `frontend/.e2e/` is the orchestrator log, its pid and the data directory; the whole directory is git-ignored and `down` deletes it.
 
-The stack sets every orchestrator variable itself and ignores the repository's `.env`. Its database always starts empty, so the seeded `admin` / `changeme` of "Start" exists again on every `up`. The knobs:
+`frontend/tests/README.md` is the suite's own document: what each fixture gives a scenario, how to add one, the wall-clock of a whole run and the coverage table over `SPEC.md`, "User-facing features" and "Frontend" — with the exclusions and why each one is excluded. `npm run test:e2e` checks that table before the run and the run's skips after it (`node frontend/tests/coverage-check.mjs`).
+
+The stack sets every orchestrator variable itself and ignores the repository's `.env`. Its database always starts empty, so the seeded `admin` / `changeme` of "Start" exists again on every `up` — and the one scenario that signs in as that account consumes it, so a second `npm run test:e2e` against the same stack skips it. A third consecutive full run against one stack fails outright: the suite's deliberate wrong-password scenarios cross the login throttle's ten failures in fifteen minutes and every login is then answered 429. Bring the stack down and up between full runs; the throttle is in the orchestrator's memory and a restart clears it. The knobs:
 
 | Variable | Meaning |
 | --- | --- |

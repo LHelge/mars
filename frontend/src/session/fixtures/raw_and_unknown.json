@@ -1,0 +1,46 @@
+[
+  {
+    "seq": 1,
+    "ts": "2026-01-02T15:00:00Z",
+    "kind": "raw",
+    "backend": "claude",
+    "native": { "type": "unknown_line", "payload": 1 }
+  },
+  {
+    "seq": 2,
+    "ts": "2026-01-02T15:00:01Z",
+    "kind": "tool_result",
+    "tool_use_id": "toolu_orphan_fake",
+    "content": "result without a call",
+    "is_error": false,
+    "truncated": false
+  },
+  {
+    "seq": 3,
+    "ts": "2026-01-02T15:00:02Z",
+    "kind": "permission_denied",
+    "tool_use_id": "toolu_denied_fake",
+    "name": "WebFetch",
+    "reason": "not allowed by policy"
+  },
+  {
+    "seq": 4,
+    "ts": "2026-01-02T15:00:03Z",
+    "kind": "launch_warning",
+    "message": "secret GITHUB_TOKEN is used but not declared"
+  },
+  {
+    "seq": 5,
+    "ts": "2026-01-02T15:00:04Z",
+    "kind": "error",
+    "message": "the CLI exited unexpectedly",
+    "fatal": true
+  },
+  {
+    "seq": 6,
+    "ts": "2026-01-02T15:00:05Z",
+    "parent_tool_use_id": "toolu_ghost_fake",
+    "kind": "text",
+    "text": "output from a subagent whose parent was never seen"
+  }
+]

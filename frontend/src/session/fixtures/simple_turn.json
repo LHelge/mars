@@ -1,0 +1,57 @@
+[
+  {
+    "seq": 1,
+    "ts": "2026-01-02T10:00:00Z",
+    "kind": "init",
+    "cli_session_id": "cli-0000-fake",
+    "model": "claude-test-model",
+    "tools": ["Read", "Edit"],
+    "mcp_servers": [{ "name": "bears", "status": "connected" }],
+    "resumed": false
+  },
+  {
+    "seq": 2,
+    "ts": "2026-01-02T10:00:01Z",
+    "kind": "user_message",
+    "text": "Rename the widget",
+    "user_id": "00000000-0000-0000-0000-000000000001",
+    "client_id": "c-1"
+  },
+  {
+    "seq": 3,
+    "ts": "2026-01-02T10:00:02Z",
+    "kind": "text_delta",
+    "text": "Renaming "
+  },
+  {
+    "seq": 4,
+    "ts": "2026-01-02T10:00:03Z",
+    "kind": "text_delta",
+    "text": "the "
+  },
+  {
+    "seq": 5,
+    "ts": "2026-01-02T10:00:04Z",
+    "kind": "text_delta",
+    "text": "widget"
+  },
+  {
+    "seq": 6,
+    "ts": "2026-01-02T10:00:05Z",
+    "kind": "text",
+    "text": "Renaming the widget."
+  },
+  {
+    "seq": 7,
+    "ts": "2026-01-02T10:00:06Z",
+    "kind": "result",
+    "subtype": "success",
+    "terminal_reason": "completed",
+    "is_error": false,
+    "num_turns": 1,
+    "duration_ms": 4200,
+    "cost_usd": 0.0123,
+    "usage": { "input_tokens": 100, "output_tokens": 20 },
+    "permission_denials": []
+  }
+]

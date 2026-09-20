@@ -6,6 +6,8 @@
     "module": "esnext",
     "types": ["vite/client"],
     "allowArbitraryExtensions": true,
+    /* The session store's hand-written `AgentEvent` fixtures are JSON. */
+    "resolveJsonModule": true,
     "skipLibCheck": true,
 
     /* Bundler mode */

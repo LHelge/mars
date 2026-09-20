@@ -1,0 +1,60 @@
+[
+  {
+    "seq": 1,
+    "ts": "2026-01-02T12:00:00Z",
+    "kind": "tool_call",
+    "tool_use_id": "toolu_task_fake",
+    "name": "Task",
+    "input": { "description": "Survey the routes", "subagent_type": "Explore" }
+  },
+  {
+    "seq": 2,
+    "ts": "2026-01-02T12:00:01Z",
+    "kind": "subagent_start",
+    "tool_use_id": "toolu_task_fake",
+    "description": "Survey the routes",
+    "agent_type": "Explore"
+  },
+  {
+    "seq": 3,
+    "ts": "2026-01-02T12:00:02Z",
+    "parent_tool_use_id": "toolu_task_fake",
+    "kind": "text",
+    "text": "Looking at the router."
+  },
+  {
+    "seq": 4,
+    "ts": "2026-01-02T12:00:03Z",
+    "parent_tool_use_id": "toolu_task_fake",
+    "kind": "tool_call",
+    "tool_use_id": "toolu_read_fake",
+    "name": "Read",
+    "input": { "file_path": "/repo/src/App.tsx" }
+  },
+  {
+    "seq": 5,
+    "ts": "2026-01-02T12:00:04Z",
+    "parent_tool_use_id": "toolu_task_fake",
+    "kind": "tool_result",
+    "tool_use_id": "toolu_read_fake",
+    "content": "export function App() {}",
+    "is_error": false,
+    "truncated": false
+  },
+  {
+    "seq": 6,
+    "ts": "2026-01-02T12:00:05Z",
+    "kind": "subagent_end",
+    "tool_use_id": "toolu_task_fake",
+    "is_error": false
+  },
+  {
+    "seq": 7,
+    "ts": "2026-01-02T12:00:06Z",
+    "kind": "tool_result",
+    "tool_use_id": "toolu_task_fake",
+    "content": "The router lives in App.tsx.",
+    "is_error": false,
+    "truncated": false
+  }
+]

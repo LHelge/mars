@@ -1,0 +1,36 @@
+[
+  {
+    "seq": 1,
+    "ts": "2026-01-02T11:00:00Z",
+    "kind": "tool_call",
+    "tool_use_id": "toolu_edit_fake",
+    "name": "Edit",
+    "input": { "file_path": "/repo/src/widget.ts", "old_string": "a", "new_string": "b" }
+  },
+  {
+    "seq": 2,
+    "ts": "2026-01-02T11:00:01Z",
+    "kind": "tool_result",
+    "tool_use_id": "toolu_edit_fake",
+    "content": "The file /repo/src/widget.ts has been updated.",
+    "is_error": false,
+    "truncated": false
+  },
+  {
+    "seq": 3,
+    "ts": "2026-01-02T11:00:02Z",
+    "kind": "tool_call",
+    "tool_use_id": "toolu_bash_fake",
+    "name": "Bash",
+    "input": { "command": "npm test" }
+  },
+  {
+    "seq": 4,
+    "ts": "2026-01-02T11:00:03Z",
+    "kind": "tool_result",
+    "tool_use_id": "toolu_bash_fake",
+    "content": { "stdout": "", "stderr": "1 test failed" },
+    "is_error": true,
+    "truncated": true
+  }
+]

@@ -161,3 +161,29 @@ export async function dropConnection(
   await context.setOffline(false);
   return dropped;
 }
+
+/**
+ * Closes the page's tracked sockets with the network left up, and returns how
+ * many were closed.
+ *
+ * This is the other half of [`dropConnection`]. That one models an outage, and
+ * an outage is precisely when the reconnect's token refresh cannot succeed:
+ * `POST /auth/refresh` fails with a network error, the socket comes back on a
+ * scheduled retry carrying the token it already had, and a scenario about the
+ * refresh would be asserting nothing. A close with the network up runs the
+ * documented path end to end instead — refresh, then reopen with a fresh token
+ * and the last cursor (`SPEC.md`, "Authentication").
+ *
+ * Requires [`armSocketDrop`] on the context before the page loaded.
+ */
+export async function closeSockets(page: Page): Promise<number> {
+  return page.evaluate((hook) => {
+    const drop = (window as unknown as Record<string, unknown>)[hook];
+    if (typeof drop !== "function") {
+      throw new Error(
+        "closeSockets: armSocketDrop() was not installed before this page loaded",
+      );
+    }
+    return (drop as () => number)();
+  }, DROP_HOOK);
+}

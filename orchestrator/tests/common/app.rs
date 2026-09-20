@@ -1080,6 +1080,83 @@ pub struct Invitation {
     pub body: Value,
 }
 
+/// Every `event` frame's sequence, in arrival order, until one reaching
+/// `until_seq` has been seen.
+///
+/// The read-side helper the delivery suites share: a socket has to be polled
+/// for its pings to be answered, so "wait for the events" and "keep the socket
+/// alive" are the same loop. `session` frames are skipped rather than
+/// collected — a state change sends one beside its event and a scenario about
+/// sequences must not depend on where it falls — and anything that is not a
+/// frame this stream documents (a close, an `error`) is a failure, because a
+/// socket that ended is a socket that delivered nothing more.
+///
+/// Panics when `until_seq` has not been reached within `within`: a hung wait
+/// is a failed test, never a hung one.
+pub async fn collect_ws_events(
+    socket: &mut TestWebSocket,
+    until_seq: i64,
+    within: Duration,
+) -> Vec<i64> {
+    let mut seen: Vec<i64> = Vec::new();
+
+    let collected = tokio::time::timeout(within, async {
+        while seen.iter().copied().max().unwrap_or(0) < until_seq {
+            match socket.receive_message().await {
+                axum_test::WsMessage::Text(text) => {
+                    let frame: Value = serde_json::from_str(text.as_str())
+                        .expect("every text frame the session socket sends is JSON");
+
+                    match frame["type"].as_str() {
+                        Some("event") => seen.push(
+                            frame["event"]["seq"]
+                                .as_i64()
+                                .expect("every event frame carries a sequence"),
+                        ),
+                        Some("session") => {}
+                        _ => panic!("unexpected frame while collecting events: {frame}"),
+                    }
+                }
+                axum_test::WsMessage::Ping(_) | axum_test::WsMessage::Pong(_) => {}
+                other => panic!("the socket ended before sequence {until_seq}: {other:?}"),
+            }
+        }
+    })
+    .await;
+
+    collected.unwrap_or_else(|_| {
+        panic!("sequence {until_seq} did not arrive within {within:?}; saw {seen:?}")
+    });
+
+    seen
+}
+
+/// Terminate every backend in *this* test's database that is `LISTEN`ing, and
+/// return how many were.
+///
+/// The one raw statement the delivery suites are allowed: losing the shared
+/// listener's connection cannot be arranged through the crate's own API, and
+/// what a scenario then asserts is that the streams recover anyway
+/// (`ARCHITECTURE.md`, "Event delivery"; ADR 0005).
+///
+/// Scoped to `current_database()` because every test in a process shares one
+/// Postgres (`tests/common/db.rs`), so an unscoped kill would take a sibling
+/// scenario's listener with it. The testcontainers `postgres` role is
+/// superuser, which is what `pg_terminate_backend` needs.
+pub async fn terminate_listener_backend(pool: &PgPool) -> usize {
+    let killed: Vec<bool> = sqlx::query_scalar(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+         WHERE pid <> pg_backend_pid()
+           AND datname = current_database()
+           AND query ILIKE 'LISTEN%'",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("the listener's backend can be looked up");
+
+    killed.len()
+}
+
 /// `/ws/sessions/{id}` with the parameters that were given.
 fn ws_path(session_id: Uuid, token: Option<&str>, after: Option<String>) -> String {
     let mut path = format!("/ws/sessions/{session_id}");

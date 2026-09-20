@@ -59,4 +59,7 @@ pub mod handoffs;
 /// `#![allow(dead_code)]` above covers for items.
 #[cfg(feature = "integration-tests")]
 #[allow(unused_imports)]
-pub use app::{AuthenticatedUser, ListenerHandle, TEST_TIMINGS, TestApp};
+pub use app::{
+    AuthenticatedUser, ListenerHandle, TEST_TIMINGS, TestApp, collect_ws_events,
+    terminate_listener_backend,
+};

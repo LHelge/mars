@@ -1,3 +1,7 @@
+// The composer (`SPEC.md`, "Frontend", "Composer").
+export { Composer } from "./Composer";
+export type { ComposerProps } from "./Composer";
+
 // The session transcript store (`SPEC.md`, "Frontend", "Session state").
 
 export {

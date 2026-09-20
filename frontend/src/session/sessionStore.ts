@@ -130,6 +130,11 @@ export interface SessionState {
   gitEventSeq: number;
   /** A turn is in progress; the composer's button reads "Interject". */
   turnActive: boolean;
+  /**
+   * The most recent `input_rejected`. The composer explains it and restores
+   * the text from the rejected optimistic message; the next send clears it.
+   */
+  lastRejection: { client_id: string; reason: string } | null;
 }
 
 export interface SessionActions {
@@ -182,6 +187,7 @@ export function emptySessionState(): SessionState {
     hasMore: false,
     gitEventSeq: 0,
     turnActive: false,
+    lastRejection: null,
   };
 }
 
@@ -831,6 +837,8 @@ export function createSessionStore(): StoreApi<SessionStore> {
           messages: { ...state.messages, [id]: message },
           order: [...state.order, id],
           turnActive: true,
+          // A new attempt supersedes the rejection the composer is explaining.
+          lastRejection: null,
         };
       });
     },
@@ -853,14 +861,19 @@ export function createSessionStore(): StoreApi<SessionStore> {
 
     inputRejected: (clientId, reason) => {
       set((state) => {
+        const lastRejection = { client_id: clientId, reason };
         const id = optimisticId(clientId);
         const message = state.messages[id];
-        if (message?.kind !== "user") return state;
+        // A rejection of something this client never sent optimistically —
+        // another browser's message, or one sent before a reload — still has
+        // to reach the composer, so the rejection is recorded either way.
+        if (message?.kind !== "user") return { ...state, lastRejection };
         return {
           messages: {
             ...state.messages,
             [id]: { ...message, pending: false, rejected: reason },
           },
+          lastRejection,
         };
       });
     },

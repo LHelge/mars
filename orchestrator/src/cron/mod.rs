@@ -31,9 +31,10 @@ use tokio::task::JoinHandle;
 
 use crate::prelude::*;
 
-pub mod orphan_cleanup;
 pub mod idle_reaper;
+pub mod orphan_cleanup;
 pub mod scheduler;
+mod secret_rotation;
 mod stuck_tasks;
 mod token_cleanup;
 
@@ -184,14 +185,6 @@ impl CronService {
     /// `git fetch --prune` on every `ready` mirror. Implemented by the mirror
     /// fetch task in this epic; the body lives in `cron/mirror_fetch.rs`.
     pub async fn mirror_fetch(&self, now: DateTime<Utc>) -> Result<JobReport> {
-        let _ = now;
-        Ok(JobReport::default())
-    }
-
-    /// Re-wrap rows whose `key_version` is behind the newest master key.
-    /// Implemented by the secret rotation task in this epic; the body lives in
-    /// `cron/secret_rotation.rs`.
-    pub async fn secret_rotation(&self, now: DateTime<Utc>) -> Result<JobReport> {
         let _ = now;
         Ok(JobReport::default())
     }

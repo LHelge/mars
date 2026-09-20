@@ -8,12 +8,22 @@
 // A panel takes the session and reaches the socket through
 // `useSessionSocketApi()`, so the registry carries no props of its own.
 
+// `TerminalView` is the one entry loaded on demand: xterm and its stylesheet
+// are the heaviest thing in the session view and most sessions are read, not
+// driven. `SidePanel` renders only the active entry behind a `Suspense`, so the
+// chunk is fetched the first time the Terminal tab is opened. A `lazy` result
+// is a `ComponentType`, so the registry shape is unchanged.
+
+import { lazy } from "react";
 import type { ComponentType } from "react";
 
 import type { Session } from "../types";
 import { ChangesPanel } from "./ChangesPanel";
 import { TasksPanel } from "./TasksPanel";
-import { TerminalView } from "./TerminalView";
+
+const TerminalView = lazy(() =>
+  import("./TerminalView").then((m) => ({ default: m.TerminalView })),
+);
 
 export interface SessionPanelProps {
   session: Session;

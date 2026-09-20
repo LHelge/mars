@@ -4,12 +4,13 @@
 // wide screen there is room for both, so it opens; on a narrow one it starts
 // collapsed to a rail and the transcript keeps the width.
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import {
   ChevronDoubleLeftIcon,
   ChevronDoubleRightIcon,
 } from "@heroicons/react/24/outline";
 
+import { LoadingState } from "../components/LoadingState";
 import type { Session } from "../types";
 import { panelsFor } from "./sidePanels";
 import type { SidePanelEntry } from "./sidePanels";
@@ -95,8 +96,13 @@ export function SidePanel({ session, panels }: SidePanelProps) {
         </button>
       </div>
 
+      {/* Only the active entry is rendered, so a panel loaded on demand (the
+          Terminal, whose xterm chunk is fetched when its tab is first opened)
+          suspends here and nowhere else. */}
       <div role="tabpanel" className="min-h-0 flex-1 overflow-y-auto">
-        <Panel session={session} />
+        <Suspense fallback={<LoadingState label="Loading panel" />}>
+          <Panel session={session} />
+        </Suspense>
       </div>
     </aside>
   );

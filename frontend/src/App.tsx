@@ -5,49 +5,87 @@
 // `/login`, `/invite/:token`, `/forgot-password` and `/reset-password/:token`
 // render outside `ProtectedRoute`; `/change-password` is inside it but exempt
 // from the must-change redirect, so the user can actually clear the flag.
+//
+// Code splitting: the eagerly imported pages are the ones an unauthenticated
+// visitor or a cold sign-in reaches without navigating — the auth forms, which
+// all share `AuthLayout`, and the dashboard the signed-in user lands on. Every
+// heavier page is a `React.lazy` of its own file (never of the `pages/` barrel,
+// which would pull them all back into one chunk), so the session view's
+// `react-markdown` and virtualizer, the project board and the admin and secrets
+// forms are fetched the first time someone navigates to them. The named export
+// is mapped to `default` because this codebase has no default exports.
+//
+// One `Suspense` wraps the whole table. Every lazy route sits inside
+// `ProtectedRoute`, so the fallback can be the same `LoadingState` inside
+// `PageLayout` that those pages show while their own first read is in flight,
+// and the chrome does not flicker between the two.
 
+import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router";
 import { AdminRoute } from "./components/AdminRoute";
-import { AdminPage } from "./pages/AdminPage";
+import { LoadingState } from "./components/LoadingState";
+import { PageLayout } from "./components/PageLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
-import { ChangePasswordPage } from "./pages/ChangePasswordPage";
 import { AcceptInvitePage } from "./pages/AcceptInvitePage";
+import { ChangePasswordPage } from "./pages/ChangePasswordPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
-import { ProjectPage } from "./pages/ProjectPage";
-import { ProjectsPage } from "./pages/ProjectsPage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
-import { SecretsPage } from "./pages/SecretsPage";
-import { SessionPage } from "./pages/SessionPage";
-import { SettingsPage } from "./pages/SettingsPage";
+
+const AdminPage = lazy(() =>
+  import("./pages/AdminPage").then((m) => ({ default: m.AdminPage })),
+);
+const ProjectPage = lazy(() =>
+  import("./pages/ProjectPage").then((m) => ({ default: m.ProjectPage })),
+);
+const ProjectsPage = lazy(() =>
+  import("./pages/ProjectsPage").then((m) => ({ default: m.ProjectsPage })),
+);
+const SecretsPage = lazy(() =>
+  import("./pages/SecretsPage").then((m) => ({ default: m.SecretsPage })),
+);
+const SessionPage = lazy(() =>
+  import("./pages/SessionPage").then((m) => ({ default: m.SessionPage })),
+);
+const SettingsPage = lazy(() =>
+  import("./pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
+);
 
 export function App() {
   return (
-    <Routes>
-      {/* Reached without a session. */}
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/invite/:token" element={<AcceptInvitePage />} />
-      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-      <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+    <Suspense
+      fallback={
+        <PageLayout>
+          <LoadingState label="Loading page" />
+        </PageLayout>
+      }
+    >
+      <Routes>
+        {/* Reached without a session. */}
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/invite/:token" element={<AcceptInvitePage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 
-      <Route element={<ProtectedRoute />}>
-        <Route path="/change-password" element={<ChangePasswordPage />} />
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/projects" element={<ProjectsPage />} />
-        <Route path="/projects/:id" element={<ProjectPage />} />
-        <Route path="/projects/:id/tasks/:number" element={<ProjectPage />} />
-        <Route path="/sessions/:id" element={<SessionPage />} />
-        <Route path="/secrets" element={<SecretsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route element={<ProtectedRoute />}>
+          <Route path="/change-password" element={<ChangePasswordPage />} />
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/projects/:id" element={<ProjectPage />} />
+          <Route path="/projects/:id/tasks/:number" element={<ProjectPage />} />
+          <Route path="/sessions/:id" element={<SessionPage />} />
+          <Route path="/secrets" element={<SecretsPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
 
-        <Route element={<AdminRoute />}>
-          <Route path="/admin" element={<AdminPage />} />
+          <Route element={<AdminRoute />}>
+            <Route path="/admin" element={<AdminPage />} />
+          </Route>
+
+          <Route path="*" element={<NotFoundPage />} />
         </Route>
-
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-    </Routes>
+      </Routes>
+    </Suspense>
   );
 }

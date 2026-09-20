@@ -1,10 +1,10 @@
 ---
 id: "8a6qd"
 title: Scaffold the rmcp Streamable HTTP server on MCP_PORT at /mcp, the McpServer handler shell and the in-process MCP test client
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:41:32.384628065Z"
-updated: "2026-09-16T20:51:52.204993472Z"
+updated: "2026-09-20T05:12:36.090413811Z"
 tags:
   - orchestrator
   - mcp
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - xjaah
 parent: qgj33
+attempts: 1
 ---
 
 ## Summary

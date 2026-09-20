@@ -1,10 +1,10 @@
 ---
 id: dbvp5
 title: Add src/mcp/error.rs mapping Error to the MCP codes unauthorized, forbidden, not_found, conflict (with data.conflicts), invalid_argument and internal, and document the wire format in SPEC.md
-status: open
+status: in_progress
 priority: P0
 created: "2026-09-16T20:42:42.812462649Z"
-updated: "2026-09-16T20:42:42.812462649Z"
+updated: "2026-09-20T04:50:19.339730798Z"
 tags:
   - orchestrator
   - mcp
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - "8a6qd"
 parent: qgj33
+attempts: 1
 ---
 
 ## Summary

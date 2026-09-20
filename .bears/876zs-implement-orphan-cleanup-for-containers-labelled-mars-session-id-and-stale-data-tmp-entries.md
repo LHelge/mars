@@ -1,10 +1,10 @@
 ---
 id: "876zs"
 title: Implement orphan cleanup for containers labelled mars.session_id and stale /data/tmp entries
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:45:23.490527713Z"
-updated: "2026-09-16T20:45:23.490527713Z"
+updated: "2026-09-20T06:25:59.374694729Z"
 tags:
   - orchestrator
   - cron
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - yb2ny
 parent: cxmar
+attempts: 1
 ---
 
 ## Summary

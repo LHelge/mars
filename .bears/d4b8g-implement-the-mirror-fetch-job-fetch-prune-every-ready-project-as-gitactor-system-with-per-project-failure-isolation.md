@@ -1,10 +1,10 @@
 ---
 id: d4b8g
 title: "Implement the mirror fetch job: fetch --prune every ready project as GitActor::System with per-project failure isolation"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:43:25.346399139Z"
-updated: "2026-09-16T20:43:25.346399139Z"
+updated: "2026-09-20T06:25:59.271002008Z"
 tags:
   - orchestrator
   - cron
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - yb2ny
 parent: cxmar
+attempts: 1
 ---
 
 ## Summary

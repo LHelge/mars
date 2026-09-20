@@ -1,10 +1,10 @@
 ---
 id: bgynw
 title: "Implement the stuck-task reaper: release leases held by done or failed sessions with session_ended or stalled, escalate at max_attempts, system comments and events"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:44:06.827099157Z"
-updated: "2026-09-16T20:44:06.827099157Z"
+updated: "2026-09-20T06:25:59.293091487Z"
 tags:
   - orchestrator
   - cron
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - yb2ny
 parent: cxmar
+attempts: 1
 ---
 
 ## Summary

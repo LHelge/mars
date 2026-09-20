@@ -1,10 +1,10 @@
 ---
 id: "98qnn"
 title: "Implement the token cleanup job: expired refresh tokens, reset tokens, unaccepted invites and secrets whose scope row is gone"
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:44:35.622437638Z"
-updated: "2026-09-16T20:44:35.622437638Z"
+updated: "2026-09-20T06:25:59.334065641Z"
 tags:
   - orchestrator
   - cron
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - yb2ny
 parent: cxmar
+attempts: 1
 ---
 
 ## Summary

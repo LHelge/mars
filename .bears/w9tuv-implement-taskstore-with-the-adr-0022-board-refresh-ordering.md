@@ -1,10 +1,10 @@
 ---
 id: w9tuv
 title: Implement taskStore with the ADR 0022 board refresh ordering
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:40:40.074332858Z"
-updated: "2026-09-16T20:40:40.074332858Z"
+updated: "2026-09-20T10:20:18.803361739Z"
 tags:
   - frontend
   - tracker
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - zazd5
 parent: gn4y2
+attempts: 1
 ---
 
 ## Summary

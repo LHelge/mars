@@ -953,3 +953,90 @@ test("a commit that is not the source session's tip is refused", async ({
     form.getByText("commit must be a full lowercase hexadecimal git object id"),
   ).toBeVisible();
 });
+
+test("a review of a superseded revision says the hand-off changed", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
+  const session = await implementer(fixture);
+  const first = commitInSessionWorkClone(
+    session,
+    { "greeting.txt": "hello\n" },
+    "feat: greeting",
+  );
+  const original = await publishRevision(
+    fixture,
+    session,
+    first,
+    "Ready for review",
+    "review",
+  );
+
+  // The drawer refetches the task on every task event, so a second revision
+  // published while the review form is open would normally reach that form
+  // first and the submit would forward the *new* id. The task read is frozen
+  // on its first answer instead: the page holds exactly what a reviewer whose
+  // decision was already in flight holds, and the submit really does carry a
+  // superseded `handoff_id` (`SPEC.md`, "Code hand-offs and review": a forward
+  // must name the current one).
+  const detail = `**/api/projects/${project.id}/tasks/1`;
+  let frozen: string | null = null;
+  await page.route(detail, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    frozen ??= await (await route.fetch()).text();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: frozen,
+    });
+  });
+
+  const panel = await openTask(page, project);
+  const form = await openReviewForm(panel, "Approve");
+  await expect(
+    form.getByText(`Approving commit ${first.slice(0, 10)}`),
+  ).toBeVisible();
+
+  const second = commitInSessionWorkClone(
+    session,
+    { "greeting.txt": "hello there\n" },
+    "fix: wording",
+  );
+  // Back to `ready`: a hand-off has to move the task somewhere it is not
+  // (`SPEC.md`, "Code hand-offs and review": 400 `handoff requires a different
+  // target state`).
+  const superseding = await publishRevision(
+    fixture,
+    session,
+    second,
+    "Second attempt",
+    "ready",
+  );
+  expect(superseding.id).not.toBe(original.id);
+
+  await submitReview(form, "Approve", "merge", "Looks right");
+
+  // The one refusal the server's own words would not help with: retrying
+  // cannot succeed, and the answer is to read the revision that arrived
+  // (`tasks/handoffRules.ts`, `reviewErrorMessage`).
+  await expect(
+    form.getByText("The hand-off changed; review the new revision"),
+  ).toBeVisible({ timeout: 30_000 });
+
+  // Nothing was decided: the current hand-off is still the newer one, and it
+  // is still unreviewed.
+  await page.unroute(detail);
+  const task = await getTask(fixture.client, fixture.project.id, 1);
+  expect(task.handoff?.id).toBe(superseding.id);
+  expect(task.handoff?.review_status).toBe("unreviewed");
+  expect(task.state).toBe("ready");
+});

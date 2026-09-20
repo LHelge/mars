@@ -17,6 +17,7 @@
 //! "Git").
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -174,7 +175,7 @@ pub struct Diff {
 
 /// One session's work branch and how it stands against the project's
 /// integration head (`SPEC.md`, "Git"; MCP `list_session_branches`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionBranch {
     /// The session whose work this is.
     pub session_id: Uuid,

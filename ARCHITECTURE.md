@@ -173,6 +173,7 @@ orchestrator/
 | Database | `sqlx` (`postgres`, `runtime-tokio`, `uuid`, `chrono`, `json`) |
 | Container engine | `bollard` |
 | MCP server | `rmcp` (`server`, `transport-streamable-http-server`) |
+| MCP tool schemas | `schemars` (`uuid1`, `chrono04`), the version `rmcp` depends on, so the derived schemas are the type `rmcp` expects |
 | Async runtime | `tokio` (`full`), `tokio-stream`, `futures-util`, `bytes` (the buffer type the engine's attach and exec streams hand back) |
 | Cancellation | `tokio-util` (`rt`), for the `CancellationToken` the shared Postgres listener is stopped by |
 | Auth | `jsonwebtoken` (`rust_crypto`, which selects its pure-Rust signing backend; the crate ships no provider by default and panics on the first signature without one), `argon2`, `sha2` |

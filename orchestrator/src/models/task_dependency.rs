@@ -7,6 +7,7 @@
 //! the other rows and therefore happens in the repository under the project
 //! lock.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -16,7 +17,9 @@ use crate::models::task::{TaskError, TaskResult};
 use crate::prelude::*;
 
 /// What one task's dependency on another means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, Default, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "task_dependency_kind", rename_all = "snake_case")]
 pub enum TaskDependencyKind {

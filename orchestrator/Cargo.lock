@@ -2021,6 +2021,7 @@ dependencies = [
  "rand 0.10.2",
  "reqwest",
  "rmcp",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3029,6 +3030,7 @@ dependencies = [
  "schemars_derive",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

@@ -1,10 +1,10 @@
 ---
 id: ee72w
 title: Re-check the holder session's state under the project lock in release_leases_for_session
-status: open
+status: done
 priority: P3
 created: "2026-09-20T05:52:24.395731316Z"
-updated: "2026-09-20T05:52:24.395731316Z"
+updated: "2026-09-20T07:00:34.238073656Z"
 tags:
   - orchestrator
   - tracker

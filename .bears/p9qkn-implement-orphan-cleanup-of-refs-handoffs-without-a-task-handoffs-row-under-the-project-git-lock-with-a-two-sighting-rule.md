@@ -1,10 +1,10 @@
 ---
 id: p9qkn
 title: Implement orphan cleanup of refs/handoffs/* without a task_handoffs row under the project git lock with a two-sighting rule
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:46:35.252601653Z"
-updated: "2026-09-20T06:25:59.394285805Z"
+updated: "2026-09-20T07:00:34.258341680Z"
 tags:
   - orchestrator
   - cron

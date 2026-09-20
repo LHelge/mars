@@ -11,17 +11,11 @@ export type { AuthLayoutProps } from "./AuthLayout";
 export { CollapsibleLines } from "./CollapsibleLines";
 export type { CollapsibleLinesProps } from "./CollapsibleLines";
 
-export { DiffBody } from "./git/DiffBody";
-export type { DiffBodyProps } from "./git/DiffBody";
-
 export { DiffView } from "./DiffView";
 export type { DiffViewProps } from "./DiffView";
 
 export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
-
-export { ChangesFileList } from "./git/ChangesFileList";
-export type { ChangesFileListProps } from "./git/ChangesFileList";
 
 export { ConflictList } from "./git/ConflictList";
 export type { ConflictListProps } from "./git/ConflictList";

@@ -1,10 +1,10 @@
 ---
 id: pg6ga
 title: "Implement the update tool: holder and creator authority, state hand-off, current-state no-op, parent and blocks-dependency edits, and revision/forward hand-offs with the source session derived from the caller"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:46:39.044440108Z"
-updated: "2026-09-16T20:46:39.044440108Z"
+updated: "2026-09-20T08:01:49.011747962Z"
 tags:
   - orchestrator
   - mcp
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - "4cvu4"
 parent: qgj33
+attempts: 1
 ---
 
 ## Summary

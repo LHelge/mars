@@ -1,10 +1,10 @@
 ---
 id: h3uux
 title: Write secrets manager, settings and admin user-management E2E specs
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:45:10.533082166Z"
-updated: "2026-09-20T17:26:54.273854353Z"
+updated: "2026-09-20T18:56:41.651667236Z"
 tags:
   - frontend
   - secrets

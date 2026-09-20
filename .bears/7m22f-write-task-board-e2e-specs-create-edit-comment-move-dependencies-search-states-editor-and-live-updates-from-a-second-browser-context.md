@@ -1,10 +1,10 @@
 ---
 id: "7m22f"
 title: "Write task board E2E specs: create, edit, comment, move, dependencies, search, states editor and live updates from a second browser context"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:44:41.033096060Z"
-updated: "2026-09-20T17:26:54.244438674Z"
+updated: "2026-09-20T18:56:41.623925109Z"
 tags:
   - frontend
   - tracker

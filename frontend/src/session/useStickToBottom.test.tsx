@@ -11,13 +11,33 @@ import { useStickToBottom } from "./useStickToBottom";
 interface HarnessProps {
   order: string[];
   tailLength: number;
+  /** What a virtualised list reports once its rows have been measured. */
+  contentHeight?: number;
+  /** Called inside the scroll handler with the rendered and the live flag. */
+  onHandled?: (rendered: boolean, live: boolean) => void;
 }
 
-function Harness({ order, tailLength }: HarnessProps) {
+function Harness({
+  order,
+  tailLength,
+  contentHeight,
+  onHandled,
+}: HarnessProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const stick = useStickToBottom(scrollRef, { order, tailLength });
+  const stick = useStickToBottom(scrollRef, {
+    order,
+    tailLength,
+    contentHeight,
+  });
   return (
-    <div ref={scrollRef} data-testid="scroller" onScroll={stick.onScroll}>
+    <div
+      ref={scrollRef}
+      data-testid="scroller"
+      onScroll={() => {
+        stick.onScroll();
+        onHandled?.(stick.pinned, stick.isPinned());
+      }}
+    >
       <span data-testid="pinned">{String(stick.pinned)}</span>
       <span data-testid="count">{stick.newCount}</span>
       <button type="button" onClick={stick.jumpToLatest}>
@@ -104,6 +124,45 @@ describe("useStickToBottom", () => {
     expect(pinned()).toBe("true");
     expect(count()).toBe("0");
     expect(scroller.scrollTop).toBe(1000);
+  });
+
+  // The virtualizer renders rows at an estimate and corrects itself a commit
+  // later: the message list is unchanged, only the content it occupies grew.
+  it("re-pins when measurement corrects the content height", () => {
+    const { rerender } = render(
+      <Harness order={["a"]} tailLength={1} contentHeight={200} />,
+    );
+    const scroller = screen.getByTestId("scroller");
+    setGeometry(scroller, 1000, 380);
+    fireEvent.scroll(scroller);
+    expect(pinned()).toBe("true");
+
+    setGeometry(scroller, 2400, 380);
+    rerender(<Harness order={["a"]} tailLength={1} contentHeight={2000} />);
+
+    expect(scroller.scrollTop).toBe(2400);
+  });
+
+  // The transcript anchors a history request inside its scroll handler, where
+  // `pinned` is still the value from the render before the gesture.
+  it("answers the live flag from inside the scroll handler", () => {
+    const seen: [boolean, boolean][] = [];
+    render(
+      <Harness
+        order={["a"]}
+        tailLength={1}
+        onHandled={(rendered, live) => {
+          seen.push([rendered, live]);
+        }}
+      />,
+    );
+    const scroller = screen.getByTestId("scroller");
+
+    // The reader jumps from the tail to the top in one gesture.
+    setGeometry(scroller, 1000, 0);
+    fireEvent.scroll(scroller);
+
+    expect(seen).toEqual([[true, false]]);
   });
 
   it("re-pins as streaming text grows the tail message", () => {

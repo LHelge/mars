@@ -18,13 +18,28 @@ export interface StickToBottomOptions {
   order: string[];
   /** Length of the last message's text, so `text_delta` growth re-pins too. */
   tailLength: number;
+  /**
+   * The height of the content, when the caller knows it better than the DOM
+   * does at commit time. A virtualised list renders its rows at an estimated
+   * height and corrects itself once they are measured, which grows the content
+   * after this effect would otherwise have run: without re-pinning on the
+   * corrected height, "follow the tail" lands wherever the estimate happened to
+   * put it. Any number that changes when the content grows will do.
+   */
+  contentHeight?: number;
 }
 
 export interface StickToBottom {
   /** Attach to the scroll container's `onScroll`. */
   onScroll: () => void;
-  /** Whether the view is following the tail. */
+  /** Whether the view is following the tail, as of the last render. */
   pinned: boolean;
+  /**
+   * The same flag, as of right now. `onScroll` updates it before React has
+   * re-rendered, so a scroll handler reading `pinned` from its own closure sees
+   * the value from before the gesture it is handling.
+   */
+  isPinned: () => boolean;
   /** Top-level messages appended since the user scrolled up. */
   newCount: number;
   /** Re-pin to the tail, which the `Jump to latest` pill calls. */
@@ -46,7 +61,7 @@ function appendedAfter(order: string[], lastId: string | null): number {
  */
 export function useStickToBottom(
   scrollRef: RefObject<HTMLDivElement | null>,
-  { order, tailLength }: StickToBottomOptions,
+  { order, tailLength, contentHeight = 0 }: StickToBottomOptions,
 ): StickToBottom {
   // The flag is needed synchronously inside the layout effect, where the state
   // value would still be the one from the render that is being committed.
@@ -90,7 +105,7 @@ export function useStickToBottom(
     if (appended > 0) {
       setNewCount((count) => count + appended);
     }
-  }, [order, tailLength, scrollToBottom]);
+  }, [order, tailLength, contentHeight, scrollToBottom]);
 
   const jumpToLatest = useCallback(() => {
     pinnedRef.current = true;
@@ -99,5 +114,7 @@ export function useStickToBottom(
     scrollToBottom();
   }, [scrollToBottom]);
 
-  return { onScroll, pinned, newCount, jumpToLatest };
+  const isPinned = useCallback(() => pinnedRef.current, []);
+
+  return { onScroll, pinned, isPinned, newCount, jumpToLatest };
 }

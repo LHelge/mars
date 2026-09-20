@@ -16,7 +16,7 @@
 
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
     Implementation, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{RequestContext, RoleServer};
@@ -36,6 +36,14 @@ const SERVER_NAME: &str = "mars-orchestrator";
 /// The one-paragraph brief the CLI puts in front of the model. Short and
 /// opinionated on purpose (`ARCHITECTURE.md`, "MCP design", Tool exposure).
 const INSTRUCTIONS: &str = "Mars task tracker and git tools. Call ready to find work, claim before working, comment before handing off.";
+
+/// How long a client may treat one `tools/list` answer as fresh.
+///
+/// The listing depends on the calling session's profile and nothing else, and
+/// a profile edit is the only thing that changes it, so a minute is short
+/// enough for an edit to show up and long enough that a client does not list
+/// again before every call.
+const TOOL_LIST_TTL_MS: u64 = 60_000;
 
 /// What the server advertises in its `initialize` response.
 ///
@@ -210,7 +218,16 @@ impl ServerHandler for McpServer {
             .cloned()
             .collect();
 
-        Ok(ListToolsResult::with_all_items(tools))
+        // Protocol revision 2026-07-28 makes `ttlMs` and `cacheScope` required
+        // on a list result, and `rmcp` 3.4.0 leaves both unset unless told.
+        // The pinned Claude Code CLI negotiates that revision and validates
+        // the result against it: without the two fields it discards the whole
+        // listing and the session has no Mars tools at all. `private`, because
+        // the listing is this session's — filtered by its profile — and no
+        // other caller's (`ARCHITECTURE.md`, "MCP design").
+        Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(TOOL_LIST_TTL_MS)
+            .with_cache_scope(CacheScope::Private))
     }
 
     /// One tool call.

@@ -49,6 +49,53 @@ async fn a_client_connects_and_the_server_lists_its_tools() {
     );
 }
 
+/// `tools/list` as the pinned Claude Code CLI sends it: protocol revision
+/// 2026-07-28, no `initialize`, the request metadata in `_meta` and the method
+/// repeated in a header.
+const MODERN_TOOLS_LIST: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"test","version":"0"}}}}"#;
+
+#[tokio::test]
+async fn a_modern_tool_listing_carries_the_cache_fields_the_cli_requires() {
+    let (app, token) = app_with_session().await;
+    let client = McpClient::connect(&app, &token)
+        .await
+        .expect("a running session's token authenticates");
+    let bearer = format!("Bearer {token}");
+
+    let response = client
+        .raw_post(
+            &[
+                ("authorization", &bearer),
+                ("content-type", "application/json"),
+                ("accept", "application/json, text/event-stream"),
+                ("mcp-protocol-version", "2026-07-28"),
+                ("mcp-method", "tools/list"),
+            ],
+            MODERN_TOOLS_LIST,
+        )
+        .await;
+
+    assert_eq!(response.status().as_u16(), 200);
+    let body = response.text().await.expect("a body");
+    // One SSE frame or a bare JSON answer, depending on the transport's mood.
+    let json = body
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap_or(&body);
+    let answer: Value = serde_json::from_str(json).expect("a JSON-RPC answer");
+    let result = &answer["result"];
+
+    // The CLI validates these three and drops the listing without them.
+    assert_eq!(result["resultType"], "complete", "{result}");
+    assert!(result["ttlMs"].is_u64(), "{result}");
+    assert_eq!(result["cacheScope"], "private", "{result}");
+    assert_eq!(
+        result["tools"].as_array().map(Vec::len),
+        Some(8),
+        "{result}"
+    );
+}
+
 #[tokio::test]
 async fn every_other_path_is_the_ordinary_404() {
     let (app, token) = app_with_session().await;

@@ -9,7 +9,7 @@ You coordinate; `task-implementer` subagents write the code. The standing rules 
 
 ## Setup
 
-1. `git status` is clean on `main`. If only `.bears/` is dirty, commit it first as `chore(infra)`.
+1. `git status` is clean on `main`. If only `.bears/` is dirty, commit it first as `chore(infra)`. Then `git fetch origin`: if `origin/main` is ahead, rebase onto it before reading Bears, because `.bears/` is only as current as the checkout and another clone may have finished, claimed or pushed the very tasks this one still shows as open. An `in_progress` task with no worktree here is another session's until the user says otherwise.
 2. `export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock` for every cargo command you run.
 3. `df -h /`. Above 70 % used, `rm -rf orchestrator/target-main` (the next verification rebuilds it) and remove any worktree a finished agent left under `.claude/worktrees/`, before dispatching: cargo never evicts old test binaries, `target-main` grows by tens of GB per epic, and every running agent adds a build directory of its own.
 4. Pick the epic with `list_epics` and read it with `get_graph`. If the Bears MCP tools show another project's tasks, the server is bound to the wrong directory; use `bea ... --json` from the repository root instead.

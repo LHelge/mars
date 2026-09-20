@@ -25,3 +25,16 @@ export {
 
 export { TaskStream, useTaskStream } from "./useTaskStream";
 export type { EventSourceFactory, EventSourceLike } from "./useTaskStream";
+
+export { UNKNOWN_COLUMN } from "./taskStore";
+export { LABEL_RULE, labelsError, parseLabels } from "./taskLabels";
+export type { ParsedLabels } from "./taskLabels";
+
+export { TaskBoard } from "./TaskBoard";
+export type { TaskBoardProps } from "./TaskBoard";
+
+export { TaskCard } from "./TaskCard";
+export type { TaskCardProps } from "./TaskCard";
+
+export { CreateTaskForm } from "./CreateTaskForm";
+export type { CreateTaskFormProps } from "./CreateTaskForm";

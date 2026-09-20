@@ -5,7 +5,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { Task, TaskEvent, TaskState } from "../types";
-import { createTaskStore, selectColumns, type TaskStoreDeps } from "./taskStore";
+import {
+  createTaskStore,
+  selectColumns,
+  UNKNOWN_COLUMN,
+  type TaskStoreDeps,
+} from "./taskStore";
 
 const PROJECT = "11111111-1111-4111-8111-111111111111";
 const OTHER_PROJECT = "22222222-2222-4222-8222-222222222222";
@@ -155,7 +160,7 @@ describe("taskStore refresh ordering", () => {
       "backlog",
       "ready",
     ]);
-    expect(selectColumns(store.getState()).map((c) => c.state.name)).toEqual([
+    expect(selectColumns(store.getState()).map((c) => c.name)).toEqual([
       "backlog",
       "ready",
     ]);
@@ -302,5 +307,55 @@ describe("taskStore refresh ordering", () => {
     store.getState().bindProject(PROJECT);
     expect(store.getState().viewGeneration).toBe(view);
     expect(store.getState().query).toBe("login");
+  });
+});
+
+describe("selectColumns", () => {
+  it("orders columns by position and keeps the API's task order", () => {
+    const columns = selectColumns({
+      states: [BACKLOG, READY],
+      tasks: [task(9, "ready"), task(2, "backlog"), task(4, "ready")],
+    });
+
+    expect(columns.map((c) => c.name)).toEqual(["backlog", "ready"]);
+    expect(columns.map((c) => c.key)).toEqual(["state-backlog", "state-ready"]);
+    expect(columns[0].state).toBe(BACKLOG);
+    // The API orders by priority, then number; the column does not re-sort.
+    expect(columns[1].tasks.map((t) => t.number)).toEqual([9, 4]);
+  });
+
+  it("has no unknown column while every task is in a current state", () => {
+    const columns = selectColumns({
+      states: [BACKLOG],
+      tasks: [task(1, "backlog")],
+    });
+
+    expect(columns).toHaveLength(1);
+  });
+
+  it("buckets a task in no current state into a trailing unknown column", () => {
+    const columns = selectColumns({
+      states: [BACKLOG, READY],
+      // Mid-refresh: `ready` was renamed and this task still names the old one.
+      tasks: [task(1, "backlog"), task(2, "was-ready"), task(3, "was-ready")],
+    });
+
+    expect(columns.map((c) => c.name)).toEqual([
+      "backlog",
+      "ready",
+      UNKNOWN_COLUMN,
+    ]);
+    const unknown = columns[columns.length - 1];
+    // Not a fabricated state row: nothing can mistake it for a real column.
+    expect(unknown.state).toBeNull();
+    expect(unknown.key).toBe(UNKNOWN_COLUMN);
+    expect(unknown.tasks.map((t) => t.number)).toEqual([2, 3]);
+  });
+
+  it("keeps an empty board's columns", () => {
+    const columns = selectColumns({ states: [BACKLOG, READY], tasks: [] });
+
+    expect(columns).toHaveLength(2);
+    expect(columns.every((c) => c.tasks.length === 0)).toBe(true);
   });
 });

@@ -12,7 +12,6 @@ import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import {
   Alert,
-  EmptyState,
   LoadingState,
   PageLayout,
   SecretsManager,
@@ -22,6 +21,7 @@ import { TaskStatesEditor } from "../tasks";
 import type { Project } from "../types";
 import { NotFoundPage } from "./NotFoundPage";
 import {
+  BoardTab,
   isNotFound,
   isUuid,
   ProfilesTab,
@@ -45,6 +45,12 @@ export function ProjectPage() {
   // `/projects/:id/tasks/:number` is the board with that task's drawer open.
   const tab: ProjectTab =
     params.number === undefined ? parseProjectTab(search.get("tab")) : "board";
+  // A `:number` that is not a number names no task; the board shows no
+  // selection and the drawer, when it arrives, says so.
+  const taskNumber =
+    params.number !== undefined && /^\d+$/.test(params.number)
+      ? Number(params.number)
+      : undefined;
 
   // An id that is not a UUID names no project: answer without asking.
   if (!isUuid(id)) {
@@ -55,6 +61,7 @@ export function ProjectPage() {
     <ProjectView
       id={id}
       tab={tab}
+      taskNumber={taskNumber}
       settingsOpen={settingsOpen}
       onToggleSettings={() => {
         setSettingsOpen((open) => !open);
@@ -66,6 +73,8 @@ export function ProjectPage() {
 interface ProjectViewProps {
   id: string;
   tab: ProjectTab;
+  /** The task of `/projects/:id/tasks/:number`, for the board panel. */
+  taskNumber: number | undefined;
   settingsOpen: boolean;
   onToggleSettings: () => void;
 }
@@ -77,6 +86,7 @@ interface ProjectViewProps {
 function ProjectView({
   id,
   tab,
+  taskNumber,
   settingsOpen,
   onToggleSettings,
 }: ProjectViewProps) {
@@ -130,13 +140,21 @@ function ProjectView({
 
         <ProjectTabs projectId={data.id} active={tab} />
 
-        <ProjectPanel project={data} tab={tab} />
+        <ProjectPanel project={data} tab={tab} taskNumber={taskNumber} />
       </div>
     </PageLayout>
   );
 }
 
-function ProjectPanel({ project, tab }: { project: Project; tab: ProjectTab }) {
+function ProjectPanel({
+  project,
+  tab,
+  taskNumber,
+}: {
+  project: Project;
+  tab: ProjectTab;
+  taskNumber: number | undefined;
+}) {
   // Nothing under the tabs exists until the mirror does; the header and the
   // settings form stay usable and the page polls until the clone settles.
   if (project.status === "cloning") {
@@ -169,12 +187,7 @@ function ProjectPanel({ project, tab }: { project: Project; tab: ProjectTab }) {
     return <TaskStatesEditor projectId={project.id} />;
   }
 
-  // `board`: the mount point for `TaskBoard` from `src/tasks/`, delivered by
-  // the task board epic.
-  return (
-    <EmptyState
-      title="The task board is not here yet"
-      description="It arrives with the frontend task board epic."
-    />
-  );
+  // `board`, which is also where `/projects/:id/tasks/:number` lands: the one
+  // place the task stream is mounted.
+  return <BoardTab project={project} taskNumber={taskNumber} />;
 }

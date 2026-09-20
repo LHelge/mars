@@ -41,7 +41,6 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
   });
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const stick = useStickToBottom(scrollRef, { order, tailLength });
 
   // `SPEC.md` names this library for the transcript; the React Compiler skips
   // components that use it, which costs this one file its auto-memoisation.
@@ -54,13 +53,34 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
     getItemKey: (index) => order[index] ?? index,
   });
 
+  // Rows are measured after they are rendered, so the list's height keeps
+  // changing under a reader who is following the tail; the total size is what
+  // tells the auto-follow to re-pin once the measurements land.
+  const totalSize = virtualizer.getTotalSize();
+  const stick = useStickToBottom(scrollRef, {
+    order,
+    tailLength,
+    contentHeight: totalSize,
+  });
+
   // The page already asked for, so one scroll gesture near the top does not
   // fire a request per `scroll` event; a landed page moves `oldestSeq` and
   // arms the next one.
   // `undefined` is "nothing requested yet": `oldestSeq` is itself `null` before
   // the first event, and a null cursor must not read as an outstanding request.
   const requestedFor = useRef<number | null | undefined>(undefined);
-  const anchor = useRef<{ height: number; top: number } | null>(null);
+  /**
+   * Where the reader was when the page was asked for, and the cursor that was
+   * current then. The cursor is what says the page has landed: until
+   * `oldestSeq` moves past it, every other commit in between — and `pinned`
+   * flipping as the reader scrolls up is one — must leave the anchor alone.
+   */
+  const anchor = useRef<{
+    height: number;
+    top: number;
+    pinned: boolean;
+    requestedFor: number | null;
+  } | null>(null);
 
   const handleScroll = useCallback(() => {
     stick.onScroll();
@@ -72,7 +92,14 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
       return;
     }
     requestedFor.current = oldestSeq;
-    anchor.current = { height: element.scrollHeight, top: element.scrollTop };
+    anchor.current = {
+      height: element.scrollHeight,
+      top: element.scrollTop,
+      // The live flag: `stick.pinned` is still the value from before this
+      // very gesture (`useStickToBottom`, `isPinned`).
+      pinned: stick.isPinned(),
+      requestedFor: oldestSeq,
+    };
     loadOlder();
   }, [hasMore, loadOlder, oldestSeq, scrollRef, stick]);
 
@@ -81,42 +108,43 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
   useLayoutEffect(() => {
     const pending = anchor.current;
     const element = scrollRef.current;
-    if (!pending || !element) {
+    if (!pending || !element || pending.requestedFor === oldestSeq) {
       return;
     }
     anchor.current = null;
     // Pinned to the bottom, the tail is what the reader is watching: keep it.
-    if (stick.pinned) {
+    if (pending.pinned) {
       return;
     }
     element.scrollTop = element.scrollHeight - pending.height + pending.top;
-  }, [oldestSeq, order, scrollRef, stick.pinned]);
+  }, [oldestSeq, order, scrollRef]);
 
   const items = virtualizer.getVirtualItems();
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
+      {/* Outside the scroller on purpose: anything above the virtual container
+          inside it would shift every row's offset away from what the
+          virtualizer positions rows at. */}
+      {hasMore && (
+        <div className="text-console-muted flex shrink-0 items-center justify-center gap-2 py-2 text-xs">
+          <Spinner className="size-3" />
+          <span>Loading earlier messages</span>
+        </div>
+      )}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
         data-testid="transcript-scroll"
-        className="flex-1 overflow-y-auto px-4 py-2"
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-2"
       >
-        {hasMore && (
-          <div className="text-console-muted flex items-center justify-center gap-2 py-2 text-xs">
-            <Spinner className="size-3" />
-            <span>Loading earlier messages</span>
-          </div>
-        )}
         {order.length === 0 ? (
           <EmptyState
             title="Nothing has happened yet"
             description="Send a message to start the session."
           />
         ) : (
-          <div
-            style={{ height: virtualizer.getTotalSize(), position: "relative" }}
-          >
+          <div style={{ height: totalSize, position: "relative" }}>
             {items.map((item) => (
               <div
                 key={item.key}

@@ -214,6 +214,13 @@ async fn only_containers_of_sessions_with_nothing_running_are_removed() {
     let parked = session_in(&app, &fixture, SessionState::Parked).await;
     let parked_container = container_for(&app, &fixture, &parked.to_string(), 10, now).await;
     record_container(&app, parked, &parked_container).await;
+    // It parked in this process, which keeps its registry entry for the input
+    // queue: an entry alone must not protect its leftover.
+    drop(
+        app.session_registry()
+            .register(parked, ProfileKind::Conversational, Phase::Running),
+    );
+    app.session_registry().mark_parked(parked);
 
     let done = session_in(&app, &fixture, SessionState::Done).await;
     let done_container = container_for(&app, &fixture, &done.to_string(), 10, now).await;

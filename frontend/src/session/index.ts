@@ -15,6 +15,9 @@ export { ChangesPanel } from "./ChangesPanel";
 export { SidePanel } from "./SidePanel";
 export type { SidePanelProps } from "./SidePanel";
 export { TasksPanel } from "./TasksPanel";
+// `TerminalView` is deliberately not re-exported: `sidePanels.ts` is its only
+// importer, so the xterm bundle stays out of everything that touches this
+// barrel and a later task can lazy-load it.
 export { panelsFor, sidePanels } from "./sidePanels";
 export type { SessionPanelProps, SidePanelEntry } from "./sidePanels";
 export {

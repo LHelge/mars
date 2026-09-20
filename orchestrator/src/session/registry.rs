@@ -428,19 +428,24 @@ impl SessionRegistry {
             .is_some_and(|tx| !tx.is_closed())
     }
 
-    /// Whether this process still tracks the session at all, live owner or
-    /// not.
+    /// Whether this process holds, or is about to hold, a container for the
+    /// session: a launch or resume is in progress, or the entry is `creating`
+    /// or `running`.
     ///
-    /// Broader than [`is_live`](Self::is_live) on purpose, and the reason it
-    /// is not [`phase`](Self::phase), which is diagnostic: orphan cleanup asks
-    /// it before removing a container whose session row says `parked`, and the
-    /// window it has to cover is a relaunch between the create and the
-    /// session's `init`, where the owner is registered and its channel may not
-    /// be reachable yet. An entry means the launch and park machinery owns
-    /// that session's containers, so the sweep leaves them alone
+    /// Orphan cleanup asks it before removing a container whose session row
+    /// says `parked`: the window it has to cover is a relaunch between the
+    /// create and the session's `init`, where the row is still `parked` and
+    /// the container is very much alive. Deliberately not "has an entry":
+    /// parking keeps the entry for its input queue, so that would protect the
+    /// leftovers of every session that ever parked in this process
     /// (`ARCHITECTURE.md`, "Background jobs").
-    pub fn has(&self, session_id: Uuid) -> bool {
-        self.state().sessions.contains_key(&session_id)
+    pub fn holds_container(&self, session_id: Uuid) -> bool {
+        let state = self.state();
+        state.launching.contains(&session_id)
+            || state
+                .sessions
+                .get(&session_id)
+                .is_some_and(|entry| entry.phase != Phase::Parked)
     }
 
     /// The registered kind of a session, without a database round-trip.

@@ -8,9 +8,9 @@
 //! or a merge's temporary clone outlived the merge. That is what decides the
 //! guards. A sweep would rather leave a leftover for the next hour than remove
 //! something a live path still holds, so a container is only touched when the
-//! session row says there is nothing running, *and* this process has no entry
-//! for the session, *and* the container is old enough that no launch can still
-//! be on its way to `running`.
+//! session row says there is nothing running, *and* this process is neither
+//! launching nor running the session, *and* the container is old enough that
+//! no launch can still be on its way to `running`.
 //!
 //! **Isolation.** The engine, the database and the filesystem all fail per
 //! item, and one failure must not cost the rest of the sweep: an item that
@@ -141,7 +141,7 @@ impl CronService {
 
             // A relaunch between the create and `running`: the row still says
             // `parked` and the owner is already registered.
-            if self.state.session_registry.has(session_id) {
+            if self.state.session_registry.holds_container(session_id) {
                 report.skipped += 1;
                 continue;
             }

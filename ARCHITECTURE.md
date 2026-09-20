@@ -693,6 +693,6 @@ One cron service with independent intervals, mirroring the reference layout of a
 | stuck-task reaper | 1 min | Release tasks held by `done` or `failed` sessions, escalating those at the attempt limit; write the system comment and emit `TaskEvent`s. |
 | token cleanup | 1 h | Delete expired refresh tokens, reset tokens, unaccepted invites, and secrets whose scope row no longer exists. |
 | secret rotation | 1 h | Re-wrap rows whose `key_version` is behind the newest key, if any. |
-| orphan cleanup | 1 h | Remove containers labelled `mars.session_id` whose session is `parked`/`done`/`failed`/missing; delete `/data/tmp` leftovers; under each project's git lock, remove `refs/handoffs/*` with no matching hand-off row. (Containers younger than 5 minutes and sessions with a live owner are skipped; `/data/tmp` entries older than one hour.) |
+| orphan cleanup | 1 h | Remove containers labelled `mars.session_id` whose session is `parked`/`done`/`failed`/missing; delete `/data/tmp` leftovers; under each project's git lock, remove `refs/handoffs/*` with no matching hand-off row. (Containers younger than 5 minutes and sessions this process is launching or running are skipped; `/data/tmp` entries older than one hour.) |
 
 Every job logs its outcome and never panics the process; a failing job is retried at its next interval. Every job runs once when the service starts, after recovery, then at its interval; a tick never overlaps the same job's previous run. Outcomes with no work are logged at `debug`, everything else at `info`.

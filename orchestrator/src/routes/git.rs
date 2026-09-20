@@ -51,7 +51,12 @@ use crate::routes::{CurrentUser, Path, Query};
 const MAX_MESSAGE_BYTES: usize = 10 * 1024;
 
 /// What a merge body that is neither documented alternative is told (400).
-const MERGE_FORM: &str = "merge takes either source or task_id and handoff_id";
+///
+/// `pub(crate)` because the `merge` MCP tool answers the same sentence for the
+/// same mistake (`SPEC.md`, "MCP tool contracts" → `merge`: "`MergeInput`
+/// (same as REST)"), and one spelling of it is one fewer string for a caller
+/// to have to match twice.
+pub(crate) const MERGE_FORM: &str = "merge takes either source or task_id and handoff_id";
 
 /// What a diff request that selects neither or both heads is told (400).
 const DIFF_FORM: &str = "diff takes either head or handoff_id";
@@ -189,7 +194,11 @@ fn merge_selection(body: &MergeBody) -> Result<MergeSelection> {
 }
 
 /// A merge commit message that is within the limit (400 above it).
-fn checked_message(message: Option<&String>) -> Result<Option<&str>> {
+///
+/// `pub(crate)` for the same reason as [`MERGE_FORM`]: the `merge` MCP tool
+/// takes the same input and so has the same limit, and a second copy of the
+/// number is a second thing to keep in step.
+pub(crate) fn checked_message(message: Option<&String>) -> Result<Option<&str>> {
     match message {
         Some(message) if message.len() > MAX_MESSAGE_BYTES => Err(Error::BadRequest(format!(
             "message is longer than {MAX_MESSAGE_BYTES} bytes"

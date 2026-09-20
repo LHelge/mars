@@ -229,6 +229,64 @@ export async function sendInput(
   }
 }
 
+/**
+ * Sets the default profile's `idle_timeout_secs`. The model's floor is one
+ * second (`orchestrator/src/models/agent_profile.rs`), and the idle reaper is a
+ * cron job on a 60 s period, so a session launched under a one-second timeout
+ * is parked at the next tick — within about a minute (`ARCHITECTURE.md`,
+ * "Session owner task", point 4; "Background jobs").
+ */
+export async function setProfileIdleTimeout(
+  client: Api,
+  projectId: string,
+  seconds: number,
+): Promise<Profile> {
+  const profile = await defaultProfile(client, projectId);
+  return client.put<Profile>(`/projects/${projectId}/profiles/${profile.id}`, {
+    ...toProfileInput(profile),
+    idle_timeout_secs: seconds,
+  });
+}
+
+/**
+ * `POST /sessions/{id}/end`, tolerating a session that is already `done` or
+ * gone. This is the clean-up every session scenario ends with: a container left
+ * running outlives the test, and `tests/e2e-stack.sh down` would be the only
+ * thing to remove it.
+ */
+export async function endSession(
+  client: Api,
+  sessionId: string,
+): Promise<void> {
+  await client.send("POST", `/sessions/${sessionId}/end`, undefined, {
+    allow: [404, 409],
+  });
+}
+
+/**
+ * Waits until the session row has no `container_id`, the documented rest state
+ * of `parked` and `done` (`ARCHITECTURE.md`, "Session lifecycle": the container
+ * is removed). The owner clears it after the state change, so a scenario that
+ * acts on the state alone is acting while the owner is still finishing.
+ */
+export function waitForContainerRemoved(
+  client: Api,
+  sessionId: string,
+  timeoutMs = 30_000,
+): Promise<Session> {
+  return waitFor(
+    async () => {
+      const session = await client.get<Session>(`/sessions/${sessionId}`);
+      return session.container_id === null ? session : null;
+    },
+    {
+      timeoutMs,
+      intervalMs: 200,
+      description: `session ${sessionId} to have its container removed`,
+    },
+  );
+}
+
 // --- tasks ------------------------------------------------------------------
 
 export function createTask(

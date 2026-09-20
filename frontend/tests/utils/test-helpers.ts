@@ -66,3 +66,9 @@ export {
   type CreateProjectOptions,
   type LaunchSessionOptions,
 } from "./resources";
+
+export {
+  endSession,
+  setProfileIdleTimeout,
+  waitForContainerRemoved,
+} from "./resources";

@@ -44,7 +44,8 @@ use mars_orchestrator::models::{NewSession, ProfileKind, RemoteUrl, SessionState
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{SessionRepository, Transition};
 use mars_orchestrator::session::{
-    OwnerCommand, OwnerContext, Phase, QueuedInput, SessionDirs, SessionOwner,
+    OwnerCommand, OwnerContext, Phase, QueuedInput, SessionDirs, SessionOwner, StopOutcome,
+    StopReason,
 };
 use serde_json::Value;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -829,9 +830,12 @@ async fn the_registry_path_records_an_input_and_the_owner_deregisters_itself() {
 
     // This owner has no container, so the stop is ignored rather than acted on
     // (the route answers 409 first); either way it must not end the loop.
-    app.session_registry()
-        .stop(fixture.session_id)
-        .expect("the owner takes a stop");
+    assert_eq!(
+        app.session_registry()
+            .stop(fixture.session_id, StopReason::User),
+        StopOutcome::Sent,
+        "the owner did not take a stop",
+    );
     tokio::time::sleep(QUIET_FOR).await;
     assert!(app.session_registry().is_live(fixture.session_id));
 
@@ -1595,7 +1599,9 @@ async fn a_stop_escalates_to_sigterm_and_parks_the_session_as_killed() {
     let owner = Owner::new(&app, &fixture).container(&container).spawn();
     owner
         .commands
-        .send(OwnerCommand::Stop)
+        .send(OwnerCommand::Stop {
+            reason: StopReason::User,
+        })
         .await
         .expect("the owner is listening");
 
@@ -1603,7 +1609,9 @@ async fn a_stop_escalates_to_sigterm_and_parks_the_session_as_killed() {
     // A second request while one is pending changes nothing.
     owner
         .commands
-        .send(OwnerCommand::Stop)
+        .send(OwnerCommand::Stop {
+            reason: StopReason::User,
+        })
         .await
         .expect("the owner is listening");
     // `STOP_GRACE_SECS` is 1 in tests; the CLI here traps nothing and keeps
@@ -1641,7 +1649,9 @@ async fn a_stop_the_cli_answers_within_the_grace_period_records_sigint() {
     let owner = Owner::new(&app, &fixture).container(&container).spawn();
     owner
         .commands
-        .send(OwnerCommand::Stop)
+        .send(OwnerCommand::Stop {
+            reason: StopReason::User,
+        })
         .await
         .expect("the owner is listening");
 
@@ -1677,7 +1687,9 @@ async fn a_stop_without_a_container_is_ignored() {
     let owner = Owner::new(&app, &fixture).spawn();
     owner
         .commands
-        .send(OwnerCommand::Stop)
+        .send(OwnerCommand::Stop {
+            reason: StopReason::User,
+        })
         .await
         .expect("the owner is listening");
     tokio::time::sleep(QUIET_FOR).await;
@@ -1815,7 +1827,9 @@ async fn a_stopped_ephemeral_session_fails_instead_of_parking() {
         .spawn();
     owner
         .commands
-        .send(OwnerCommand::Stop)
+        .send(OwnerCommand::Stop {
+            reason: StopReason::User,
+        })
         .await
         .expect("the owner is listening");
 
@@ -1832,6 +1846,227 @@ async fn a_stopped_ephemeral_session_fails_instead_of_parking() {
     let change = last_event(&app.pool, fixture.session_id, "state_change").await;
     assert_eq!(change["to"], "failed");
     assert_eq!(change["signal"], "SIGINT");
+}
+
+/// The idle reaper's stop of a conversational session: the same signals as a
+/// user's, and the `state_change` says `idle timeout` instead
+/// (`ARCHITECTURE.md`, "Stop semantics", "Session lifecycle",
+/// `running → parked`).
+#[tokio::test]
+async fn an_idle_stop_parks_a_conversational_session() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture).container(&container).spawn();
+    owner
+        .commands
+        .send(OwnerCommand::Stop {
+            reason: StopReason::Idle,
+        })
+        .await
+        .expect("the owner is listening");
+
+    wait_for_signal(&app, &container, Signal::Sigint).await;
+    assert!(app.engine().exit(&container, 0));
+    owner.ended().await;
+
+    let (state, container_column, parked_at, ended_at, error) =
+        lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "parked", "an idle session was not parked");
+    assert_eq!(container_column, None, "the container was not removed");
+    assert!(parked_at.is_some(), "parked_at was not set");
+    assert_eq!(ended_at, None);
+    assert_eq!(error, None);
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["from"], "running");
+    assert_eq!(change["to"], "parked");
+    assert_eq!(change["reason"], "idle timeout");
+    assert_eq!(change["signal"], "SIGINT");
+}
+
+/// A CLI that ignores the reaper's `SIGINT` is `SIGTERM`-ed at the end of the
+/// grace period like any other stop, and the session is still `parked`: a stop
+/// was asked for, so the exit code is a log line, not a failure.
+#[tokio::test]
+async fn an_idle_stop_escalates_to_sigterm_and_still_parks() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture).container(&container).spawn();
+    owner
+        .commands
+        .send(OwnerCommand::Stop {
+            reason: StopReason::Idle,
+        })
+        .await
+        .expect("the owner is listening");
+
+    wait_for_signal(&app, &container, Signal::Sigint).await;
+    // `STOP_GRACE_SECS` is 1 in tests and this container traps nothing.
+    wait_for_signal(&app, &container, Signal::Sigterm).await;
+    assert_eq!(
+        app.engine().signals(&container),
+        vec![Signal::Sigint, Signal::Sigterm],
+        "an idle stop did not send SIGINT then SIGTERM exactly once each",
+    );
+
+    assert!(app.engine().exit(&container, 143));
+    owner.ended().await;
+
+    let (state, _, parked_at, _, error) = lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "parked");
+    assert!(parked_at.is_some());
+    assert_eq!(error, None);
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["reason"], "idle timeout");
+    assert_eq!(change["signal"], "SIGTERM");
+}
+
+/// An ephemeral session the reaper gave up on is `failed` with
+/// `sessions.error = "stalled"`, and the end-of-session hook runs so the tasks
+/// it held are released (`ARCHITECTURE.md`, "Task tracker", "Liveness comes
+/// from the session"). Nothing is fetched back: the run produced no result, and
+/// its work clone stays on disk for `POST /sessions/{id}/sync`.
+#[tokio::test]
+async fn a_stalled_ephemeral_session_fails_and_releases_its_tasks() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture_of_kind(&app, ProfileKind::Ephemeral).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let ended = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&ended);
+    let state = app
+        .state
+        .clone()
+        .with_session_ended_hook(Arc::new(move |_| {
+            let counter = Arc::clone(&counter);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+            .boxed()
+        }));
+
+    let owner = Owner::new(&app, &fixture)
+        .kind(ProfileKind::Ephemeral)
+        .container(&container)
+        .registered()
+        .state(state)
+        .spawn();
+    owner
+        .commands
+        .send(OwnerCommand::Stop {
+            reason: StopReason::Stalled,
+        })
+        .await
+        .expect("the owner is listening");
+
+    wait_for_signal(&app, &container, Signal::Sigint).await;
+    // The CLI died on the SIGINT rather than ending a turn.
+    assert!(app.engine().exit(&container, 130));
+    owner.ended().await;
+
+    let (state, container_column, parked_at, ended_at, error) =
+        lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(
+        state, "failed",
+        "a stalled ephemeral session was not failed"
+    );
+    assert_eq!(container_column, None);
+    assert_eq!(parked_at, None, "an ephemeral session was parked");
+    assert!(ended_at.is_some(), "ended_at was not set");
+    assert_eq!(error.as_deref(), Some("stalled"));
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["from"], "running");
+    assert_eq!(change["to"], "failed");
+    assert_eq!(change["reason"], "stalled");
+    assert_eq!(change["signal"], "SIGINT");
+
+    assert_eq!(
+        ended.load(Ordering::SeqCst),
+        1,
+        "the end-of-session hook did not run exactly once",
+    );
+    let kinds = kinds(&app.pool, fixture.session_id).await;
+    assert!(
+        !kinds.iter().any(|kind| kind == "git"),
+        "a stalled session fetched its branch back: {kinds:?}",
+    );
+    // A failed session has nothing more to say to, so its entry goes.
+    assert_eq!(app.session_registry().phase(fixture.session_id), None);
+}
+
+/// An ephemeral session can never end `parked`, so an `Idle` stop that reaches
+/// one is a caller's mistake and is treated as `Stalled` (ADR 0003).
+#[tokio::test]
+async fn an_idle_stop_of_an_ephemeral_session_is_treated_as_stalled() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture_of_kind(&app, ProfileKind::Ephemeral).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture)
+        .kind(ProfileKind::Ephemeral)
+        .container(&container)
+        .spawn();
+    owner
+        .commands
+        .send(OwnerCommand::Stop {
+            reason: StopReason::Idle,
+        })
+        .await
+        .expect("the owner is listening");
+
+    wait_for_signal(&app, &container, Signal::Sigint).await;
+    assert!(app.engine().exit(&container, 0));
+    owner.ended().await;
+
+    let (state, _, parked_at, ended_at, error) = lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "failed");
+    assert_eq!(parked_at, None);
+    assert!(ended_at.is_some());
+    assert_eq!(error.as_deref(), Some("stalled"));
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["reason"], "stalled");
+}
+
+/// The mirror image: a conversational session is never failed by idleness, so a
+/// `Stalled` stop that reaches one parks it as an idle timeout.
+#[tokio::test]
+async fn a_stalled_stop_of_a_conversational_session_is_treated_as_idle() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+    let container = start_container(&app, &fixture).await;
+
+    let owner = Owner::new(&app, &fixture).container(&container).spawn();
+    owner
+        .commands
+        .send(OwnerCommand::Stop {
+            reason: StopReason::Stalled,
+        })
+        .await
+        .expect("the owner is listening");
+
+    wait_for_signal(&app, &container, Signal::Sigint).await;
+    assert!(app.engine().exit(&container, 0));
+    owner.ended().await;
+
+    let (state, _, parked_at, _, error) = lifecycle(&app.pool, fixture.session_id).await;
+    assert_eq!(state, "parked");
+    assert!(parked_at.is_some());
+    assert_eq!(error, None);
+
+    let change = last_event(&app.pool, fixture.session_id, "state_change").await;
+    assert_eq!(change["reason"], "idle timeout");
 }
 
 /// A container that exits while the session is still `creating` never got as far

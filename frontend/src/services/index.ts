@@ -39,7 +39,37 @@ export type {
 export { getHealth } from "./health";
 export type { Health } from "./health";
 
-export { listProjects } from "./projects";
+export {
+  clearSharedDir,
+  createProject,
+  createSharedDir,
+  deleteProject,
+  deleteSharedDir,
+  fetchProject,
+  getProject,
+  listBranches,
+  listProjects,
+  listSharedDirs,
+  retryClone,
+  updateProject,
+} from "./projects";
+
+export {
+  createProfile,
+  deleteProfile,
+  getProfile,
+  listProfiles,
+  updateProfile,
+} from "./profiles";
+
+export {
+  getDiff,
+  isGitConflict,
+  listSessionBranches,
+  merge,
+  push,
+  rebase,
+} from "./git";
 
 export {
   createSecret,
@@ -53,10 +83,26 @@ export type { ListSecretsParams } from "./secrets";
 
 export { queryKeys } from "./queryKeys";
 
-export { listSessions } from "./sessions";
-export type { ListSessionsParams } from "./sessions";
+export {
+  createSession,
+  deleteSession,
+  endSession,
+  getSession,
+  listEvents,
+  listProjectSessions,
+  listSessionTasks,
+  listSessions,
+  retrySession,
+  sendInput,
+  stopSession,
+  syncSession,
+  updateSession,
+} from "./sessions";
+export type { ListEventsParams, ListSessionsParams } from "./sessions";
 
-export { listHumanTasks } from "./tasks";
+export { getTask, listHumanTasks } from "./tasks";
+
+export { listTaskStates } from "./taskStates";
 
 export {
   changePassword,

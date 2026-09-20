@@ -1,14 +1,15 @@
 ---
 id: "2k43n"
 title: "Give each task-implementer its own cargo target directory: the shared orchestrator/target made parallel agents' full-suite results unreliable in both directions"
-status: open
+status: done
 priority: P2
 created: "2026-09-20T10:52:53.752543929Z"
-updated: "2026-09-20T10:52:53.752543929Z"
+updated: "2026-09-20T11:52:47.878684930Z"
 tags:
   - infra
   - tests
   - docs
+attempts: 1
 ---
 
 ## Summary

@@ -1,15 +1,16 @@
 ---
 id: ue26r
 title: realtime_acceptance listener_loss_is_recovered_by_streams still closes with Away under heavy machine load
-status: open
+status: done
 priority: P1
 created: "2026-09-20T06:28:33.779112807Z"
-updated: "2026-09-20T07:12:10.951512842Z"
+updated: "2026-09-20T11:52:46.798783392Z"
 tags:
   - orchestrator
   - tests
   - ws
   - flaky
+attempts: 1
 ---
 
 ## Summary

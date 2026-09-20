@@ -1,16 +1,17 @@
 ---
 id: hkrrt
 title: "Build the Composer: Enter to send, Interject mid-turn, answer mode for prompts, stop button, hidden for ephemeral and disabled when done/failed"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:46:16.473419671Z"
-updated: "2026-09-16T20:46:16.473419671Z"
+updated: "2026-09-20T07:58:59.424962848Z"
 tags:
   - frontend
   - sessions
 depends_on:
   - zum7c
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

@@ -64,6 +64,8 @@ use mars_orchestrator::repositories::{SessionRepository, TaskRepository, Transit
 use mars_orchestrator::tracker::TrackerMutation;
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 /// How long a frame that should already be on its way is waited for.
@@ -254,6 +256,86 @@ async fn assert_ws_silent(socket: &mut TestWebSocket, during: Duration, what: &s
             WsMessage::Ping(_) | WsMessage::Pong(_) => {}
             other => panic!("{what}: the socket received {other:?}"),
         }
+    }
+}
+
+/// A socket that a task of its own reads for the whole scenario, so every
+/// ping is answered whatever the scenario is doing meanwhile.
+///
+/// A `TestWebSocket` writes its pongs only while it is being read, and the
+/// server closes with 1001 after two pings went unanswered (`SPEC.md`,
+/// "WebSocket: session stream"): 600 ms of not reading, with the test
+/// timings. A scenario that turns to something else for that long — waits on
+/// the task stream, say — has really stopped answering, and the close it then
+/// gets is the server being right. Pings and pongs end here; every other
+/// message is forwarded in order, a close last.
+struct PolledSocket {
+    messages: mpsc::UnboundedReceiver<WsMessage>,
+    reader: JoinHandle<()>,
+}
+
+impl PolledSocket {
+    fn spawn(mut socket: TestWebSocket) -> Self {
+        let (tx, messages) = mpsc::unbounded_channel();
+
+        let reader = tokio::spawn(async move {
+            loop {
+                let message = socket.receive_message().await;
+                if matches!(message, WsMessage::Ping(_) | WsMessage::Pong(_)) {
+                    continue;
+                }
+
+                let last = matches!(message, WsMessage::Close(_));
+                if tx.send(message).is_err() || last {
+                    break;
+                }
+            }
+        });
+
+        Self { messages, reader }
+    }
+
+    /// `common::collect_ws_events` over the forwarded messages, and the same
+    /// contract: the sequences seen until one reaches `until_seq`, a panic on
+    /// anything that is not an `event` or a `session`, and a panic rather than
+    /// a hang when `within` runs out.
+    async fn events_until(&mut self, until_seq: i64, within: Duration) -> Vec<i64> {
+        let mut seen: Vec<i64> = Vec::new();
+
+        let collected = tokio::time::timeout(within, async {
+            while seen.iter().copied().max().unwrap_or(0) < until_seq {
+                match self.messages.recv().await {
+                    Some(WsMessage::Text(text)) => {
+                        let frame: Value =
+                            serde_json::from_str(text.as_str()).expect("every text frame is JSON");
+
+                        match frame["type"].as_str() {
+                            Some("event") => seen.push(
+                                frame["event"]["seq"]
+                                    .as_i64()
+                                    .expect("every event frame carries a sequence"),
+                            ),
+                            Some("session") => {}
+                            _ => panic!("unexpected frame while collecting events: {frame}"),
+                        }
+                    }
+                    other => panic!("the socket ended before sequence {until_seq}: {other:?}"),
+                }
+            }
+        })
+        .await;
+
+        collected.unwrap_or_else(|_| {
+            panic!("sequence {until_seq} did not arrive within {within:?}; saw {seen:?}")
+        });
+
+        seen
+    }
+}
+
+impl Drop for PolledSocket {
+    fn drop(&mut self) {
+        self.reader.abort();
     }
 }
 
@@ -525,6 +607,11 @@ async fn rollback_delivers_nothing_anywhere() {
 /// Which of the two did it is deliberately not asserted: both are the
 /// documented recovery, and a test that named one would break when the
 /// reconnect happened to be faster.
+///
+/// The socket is a [`PolledSocket`]: this scenario spends its time on the task
+/// stream — a keepalive to begin with, then a recovery that may take a whole
+/// safety read — and a socket left unread for that long misses its two pongs
+/// on a loaded machine, which is a close this scenario is not about.
 #[tokio::test]
 async fn listener_loss_is_recovered_by_streams() {
     let app = TestApp::spawn().await;
@@ -534,6 +621,7 @@ async fn listener_loss_is_recovered_by_streams() {
         .ws(fixture.session_id, &fixture.user.access_token, 0)
         .await;
     expect_session_frame(&mut socket).await;
+    let mut socket = PolledSocket::spawn(socket);
 
     let mut stream = SseReader::new(
         app.sse(fixture.project_id, &fixture.user.access_token, None, None)
@@ -553,7 +641,7 @@ async fn listener_loss_is_recovered_by_streams() {
     append_task_events(&app.pool, fixture.project_id, 1).await;
 
     // `max(5 s, 2 × safety read)`, which with the test timings is 5 s.
-    assert_eq!(collect_ws_events(&mut socket, 1, WITHIN).await, vec![1]);
+    assert_eq!(socket.events_until(1, WITHIN).await, vec![1]);
     assert_eq!(collect_sse_ids(&mut stream, 1, WITHIN).await, vec![1]);
 
     // And the listener is listening again: an append after the reconnect is an
@@ -562,7 +650,7 @@ async fn listener_loss_is_recovered_by_streams() {
     append_task_events(&app.pool, fixture.project_id, 1).await;
 
     assert_eq!(
-        collect_ws_events(&mut socket, 2, Duration::from_secs(2)).await,
+        socket.events_until(2, Duration::from_secs(2)).await,
         vec![2],
     );
     assert_eq!(

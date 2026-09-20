@@ -1,10 +1,10 @@
 ---
 id: "2txez"
 title: Add frontend types and services for projects, branches, shared dirs, profiles, sessions, events and git
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:40:42.646403323Z"
-updated: "2026-09-16T20:51:52.315209963Z"
+updated: "2026-09-20T07:37:11.612461941Z"
 tags:
   - frontend
   - sessions
@@ -14,6 +14,7 @@ depends_on:
   - "2f5u2"
   - h8kw9
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

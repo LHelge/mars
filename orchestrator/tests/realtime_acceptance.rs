@@ -339,7 +339,8 @@ impl Drop for PolledSocket {
     }
 }
 
-/// Read the stream for `during`, failing on anything but a keepalive comment.
+/// Read the stream for `during`, failing on anything but a comment frame
+/// (the opening `: ready` and the periodic `: keepalive`).
 async fn assert_sse_silent<S>(reader: &mut SseReader<S>, during: Duration, what: &str)
 where
     S: Stream<Item = Bytes> + Unpin,
@@ -347,7 +348,7 @@ where
     let deadline = tokio::time::Instant::now() + during;
 
     while let Ok(Some(frame)) = tokio::time::timeout_at(deadline, reader.next_frame()).await {
-        assert!(frame.is_keepalive(), "{what}: the stream sent {frame:?}");
+        assert!(frame.is_comment(), "{what}: the stream sent {frame:?}");
     }
 }
 

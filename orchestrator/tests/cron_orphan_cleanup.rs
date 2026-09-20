@@ -1,4 +1,4 @@
-//! The orphan cleanup job's container and `/data/tmp` sweeps
+//! The orphan cleanup job's container, `/data/tmp` and hand-off ref sweeps
 //! (`ARCHITECTURE.md`, "Background jobs"; `CLAUDE.md`, "Testing
 //! expectations").
 //!
@@ -16,6 +16,12 @@
 //! removal, and that a sweep failing as a whole does not cost the sweeps after
 //! it.
 //!
+//! The hand-off sweep is asserted on real repositories (`CLAUDE.md`, "Testing
+//! expectations": git is never mocked) and on one `CronService` value held
+//! across several runs, because the sightings that make the two-sighting rule
+//! work live on the service: a fresh `app.cron()` per run would forget them
+//! and nothing would ever be removed.
+//!
 //! Needs a container engine; see `tests/common/db.rs`.
 
 #![cfg(feature = "integration-tests")]
@@ -25,16 +31,26 @@ mod common;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use chrono::{TimeDelta, Utc};
 use common::TestApp;
+use common::handoffs::Fixture as HandoffFixture;
 use mars_orchestrator::cron::JobReport;
 use mars_orchestrator::engine::{
     ContainerEngine, ContainerId, ContainerSpec, LABEL_PROJECT_ID, LABEL_SESSION_ID,
 };
-use mars_orchestrator::models::{NewSession, ProfileKind, SessionState, StateChange};
-use mars_orchestrator::repositories::SessionRepository;
+use mars_orchestrator::events::TaskActor;
+use mars_orchestrator::git::testutil::run_git;
+use mars_orchestrator::git::{init_project_repo, refs};
+use mars_orchestrator::models::{
+    BranchName, NewProject, NewSession, NewTask, NewTaskComment, NewTaskHandoff, ProfileKind,
+    Project, RemoteUrl, SessionState, StateChange,
+};
+use mars_orchestrator::repositories::{ProjectRepository, SessionRepository, TaskRepository};
 use mars_orchestrator::session::{OwnerRx, Phase};
+use mars_orchestrator::tracker::TrackerMutation;
+use tokio::time::timeout;
 use uuid::Uuid;
 
 /// Not a credential: an obviously fake stand-in for the seeded user's Argon2id
@@ -385,4 +401,318 @@ fn age(path: &std::path::Path) {
     let file = fs::File::open(path).expect("the entry opens");
     file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600))
         .expect("the entry's modification time is moved back");
+}
+
+// --- the hand-off ref sweep -----------------------------------------------
+
+/// A second project with a repository of its own, beside the hand-off
+/// fixture's, so that the sweep is asserted over more than one git lock and
+/// the per-project scope of the row query is visible.
+///
+/// It shares the fixture's upstream: what matters here is that
+/// `DATA_DIR/projects/<id>/repo.git` is a real bare repository with a commit
+/// in it, not where that commit came from.
+async fn second_project(fixture: &HandoffFixture) -> Project {
+    let mut new_project = NewProject::new("orphans-other", "https://git.example.invalid/other.git")
+        .expect("the project is valid");
+    new_project.default_branch = Some(BranchName::parse("main").expect("main is a branch name"));
+
+    let projects = ProjectRepository::new(&fixture.app.pool);
+    let mut tx = fixture
+        .app
+        .pool
+        .begin()
+        .await
+        .expect("a transaction begins");
+    let project = projects
+        .insert(&mut tx, &new_project)
+        .await
+        .expect("the project inserts");
+    tx.commit().await.expect("the transaction commits");
+
+    {
+        let guard = fixture.app.state.git_locks.lock(project.id).await;
+        init_project_repo(
+            &guard,
+            &fixture.paths(),
+            &RemoteUrl::local_for_tests(&fixture.upstream.path),
+            Some("main"),
+            None,
+        )
+        .await
+        .expect("the second project's repository is initialised");
+    }
+
+    let mut mutation = TrackerMutation::begin(&fixture.app.pool, project.id, TaskActor::System)
+        .await
+        .expect("the mutation opens");
+    TaskRepository::new(&fixture.app.pool)
+        .insert_default_states(mutation.conn(), project.id)
+        .await
+        .expect("the default states insert");
+    mutation.commit().await.expect("the mutation commits");
+
+    project
+}
+
+/// A task with a comment and a hand-off row in `project_id`, as a publication
+/// would leave behind, and the hand-off's id.
+///
+/// The fixture's own `task`/`current_handoff` pair only knows its own project,
+/// so the second project's rows are made here through the same repositories.
+async fn handoff_row(fixture: &HandoffFixture, project_id: Uuid, commit: &str) -> Uuid {
+    let repository = TaskRepository::new(&fixture.app.pool);
+    let mut mutation = TrackerMutation::begin(&fixture.app.pool, project_id, TaskActor::System)
+        .await
+        .expect("the mutation opens");
+
+    let new_task = NewTask::new(project_id, "hand the work over").expect("the title parses");
+    let task = repository
+        .insert_task(mutation.conn(), project_id, &new_task)
+        .await
+        .expect("the task inserts");
+
+    let comment = NewTaskComment::from_user(task.id, fixture.user.id, "the published revision");
+    let comment = repository
+        .insert_comment(mutation.conn(), project_id, &comment)
+        .await
+        .expect("the comment inserts");
+
+    let mut handoff = NewTaskHandoff::new(task.id, "session/fake", commit, comment.id);
+    handoff.created_by_user_id = Some(fixture.user.id);
+    let handoff = repository
+        .insert_handoff(mutation.conn(), project_id, &handoff)
+        .await
+        .expect("the hand-off inserts");
+    mutation.commit().await.expect("the mutation commits");
+
+    handoff.id
+}
+
+/// The commit `refs/heads/main` names in a project's repository: what every
+/// hand-off ref in these scenarios is pinned at.
+async fn main_commit(mirror: &std::path::Path) -> String {
+    run_git(mirror, &["rev-parse", "refs/heads/main"])
+        .await
+        .trim()
+        .to_string()
+}
+
+/// Pin `refs/handoffs/<id>` at `commit`, the way publication does under the
+/// project git lock.
+async fn pin(fixture: &HandoffFixture, project_id: Uuid, id: Uuid, commit: &str) {
+    let _guard = fixture.app.state.git_locks.lock(project_id).await;
+    refs::retain_handoff(&fixture.paths().project_repo(project_id), id, commit)
+        .await
+        .expect("the hand-off ref is pinned");
+}
+
+/// The hand-off ids a project's repository currently retains, sorted.
+async fn pinned(fixture: &HandoffFixture, project_id: Uuid) -> Vec<Uuid> {
+    let mut ids: Vec<Uuid> = refs::list_handoffs(&fixture.paths().project_repo(project_id))
+        .await
+        .expect("the hand-off refs list")
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[tokio::test]
+async fn an_orphan_handoff_ref_is_removed_only_on_a_second_sighting_an_hour_later() {
+    let fixture = HandoffFixture::create("orphan-handoffs").await;
+    let other = second_project(&fixture).await;
+
+    let mirror_a = fixture.paths().project_repo(fixture.project.id);
+    let mirror_b = fixture.paths().project_repo(other.id);
+    let commit_a = main_commit(&mirror_a).await;
+    let commit_b = main_commit(&mirror_b).await;
+
+    // (a) a published hand-off: a row and its ref, which must survive.
+    let task = fixture.task("implement it", "ready").await;
+    let (_task, id_a) = fixture
+        .current_handoff(&task, None, "session/fake", &commit_a)
+        .await;
+    pin(&fixture, fixture.project.id, id_a, &commit_a).await;
+
+    // (b) a ref whose row was deleted with its task: an interrupted deletion.
+    let id_b = handoff_row(&fixture, fixture.project.id, &commit_a).await;
+    pin(&fixture, fixture.project.id, id_b, &commit_a).await;
+    // The row-level fact no interface answers: a `task_handoffs` row that is
+    // gone while its ref is not, which is what an interrupted deletion leaves.
+    sqlx::query("DELETE FROM task_handoffs WHERE id = $1")
+        .bind(id_b)
+        .execute(&fixture.app.pool)
+        .await
+        .expect("the hand-off row is deleted");
+
+    // (c) a ref for an id that has no row at all yet: a publication that
+    // pinned its ref and has not committed its tracker transaction.
+    let id_c = Uuid::new_v4();
+    pin(&fixture, fixture.project.id, id_c, &commit_a).await;
+
+    // The second project: one published hand-off of its own, and a copy of the
+    // first project's ref, whose row belongs to another project and is
+    // therefore an orphan here.
+    let id_d = handoff_row(&fixture, other.id, &commit_b).await;
+    pin(&fixture, other.id, id_d, &commit_b).await;
+    pin(&fixture, other.id, id_a, &commit_b).await;
+
+    // One service across the runs: the sightings live on it.
+    let cron = fixture.app.cron();
+    let now = Utc::now();
+
+    let first = cron.orphan_cleanup(now).await.expect("the first run");
+    assert_eq!(
+        first,
+        JobReport {
+            items: 0,
+            skipped: 3,
+            failures: 0
+        },
+        "the first sighting must remove nothing",
+    );
+
+    let second = cron
+        .orphan_cleanup(now + TimeDelta::minutes(30))
+        .await
+        .expect("the second run");
+    assert_eq!(
+        second,
+        JobReport {
+            items: 0,
+            skipped: 3,
+            failures: 0
+        },
+        "a second sighting inside the hour must remove nothing",
+    );
+
+    // The publication behind (c) finally commits its row, under an id the
+    // sweep has already sighted twice.
+    let mut mutation =
+        TrackerMutation::begin(&fixture.app.pool, fixture.project.id, TaskActor::System)
+            .await
+            .expect("the mutation opens");
+    let late_task = TaskRepository::new(&fixture.app.pool)
+        .insert_task(
+            mutation.conn(),
+            fixture.project.id,
+            &NewTask::new(fixture.project.id, "the late publication").expect("the title parses"),
+        )
+        .await
+        .expect("the task inserts");
+    mutation.commit().await.expect("the mutation commits");
+    // Raw SQL for the one thing no interface offers: a hand-off row with a
+    // chosen id, so the row lands under the ref the sweep already remembers.
+    sqlx::query(
+        r#"INSERT INTO task_handoffs (id, task_id, source_branch, "commit")
+           VALUES ($1, $2, 'session/fake', $3)"#,
+    )
+    .bind(id_c)
+    .bind(late_task.id)
+    .bind(&commit_a)
+    .execute(&fixture.app.pool)
+    .await
+    .expect("the late hand-off row inserts");
+
+    let third = cron
+        .orphan_cleanup(now + TimeDelta::minutes(61))
+        .await
+        .expect("the third run");
+    assert_eq!(
+        third,
+        JobReport {
+            items: 2,
+            skipped: 0,
+            failures: 0
+        },
+        "exactly the two refs orphaned for an hour are removed",
+    );
+
+    let mut remaining_a = vec![id_a, id_c];
+    remaining_a.sort();
+    assert_eq!(
+        pinned(&fixture, fixture.project.id).await,
+        remaining_a,
+        "a published ref, or one whose row arrived late, was removed",
+    );
+    assert_eq!(
+        pinned(&fixture, other.id).await,
+        vec![id_d],
+        "the second project's own hand-off ref was removed, or another project's was kept",
+    );
+
+    let fourth = cron
+        .orphan_cleanup(now + TimeDelta::minutes(122))
+        .await
+        .expect("the fourth run");
+    assert_eq!(
+        fourth,
+        JobReport::default(),
+        "a run with nothing orphaned did work",
+    );
+}
+
+#[tokio::test]
+async fn the_sweep_waits_for_the_project_git_lock() {
+    let fixture = HandoffFixture::create("orphan-handoff-lock").await;
+    let cron = fixture.app.cron();
+
+    let guard = fixture.guard().await;
+
+    let blocked = timeout(Duration::from_millis(200), cron.orphan_cleanup(Utc::now())).await;
+    assert!(
+        blocked.is_err(),
+        "the sweep reached a project's refs while its git lock was held",
+    );
+
+    drop(guard);
+
+    let report = timeout(Duration::from_secs(10), cron.orphan_cleanup(Utc::now()))
+        .await
+        .expect("the sweep completes once the git lock is released")
+        .expect("orphan cleanup runs");
+    assert_eq!(report, JobReport::default(), "an empty run did work");
+}
+
+#[tokio::test]
+async fn an_unreadable_repository_costs_one_failure_and_the_other_projects_are_swept() {
+    let fixture = HandoffFixture::create("orphan-handoff-failure").await;
+    let commit = main_commit(&fixture.paths().project_repo(fixture.project.id)).await;
+
+    // An orphan in the healthy project, so its sweep is visible in the report.
+    let id = Uuid::new_v4();
+    pin(&fixture, fixture.project.id, id, &commit).await;
+
+    // A project whose `repo.git` is there but is not a repository: what an
+    // interrupted deletion, or a half-written clone, leaves behind. A project
+    // with no `repo.git` at all is skipped rather than counted, which is what
+    // the container and `/data/tmp` scenarios above rely on.
+    let broken = second_project(&fixture).await;
+    let broken_repo = fixture.paths().project_repo(broken.id);
+    fs::remove_dir_all(&broken_repo).expect("the second repository is removed");
+    fs::create_dir_all(&broken_repo).expect("an empty directory takes its place");
+
+    let report = fixture
+        .app
+        .cron()
+        .orphan_cleanup(Utc::now())
+        .await
+        .expect("orphan cleanup runs even when one project fails");
+
+    assert_eq!(
+        report,
+        JobReport {
+            items: 0,
+            skipped: 1,
+            failures: 1
+        },
+        "the broken project cost more than one failure, or stopped the sweep",
+    );
+    assert_eq!(
+        pinned(&fixture, fixture.project.id).await,
+        vec![id],
+        "a first-sighted orphan was removed",
+    );
 }

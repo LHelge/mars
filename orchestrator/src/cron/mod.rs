@@ -22,12 +22,14 @@
 //! timeout on either side of it — and, for a job that decides nothing by
 //! time, so the dispatch below can stay one shape.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use crate::prelude::*;
 
@@ -132,13 +134,30 @@ pub struct JobReport {
 /// Held behind an `Arc` by [`CronService::start`] and by nothing else: the
 /// jobs take `&self`, so a test calls one directly on a plain value
 /// (`TestApp::cron`) without a scheduler anywhere near it.
+///
+/// One job carries memory between its runs — [`CronService::orphan_cleanup`]'s
+/// hand-off sweep, which removes a ref only after finding it orphaned twice —
+/// and that memory lives here, behind a `tokio::sync::Mutex` because the jobs
+/// borrow `&self` and never `&mut self`. Two `CronService` values over the
+/// same state therefore do not share it, which is why a test of the
+/// two-sighting rule keeps one value across its runs.
 pub struct CronService {
     state: AppState,
+    /// When each orphaned `refs/handoffs/<id>` was first seen without a row,
+    /// keyed by `(project_id, handoff_id)` (`cron/orphan_cleanup.rs`).
+    ///
+    /// Deliberately not persisted: losing it at a restart costs an orphan two
+    /// more sightings and nothing else, whereas a table would make a leftover
+    /// ref's bookkeeping into rows of its own to clean up.
+    handoff_sightings: tokio::sync::Mutex<HashMap<(Uuid, Uuid), DateTime<Utc>>>,
 }
 
 impl CronService {
     pub fn new(state: AppState) -> Self {
-        CronService { state }
+        CronService {
+            state,
+            handoff_sightings: tokio::sync::Mutex::new(HashMap::new()),
+        }
     }
 
     /// Run one job now, with the clock the caller chose.

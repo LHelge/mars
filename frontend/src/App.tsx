@@ -17,6 +17,7 @@ import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { ProjectsPage } from "./pages/ProjectsPage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { SecretsPage } from "./pages/SecretsPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -33,7 +34,7 @@ export function App() {
       <Route element={<ProtectedRoute />}>
         <Route path="/change-password" element={<ChangePasswordPage />} />
         <Route path="/" element={<DashboardPage />} />
-        <Route path="/projects" element={<PlaceholderPage title="Projects" />} />
+        <Route path="/projects" element={<ProjectsPage />} />
         <Route path="/projects/:id" element={<PlaceholderPage title="Project" />} />
         <Route path="/projects/:id/tasks/:number" element={<PlaceholderPage title="Task" />} />
         <Route path="/sessions/:id" element={<PlaceholderPage title="Session" />} />

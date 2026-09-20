@@ -20,6 +20,8 @@ export const queryKeys = {
   projects: {
     all: ["projects"] as const,
     list: () => ["projects", "list"] as const,
+    /** One project; the list warms it so a detail view opens on known data. */
+    detail: (id: string) => ["projects", id] as const,
   },
 
   secrets: {

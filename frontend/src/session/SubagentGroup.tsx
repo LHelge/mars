@@ -13,8 +13,12 @@ import type { ToolMessage } from "./sessionStore";
 
 export interface SubagentGroupProps {
   message: ToolMessage;
-  /** The nested rows, rendered only while expanded. */
-  children: ReactNode;
+  /**
+   * The nested rows, rendered only while expanded. Optional because the tool
+   * registry resolves this component for `Task` and `Agent`, and a resolved
+   * renderer is only handed the message.
+   */
+  children?: ReactNode;
 }
 
 /** A subagent that has ended is history; a running one is what is happening. */

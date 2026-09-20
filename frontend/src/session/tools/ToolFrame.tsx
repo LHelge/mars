@@ -6,7 +6,14 @@ import type { ReactNode } from "react";
 
 import { Spinner } from "../../components/Spinner";
 import type { ToolMessage } from "../sessionStore";
+import { JsonToolRenderer } from "./JsonToolRenderer";
 import { toolRendererFor } from "./registry";
+// Populates the registry: a tool row is never drawn without this module.
+import "./renderers";
+
+/** What a result the orchestrator had to cut says about itself. */
+const TRUNCATED =
+  "Result truncated at 256 KiB; the full output is in the session transcript file";
 
 export interface ToolFrameProps {
   message: ToolMessage;
@@ -63,10 +70,21 @@ export function ToolFrame({ message, children }: ToolFrameProps) {
         )}
       </div>
       {open && (
-        <div className="px-3 pt-1 pb-2">
+        <div className="space-y-2 px-3 pt-1 pb-2">
+          {message.truncated === true && (
+            <p className="text-console-muted text-xs">{TRUNCATED}</p>
+          )}
           {/* The renderer is looked up per message, so it is created here
-              rather than closed over by a component defined during render. */}
-          {createElement(toolRendererFor(message.name), { message })}
+              rather than closed over by a component defined during render.
+              A subagent's registered renderer is the nested group `MessageRow`
+              already draws as `children`, so the body shows the call itself —
+              the prompt that started the subagent — instead of repeating it. */}
+          {createElement(
+            message.subagent === undefined
+              ? toolRendererFor(message.name)
+              : JsonToolRenderer,
+            { message },
+          )}
         </div>
       )}
       {children}

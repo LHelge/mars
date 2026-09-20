@@ -8,11 +8,20 @@ export type { AlertKind, AlertProps } from "./Alert";
 export { AuthLayout } from "./AuthLayout";
 export type { AuthLayoutProps } from "./AuthLayout";
 
+export { CollapsibleLines } from "./CollapsibleLines";
+export type { CollapsibleLinesProps } from "./CollapsibleLines";
+
+export { DiffView } from "./DiffView";
+export type { DiffViewProps } from "./DiffView";
+
 export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
 
 export { FormField } from "./FormField";
 export type { FormFieldProps } from "./FormField";
+
+export { JsonTree } from "./JsonTree";
+export type { JsonTreeProps } from "./JsonTree";
 
 export { LoadingState } from "./LoadingState";
 export type { LoadingStateProps } from "./LoadingState";

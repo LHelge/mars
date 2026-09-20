@@ -4,7 +4,7 @@ title: Verify against a real orchestrator that a token refresh on socket reconne
 status: open
 priority: P2
 created: "2026-09-20T08:49:57.461269981Z"
-updated: "2026-09-20T15:23:04.024368414Z"
+updated: "2026-09-20T18:50:44.361190492Z"
 tags:
   - frontend
   - sessions
@@ -12,6 +12,7 @@ tags:
   - e2e
 depends_on:
   - "2acdq"
+  - hez8r
 parent: "6s8j7"
 ---
 

@@ -1,10 +1,10 @@
 ---
 id: dy7gr
 title: Write a first SSE frame at once so a task stream with nothing to replay opens through a buffering proxy
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-20T17:51:23.324591432Z"
-updated: "2026-09-20T17:51:37.217576342Z"
+updated: "2026-09-20T18:56:41.677457111Z"
 tags:
   - orchestrator
   - realtime

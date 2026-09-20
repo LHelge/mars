@@ -1,10 +1,10 @@
 ---
 id: "2acdq"
 title: "Write session lifecycle E2E specs on the stub image: launch, transcript replay, message, stop, resume, end, failure and retry"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:44:05.430449145Z"
-updated: "2026-09-20T17:26:54.213919080Z"
+updated: "2026-09-20T18:56:41.594758479Z"
 tags:
   - frontend
   - sessions

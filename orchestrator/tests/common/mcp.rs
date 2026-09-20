@@ -82,6 +82,30 @@ impl TestApp {
         (project.id, profile.id)
     }
 
+    /// A second profile in `project_id` whose `mcp_tools` are exactly these.
+    ///
+    /// What the dispatch suite varies: the git tools a session may call are the
+    /// ones its profile names (`docs/data-model.md`,
+    /// `agent_profiles.mcp_tools`). The names go through
+    /// [`NewAgentProfile::validate`] like any other profile's, so a test cannot
+    /// seed a set the API would refuse.
+    pub async fn seed_mcp_profile(&self, project_id: Uuid, mcp_tools: &[&str]) -> Uuid {
+        let name = format!("profile-{}", &Uuid::new_v4().simple().to_string()[..8]);
+        let mut profile = NewAgentProfile::new(project_id, &name, "localhost/mars-session:test")
+            .expect("the profile is valid");
+        profile.mcp_tools = mcp_tools.iter().map(|tool| (*tool).to_string()).collect();
+        profile.validate().expect("the tool names are known ones");
+
+        let mut tx = self.pool.begin().await.expect("a transaction begins");
+        let inserted = ProjectRepository::new(&self.pool)
+            .insert_profile(&mut tx, &profile)
+            .await
+            .expect("the profile inserts");
+        tx.commit().await.expect("the transaction commits");
+
+        inserted.id
+    }
+
     /// A session in `state`, with a freshly generated bearer token.
     ///
     /// The row is inserted through [`SessionRepository`] with

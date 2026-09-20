@@ -241,8 +241,10 @@ async fn every_live_state_authenticates() {
             .await
             .unwrap_or_else(|err| panic!("a {state} session authenticates: {err}"));
 
-        // The handshake really completed: the server answered a request.
-        assert!(client.list_tools().await.is_empty());
+        // The handshake really completed: the server answered a request. What
+        // it answers with is `tests/mcp_dispatch.rs`; all that matters here is
+        // that a listing came back at all.
+        assert!(!client.list_tools().await.is_empty());
     }
 }
 

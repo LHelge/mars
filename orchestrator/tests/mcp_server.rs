@@ -6,7 +6,8 @@
 //! suite pins is the shape of the listener: `/mcp` speaks MCP, everything else
 //! answers the ordinary error body — unauthenticated, because the 404 fallback
 //! is outside the middleware — and the handshake advertises the tools
-//! capability with no tools behind it until the dispatch task lands.
+//! capability with tools behind it. Which tools, for which profile, is
+//! `tests/mcp_dispatch.rs`.
 //!
 //! Needs a container engine (`DOCKER_HOST`); see `tests/common/db.rs`.
 
@@ -33,16 +34,18 @@ async fn app_with_session() -> (TestApp, String) {
 }
 
 #[tokio::test]
-async fn a_client_connects_and_the_server_lists_no_tools_yet() {
+async fn a_client_connects_and_the_server_lists_its_tools() {
     let (app, token) = app_with_session().await;
 
     let client = McpClient::connect(&app, &token)
         .await
         .expect("a running session's token authenticates");
 
-    assert!(
-        client.list_tools().await.is_empty(),
-        "no tool is registered until the dispatch task lands"
+    // The seeded profile names no git tool, so this is the task-tracker set.
+    assert_eq!(
+        client.list_tools().await.len(),
+        8,
+        "the handshake is followed by a usable listing"
     );
 }
 

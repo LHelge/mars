@@ -1,10 +1,10 @@
 ---
 id: bxhas
 title: Build sessionStore (Zustand) folding AgentEvents into messages, order, pendingTools, subagents and pendingPrompt, with fixture tests
-status: in_progress
+status: done
 priority: P0
 created: "2026-09-16T20:41:39.804562669Z"
-updated: "2026-09-20T07:37:32.868687667Z"
+updated: "2026-09-20T07:49:39.028127466Z"
 tags:
   - frontend
   - sessions

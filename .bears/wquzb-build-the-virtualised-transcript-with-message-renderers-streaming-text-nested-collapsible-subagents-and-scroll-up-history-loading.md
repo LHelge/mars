@@ -1,16 +1,17 @@
 ---
 id: wquzb
 title: Build the virtualised Transcript with message renderers, streaming text, nested collapsible subagents and scroll-up history loading
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:43:53.507147855Z"
-updated: "2026-09-16T20:43:53.507147855Z"
+updated: "2026-09-20T07:49:40.234427486Z"
 tags:
   - frontend
   - sessions
 depends_on:
   - bxhas
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

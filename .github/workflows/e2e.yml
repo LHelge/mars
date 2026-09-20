@@ -179,6 +179,12 @@ jobs:
 
       # `CI=true` is what turns on the config's one retry, the HTML reporter and
       # a fresh Vite dev server per run (`reuseExistingServer: false`).
+      #
+      # `npm run test:e2e` is wrapped by `tests/coverage-check.mjs`: before the
+      # run it checks that every scenario `frontend/tests/README.md` names
+      # exists, and after it that the run skipped nothing that document does not
+      # list as an exclusion — which is what keeps a retried failure from being
+      # reported as a skip.
       - name: End-to-end tests
         run: npm run test:e2e
         env:

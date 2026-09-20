@@ -49,7 +49,13 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: isCI ? 1 : 0,
-  reporter: isCI ? [["list"], ["html", { open: "never" }]] : "list",
+  // The JSON report is what `tests/coverage-check.mjs --skips` reads after a
+  // run, so it is written locally as well as in CI.
+  reporter: [
+    ["list"],
+    ["json", { outputFile: "test-results/results.json" }],
+    ...(isCI ? [["html", { open: "never" }] as const] : []),
+  ],
   use: {
     baseURL,
     trace: "retain-on-failure",

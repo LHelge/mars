@@ -20,8 +20,10 @@ export const queryKeys = {
   projects: {
     all: ["projects"] as const,
     list: () => ["projects", "list"] as const,
-    /** One project; the list warms it so a detail view opens on known data. */
+    /** One project, as the project page and every one of its tabs read it; the list warms it. */
     detail: (id: string) => ["projects", id] as const,
+    /** The mirror's refs (`GET /projects/{id}/branches`). */
+    branches: (id: string) => ["projects", id, "branches"] as const,
   },
 
   secrets: {

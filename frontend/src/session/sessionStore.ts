@@ -140,6 +140,16 @@ export interface SessionActions {
   applyEvent: (event: AgentEvent) => void;
   /** An older page, newest-last as the REST endpoint returns it. */
   prependHistory: (events: AgentEvent[], hasMore: boolean) => void;
+  /**
+   * A message the client itself has to show — a socket `error` frame, say —
+   * rendered like any other system message but carrying no `seq`, so it never
+   * touches the replay cursors.
+   */
+  addSystemMessage: (
+    text: string,
+    level?: SystemMessage["level"],
+    detail?: unknown,
+  ) => void;
   addOptimisticUser: (clientId: string, input: SessionInput) => void;
   inputAccepted: (clientId: string, seq: number) => void;
   inputRejected: (clientId: string, reason: string) => void;
@@ -743,6 +753,8 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
 }
 
 export function createSessionStore(): StoreApi<SessionStore> {
+  // Ids for messages the client invents; `e<seq>` is reserved for events.
+  let local = 0;
   return createStore<SessionStore>()((set) => ({
     ...emptySessionState(),
 
@@ -790,6 +802,18 @@ export function createSessionStore(): StoreApi<SessionStore> {
             state.lastSeq,
             ...accepted.map((event) => event.seq),
           ),
+        };
+      });
+    },
+
+    addSystemMessage: (text, level = "error", detail) => {
+      set((state) => {
+        local += 1;
+        const id = `local:${local}`;
+        const message: SystemMessage = { id, kind: "system", text, level, detail };
+        return {
+          messages: { ...state.messages, [id]: message },
+          order: [...state.order, id],
         };
       });
     },

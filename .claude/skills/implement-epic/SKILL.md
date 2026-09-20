@@ -11,8 +11,9 @@ You coordinate; `task-implementer` subagents write the code. The standing rules 
 
 1. `git status` is clean on `main`. If only `.bears/` is dirty, commit it first as `chore(infra)`.
 2. `export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock` for every cargo command you run.
-3. Pick the epic with `list_epics` and read it with `get_graph`. If the Bears MCP tools show another project's tasks, the server is bound to the wrong directory; use `bea ... --json` from the repository root instead.
-4. Tell the user in one line which epic and how many tasks, then start. Ask only if something in the epic is unclear.
+3. `df -h /`. Above 70 % used, `rm -rf orchestrator/target-main` (the next verification rebuilds it) and remove any worktree a finished agent left under `.claude/worktrees/`, before dispatching: cargo never evicts old test binaries, `target-main` grows by tens of GB per epic, and every running agent adds a build directory of its own.
+4. Pick the epic with `list_epics` and read it with `get_graph`. If the Bears MCP tools show another project's tasks, the server is bound to the wrong directory; use `bea ... --json` from the repository root instead.
+5. Tell the user in one line which epic and how many tasks, then start. Ask only if something in the epic is unclear.
 
 ## The loop
 
@@ -37,8 +38,10 @@ Repeat until the epic has no open tasks.
    git worktree unlock <worktree>; git worktree remove --force <worktree>; git branch -D <branch>
    ```
 
+   Removing the worktree removes the agent's build directory with it (`orchestrator/target` inside the worktree), so do it as soon as the branch is on `main`, not at the end of the epic.
+
    Conflicts between siblings are usually a few lines in `src/prelude/mod.rs`, `Cargo.toml`, `package.json` or `README.md`; resolve them by hand and `git cherry-pick --continue`.
-4. **Verify once per round**, when all its branches are on `main`: run the CLAUDE.md "Code quality" chains for the areas the round touched, the backend chain with `CARGO_TARGET_DIR=$PWD/orchestrator/target-main`. That directory is yours alone; the subagents share `orchestrator/target`, where a sibling's artifact can go stale, so your run is the authoritative one. If the round changed `orchestrator/migrations/`, first `touch tests/common/db.rs tests/migrations.rs src/main.rs` in `orchestrator/`, because `sqlx::migrate!` embeds the SQL at compile time. If it changed `.github/workflows/`, run actionlint (`podman run --rm -v $PWD:/repo:ro -w /repo docker.io/rhysd/actionlint:latest`). A failure is fixed forward on `main`: a few lines yourself, anything larger by a new `task-implementer` given the failing output.
+4. **Verify once per round**, when all its branches are on `main`: run the CLAUDE.md "Code quality" chains for the areas the round touched, the backend chain with `CARGO_TARGET_DIR=$PWD/orchestrator/target-main`. That directory is yours alone, and yours is the only run of the whole suite: each subagent builds in its own worktree and runs only fmt, clippy and the test binaries its task concerns, because a full build is about 48 GB per directory. A failure in a binary no agent ran is therefore expected to show up here first. If the round changed `orchestrator/migrations/`, first `touch tests/common/db.rs tests/migrations.rs src/main.rs` in `orchestrator/`, because `sqlx::migrate!` embeds the SQL at compile time. If it changed `.github/workflows/`, run actionlint (`podman run --rm -v $PWD:/repo:ro -w /repo docker.io/rhysd/actionlint:latest`). A failure is fixed forward on `main`: a few lines yourself, anything larger by a new `task-implementer` given the failing output.
 5. **Record.** `complete_task` for each task of the round, then commit `.bears/` as `chore(infra): track <epic> progress in Bears (<epic id>)`. Do not push.
 
 ## Closing the epic

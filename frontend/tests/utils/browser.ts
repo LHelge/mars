@@ -73,3 +73,91 @@ export async function newLoggedInPage(
   await loginViaToken(context, user);
   return context.newPage();
 }
+
+/** The page-global `dropConnection` installs and calls. */
+const DROP_HOOK = "__marsDropSockets";
+
+/**
+ * Makes the page's WebSockets closable from the test, for [`dropConnection`].
+ *
+ * `BrowserContext.setOffline` alone is not enough: Chromium's offline
+ * emulation fails new requests but leaves an already established WebSocket
+ * open, so a session socket survives the outage and the client never runs its
+ * reconnect path. What does close it is the page closing it — so every socket
+ * whose URL contains `match` is tracked here, behind a subclass of the real
+ * `WebSocket`, leaving framing, binary frames and every other behaviour the
+ * client relies on untouched.
+ *
+ * The init script has to be in place before the page that opens the socket
+ * loads, so this is called on the context, beside `loginViaToken`, and before
+ * the first navigation.
+ */
+export async function armSocketDrop(
+  context: BrowserContext,
+  match = "/ws/",
+): Promise<void> {
+  await context.addInitScript(
+    ([hook, needle]) => {
+      const open = new Set<WebSocket>();
+      const Native = window.WebSocket;
+
+      class Tracked extends Native {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          super(url, protocols);
+          if (!String(url).includes(needle)) return;
+          open.add(this);
+          this.addEventListener("close", () => open.delete(this));
+        }
+      }
+
+      window.WebSocket = Tracked;
+      Object.defineProperty(window, hook, {
+        value: () => {
+          const count = open.size;
+          // 4900 is in the private range: the client treats any non-1008
+          // close the same way, and a distinct code names the cause in a log.
+          for (const socket of open) socket.close(4900, "dropped by the test");
+          open.clear();
+          return count;
+        },
+      });
+    },
+    [DROP_HOOK, match] as const,
+  );
+}
+
+/**
+ * Takes the page's network away for `offlineMs`, closing the sockets it holds,
+ * and gives it back — the forced disconnect the reconnect scenarios need.
+ *
+ * Both halves matter. The close is what makes the client notice; being offline
+ * across it is what keeps it noticing, because the reconnect refreshes the
+ * access token first (`SPEC.md`, "Authentication") and that request has to
+ * fail for a while, or the socket is back before a reader — or an assertion —
+ * ever sees `reconnecting`.
+ *
+ * Nothing on the server side is touched: the session goes on running and the
+ * events it commits meanwhile are exactly what the reopened socket replays
+ * from `?after=<seq>` (`SPEC.md`, "WebSocket: session stream").
+ *
+ * Requires [`armSocketDrop`] on the context before the page loaded.
+ */
+export async function dropConnection(
+  page: Page,
+  offlineMs = 3000,
+): Promise<number> {
+  const context = page.context();
+  await context.setOffline(true);
+  const dropped = await page.evaluate((hook) => {
+    const drop = (window as unknown as Record<string, unknown>)[hook];
+    if (typeof drop !== "function") {
+      throw new Error(
+        "dropConnection: armSocketDrop() was not installed before this page loaded",
+      );
+    }
+    return (drop as () => number)();
+  }, DROP_HOOK);
+  await page.waitForTimeout(offlineMs);
+  await context.setOffline(false);
+  return dropped;
+}

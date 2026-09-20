@@ -35,6 +35,7 @@ pub mod orphan_cleanup;
 pub mod idle_reaper;
 pub mod scheduler;
 mod stuck_tasks;
+mod token_cleanup;
 
 pub use scheduler::spawn_job;
 
@@ -183,14 +184,6 @@ impl CronService {
     /// `git fetch --prune` on every `ready` mirror. Implemented by the mirror
     /// fetch task in this epic; the body lives in `cron/mirror_fetch.rs`.
     pub async fn mirror_fetch(&self, now: DateTime<Utc>) -> Result<JobReport> {
-        let _ = now;
-        Ok(JobReport::default())
-    }
-
-    /// Delete expired credentials and orphaned secret rows. Implemented by the
-    /// token cleanup task in this epic; the body lives in
-    /// `cron/token_cleanup.rs`.
-    pub async fn token_cleanup(&self, now: DateTime<Utc>) -> Result<JobReport> {
         let _ = now;
         Ok(JobReport::default())
     }

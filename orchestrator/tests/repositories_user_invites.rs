@@ -428,9 +428,9 @@ async fn the_reaper_deletes_expired_unaccepted_invites_only() {
     );
     tx.commit().await.unwrap();
 
-    assert_eq!(repository.delete_expired().await.unwrap(), 1);
+    assert_eq!(repository.delete_expired(Utc::now()).await.unwrap(), 1);
     assert_eq!(repository.list_open().await.unwrap(), [live]);
-    assert_eq!(repository.delete_expired().await.unwrap(), 0);
+    assert_eq!(repository.delete_expired(Utc::now()).await.unwrap(), 0);
     // The accepted row survived, so it can still be revoked-checked by id.
     assert!(!repository.delete_open(accepted.id).await.unwrap());
 }

@@ -17,6 +17,11 @@ use std::collections::HashMap;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 
+/// How long a statement against the unreachable database waits before it
+/// fails. Short, because every millisecond of it is time the shutdown test
+/// spends waiting for a tick it already asked to be the last one.
+const UNREACHABLE_AFTER: Duration = Duration::from_millis(200);
+
 /// Obviously fake values; nothing listens on port 1, so the health probe
 /// reports `database: false` when its own timeout fires (rule 3).
 fn test_state() -> AppState {
@@ -36,7 +41,12 @@ fn test_state() -> AppState {
 
     let config = Config::from_vars(|name| vars.get(name).map(|value| value.to_string()))
         .expect("a complete required set loads");
+    // A job body that reaches for this pool has to give up quickly rather than
+    // sit out sqlx's 30-second default: the cron test below signals shutdown
+    // while the first tick is still running, and the loop only stops once that
+    // tick has finished (`src/cron/scheduler.rs`).
     let pool = PgPoolOptions::new()
+        .acquire_timeout(UNREACHABLE_AFTER)
         .connect_lazy(&config.database_url)
         .expect("a lazy pool never connects");
 
@@ -114,8 +124,9 @@ async fn both_listeners_serve_and_stop_on_one_shutdown_signal() {
 /// with `STOP_GRACE_SECS` (`ARCHITECTURE.md`, "Restart procedure"); this is
 /// the unbounded version of that wait, so a loop that only noticed the signal
 /// at its next tick would hang here instead of being papered over by the
-/// grace. Every job is a stub, so what is under test is the loop and nothing
-/// else.
+/// grace. What is under test is the loop; a job body that runs here reaches
+/// the unreachable database of [`test_state`] and gives up within
+/// [`UNREACHABLE_AFTER`], so no body can decide this deadline either.
 #[tokio::test]
 async fn the_cron_jobs_stop_on_the_same_signal_as_the_listeners() {
     let api = TcpListener::bind("127.0.0.1:0")

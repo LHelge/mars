@@ -281,7 +281,7 @@ async fn the_reaper_deletes_expired_tokens_only() {
     );
     tx.commit().await.unwrap();
 
-    assert_eq!(repository.delete_expired().await.unwrap(), 1);
+    assert_eq!(repository.delete_expired(Utc::now()).await.unwrap(), 1);
     assert!(
         repository
             .find_by_hash(OTHER_FAKE_TOKEN_HASH)
@@ -296,7 +296,7 @@ async fn the_reaper_deletes_expired_tokens_only() {
             .unwrap()
             .is_some()
     );
-    assert_eq!(repository.delete_expired().await.unwrap(), 0);
+    assert_eq!(repository.delete_expired(Utc::now()).await.unwrap(), 0);
 }
 
 #[tokio::test]

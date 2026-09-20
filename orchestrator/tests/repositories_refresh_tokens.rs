@@ -340,9 +340,9 @@ async fn delete_expired_removes_only_expired_rows() {
     assert!(repository.revoke(&mut tx, revoked.id).await.unwrap());
     tx.commit().await.unwrap();
 
-    assert_eq!(repository.delete_expired().await.unwrap(), 1);
+    assert_eq!(repository.delete_expired(Utc::now()).await.unwrap(), 1);
     // Nothing left to reap on the next tick.
-    assert_eq!(repository.delete_expired().await.unwrap(), 0);
+    assert_eq!(repository.delete_expired(Utc::now()).await.unwrap(), 0);
 
     assert!(
         repository

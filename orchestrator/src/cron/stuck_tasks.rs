@@ -21,6 +21,15 @@
 //! whose release fails does not stop the rest (`ARCHITECTURE.md`, "Task
 //! tracker" → "One mutation at a time per project").
 //!
+//! **A holder retried under the sweep still loses its leases, on purpose.**
+//! The listing is lock-free, so a `failed` conversational session may be
+//! retried (`failed → parked`) before its release runs, and the primitive does
+//! not re-read the session's state. That is not a lease stolen from a live
+//! session: a session that failed has had its held tasks released by
+//! definition (`ARCHITECTURE.md`, "Session lifecycle", the `failed` row), the
+//! hook owed that release at the moment of the failure, and the retry starts
+//! without them either way. The task is simply claimable again.
+//!
 //! **The reaper decides nothing about escalation, comments or email.** What a
 //! release does to a task at `max_attempts`, what it writes in the thread and
 //! who is told about it is the tracker's, so that the hook path and this path

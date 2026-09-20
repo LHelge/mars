@@ -1,16 +1,17 @@
 ---
 id: qpybb
 title: "Replace the E2E workflow placeholder with the real stack on rootless Podman: Postgres, stub image, orchestrator, Playwright, artifacts"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:42:10.894509572Z"
-updated: "2026-09-16T20:42:10.894509572Z"
+updated: "2026-09-20T17:25:49.144195964Z"
 tags:
   - infra
   - tests
 depends_on:
   - arsch
 parent: "6s8j7"
+attempts: 1
 ---
 
 ## Summary

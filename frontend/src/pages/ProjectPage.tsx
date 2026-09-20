@@ -28,6 +28,7 @@ import {
   ProjectTabs,
   parseProjectTab,
   projectErrorMessage,
+  SharedDirsTab,
   useProject,
 } from "./project";
 import type { ProjectTab } from "./project";
@@ -133,12 +134,10 @@ function ProjectView({
 }
 
 /** The tabs later tasks of this epic fill in. */
-const PENDING_LABELS: Record<"sessions" | "profiles" | "shared-dirs", string> =
-  {
-    sessions: "Sessions",
-    profiles: "Agent profiles",
-    "shared-dirs": "Shared directories",
-  };
+const PENDING_LABELS: Record<"sessions" | "profiles", string> = {
+  sessions: "Sessions",
+  profiles: "Agent profiles",
+};
 
 function ProjectPanel({ project, tab }: { project: Project; tab: ProjectTab }) {
   // Nothing under the tabs exists until the mirror does; the header and the
@@ -155,6 +154,10 @@ function ProjectPanel({ project, tab }: { project: Project; tab: ProjectTab }) {
         title="Project secrets"
       />
     );
+  }
+
+  if (tab === "shared-dirs") {
+    return <SharedDirsTab project={project} />;
   }
 
   if (tab === "board" || tab === "states") {

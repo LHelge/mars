@@ -450,6 +450,99 @@ describe("prependHistory", () => {
   });
 });
 
+describe("prependHistory across a subagent boundary", () => {
+  it("reconciles the placeholder parent and a nested unknown result", () => {
+    // The live half starts mid-subagent: it sees a nested result, the
+    // subagent's end and the parent's result, so it invents both an `Agent`
+    // parent placeholder and an `unknown` child.
+    const store = createSessionStore();
+    applyAll(store, subagent.slice(4));
+    const live = store.getState();
+    expect(tool(live, "tool:toolu_task_fake").name).toBe("Agent");
+    expect(tool(live, "e5").name).toBe("unknown");
+
+    store.getState().prependHistory(subagent.slice(0, 4), false);
+    const state = store.getState();
+
+    expect(state.order).toEqual(["e1"]);
+    expect(state.messages["tool:toolu_task_fake"]).toBeUndefined();
+    expect(state.messages.e5).toBeUndefined();
+
+    const task = tool(state, "e1");
+    expect(task.name).toBe("Task");
+    expect(task.input).toMatchObject({ description: "Survey the routes" });
+    expect(task.running).toBe(false);
+    expect(task.result).toBe("The router lives in App.tsx.");
+    expect(task.subagent).toEqual({
+      description: "Survey the routes",
+      agent_type: "Explore",
+      is_error: false,
+    });
+    // No stale placeholder id survives in the parent's children.
+    expect(task.children).toEqual(["e3", "e4"]);
+    expect(state.subagents).toEqual({ toolu_task_fake: ["e3", "e4"] });
+
+    const read = tool(state, "e4");
+    expect(read.name).toBe("Read");
+    expect(read.running).toBe(false);
+    expect(read.result).toBe("export function App() {}");
+
+    expect(state.pendingTools).toEqual({});
+    expect(state.oldestSeq).toBe(1);
+    expect(state.lastSeq).toBe(7);
+  });
+
+  it("reconciles when the cut falls between subagent_start and the children", () => {
+    const store = createSessionStore();
+    applyAll(store, subagent.slice(2));
+    expect(store.getState().order).toEqual(["tool:toolu_task_fake"]);
+
+    store.getState().prependHistory(subagent.slice(0, 2), false);
+    const state = store.getState();
+
+    expect(state.order).toEqual(["e1"]);
+    const task = tool(state, "e1");
+    expect(task.name).toBe("Task");
+    expect(task.children).toEqual(["e3", "e4"]);
+    expect(task.running).toBe(false);
+    expect(task.subagent?.is_error).toBe(false);
+    expect(tool(state, "e4").name).toBe("Read");
+    expect(state.pendingTools).toEqual({});
+  });
+
+  it("leaves the parent still running when the older page is only the call", () => {
+    // Only the nested result is live: the parent tool has no result yet.
+    const store = createSessionStore();
+    applyAll(store, subagent.slice(4, 5));
+    store.getState().prependHistory(subagent.slice(0, 4), false);
+    const state = store.getState();
+
+    expect(state.order).toEqual(["e1"]);
+    const task = tool(state, "e1");
+    expect(task.running).toBe(true);
+    expect(task.children).toEqual(["e3", "e4"]);
+    expect(state.subagents).toEqual({ toolu_task_fake: ["e3", "e4"] });
+    expect(state.pendingTools).toEqual({ toolu_task_fake: "e1" });
+    expect(tool(state, "e4").running).toBe(false);
+  });
+
+  it("takes turnActive from the first page loaded into an empty store", () => {
+    const midTurn = createSessionStore();
+    midTurn.getState().prependHistory(subagent.slice(0, 2), true);
+    expect(midTurn.getState().turnActive).toBe(true);
+
+    const finished = createSessionStore();
+    finished.getState().prependHistory(simpleTurn, true);
+    expect(finished.getState().turnActive).toBe(false);
+
+    // A later page never revises the live answer.
+    const live = createSessionStore();
+    applyAll(live, simpleTurn.slice(6));
+    live.getState().prependHistory(simpleTurn.slice(0, 6), false);
+    expect(live.getState().turnActive).toBe(false);
+  });
+});
+
 describe("optimistic input", () => {
   it("replaces the optimistic message in place when its event arrives", () => {
     const store = createSessionStore();

@@ -61,6 +61,7 @@ use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use tokio::io::AsyncWrite;
 use tokio::sync::{Notify, oneshot};
 use uuid::Uuid;
@@ -112,6 +113,10 @@ struct MockContainer {
     spec: ContainerSpec,
     /// Where it is in its lifecycle.
     state: ContainerState,
+    /// When the mock was asked to create it, which is what
+    /// [`ContainerSummary::created`] reports. A test that needs an older
+    /// container moves it with [`MockEngine::set_created`].
+    created_at: DateTime<Utc>,
     /// The host pid [`ContainerEngine::inspect`] reports while it runs.
     pid: i64,
     /// Every signal [`ContainerEngine::kill`] sent, in order.
@@ -259,6 +264,10 @@ struct MockState {
     missing_images: BTreeSet<String>,
     /// The message the next pull fails with, if a test armed one.
     next_pull_error: Option<String>,
+    /// The message the next [`ContainerEngine::list_by_label`] fails with, if
+    /// a test armed one: the engine being unreachable is the one failure a
+    /// listing sweep reports as its own `Err`.
+    next_list_error: Option<String>,
     /// Every [`ContainerEngine::exec_pty`], in order.
     exec_requests: Vec<ExecRequest>,
     /// Output queued for a container's exec session, oldest first.
@@ -502,6 +511,30 @@ impl MockEngine {
         self.lock().missing_images = images.into_iter().map(Into::into).collect();
     }
 
+    /// Move a container's creation time, which is what
+    /// [`ContainerSummary::created`] reports and what orphan cleanup's
+    /// five-minute guard is measured against (`ARCHITECTURE.md`, "Background
+    /// jobs"). The mock creates every container `now`, so a test that needs an
+    /// older one says so here.
+    ///
+    /// Returns whether there was such a container.
+    pub fn set_created(&self, id: &ContainerId, created: DateTime<Utc>) -> bool {
+        match self.lock().containers.get_mut(&id.0) {
+            Some(container) => {
+                container.created_at = created;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Make the next [`ContainerEngine::list_by_label`] fail with
+    /// [`EngineError::Connection`] carrying this message: the engine being
+    /// unreachable, which a sweep over a listing reports as its own `Err`.
+    pub fn fail_next_list(&self, message: impl Into<String>) {
+        self.lock().next_list_error = Some(message.into());
+    }
+
     /// Make the next [`ContainerEngine::pull_image`] fail with
     /// [`EngineError::ImagePull`] carrying this message — the message the
     /// launcher puts into `sessions.error` verbatim.
@@ -635,6 +668,7 @@ impl ContainerEngine for MockEngine {
             MockContainer {
                 spec: spec.clone(),
                 state: ContainerState::Created,
+                created_at: Utc::now(),
                 // Deterministic and obviously not a real pid, so a test can
                 // assert on it without pretending to know the host.
                 pid: 10_000 + number as i64,
@@ -808,7 +842,11 @@ impl ContainerEngine for MockEngine {
     }
 
     async fn list_by_label(&self, label_key: &str) -> Result<Vec<ContainerSummary>, EngineError> {
-        let state = self.lock();
+        let mut state = self.lock();
+
+        if let Some(message) = state.next_list_error.take() {
+            return Err(EngineError::Connection(message));
+        }
 
         Ok(state
             .containers
@@ -819,6 +857,7 @@ impl ContainerEngine for MockEngine {
                 name: container.spec.name.clone(),
                 labels: container.spec.labels.clone(),
                 running: container.state.is_running(),
+                created: container.created_at,
             })
             .collect())
     }

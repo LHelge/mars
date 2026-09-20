@@ -428,6 +428,21 @@ impl SessionRegistry {
             .is_some_and(|tx| !tx.is_closed())
     }
 
+    /// Whether this process still tracks the session at all, live owner or
+    /// not.
+    ///
+    /// Broader than [`is_live`](Self::is_live) on purpose, and the reason it
+    /// is not [`phase`](Self::phase), which is diagnostic: orphan cleanup asks
+    /// it before removing a container whose session row says `parked`, and the
+    /// window it has to cover is a relaunch between the create and the
+    /// session's `init`, where the owner is registered and its channel may not
+    /// be reachable yet. An entry means the launch and park machinery owns
+    /// that session's containers, so the sweep leaves them alone
+    /// (`ARCHITECTURE.md`, "Background jobs").
+    pub fn has(&self, session_id: Uuid) -> bool {
+        self.state().sessions.contains_key(&session_id)
+    }
+
     /// The registered kind of a session, without a database round-trip.
     ///
     /// `None` when the session is not registered; the caller then reads the

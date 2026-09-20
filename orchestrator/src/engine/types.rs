@@ -22,6 +22,7 @@ use std::result::Result;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -297,6 +298,16 @@ pub struct ContainerSummary {
     pub labels: BTreeMap<String, String>,
     /// Whether the engine reports it running.
     pub running: bool,
+    /// When the engine created the container.
+    ///
+    /// Orphan cleanup reads it: a container younger than five minutes belongs
+    /// to a launch that may still be between `create` and `running`, and is
+    /// left alone whatever the session row says (`ARCHITECTURE.md`,
+    /// "Background jobs"). Both engines report it in the list endpoint, at
+    /// one-second resolution; an engine that reports none at all reads as the
+    /// Unix epoch, which is old, because the guard is a backstop behind the
+    /// session state and the registry and not the reason a container is kept.
+    pub created: DateTime<Utc>,
 }
 
 /// The FIFO a session image's entrypoint makes and opens read-write as the

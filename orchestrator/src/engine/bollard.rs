@@ -46,6 +46,7 @@ use std::result::Result;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use async_trait::async_trait;
+use chrono::DateTime;
 // `bollard` names three types the engine's own vocabulary also names. They are
 // imported under an alias rather than qualified at every use, so a signature
 // below can never be read as the wrong one.
@@ -638,6 +639,15 @@ fn to_container_summary(summary: BollardContainerSummary) -> ContainerSummary {
             .unwrap_or_default(),
         running: summary.state == Some(ContainerSummaryStateEnum::RUNNING),
         labels: labels_of(summary.labels),
+        // Both engines report `Created` as whole Unix seconds. A row without
+        // one reads as the epoch rather than as "just now": the only caller,
+        // orphan cleanup, uses the age as a backstop behind the session state
+        // and the registry, and a missing timestamp must not make a leftover
+        // immortal (`ARCHITECTURE.md`, "Engine adapter", the list row).
+        created: summary
+            .created
+            .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+            .unwrap_or(DateTime::UNIX_EPOCH),
     }
 }
 
@@ -1389,11 +1399,16 @@ mod tests {
                 "s1".to_string(),
             )])),
             state,
+            created: Some(1_700_000_000),
             ..Default::default()
         };
 
         let running = to_container_summary(row(Some(ContainerSummaryStateEnum::RUNNING)));
         assert!(running.running);
+        assert_eq!(
+            running.created,
+            DateTime::from_timestamp(1_700_000_000, 0).expect("a valid timestamp"),
+        );
         assert_eq!(running.id, ContainerId("c0ffee".to_string()));
         assert_eq!(running.name, "mars-session-1");
         assert_eq!(
@@ -1425,6 +1440,9 @@ mod tests {
         assert_eq!(summary.name, "");
         assert!(summary.labels.is_empty());
         assert!(!summary.running);
+        // An engine that reports no creation time reads as old, never as new:
+        // orphan cleanup's age guard must not keep a leftover for ever.
+        assert_eq!(summary.created, DateTime::UNIX_EPOCH);
     }
 
     #[test]

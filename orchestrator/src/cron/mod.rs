@@ -31,6 +31,7 @@ use tokio::task::JoinHandle;
 
 use crate::prelude::*;
 
+pub mod orphan_cleanup;
 pub mod scheduler;
 mod stuck_tasks;
 
@@ -205,14 +206,6 @@ impl CronService {
     /// Implemented by the secret rotation task in this epic; the body lives in
     /// `cron/secret_rotation.rs`.
     pub async fn secret_rotation(&self, now: DateTime<Utc>) -> Result<JobReport> {
-        let _ = now;
-        Ok(JobReport::default())
-    }
-
-    /// Remove leftover containers, `/data/tmp` directories and hand-off refs.
-    /// Implemented by the orphan cleanup task in this epic; the body lives in
-    /// `cron/orphan_cleanup.rs`.
-    pub async fn orphan_cleanup(&self, now: DateTime<Utc>) -> Result<JobReport> {
         let _ = now;
         Ok(JobReport::default())
     }

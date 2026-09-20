@@ -172,6 +172,17 @@ impl<'a> ProjectRepository<'a> {
     /// stale while the sweep worked through the list. `ORDER BY id` so a sweep
     /// visits projects in the same order every tick, which makes a log of two
     /// consecutive runs comparable.
+    pub async fn list_ids_by_status(&self, status: ProjectStatus) -> Result<Vec<Uuid>> {
+        let ids = sqlx::query_scalar!(
+            r#"SELECT id FROM projects WHERE status = $1 ORDER BY id"#,
+            status as ProjectStatus,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(ids)
+    }
+
     /// The ids of every project, whatever its status, in a stable order.
     ///
     /// [`ProjectRepository::list_ids_by_status`]'s companion for the sweeps
@@ -185,17 +196,6 @@ impl<'a> ProjectRepository<'a> {
         let ids = sqlx::query_scalar!(r#"SELECT id FROM projects ORDER BY id"#)
             .fetch_all(self.pool)
             .await?;
-
-        Ok(ids)
-    }
-
-    pub async fn list_ids_by_status(&self, status: ProjectStatus) -> Result<Vec<Uuid>> {
-        let ids = sqlx::query_scalar!(
-            r#"SELECT id FROM projects WHERE status = $1 ORDER BY id"#,
-            status as ProjectStatus,
-        )
-        .fetch_all(self.pool)
-        .await?;
 
         Ok(ids)
     }

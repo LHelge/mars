@@ -56,10 +56,28 @@ export function formatDateTime(iso: string | null | undefined): string {
   return date === null ? PLACEHOLDER : DATE_TIME.format(date);
 }
 
-/** Accumulated cost, always two decimals so a column of them lines up. */
-export function formatUsd(value: number | null | undefined): string {
+/**
+ * Accumulated cost, at a fixed number of decimals so a column of them lines
+ * up. Two decimals read best in a cross-project roll-up; a single session's
+ * spend is often a fraction of a cent, so the per-session lists ask for four.
+ */
+export function formatUsd(
+  value: number | null | undefined,
+  decimals = 2,
+): string {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return PLACEHOLDER;
   }
-  return `$${value.toFixed(2)}`;
+  return `$${value.toFixed(decimals)}`;
+}
+
+/** How many characters of a commit id are enough to recognise it. */
+const SHORT_SHA = 7;
+
+/** The first seven characters of a commit id, as git itself abbreviates one. */
+export function shortSha(commit: string | null | undefined): string {
+  if (commit === null || commit === undefined || commit === "") {
+    return PLACEHOLDER;
+  }
+  return commit.slice(0, SHORT_SHA);
 }

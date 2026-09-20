@@ -8,7 +8,8 @@ export const queryKeys = {
   sessions: {
     all: ["sessions"] as const,
     /** Without a state: every session the dashboard's list endpoint returns. */
-    list: (state?: SessionState) => ["sessions", "list", state ?? "all"] as const,
+    list: (state?: SessionState) =>
+      ["sessions", "list", state ?? "all"] as const,
   },
 
   tasks: {
@@ -24,6 +25,10 @@ export const queryKeys = {
     detail: (id: string) => ["projects", id] as const,
     /** The mirror's refs (`GET /projects/{id}/branches`). */
     branches: (id: string) => ["projects", id, "branches"] as const,
+    /**
+     * One project's sessions. A state filter extends the key with a further
+     * element, so invalidating this base key covers every filter at once.
+     */
     sessions: (id: string) => ["projects", id, "sessions"] as const,
     /** The project's shared directories (`GET /projects/{id}/shared-dirs`). */
     sharedDirs: (id: string) => ["projects", id, "shared-dirs"] as const,

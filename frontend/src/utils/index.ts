@@ -3,7 +3,11 @@ export {
   formatRelative,
   formatUsd,
   PLACEHOLDER,
+  shortSha,
 } from "./format";
+
+export { parseTaskRef } from "./taskRef";
+export type { TaskRef } from "./taskRef";
 
 export { safeReturnTo, useReturnTo } from "./returnTo";
 

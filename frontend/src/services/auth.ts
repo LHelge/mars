@@ -16,8 +16,12 @@ import type {
 } from "../types";
 import { ApiError, apiGet, apiPost } from "./apiClient";
 
-/** The one key this module writes; nothing else goes to storage. */
-const TOKEN_STORAGE_KEY = "mars.access_token";
+/**
+ * The one key this module writes; nothing else goes to storage. Exported for
+ * the Playwright helpers, which seed a browser with an already issued token
+ * instead of driving the login form (`frontend/tests/utils/browser.ts`).
+ */
+export const TOKEN_STORAGE_KEY = "mars.access_token";
 
 export interface AuthState {
   user: User | null;

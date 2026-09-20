@@ -6,8 +6,10 @@
     "types": ["node"],
     "skipLibCheck": true,
 
-    /* Bundler mode */
-    "module": "nodenext",
+    /* Bundler mode. Playwright's own loader resolves TypeScript the way Vite
+       does, and these specs import from `src/`, which is written for it. */
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",

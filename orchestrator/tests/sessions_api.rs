@@ -1997,16 +1997,40 @@ async fn an_end_closes_a_running_session_and_publishes_its_branch() {
     assert_eq!(sync["detail"]["commit"], json!(published));
 }
 
+/// A user who launched a session by mistake closes it without waiting for the
+/// container they never wanted (`SPEC.md`, "Sessions"; task `qhyhw`). Nothing
+/// is launching this one, so the end has nothing to wait for and the row it
+/// answers is `done`.
+#[tokio::test]
+async fn an_end_closes_a_session_that_is_still_creating() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let creating = seed_session(&app, &fixture, SessionState::Creating, None).await;
+
+    let response = app
+        .post_as(&fixture.user, &action_path(creating.id, "end"))
+        .await;
+    response.assert_status_ok();
+
+    let body = response.json::<Value>();
+    assert_eq!(body["state"], json!("done"));
+    assert_eq!(body["container_id"], Value::Null);
+    assert_ne!(body["ended_at"], Value::Null);
+
+    let row = reload(&app, creating.id).await;
+    assert_eq!(row.state, SessionState::Done);
+    assert!(
+        app.engine().specs().is_empty(),
+        "ending a creating session started a container",
+    );
+}
+
 #[tokio::test]
 async fn an_end_refuses_a_session_that_has_nothing_to_end() {
     let app = TestApp::spawn().await;
     let fixture = Fixture::create(&app).await;
 
-    for state in [
-        SessionState::Creating,
-        SessionState::Done,
-        SessionState::Failed,
-    ] {
+    for state in [SessionState::Done, SessionState::Failed] {
         let session = seed_session(&app, &fixture, state, None).await;
         let response = app
             .post_as(&fixture.user, &action_path(session.id, "end"))

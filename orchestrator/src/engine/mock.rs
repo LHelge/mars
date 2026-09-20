@@ -291,6 +291,14 @@ struct MockState {
     /// hundred milliseconds. A test that means to arrange what arrives in that
     /// window holds the removal here rather than hoping to hit it.
     removals_held: bool,
+    /// Whether [`ContainerEngine::start`] parks instead of starting.
+    ///
+    /// The launch window: a session is `creating` from the moment its row
+    /// exists until its container is started and stdin attached, and that is
+    /// where an `end` has to be able to arrive. Holding the start here is what
+    /// lets a test stand inside `creating` with the container created rather
+    /// than race the launcher to it.
+    starts_held: bool,
     /// How many pings the mock was asked for, healthy or not.
     pings: usize,
 }
@@ -572,6 +580,23 @@ impl MockEngine {
         self.lock().removals_held = false;
     }
 
+    /// Hold every [`ContainerEngine::start`] until
+    /// [`MockEngine::resume_starts`] lets it go.
+    ///
+    /// The window a launch is in while its session is `creating` and its
+    /// container already exists. A test that means to arrange what arrives in
+    /// that window — an `end` of a session the user launched by mistake —
+    /// holds the start here rather than hoping to hit it.
+    pub fn hold_starts(&self) {
+        self.lock().starts_held = true;
+    }
+
+    /// Let every held [`ContainerEngine::start`] finish, and stop holding new
+    /// ones.
+    pub fn resume_starts(&self) {
+        self.lock().starts_held = false;
+    }
+
     // ---- internals ---------------------------------------------------------
 
     /// Test-only code: a poisoned lock means another test thread already
@@ -720,6 +745,12 @@ impl ContainerEngine for MockEngine {
     /// engines answer 304 and the adapter reads it as success, so a start that
     /// races another start cannot fail on it.
     async fn start(&self, id: &ContainerId) -> Result<(), EngineError> {
+        // A poll rather than a `Notify`, for the reason `remove` polls: the
+        // flag is read under the same lock as everything else here.
+        while self.lock().starts_held {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
         let mut state = self.lock();
         let container = container(&mut state, id)?;
 

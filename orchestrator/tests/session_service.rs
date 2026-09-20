@@ -353,6 +353,23 @@ async fn wait_for_state(app: &TestApp, session_id: Uuid, state: SessionState) {
     );
 }
 
+/// Wait until the session row names a container, or give up and return `None`.
+///
+/// The launcher records `container_id` in a transaction of its own right after
+/// the create, so a test standing inside `creating` reads it from the row
+/// rather than guessing the mock's next id.
+async fn wait_for_container_id(app: &TestApp, session_id: Uuid) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + WITHIN;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(container_id) = reload(app, session_id).await.container_id {
+            return Some(container_id);
+        }
+        tokio::time::sleep(POLL).await;
+    }
+
+    None
+}
+
 /// Wait until the session has an event of `kind`, or fail.
 async fn wait_for_event(app: &TestApp, session_id: Uuid, kind: &str) {
     let deadline = tokio::time::Instant::now() + WITHIN;
@@ -681,17 +698,123 @@ async fn ending_a_parked_session_never_starts_a_container() {
     );
 }
 
+/// A session nothing is launching — a `creating` row a crashed launch left
+/// behind — closes with nothing to wait for (`ARCHITECTURE.md`, "Session
+/// lifecycle", "A session ended while it is creating"; task `qhyhw`).
 #[tokio::test]
-async fn a_creating_session_cannot_be_ended() {
+async fn ending_a_creating_session_with_no_launch_closes_it_at_once() {
     let app = TestApp::spawn().await;
     let fixture = Fixture::create(&app).await;
 
-    let error = SessionService::new(&app.state)
-        .end(fixture.id())
-        .await
-        .expect_err("a creating session has nothing to end yet");
+    let (service, ended) = service_with_hook(&app);
+    let closed = service.end(fixture.id()).await.expect("the session ends");
 
-    assert_eq!(conflict(error), "session is creating");
+    assert_eq!(closed.state, SessionState::Done);
+    assert!(closed.ended_at.is_some());
+    assert!(
+        app.engine().specs().is_empty(),
+        "ending a creating session started a container",
+    );
+
+    let change = last_event(&app, fixture.id(), "state_change").await;
+    assert_eq!(change["from"], "creating");
+    assert_eq!(change["to"], "done");
+    assert_eq!(change["reason"], "ended by user");
+
+    assert_eq!(
+        *ended.lock().expect("the hook lock is healthy"),
+        vec![fixture.id()],
+        "the end-of-session hook releases the tasks a creating session held",
+    );
+}
+
+/// The leak this task exists to end: the end of a session that is still
+/// `creating` used to be refused 409, and the launch it refused went on to
+/// start a container nothing would remove (task `qhyhw`).
+///
+/// Holding the mock's `start` is what makes the window a moment the test
+/// chooses: the launch has created its container and is inside the start, the
+/// row still reads `creating`, and the end arrives there. The launch then
+/// reads the cancellation at its next checkpoint, removes the container and
+/// lets go of the session without ever reaching `running`.
+#[tokio::test]
+async fn ending_a_session_during_creating_cancels_its_launch_and_leaves_no_container() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+
+    let engine = app.engine();
+    engine.hold_starts();
+
+    // A resume rather than a fresh launch, for the reason the other lifecycle
+    // scenarios here use one: the fixture already has the work clone. The row
+    // is `creating`, which is the state a launch is cancelled in.
+    let launch = Launcher::from_state(&app.state)
+        .launch(fixture.id(), LaunchMode::Resume)
+        .expect("nothing else is launching this session");
+
+    wait_until("the launch to create its container", || {
+        !engine.specs().is_empty()
+    })
+    .await;
+    let container_id = ContainerId(
+        wait_for_container_id(&app, fixture.id())
+            .await
+            .expect("the launch records the container it created"),
+    );
+    assert_eq!(
+        reload(&app, fixture.id()).await.state,
+        SessionState::Creating,
+        "the held start let the launch reach running",
+    );
+
+    let (service, ended) = service_with_hook(&app);
+    let session_id = fixture.id();
+    let ending = tokio::spawn(async move { service.end(session_id).await });
+
+    let registry = app.session_registry();
+    wait_until("the end to cancel the launch", || {
+        registry.launch_cancelled(session_id)
+    })
+    .await;
+    engine.resume_starts();
+
+    let closed = ending
+        .await
+        .expect("the ending task does not panic")
+        .expect("a creating session can be ended");
+    launch.await.expect("the launch task does not panic");
+
+    assert_eq!(closed.state, SessionState::Done);
+    assert_eq!(closed.container_id, None, "the DTO still names a container");
+    assert!(closed.ended_at.is_some());
+
+    let row = reload(&app, fixture.id()).await;
+    assert_eq!(row.state, SessionState::Done);
+    assert_eq!(row.container_id, None);
+    assert_eq!(
+        engine.state_of(&container_id),
+        None,
+        "the cancelled launch left its container behind",
+    );
+
+    // The session never ran: the only state change it has is the end's own.
+    let changes: Vec<String> = kinds(&app, fixture.id())
+        .await
+        .into_iter()
+        .filter(|kind| kind == "state_change")
+        .collect();
+    assert_eq!(changes.len(), 1, "the session reached running after all");
+    let change = last_event(&app, fixture.id(), "state_change").await;
+    assert_eq!(change["from"], "creating");
+    assert_eq!(change["to"], "done");
+
+    assert_eq!(
+        *ended.lock().expect("the hook lock is healthy"),
+        vec![fixture.id()],
+        "the end-of-session hook must run exactly once",
+    );
+    assert_eq!(app.session_registry().phase(fixture.id()), None);
+    assert!(!app.session_registry().is_launching(fixture.id()));
 }
 
 #[tokio::test]

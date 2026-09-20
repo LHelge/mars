@@ -46,6 +46,7 @@ import {
   loginViaToken,
   mirrorPath,
   sendInput,
+  sessionContainers,
   setProfileIdleTimeout,
   setProfileSecrets,
   setProjectSecret,
@@ -583,6 +584,37 @@ test("end moves to done and disables the composer", async ({
   expect(
     gitRevParse(mirrorPath(project.id), `refs/sessions/${sessionId}`),
   ).toMatch(/^[0-9a-f]{40}$/);
+});
+
+test("ending a session right after launch leaves no container", async ({
+  page,
+  context,
+  request,
+}) => {
+  const { client, project } = await stage(request, context, "end-creating");
+  const sessionId = await launchFromUi(page, client, project, "hello stub");
+
+  // No wait for `running`: the End button is offered while the session is
+  // still `creating`, and pressing it there cancels the launch
+  // (`SPEC.md`, "Sessions"; `ARCHITECTURE.md`, "Session lifecycle", "A session
+  // ended while it is creating").
+  const actions = header(page);
+  await actions.getByRole("button", { name: "End" }).click();
+  await actions.getByRole("button", { name: "Confirm end" }).click();
+
+  await expectState(page, "done");
+  const done = await waitForSessionState(client, sessionId, "done");
+  expect(done.ended_at).not.toBeNull();
+  expect(done.container_id).toBeNull();
+
+  const form = composer(page);
+  await expect(form.getByLabel("Message", { exact: true })).toBeDisabled();
+  await expect(form.getByText("Session has ended")).toBeVisible();
+
+  // The leak this scenario exists for: the refused end used to let the launch
+  // carry on and start a container nothing would remove (task `qhyhw`). The
+  // engine is the only witness that can say it did not.
+  expect(sessionContainers(sessionId)).toEqual([]);
 });
 
 test("a CLI that exits non-zero fails the session and retry parks it", async ({

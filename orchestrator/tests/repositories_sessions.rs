@@ -1238,16 +1238,18 @@ async fn a_transition_from_a_state_the_session_left_is_a_conflict() {
     assert_eq!(error.status(), StatusCode::CONFLICT);
     assert_eq!(error.to_string(), "session is creating");
 
-    // `from` right, edge missing: the model's own refusal.
+    // `from` right, edge missing: the model's own refusal. A session that has
+    // never run cannot be parked; ending it, which is an edge, is
+    // `a_creating_session_is_ended_over_its_own_edge` below.
     let mut tx = pool.begin().await.unwrap();
     let error = repository
         .transition(
             &mut tx,
             id,
-            &Transition::new(SessionState::Creating, SessionState::Done, "ended"),
+            &Transition::new(SessionState::Creating, SessionState::Parked, "parked"),
         )
         .await
-        .expect_err("creating -> done is not an edge");
+        .expect_err("creating -> parked is not an edge");
     tx.rollback().await.unwrap();
 
     assert_eq!(error.status(), StatusCode::CONFLICT);
@@ -1255,7 +1257,7 @@ async fn a_transition_from_a_state_the_session_left_is_a_conflict() {
         error.to_string(),
         SessionError::InvalidTransition {
             from: SessionState::Creating,
-            to: SessionState::Done,
+            to: SessionState::Parked,
         }
         .to_string(),
     );
@@ -1277,6 +1279,34 @@ async fn a_transition_from_a_state_the_session_left_is_a_conflict() {
         .expect_err("there is no such session");
     tx.rollback().await.unwrap();
     assert_eq!(error.status(), StatusCode::NOT_FOUND);
+}
+
+/// The edge a user's end of a session that is still `creating` takes: the row
+/// closes `done`, `ended_at` is stamped and the transcript records the change
+/// like any other (`ARCHITECTURE.md`, "Session lifecycle"; task `qhyhw`).
+#[tokio::test]
+async fn a_creating_session_is_ended_over_its_own_edge() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let fixture = seed(&pool).await;
+    let repository = SessionRepository::new(&pool);
+
+    let id = insert(&pool, &new_session(&fixture)).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let ended = repository
+        .transition(
+            &mut tx,
+            id,
+            &Transition::new(SessionState::Creating, SessionState::Done, "ended by user"),
+        )
+        .await
+        .expect("creating -> done is an edge");
+    tx.commit().await.unwrap();
+
+    assert_eq!(ended.state, SessionState::Done);
+    assert!(ended.ended_at.is_some());
+    assert!(ended.error.is_none());
+    assert_eq!(repository.max_seq(id).await.unwrap(), 1);
 }
 
 #[tokio::test]

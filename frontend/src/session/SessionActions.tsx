@@ -1,11 +1,9 @@
 // What an operator can do to a running session, gated by its state
 // (`SPEC.md`, "Sessions"; `ARCHITECTURE.md`, "Session lifecycle").
 //
-//   Stop    running                 SIGINT now, SIGTERM after the grace period
-//   End     creating/running/parked stop, fetch back, close as `done`
-//   Sync    running/parked/done     fetch the session branch into the mirror
-//   Retry   failed, conversational  relaunch, optionally with a new message
-//   Delete  done/failed             remove the session and leave the page
+// Which button each state offers is `sessionActions()` in
+// `sessionActionRules.ts`, which is where the state table is written out and
+// tested; this file is what the buttons do.
 //
 // Ephemeral sessions run one prompt and end; they are never retried, so the
 // button is not there to be refused. Destructive actions confirm in place —
@@ -26,6 +24,7 @@ import { queryKeys } from "../services/queryKeys";
 import { deleteSession, endSession, retrySession } from "../services/sessions";
 import type { Session } from "../types";
 import { shortSha } from "../utils/format";
+import { sessionActions } from "./sessionActionRules";
 import { getSessionStore } from "./sessionStore";
 import { useSyncSession } from "./useSyncSession";
 
@@ -55,7 +54,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
   const [retryMessage, setRetryMessage] = useState("");
 
   const id = session.id;
-  const state = session.state;
+  const can = sessionActions(session);
 
   /** The authoritative session a lifecycle call returns, into both readers. */
   const adopt = (next: Session): void => {
@@ -121,15 +120,10 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
     },
   });
 
-  const canEnd = state === "creating" || state === "running" || state === "parked";
-  const canSync = state === "running" || state === "parked" || state === "done";
-  const canRetry = state === "failed" && session.kind === "conversational";
-  const canDelete = state === "done" || state === "failed";
-
   return (
     <div className="flex min-w-0 flex-col items-end gap-2">
       <div className="flex flex-wrap items-center justify-end gap-2">
-        {state === "running" && (
+        {can.stop && (
           <SubmitButton
             type="button"
             variant="danger"
@@ -143,7 +137,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
           </SubmitButton>
         )}
 
-        {canEnd && (
+        {can.end && (
           <SubmitButton
             type="button"
             variant="ghost"
@@ -161,7 +155,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
           </SubmitButton>
         )}
 
-        {canSync && (
+        {can.sync && (
           <SubmitButton
             type="button"
             variant="ghost"
@@ -175,7 +169,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
           </SubmitButton>
         )}
 
-        {canRetry && (
+        {can.retry && (
           <SubmitButton
             type="button"
             variant="ghost"
@@ -189,7 +183,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
           </SubmitButton>
         )}
 
-        {canDelete && (
+        {can.delete && (
           <SubmitButton
             type="button"
             variant="danger"
@@ -208,7 +202,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
         )}
       </div>
 
-      {retryOpen && canRetry && (
+      {retryOpen && can.retry && (
         <form
           className="flex w-full max-w-md items-center gap-2"
           onSubmit={(event) => {

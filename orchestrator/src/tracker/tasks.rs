@@ -58,7 +58,9 @@ use crate::repositories::tasks::StateFields;
 // Creation resolves every entry inside this project, so an id from another
 // project and an id from nowhere get the same answer here — the message the
 // dependency endpoint gives an out-of-project end, stated once.
-use crate::tracker::dependencies::DEPENDENCY_SCOPE;
+use crate::tracker::dependencies::{
+    DEPENDENCY_SCOPE, add_dependency, remove_dependency, resolve_dependency,
+};
 use crate::tracker::graph::{capture_before_delete, check_no_cycle, recompute_blocked};
 use crate::tracker::provenance::resolve_origin;
 use crate::tracker::state::{StateChangeOptions, StateEventKind, change_state, resolve_state};
@@ -313,7 +315,14 @@ pub struct UpdateTaskInput {
     /// The whole new label set, replacing the stored one.
     pub labels: Option<Vec<String>>,
     /// The new parent, or `Some(None)` to make the task top-level again.
-    pub parent: Option<Option<Uuid>>,
+    ///
+    /// A [`TaskRef`] rather than a UUID, because the MCP `update` tool names a
+    /// parent by its per-project number as readily as by its id and a number
+    /// resolved outside the project lock can name a different task by the time
+    /// the re-parenting lands. [`update_task`] resolves it inside the
+    /// mutation; a reference naming no task of this project is
+    /// [`Error::NotFound`].
+    pub parent: Option<Option<TaskRef>>,
     /// The new assignee, or `Some(None)` to unassign.
     pub assignee_user_id: Option<Option<Uuid>>,
     /// The state's *name*; a different one is a hand-off, the current one is a
@@ -324,6 +333,19 @@ pub struct UpdateTaskInput {
     /// column is [`change_state`]'s to write, and there is no state change to
     /// attach it to.
     pub needs_human_reason: Option<String>,
+    /// `blocks` prerequisites to add, in the caller's order.
+    ///
+    /// The MCP tool's `add_depends_on` (`SPEC.md`, "MCP tool contracts" →
+    /// `update`). Resolved and applied inside the same mutation as the field
+    /// changes, so a hand-off that also adds a prerequisite is still one
+    /// transaction.
+    pub add_depends_on: Vec<TaskRef>,
+    /// `blocks` prerequisites to remove, in the caller's order.
+    ///
+    /// `remove_depends_on`. Only the `blocks` edge goes: a pair that also
+    /// carries `discovered_from` keeps its provenance
+    /// ([`dependencies::remove_dependency`](crate::tracker::dependencies::remove_dependency)).
+    pub remove_depends_on: Vec<TaskRef>,
 }
 
 /// What an update did.
@@ -356,20 +378,31 @@ const UNKNOWN_ASSIGNEE: &str = "unknown assignee";
 /// read from the top:
 ///
 /// ```text
-/// update the columns (400: title, priority, label, parent rules, assignee)
+/// resolve the new parent, if one was named (404)
+///   → update the columns (400: title, priority, label, parent rules, assignee)
 ///   → emit `updated` if a column actually moved
 ///   → recompute `blocked` for the old and the new parent, emitting the flips
 ///   → resolve the state name (400) and hand the task off, which emits
 ///     `state_changed` and the flips crossing the terminal line owes
+///   → add and remove the `blocks` edges the update named (400/404/409),
+///     each with its own `dependency_added` or `dependency_removed` and the
+///     `blocked` flip it causes
 /// ```
 ///
 /// **Events, in order**: `updated`, then a re-parenting's parent flips, then
-/// `state_changed`, then the flips the state change caused. The frontend only
-/// refreshes its snapshot when an event arrives (ADR 0022), so the order is
-/// about a readable history rather than about correctness; what it says is
-/// "the fields changed, then the task moved, and here is what that moved
-/// downstream". Nothing at all is emitted when nothing changed, and
+/// `state_changed`, then the flips the state change caused, then one
+/// `dependency_added` or `dependency_removed` per edge with its own flip. The
+/// frontend only refreshes its snapshot when an event arrives (ADR 0022), so
+/// the order is about a readable history rather than about correctness; what
+/// it says is "the fields changed, then the task moved, and here is what that
+/// moved downstream". Nothing at all is emitted when nothing changed, and
 /// `task_sessions` is likewise only touched then (ADR 0030).
+///
+/// **The dependency edits are not no-ops.** An edge that is already there is
+/// 409 `dependency already exists` and one that is not there is 404
+/// `dependency not found`, exactly as the REST dependency endpoints answer
+/// them (`SPEC.md`, "Tasks" and "MCP tool contracts" → `update`), so an update
+/// that names either is rejected whole rather than half-applied.
 ///
 /// **A state no-op is not a refusal**: assigning the state the task is already
 /// in preserves the lease, `attempts` and `closed_at` and emits no state
@@ -384,13 +417,22 @@ pub async fn update_task(
 ) -> Result<UpdateOutcome> {
     let project_id = m.project_id();
 
+    // (0) The new parent, named the way every other task argument is. Resolved
+    // here rather than by the caller so that the lookup is inside the lock the
+    // re-parenting is applied under.
+    let parent_id = match input.parent {
+        Some(Some(reference)) => Some(Some(locked_task(m, reference).await?.id)),
+        Some(None) => Some(None),
+        None => None,
+    };
+
     let update = TaskUpdate {
         title: input.title.as_deref().map(TaskTitle::parse).transpose()?,
         description: input.description,
         priority: input.priority.map(Priority::try_from).transpose()?,
         labels: input.labels.as_deref().map(Label::parse_list).transpose()?,
         assignee_user_id: input.assignee_user_id,
-        parent_id: input.parent,
+        parent_id,
     };
 
     // (1) The columns. The repository decides what "changed" means — against
@@ -446,7 +488,20 @@ pub async fn update_task(
         None => false,
     };
 
-    let changed = updated.is_some() || state_changed;
+    // (5) The `blocks` edges, last: an update that also moves the task has
+    // already moved it, so the `blocked` recomputation each edge triggers sees
+    // the state the task ends in.
+    let edges_changed = !input.add_depends_on.is_empty() || !input.remove_depends_on.is_empty();
+    for reference in input.add_depends_on {
+        let prerequisite = resolve_dependency(m, reference).await?;
+        add_dependency(m, task, &prerequisite, TaskDependencyKind::Blocks).await?;
+    }
+    for reference in input.remove_depends_on {
+        let prerequisite = resolve_dependency(m, reference).await?;
+        remove_dependency(m, task, &prerequisite, TaskDependencyKind::Blocks).await?;
+    }
+
+    let changed = updated.is_some() || state_changed || edges_changed;
     if changed {
         m.touch_actor(task.id);
 
@@ -455,6 +510,7 @@ pub async fn update_task(
             task_id = %task.id,
             fields = updated.is_some(),
             state = state_changed,
+            edges = edges_changed,
             "task updated",
         );
     }
@@ -547,6 +603,21 @@ pub async fn delete_task(m: &mut TrackerMutation<'_>, task: &Task) -> Result<()>
     );
 
     Ok(())
+}
+
+/// The task a reference names, inside this project and inside this lock.
+///
+/// Used for the parent an update re-nests under: the scope is in the `WHERE`
+/// clause, so a task of another project is indistinguishable from one that
+/// does not exist, and the row is held `FOR UPDATE` because the re-parenting
+/// is about to depend on whether it has a parent of its own.
+async fn locked_task(m: &mut TrackerMutation<'_>, reference: TaskRef) -> Result<Task> {
+    let project_id = m.project_id();
+
+    TaskRepository::new(m.pool())
+        .find_task_for_update(m.conn(), project_id, reference)
+        .await?
+        .ok_or(Error::NotFound)
 }
 
 /// This mutation's view of a task of this project, which must be there.

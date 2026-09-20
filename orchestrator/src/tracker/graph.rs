@@ -43,7 +43,11 @@ use crate::tracker::TrackerMutation;
 /// The message a refused `blocks` edge carries.
 ///
 /// `SPEC.md`, "Tasks": adding a dependency that would create a cycle is 409.
-const CYCLE: &str = "dependency would create a cycle";
+/// Public because the MCP `update` tool answers the same refusal as
+/// `invalid_argument` instead — "a cycle returns `invalid_argument`"
+/// (`SPEC.md`, "MCP tool contracts" → `update`) — and recognises it by this
+/// exact message rather than by a second constant that could drift from it.
+pub const CYCLE: &str = "dependency would create a cycle";
 
 /// One task whose `blocked` flag changed, and what it changed to.
 ///

@@ -194,10 +194,7 @@ async fn a_stubbed_tool_answers_the_generic_internal_error() {
     let app = TestApp::spawn().await;
     let client = client_with_tools(&app, &[]).await;
 
-    for (tool, args) in [
-        ("update", json!({ "task": 12, "title": "a clearer title" })),
-        ("create_task", json!({ "title": "found along the way" })),
-    ] {
+    for (tool, args) in [("create_task", json!({ "title": "found along the way" }))] {
         let err = client
             .call(tool, args)
             .await

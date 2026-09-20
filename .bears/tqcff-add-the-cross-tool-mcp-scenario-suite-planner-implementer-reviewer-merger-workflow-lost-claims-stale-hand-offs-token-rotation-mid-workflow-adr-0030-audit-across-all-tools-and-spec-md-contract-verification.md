@@ -1,10 +1,10 @@
 ---
 id: tqcff
 title: "Add the cross-tool MCP scenario suite: planner-implementer-reviewer-merger workflow, lost claims, stale hand-offs, token rotation mid-workflow, ADR 0030 audit across all tools, and SPEC.md contract verification"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-16T20:47:49.319413872Z"
-updated: "2026-09-16T20:47:49.319413872Z"
+updated: "2026-09-20T09:32:19.383030913Z"
 tags:
   - orchestrator
   - mcp
@@ -17,6 +17,7 @@ depends_on:
   - "88zm4"
   - x458j
 parent: qgj33
+attempts: 1
 ---
 
 ## Summary

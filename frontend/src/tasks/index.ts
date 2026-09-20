@@ -43,3 +43,19 @@ export { filterTasks, normalizeQuery } from "./search";
 export { selectVisibleColumns } from "./taskStore";
 export { TaskSearch } from "./TaskSearch";
 export type { TaskSearchProps } from "./TaskSearch";
+
+export { TaskDetail } from "./TaskDetail";
+export type { TaskDetailProps } from "./TaskDetail";
+
+export { CommentList } from "./CommentList";
+export type { CommentListProps } from "./CommentList";
+
+export { CommentForm } from "./CommentForm";
+export type { CommentFormProps } from "./CommentForm";
+
+export { DependencyList } from "./DependencyList";
+export type { DependencyListProps } from "./DependencyList";
+
+export { buildTaskLink, parseTaskNumber, taskPath } from "./taskLink";
+export { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
+export { useUsername } from "./useUsername";

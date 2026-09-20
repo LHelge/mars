@@ -38,7 +38,7 @@ describe("CopyLinkButton", () => {
 
     await screen.findByRole("button", { name: "Link copied" });
     expect(writeText).toHaveBeenCalledWith(`${window.location.origin}${PATH}`);
-    expect(screen.queryByLabelText("Session link")).toBeNull();
+    expect(screen.queryByLabelText("Link")).toBeNull();
   });
 
   it("reveals the URL in a selectable field when the clipboard refuses", async () => {
@@ -49,7 +49,7 @@ describe("CopyLinkButton", () => {
     render(<CopyLinkButton path={PATH} />);
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
 
-    const field = await screen.findByLabelText("Session link");
+    const field = await screen.findByLabelText("Link");
     expect(field).toHaveProperty("value", `${window.location.origin}${PATH}`);
     expect(screen.queryByRole("button", { name: "Link copied" })).toBeNull();
   });
@@ -58,7 +58,7 @@ describe("CopyLinkButton", () => {
     render(<CopyLinkButton path={PATH} />);
     fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
 
-    const field = await screen.findByLabelText("Session link");
+    const field = await screen.findByLabelText("Link");
     expect(field).toHaveProperty("value", `${window.location.origin}${PATH}`);
   });
 

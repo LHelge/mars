@@ -45,12 +45,10 @@ export function ProjectPage() {
   // `/projects/:id/tasks/:number` is the board with that task's drawer open.
   const tab: ProjectTab =
     params.number === undefined ? parseProjectTab(search.get("tab")) : "board";
-  // A `:number` that is not a number names no task; the board shows no
-  // selection and the drawer, when it arrives, says so.
-  const taskNumber =
-    params.number !== undefined && /^\d+$/.test(params.number)
-      ? Number(params.number)
-      : undefined;
+  // The parameter travels as it was written: the board panel decides what it
+  // names, because "no task in the URL" and "a task number that is not one"
+  // are different answers — no drawer, and a drawer that says not found.
+  const taskParam = params.number;
 
   // An id that is not a UUID names no project: answer without asking.
   if (!isUuid(id)) {
@@ -61,7 +59,7 @@ export function ProjectPage() {
     <ProjectView
       id={id}
       tab={tab}
-      taskNumber={taskNumber}
+      taskParam={taskParam}
       settingsOpen={settingsOpen}
       onToggleSettings={() => {
         setSettingsOpen((open) => !open);
@@ -73,8 +71,8 @@ export function ProjectPage() {
 interface ProjectViewProps {
   id: string;
   tab: ProjectTab;
-  /** The task of `/projects/:id/tasks/:number`, for the board panel. */
-  taskNumber: number | undefined;
+  /** The `:number` of `/projects/:id/tasks/:number`, for the board panel. */
+  taskParam: string | undefined;
   settingsOpen: boolean;
   onToggleSettings: () => void;
 }
@@ -86,7 +84,7 @@ interface ProjectViewProps {
 function ProjectView({
   id,
   tab,
-  taskNumber,
+  taskParam,
   settingsOpen,
   onToggleSettings,
 }: ProjectViewProps) {
@@ -140,7 +138,7 @@ function ProjectView({
 
         <ProjectTabs projectId={data.id} active={tab} />
 
-        <ProjectPanel project={data} tab={tab} taskNumber={taskNumber} />
+        <ProjectPanel project={data} tab={tab} taskParam={taskParam} />
       </div>
     </PageLayout>
   );
@@ -149,11 +147,11 @@ function ProjectView({
 function ProjectPanel({
   project,
   tab,
-  taskNumber,
+  taskParam,
 }: {
   project: Project;
   tab: ProjectTab;
-  taskNumber: number | undefined;
+  taskParam: string | undefined;
 }) {
   // Nothing under the tabs exists until the mirror does; the header and the
   // settings form stay usable and the page polls until the clone settles.
@@ -189,5 +187,5 @@ function ProjectPanel({
 
   // `board`, which is also where `/projects/:id/tasks/:number` lands: the one
   // place the task stream is mounted.
-  return <BoardTab project={project} taskNumber={taskNumber} />;
+  return <BoardTab project={project} taskParam={taskParam} />;
 }

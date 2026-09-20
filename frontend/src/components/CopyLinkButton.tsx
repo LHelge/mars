@@ -15,9 +15,11 @@ const COPIED_MS = 2000;
 export interface CopyLinkButtonProps {
   /** An application path, already absolute within the origin: `/sessions/{id}`. */
   path: string;
+  /** What the fallback field is called, for the people who hear it read out. */
+  label?: string;
 }
 
-export function CopyLinkButton({ path }: CopyLinkButtonProps) {
+export function CopyLinkButton({ path, label = "Link" }: CopyLinkButtonProps) {
   const [copied, setCopied] = useState(false);
   const [manual, setManual] = useState(false);
   const [shown, setShown] = useState(path);
@@ -78,7 +80,7 @@ export function CopyLinkButton({ path }: CopyLinkButtonProps) {
         <input
           ref={fieldRef}
           readOnly
-          aria-label="Session link"
+          aria-label={label}
           value={url}
           onFocus={(event) => {
             event.target.select();

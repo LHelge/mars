@@ -17,33 +17,14 @@
 // on every refresh, so this only pays off for the renders a sibling causes —
 // the search field, the drawer opening — but those are the frequent ones.
 
-import { useQuery } from "@tanstack/react-query";
 import { memo } from "react";
 import { Link } from "react-router";
 
-import { queryKeys } from "../services/queryKeys";
-import { getUser } from "../services/users";
-import type { Task, TaskPriority } from "../types";
+import type { Task } from "../types";
+import { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
 import { useTaskStore } from "./taskStore";
 import { selectTaskById } from "./taskStore";
-
-/** Quiet colour for the two priorities that mean "not later" (`SPEC.md`). */
-const PRIORITY_COLOUR: Record<TaskPriority, string> = {
-  0: "text-state-failed",
-  1: "text-state-parked",
-  2: "text-console-muted",
-  3: "text-console-muted",
-};
-
-const PRIORITY_MEANING: Record<TaskPriority, string> = {
-  0: "P0 — critical",
-  1: "P1 — high",
-  2: "P2 — normal",
-  3: "P3 — low",
-};
-
-const CHIP =
-  "border-console-border inline-flex items-center rounded border px-1 py-px font-mono text-[0.6875rem] leading-4";
+import { useUsername } from "./useUsername";
 
 export interface TaskCardProps {
   task: Task;
@@ -171,25 +152,15 @@ function dependencyTitle(blockedBy: number, blocking: number): string {
   return parts.join("; ");
 }
 
-/**
- * The assignee's username. `staleTime: Infinity` because a username barely
- * changes and a board can carry the same one on fifty cards; until it lands,
- * the id's first eight characters say who it is well enough to recognise.
- */
+/** The assignee's username, shared with the drawer (`useUsername`). */
 function Assignee({ id }: { id: string | null }) {
-  const user = useQuery({
-    queryKey: queryKeys.users.detail(id ?? ""),
-    queryFn: () => getUser(id ?? ""),
-    enabled: id !== null,
-    staleTime: Infinity,
-    retry: false,
-  });
+  const username = useUsername(id);
 
-  if (id === null) return null;
+  if (username === null) return null;
 
   return (
     <span className={`${CHIP} text-console-muted`} title="Assignee">
-      @{user.data?.username ?? id.slice(0, 8)}
+      @{username}
     </span>
   );
 }

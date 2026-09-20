@@ -109,7 +109,10 @@ export function SessionHeader({ session, status, onStop }: SessionHeaderProps) {
             >
               project
             </Link>
-            <CopyLinkButton path={`/sessions/${session.id}`} />
+            <CopyLinkButton
+              path={`/sessions/${session.id}`}
+              label="Session link"
+            />
           </div>
           <SessionActions session={session} onStop={onStop} />
         </div>

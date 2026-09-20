@@ -87,6 +87,12 @@ const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// that gap is what this covers; it is not a wait for anything to happen.
 const ATTACH_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a live terminal exec's close may take. The adapter's own budget
+/// for ending the shell and reading its code, which `ws::terminal` in turn
+/// bounds at five seconds; a close that spends it all has left a process
+/// behind.
+const EXEC_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The grace period the suite stops containers with, in seconds. Long enough
 /// for the `TERM` trap to run, so the exit code is the trap's and not the
 /// engine's hard kill.
@@ -181,6 +187,7 @@ impl EngineContract {
         self.a_stdin_write_after_the_container_exited_fails().await;
         self.exec_pty_on_a_container_that_is_not_running_is_a_conflict()
             .await;
+        self.closing_a_live_terminal_exec_ends_it().await;
     }
 
     // ---- the scenarios ------------------------------------------------------
@@ -674,6 +681,41 @@ impl EngineContract {
             !failure.to_string().is_empty(),
             "the failed write says nothing at all"
         );
+    }
+
+    /// Closing a terminal exec whose shell is still alive ends it, and the code
+    /// it answers with is the shell's own rather than the unknown `-1`.
+    ///
+    /// The shell here is idle at its prompt: this is the client closing the
+    /// terminal, not the shell leaving. The adapter sends the PTY an end of
+    /// input for it, because the connection's half-close alone is an EOF on
+    /// Docker and nothing at all on rootless Podman, and a shell left behind
+    /// would sit in the container until the session stopped
+    /// (`ARCHITECTURE.md`, "Engine adapter", the `exec + resize` row). That the
+    /// engine really has no exec running afterwards is asserted where there is
+    /// an engine to ask, in `tests/engine.rs`.
+    pub async fn closing_a_live_terminal_exec_ends_it(&self) {
+        let (_spec, id) = self.running("contract-exec-close").await;
+
+        let exec = self
+            .engine
+            .exec_pty(&id, &["sh".to_string()], "0:0", 80, 24)
+            .await
+            .expect("a running container takes an exec");
+
+        // The shell needs its PTY before the end of input reaches it.
+        tokio::time::sleep(TRAP_DELAY).await;
+
+        let code = tokio::time::timeout(EXEC_CLOSE_TIMEOUT, exec.close())
+            .await
+            .expect("the close answered inside its bound")
+            .expect("the close reports a code");
+        assert!(
+            code >= 0,
+            "closing a live terminal exec left it running: it reported {code}"
+        );
+
+        self.engine.remove(&id, true).await.expect("removed");
     }
 
     /// An exec on a container that is not running is a conflict, whether it has

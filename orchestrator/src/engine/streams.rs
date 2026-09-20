@@ -52,10 +52,44 @@ pub(super) type OutputStream = Pin<Box<dyn Stream<Item = Result<LogOutput, Bolla
 /// [`StdinWriter`](super::StdinWriter)'s blanket implementation.
 pub(super) type InputSink = Pin<Box<dyn AsyncWrite + Send>>;
 
+/// What [`BollardExec::close`] sends the shell to end it: discard whatever is
+/// half-typed on the current line (`^U`), then end the input on an empty line
+/// (`^D`), which is the EOF an interactive shell exits on.
+///
+/// These are the PTY's own line discipline inside the container, not anything
+/// an engine interprets, which is what makes the two engines agree here: the
+/// half-close of the connection that follows is an EOF for the shell on Docker
+/// and nothing at all on rootless Podman (`ARCHITECTURE.md`, "Engine
+/// adapter"), while these bytes reach the shell on both.
+const END_OF_INPUT: &[u8] = b"\x15\x04";
+
+/// The interrupt [`BollardExec::close`] falls back to when the end of input
+/// alone did not end the exec: `^C`, which the PTY turns into a `SIGINT` for
+/// whatever holds the terminal, so a shell sitting in a foreground command
+/// gets back to its prompt and takes the [`END_OF_INPUT`] that follows.
+const INTERRUPT: &[u8] = b"\x03";
+
+/// How long [`BollardExec::close`] waits after the interrupt before sending
+/// the end of input again: the `^C` flushes the terminal's input queue, so the
+/// two must not be in flight together.
+const INTERRUPT_SETTLE: Duration = Duration::from_millis(50);
+
 /// How long [`BollardExec::close`] waits for the PTY's output to end after the
-/// input half has gone. A shell that ignores its EOF must not hold the
-/// WebSocket handler's task open for longer than this.
-const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// end of input. A shell at its prompt exits on it at once; this is the room
+/// for a login shell's traps and a slow socket, not a wait for a process that
+/// is still working.
+const EOF_DRAIN_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// How long [`BollardExec::close`] waits for the PTY's output to end after the
+/// interrupt and the second end of input.
+const INTERRUPT_DRAIN_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// How long [`BollardExec::close`] waits for the PTY's output to end after the
+/// input half has gone, for a process that took neither the EOF nor the
+/// interrupt. Short: everything that was going to end the exec has been tried,
+/// and the WebSocket handler's task must not be held for longer
+/// (`ws::terminal`, `CLOSE_TIMEOUT`).
+const HALF_CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// How long [`resize_exec`] waits before its single retry.
 const RESIZE_RETRY_DELAY: Duration = Duration::from_millis(50);
@@ -298,18 +332,32 @@ impl ExecSession for BollardExec {
             mut output,
         } = *self;
 
-        // The half-close is the shell's EOF, which is what makes it exit. A
-        // connection the engine has already torn down refuses it, and that is
-        // the same end by another route.
+        // Closing the terminal ends the shell, on either engine. The EOF that
+        // does it is sent *through* the PTY rather than left to the half-close
+        // of the connection below, which Docker passes on as an EOF and
+        // rootless Podman does not pass on at all; an idle `/bin/bash -l` that
+        // survived its close stayed at its prompt until the container stopped
+        // (`ARCHITECTURE.md`, "Engine adapter"). A write that fails is the
+        // connection already gone, which is the exec already over.
+        let _ = write_bytes(&mut input, END_OF_INPUT).await;
+        let mut ended = drained_within(&mut output, EOF_DRAIN_TIMEOUT).await;
+
+        if !ended {
+            // Something has the terminal that does not read an EOF — a
+            // foreground command, or a shell that was mid-line. Interrupt it
+            // and end the input again.
+            let _ = write_bytes(&mut input, INTERRUPT).await;
+            sleep(INTERRUPT_SETTLE).await;
+            let _ = write_bytes(&mut input, END_OF_INPUT).await;
+            ended = drained_within(&mut output, INTERRUPT_DRAIN_TIMEOUT).await;
+        }
+
+        // The half-close as well: on Docker it is a second EOF for anything
+        // still reading, and on both it is this connection ending.
         let _ = input.shutdown().await;
         drop(input);
 
-        if timeout(OUTPUT_DRAIN_TIMEOUT, async {
-            while output.next().await.is_some() {}
-        })
-        .await
-        .is_err()
-        {
+        if !ended && !drained_within(&mut output, HALF_CLOSE_DRAIN_TIMEOUT).await {
             debug!(
                 container = %container,
                 "the terminal exec did not end within the drain timeout"
@@ -326,6 +374,27 @@ impl ExecSession for BollardExec {
         );
         Ok(code)
     }
+}
+
+/// Write bytes to a PTY's input half and flush them, so a byte that is meant
+/// to end the process is not sitting in a buffer.
+///
+/// The bytes are never logged: what travels here is a terminal's (CLAUDE.md
+/// rule 3).
+async fn write_bytes(input: &mut InputSink, bytes: &[u8]) -> io::Result<()> {
+    input.write_all(bytes).await?;
+    input.flush().await
+}
+
+/// Read an exec's output to its end, discarding it, and answer whether the end
+/// arrived inside `bound`.
+///
+/// The end of the output is the exec's process having gone, which is what
+/// `close` is waiting for; a `false` is a process still holding the PTY.
+async fn drained_within(output: &mut OutputStream, bound: Duration) -> bool {
+    timeout(bound, async { while output.next().await.is_some() {} })
+        .await
+        .is_ok()
 }
 
 /// Resize an exec's PTY, retrying once.
@@ -582,6 +651,40 @@ mod tests {
         );
 
         drain.await.expect("the drain ends with the stream");
+    }
+
+    /// What `close` sends the shell, as the PTY would receive it: the line is
+    /// discarded first, so the EOF lands on an empty one and the shell exits
+    /// instead of submitting whatever was half-typed.
+    #[tokio::test]
+    async fn the_end_of_input_reaches_the_pty_as_a_kill_line_and_an_eof() {
+        let (pty, mut shell_side) = tokio::io::duplex(64);
+        let mut input: InputSink = Box::pin(pty);
+
+        write_bytes(&mut input, END_OF_INPUT)
+            .await
+            .expect("the PTY takes the bytes");
+
+        let mut seen = vec![0_u8; 2];
+        shell_side
+            .read_exact(&mut seen)
+            .await
+            .expect("the bytes arrive at the shell's end");
+        assert_eq!(seen, vec![0x15, 0x04]);
+        assert_eq!(INTERRUPT, &[0x03]);
+    }
+
+    /// The end of the output is the exec's process having gone; a process that
+    /// holds the PTY is the bound running out, not a hang.
+    #[tokio::test]
+    async fn a_drain_answers_whether_the_output_ended_inside_its_bound() {
+        let mut ended = stream_of(vec![Ok(LogOutput::Console {
+            message: Bytes::from_static(b"logout\r\n"),
+        })]);
+        assert!(drained_within(&mut ended, Duration::from_secs(5)).await);
+
+        let mut never: OutputStream = Box::pin(futures_util::stream::pending());
+        assert!(!drained_within(&mut never, Duration::from_millis(50)).await);
     }
 
     #[tokio::test]

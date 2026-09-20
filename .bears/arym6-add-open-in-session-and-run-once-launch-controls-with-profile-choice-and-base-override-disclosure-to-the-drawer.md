@@ -1,10 +1,10 @@
 ---
 id: arym6
 title: Add "open in session" and "run once" launch controls with profile choice and base-override disclosure to the drawer
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:44:10.240271289Z"
-updated: "2026-09-20T10:51:51.783400401Z"
+updated: "2026-09-20T11:17:04.334522522Z"
 tags:
   - frontend
   - tracker

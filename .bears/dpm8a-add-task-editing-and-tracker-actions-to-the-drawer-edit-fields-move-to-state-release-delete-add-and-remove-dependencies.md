@@ -1,10 +1,10 @@
 ---
 id: dpm8a
 title: "Add task editing and tracker actions to the drawer: edit fields, move to state, release, delete, add and remove dependencies"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:43:46.251854665Z"
-updated: "2026-09-20T10:51:50.686284872Z"
+updated: "2026-09-20T11:17:03.223320248Z"
 tags:
   - frontend
   - tracker

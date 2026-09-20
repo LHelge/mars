@@ -19,11 +19,13 @@ pub mod auth;
 pub mod context;
 pub mod error;
 pub mod server;
+pub mod tools;
 
 pub use auth::require_session;
 pub use context::SessionContext;
 pub use error::{McpError, McpErrorCode, McpResult};
 pub use server::McpServer;
+pub use tools::ToolName;
 
 /// The router served on `MCP_PORT`: the Streamable HTTP service at `/mcp` and
 /// nothing else.

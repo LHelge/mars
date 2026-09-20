@@ -9,6 +9,7 @@
 //! the repository under the project lock.
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -34,7 +35,9 @@ pub fn is_commit_id(raw: &str) -> bool {
 ///
 /// A `TEXT` column with a `CHECK`, not a database enum type
 /// (`docs/data-model.md`, `task_handoffs`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, Default, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 pub enum ReviewStatus {
@@ -217,7 +220,7 @@ impl NewTaskHandoff {
 /// The input half of [`ReviewStatus`]: a caller may record a decision but
 /// never "unreviewed", which is only ever the state a fresh revision starts in
 /// (`SPEC.md`, "Code hand-offs and review").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewDecision {
     /// This commit is good; a task merge may use it.
@@ -253,7 +256,7 @@ impl From<ReviewDecision> for ReviewStatus {
 /// without capturing it, a review decision sent with a revision would be
 /// silently dropped instead of refused with
 /// [`TaskError::HandoffReviewOnRevision`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HandoffInput {
     /// Publish committed work as the task's new hand-off, always unreviewed.

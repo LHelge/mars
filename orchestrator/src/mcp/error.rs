@@ -88,10 +88,6 @@ pub struct McpError {
     pub conflicts: Option<Vec<String>>,
 }
 
-#[allow(
-    dead_code,
-    reason = "the tool handlers and the dispatcher of the next task construct these"
-)]
 impl McpError {
     fn new(code: McpErrorCode, message: impl Into<String>) -> Self {
         Self {

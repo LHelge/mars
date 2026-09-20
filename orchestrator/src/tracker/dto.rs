@@ -26,6 +26,7 @@
 //! task it described.
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -41,7 +42,7 @@ use crate::prelude::*;
 ///
 /// `task_id` is the *other* end — the prerequisite — because the owning task
 /// is the one the edge is listed on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct DependencyRef {
     /// The prerequisite task.
     pub task_id: Uuid,
@@ -53,7 +54,7 @@ pub struct DependencyRef {
 ///
 /// The `task_comments` row field for field; bodies are stored and displayed
 /// unredacted (ADR 0027).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CommentDto {
     pub id: Uuid,
     pub task_id: Uuid,
@@ -84,7 +85,7 @@ impl From<TaskComment> for CommentDto {
 /// The `task_handoffs` row field for field. Every actor is optional because
 /// deletion nulls the foreign keys while the branch, the commit and the review
 /// timestamp remain.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HandoffDto {
     pub id: Uuid,
     pub task_id: Uuid,
@@ -126,7 +127,7 @@ impl From<TaskHandoff> for HandoffDto {
 ///
 /// The `task_sessions` row without its `task_id`: the detail it hangs off
 /// already names the task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskSessionLinkDto {
     pub session_id: Uuid,
     pub first_touched_at: DateTime<Utc>,
@@ -148,7 +149,7 @@ impl From<TaskSession> for TaskSessionLinkDto {
 /// Assembled only through [`TaskDto::from_parts`], so every producer — the
 /// routes, the MCP tools and the `TaskEvent` payloads — puts the same four
 /// neighbours around the row and none of them can forget one.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskDto {
     pub id: Uuid,
     pub project_id: Uuid,
@@ -228,7 +229,7 @@ impl TaskDto {
 ///
 /// Children are [`TaskDto`]s, never details: nesting is one level deep, so
 /// `children[].children` does not exist.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskDetailDto {
     /// The task itself, spread into this object.
     #[serde(flatten)]
@@ -258,7 +259,7 @@ const EXCERPT_CHARS: usize = 200;
 ///
 /// Read-only like its siblings here, assembled in `tracker::leases` from the
 /// repository's claimable read.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskSummary {
     pub id: Uuid,
     pub number: i32,

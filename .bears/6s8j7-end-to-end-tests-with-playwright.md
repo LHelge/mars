@@ -2,10 +2,10 @@
 id: "6s8j7"
 title: End-to-end tests with Playwright
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:14:55.298493493Z"
-updated: "2026-09-17T07:01:44.594456563Z"
+updated: "2026-09-20T23:08:01.413872480Z"
 tags:
   - frontend
   - orchestrator

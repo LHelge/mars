@@ -1,10 +1,10 @@
 ---
 id: h9u3c
 title: "Implement profile-aware tools/list and tools/call dispatch: tracker tools always, git tools only when in profile.mcp_tools, forbidden for unlisted tools, invalid_argument for bad input"
-status: open
+status: in_progress
 priority: P0
 created: "2026-09-16T20:44:00.701270365Z"
-updated: "2026-09-16T20:44:00.701270365Z"
+updated: "2026-09-20T06:08:41.276502588Z"
 tags:
   - orchestrator
   - mcp
@@ -13,6 +13,7 @@ depends_on:
   - dbvp5
   - "7rf9z"
 parent: qgj33
+attempts: 1
 ---
 
 ## Summary

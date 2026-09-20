@@ -1,10 +1,10 @@
 ---
 id: zcj6p
 title: "Build GitActionsPanel: session branches with ahead/behind, merge, rebase and push with conflict display and GitHub compare link, mounted on the project sessions tab and session view"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:48:27.553313318Z"
-updated: "2026-09-16T20:48:27.553313318Z"
+updated: "2026-09-20T08:35:26.734651599Z"
 tags:
   - frontend
   - git
@@ -14,6 +14,7 @@ depends_on:
   - zv5br
   - k97mz
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

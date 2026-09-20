@@ -1,10 +1,10 @@
 ---
 id: dyr6h
 title: Build TerminalView on xterm.js over binary WebSocket frames with terminal_open/resize/close and exit display
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-16T20:47:26.061869092Z"
-updated: "2026-09-16T20:47:26.061869092Z"
+updated: "2026-09-20T08:35:24.576451490Z"
 tags:
   - frontend
   - sessions
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - k97mz
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

@@ -32,6 +32,7 @@ use tokio::task::JoinHandle;
 use crate::prelude::*;
 
 pub mod scheduler;
+mod stuck_tasks;
 
 pub use scheduler::spawn_job;
 
@@ -188,14 +189,6 @@ impl CronService {
     /// Implemented by the idle reaper task in this epic; the body lives in
     /// `cron/idle_reaper.rs` and delegates to `session/idle_reaper.rs`.
     pub async fn idle_reaper(&self, now: DateTime<Utc>) -> Result<JobReport> {
-        let _ = now;
-        Ok(JobReport::default())
-    }
-
-    /// Release tasks held by `done` or `failed` sessions. Implemented by the
-    /// stuck-task reaper task in this epic; the body lives in
-    /// `cron/stuck_tasks.rs`.
-    pub async fn stuck_task_reaper(&self, now: DateTime<Utc>) -> Result<JobReport> {
         let _ = now;
         Ok(JobReport::default())
     }

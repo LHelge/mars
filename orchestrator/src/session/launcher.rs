@@ -603,8 +603,8 @@ async fn launch(
 /// Whether the `end` of a session that is still `creating` has cancelled this
 /// launch, saying where the launch was when it noticed.
 ///
-/// `where_it_stopped` is a fixed sentence per checkpoint, so the log reads as
-/// the sequence's own account of how far it got.
+/// `where_it_stopped` is a fixed phrase per checkpoint, logged as a field so
+/// the record says how far the sequence got.
 fn cancelled_at(state: &AppState, session_id: Uuid, where_it_stopped: &'static str) -> bool {
     if !state.session_registry.launch_cancelled(session_id) {
         return false;
@@ -612,7 +612,8 @@ fn cancelled_at(state: &AppState, session_id: Uuid, where_it_stopped: &'static s
 
     info!(
         session_id = %session_id,
-        "the launch was cancelled by an end of the session {where_it_stopped}",
+        checkpoint = where_it_stopped,
+        "the launch was cancelled by an end of the session",
     );
     true
 }

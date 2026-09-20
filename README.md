@@ -372,6 +372,36 @@ npm run test:e2e             # starts the dev server itself, or reuses a running
 
 `PLAYWRIGHT_BASE_URL` points Playwright at the frontend under test (default `http://localhost:5173`, the Vite dev server) and `PLAYWRIGHT_API_URL` at the orchestrator its helpers call directly (default `http://localhost:7000`).
 
+### End-to-end tests
+
+`frontend/tests/e2e-stack.sh` brings up everything the Playwright scenarios need, the same way on a developer machine and in CI: a fresh Postgres container, the stub session image, and an orchestrator built with `--features integration-tests` running **on the host** exactly as "Running locally" describes, with its log captured to a file:
+
+```bash
+cd frontend
+npm run test:e2e:up          # postgres, stub image, cargo build, orchestrator, health
+npm run test:e2e             # the Playwright suite
+npm run test:e2e:down        # stops everything and removes the run's state
+npm run test:e2e:status      # what is up right now
+```
+
+`up` writes `frontend/.e2e/env`, which `playwright.config.ts` reads and copies into the environment for any variable that is not already set, so the suite needs no hand-set variables. The file carries `PLAYWRIGHT_BASE_URL`, `PLAYWRIGHT_API_URL`, `PLAYWRIGHT_ORCHESTRATOR_LOG` (the log the invite scenarios read the `LogEmailClient` links from — `RUST_LOG=info`, no `RESEND_API_KEY`), `PLAYWRIGHT_DATA_DIR` (`DATA_DIR`, equal to `DATA_DIR_HOST`, so tests can read the session work clones and the mirrors at `projects/<id>/repo.git`), `PLAYWRIGHT_REPOS_DIR` (scratch bare repositories), `PLAYWRIGHT_STUB_IMAGE` and `PLAYWRIGHT_ENGINE`. The rest of `frontend/.e2e/` is the orchestrator log, its pid and the data directory; the whole directory is git-ignored and `down` deletes it.
+
+The stack sets every orchestrator variable itself and ignores the repository's `.env`. Its database always starts empty, so the seeded `admin` / `changeme` of "Start" exists again on every `up`. The knobs:
+
+| Variable | Meaning |
+| --- | --- |
+| `E2E_ENGINE` | `podman` (default) or `docker`; sets `DOCKER_HOST` unless one is already exported, and selects `host.containers.internal` or `host.docker.internal` for `MCP_URL` and `SESSION_EXTRA_HOSTS`. |
+| `E2E_PG_PORT` | Host port of the `mars-e2e-pg` container (default `5433`, so the `mars-pg` of "Running locally" can stay up). |
+| `E2E_API_PORT`, `E2E_MCP_PORT` | `API_PORT` and `MCP_PORT` (defaults `7000` and `7001`). The Playwright `webServer` passes `VITE_API_TARGET` so the dev server proxies to the API port actually in use. |
+| `E2E_BASE_URL` | The frontend origin, used for both `PUBLIC_URL` and `PLAYWRIGHT_BASE_URL` (default `http://localhost:5173`). |
+| `E2E_STUB_IMAGE` | Tag built from `images/stub` and passed as `SESSION_IMAGE_DEFAULT`, so a new project's `default` profile runs the stub (default `localhost/mars-session-stub:dev`). |
+| `E2E_SKIP_IMAGE_BUILD`, `E2E_SKIP_CARGO_BUILD` | `1` reuses the image or the binary already built. |
+| `E2E_KEEP_LOG` | `1` keeps `frontend/.e2e/orchestrator.log` when `down` deletes the rest. |
+
+`up` checks its preconditions first and fails with one line each: the engine socket answers `info`, `cargo`, `git`, `openssl` and `curl` are on `PATH`, the three ports are free, and rootless Podman has the subordinate ids `keep-id` needs. On Docker with a uid other than 1000 it warns that the uid contract is not met (`ARCHITECTURE.md`, "Uid contract") and continues. If `GET /api/health` never reaches 200 within 180 seconds it prints the health JSON — `engine: false` means the socket is wrong — and the last 50 lines of the log.
+
+`down` stops the orchestrator (SIGTERM, then SIGKILL after 10 seconds), removes `mars-e2e-pg`, and removes the session and probe containers this stack started: they are recognised by the data directory bind-mounted into them, because the `mars.session_id` label and the `mars-session-<id>` name are the same for any orchestrator on the engine, so a developer's own sessions are left alone.
+
 ### CI
 
 | Workflow | Triggers on | Checks |

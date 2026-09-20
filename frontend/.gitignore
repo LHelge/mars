@@ -3,3 +3,6 @@ dist/
 test-results/
 playwright-report/
 *.local
+# The end-to-end stack's runtime state: data directory, orchestrator log, pid
+# and the env file playwright.config.ts reads (tests/e2e-stack.sh).
+.e2e/

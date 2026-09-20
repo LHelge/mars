@@ -584,6 +584,51 @@ describe("optimistic input", () => {
     });
     expect(store.getState().order).toEqual([optimisticId("c-x")]);
   });
+
+  it("records the last rejection for the composer", () => {
+    const store = createSessionStore();
+    expect(store.getState().lastRejection).toBeNull();
+
+    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    store.getState().inputRejected("c-x", "session is done");
+
+    expect(store.getState().lastRejection).toEqual({
+      client_id: "c-x",
+      reason: "session is done",
+    });
+  });
+
+  it("records a rejection of a message this client never sent", () => {
+    const store = createSessionStore();
+    store.getState().inputRejected("c-other", "session is ephemeral");
+
+    expect(store.getState().lastRejection).toEqual({
+      client_id: "c-other",
+      reason: "session is ephemeral",
+    });
+    expect(store.getState().messages[optimisticId("c-other")]).toBeUndefined();
+  });
+
+  it("clears the last rejection on the next attempt", () => {
+    const store = createSessionStore();
+    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    store.getState().inputRejected("c-x", "session is done");
+    store.getState().addOptimisticUser("c-y", { kind: "message", text: "Again" });
+
+    expect(store.getState().lastRejection).toBeNull();
+    // The rejected message keeps its own marking; only the banner is cleared.
+    expect(store.getState().messages[optimisticId("c-x")]).toMatchObject({
+      rejected: "session is done",
+    });
+  });
+
+  it("reset clears the last rejection", () => {
+    const store = createSessionStore();
+    store.getState().inputRejected("c-x", "session is done");
+    store.getState().reset();
+
+    expect(store.getState().lastRejection).toBeNull();
+  });
 });
 
 describe("store lifecycle", () => {

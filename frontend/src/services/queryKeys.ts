@@ -24,6 +24,9 @@ export const queryKeys = {
     detail: (id: string) => ["projects", id] as const,
     /** The mirror's refs (`GET /projects/{id}/branches`). */
     branches: (id: string) => ["projects", id, "branches"] as const,
+    sessions: (id: string) => ["projects", id, "sessions"] as const,
+    /** The project's shared directories (`GET /projects/{id}/shared-dirs`). */
+    sharedDirs: (id: string) => ["projects", id, "shared-dirs"] as const,
   },
 
   secrets: {

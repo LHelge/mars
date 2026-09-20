@@ -7,6 +7,8 @@ export type { ProjectHeaderProps } from "./ProjectHeader";
 export { ProjectSettingsForm } from "./ProjectSettingsForm";
 export type { ProjectSettingsFormProps } from "./ProjectSettingsForm";
 
+export { SharedDirsTab } from "./SharedDirsTab";
+
 export { ProjectTabs } from "./ProjectTabs";
 export type { ProjectTabsProps } from "./ProjectTabs";
 

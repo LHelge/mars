@@ -1,16 +1,17 @@
 ---
 id: "347vr"
 title: Build TaskBoard columns, TaskCard, the create-task form and the TasksPage route mounting the board
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:42:14.186504373Z"
-updated: "2026-09-16T20:42:14.186504373Z"
+updated: "2026-09-20T10:38:47.280046487Z"
 tags:
   - frontend
   - tracker
 depends_on:
   - "6s3j3"
 parent: gn4y2
+attempts: 1
 ---
 
 ## Summary

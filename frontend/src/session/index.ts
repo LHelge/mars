@@ -36,3 +36,25 @@ export type {
   TerminalFrame,
   TerminalListener,
 } from "./useSessionSocket";
+
+// The transcript view (`SPEC.md`, "Frontend", "Transcript rendering"). The
+// per-kind renderers are not re-exported: their component names would collide
+// with the message type names above, and only `MessageRow` ever picks one.
+
+export { SubagentGroup } from "./SubagentGroup";
+export type { SubagentGroupProps } from "./SubagentGroup";
+export { Transcript } from "./Transcript";
+export type { TranscriptProps } from "./Transcript";
+export { useStickToBottom } from "./useStickToBottom";
+export type { StickToBottom, StickToBottomOptions } from "./useStickToBottom";
+export { MessageRow } from "./messages/MessageRow";
+export type { MessageRowProps } from "./messages/MessageRow";
+export { ToolFrame } from "./tools/ToolFrame";
+export type { ToolFrameProps } from "./tools/ToolFrame";
+export { DefaultToolRenderer } from "./tools/DefaultToolRenderer";
+export {
+  clearToolRenderers,
+  registerToolRenderer,
+  toolRendererFor,
+} from "./tools/registry";
+export type { ToolRenderer } from "./tools/registry";

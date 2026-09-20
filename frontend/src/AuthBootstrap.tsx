@@ -36,6 +36,7 @@ import {
   signOut,
 } from "./services";
 import { getMe } from "./services/users";
+import { useTaskStore } from "./tasks/taskStore";
 
 export interface AuthBootstrapProps {
   children: ReactNode;
@@ -75,6 +76,9 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
     });
     const offSignOut = onSignOut(() => {
       queryClient.clear();
+      // The board snapshot is one user's view of a project; in-flight reads
+      // are discarded with it.
+      useTaskStore.getState().reset();
       void navigate("/login", { replace: true });
     });
 

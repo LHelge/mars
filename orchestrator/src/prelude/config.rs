@@ -278,6 +278,18 @@ impl Config {
 
         let mcp_url = value(&vars, "MCP_URL")
             .unwrap_or_else(|| format!("http://orchestrator:{mcp_port}/mcp"));
+        // The MCP listener answers only to this URL's host besides loopback
+        // (`mcp::mcp_router`), so a value without one would refuse every
+        // session at its first request instead of here.
+        let has_host = mcp_url
+            .parse::<axum::http::Uri>()
+            .is_ok_and(|uri| uri.scheme().is_some() && uri.host().is_some());
+        if !has_host {
+            return Err(ConfigError::invalid(
+                "MCP_URL",
+                "must be a URL with a scheme and a host",
+            ));
+        }
 
         let session_network_internal =
             value(&vars, "SESSION_NETWORK_INTERNAL").unwrap_or_else(|| "mars-sessions".to_string());
@@ -754,6 +766,20 @@ mod tests {
         let config = load(&vars).expect("loads");
         assert_eq!(config.mcp_port, 9001);
         assert_eq!(config.mcp_url, "http://orchestrator:9001/mcp");
+    }
+
+    #[test]
+    fn an_mcp_url_without_a_host_is_refused_by_name() {
+        for raw in ["orchestrator:7001/mcp", "/mcp", "not a url"] {
+            let mut vars = required_only();
+            vars.insert("MCP_URL".to_string(), raw.to_string());
+
+            let error = load(&vars).expect_err("refused");
+            assert!(
+                matches!(error, ConfigError::Invalid { ref name, .. } if name == "MCP_URL"),
+                "{raw:?}: {error}"
+            );
+        }
     }
 
     #[test]

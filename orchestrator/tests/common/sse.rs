@@ -157,3 +157,50 @@ where
             .is_ok()
     }
 }
+
+/// Every frame's `id`, in arrival order, until one reaching `until_seq` has
+/// been seen.
+///
+/// The SSE half of `common::app::collect_ws_events`, and the same contract:
+/// keepalives are skipped, every other frame must carry an `id` that is a
+/// sequence, and a body that ends or a wait that runs out is a failure rather
+/// than a hang.
+pub async fn collect_sse_ids<S>(
+    reader: &mut SseReader<S>,
+    until_seq: i64,
+    within: Duration,
+) -> Vec<i64>
+where
+    S: Stream<Item = Bytes> + Unpin,
+{
+    let mut seen: Vec<i64> = Vec::new();
+
+    let collected = tokio::time::timeout(within, async {
+        while seen.iter().copied().max().unwrap_or(0) < until_seq {
+            let frame = reader
+                .next_frame()
+                .await
+                .unwrap_or_else(|| panic!("the stream ended before sequence {until_seq}"));
+
+            if frame.is_keepalive() {
+                continue;
+            }
+
+            seen.push(
+                frame
+                    .id
+                    .as_deref()
+                    .expect("every task frame carries an id")
+                    .parse::<i64>()
+                    .expect("the id is a sequence"),
+            );
+        }
+    })
+    .await;
+
+    collected.unwrap_or_else(|_| {
+        panic!("sequence {until_seq} did not arrive within {within:?}; saw {seen:?}")
+    });
+
+    seen
+}

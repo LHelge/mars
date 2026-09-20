@@ -4,7 +4,7 @@ title: Audit E2E coverage against SPEC user-facing features, harden flaky waits 
 status: open
 priority: P2
 created: "2026-09-16T20:48:02.931989676Z"
-updated: "2026-09-16T20:48:02.931989676Z"
+updated: "2026-09-20T17:51:26.952299662Z"
 tags:
   - frontend
   - docs
@@ -17,6 +17,7 @@ depends_on:
   - "2yeth"
   - h3uux
   - qpybb
+  - dy7gr
 parent: "6s8j7"
 ---
 

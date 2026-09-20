@@ -11,7 +11,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Diff } from "../types";
+import type { Diff } from "../../types";
 import { ChangesFileList } from "./ChangesFileList";
 
 function diff(overrides: Partial<Diff> = {}): Diff {

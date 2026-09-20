@@ -49,6 +49,13 @@ export const queryKeys = {
     diff: (id: string, head: string, base?: string) =>
       ["projects", id, "git", "diff", { head, base: base ?? null }] as const,
     /**
+     * The diff of one hand-off's retained commit (`?handoff_id=`). A retained
+     * commit is immutable, so this answer never goes stale and the key is kept
+     * apart from the head form's, which a session's branch moves under.
+     */
+    handoffDiff: (id: string, handoffId: string) =>
+      ["projects", id, "git", "diff", { handoff_id: handoffId }] as const,
+    /**
      * One project's sessions. A state filter extends the key with a further
      * element, so invalidating this base key covers every filter at once.
      */

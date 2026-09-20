@@ -20,9 +20,11 @@
 // the same section means the commit being talked about is never off-screen
 // from the form talking about it.
 //
-// `onViewDiff` and the space beside the review badge are seams for the merge
-// and diff task: without a handler the row's `View diff` is a disabled
-// placeholder rather than a missing affordance.
+// The merge control and the diff viewer fill the seams the panel was built
+// with: `Merge approved hand-off` sits beside the review badge, because it is
+// that badge being acted on, and `View diff` on any row opens the retained
+// commit's diff inside the section rather than navigating away from the
+// argument it belongs to.
 
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
@@ -31,6 +33,8 @@ import { MarkdownBody } from "../components/Markdown";
 import { SubmitButton } from "../components/SubmitButton";
 import type { Comment, Handoff, TaskDetail } from "../types";
 import { formatDateTime, formatRelative, shortId } from "../utils/format";
+import { HandoffDiff } from "./HandoffDiff";
+import { MergeTaskAction } from "./MergeTaskAction";
 import {
   REVIEW_ACTION,
   commentExcerpt,
@@ -47,27 +51,32 @@ import { useUsername } from "./useUsername";
 export interface HandoffPanelProps {
   projectId: string;
   task: TaskDetail;
-  /**
-   * Show the retained commit of one hand-off. Wired by the merge and diff
-   * controls; until then every row's `View diff` is disabled.
-   */
-  onViewDiff?: (handoff: Handoff) => void;
 }
 
 /** Which form is open, if any. */
 type OpenForm =
   { kind: "revision" } | { kind: "review"; decision: ReviewDecision };
 
-export function HandoffPanel({
-  projectId,
-  task,
-  onViewDiff,
-}: HandoffPanelProps) {
+export function HandoffPanel({ projectId, task }: HandoffPanelProps) {
   const [open, setOpen] = useState<OpenForm | null>(null);
+  // Which hand-off's retained commit is on screen. The panel holds the id
+  // rather than the row, so a refreshed task carries the view with it.
+  const [viewing, setViewing] = useState<string | null>(null);
   const current = task.handoff;
 
   function close() {
     setOpen(null);
+  }
+
+  const shown =
+    viewing === null
+      ? null
+      : (task.handoffs.find((one) => one.id === viewing) ?? null);
+
+  function viewDiff(handoff: Handoff) {
+    // Clicking the row that is already open closes it, so the button is the
+    // same affordance both ways.
+    setViewing((shownId) => (shownId === handoff.id ? null : handoff.id));
   }
 
   return (
@@ -75,7 +84,12 @@ export function HandoffPanel({
       {current === null ? (
         <p className="text-console-muted text-sm">No code hand-off</p>
       ) : (
-        <CurrentHandoff task={task} handoff={current} />
+        <CurrentHandoff
+          projectId={projectId}
+          task={task}
+          handoff={current}
+          onViewDiff={viewDiff}
+        />
       )}
 
       <div className="flex flex-wrap items-center gap-2">
@@ -137,7 +151,19 @@ export function HandoffPanel({
         />
       )}
 
-      <History task={task} onViewDiff={onViewDiff} />
+      {shown !== null && (
+        <HandoffDiff
+          // A fresh query per hand-off, rather than one that swaps its subject.
+          key={shown.id}
+          projectId={projectId}
+          handoff={shown}
+          onClose={() => {
+            setViewing(null);
+          }}
+        />
+      )}
+
+      <History task={task} onViewDiff={viewDiff} />
     </div>
   );
 }
@@ -147,11 +173,15 @@ export function HandoffPanel({
  * said about it, and whether anyone has judged it.
  */
 function CurrentHandoff({
+  projectId,
   task,
   handoff,
+  onViewDiff,
 }: {
+  projectId: string;
   task: TaskDetail;
   handoff: Handoff;
+  onViewDiff: (handoff: Handoff) => void;
 }) {
   const label = reviewLabel(handoff);
   const comment = handoffComment(task.comments, handoff);
@@ -179,11 +209,13 @@ function CurrentHandoff({
           {handoff.source_branch}
         </span>
         <CopyCommit commit={handoff.commit} />
-        {/* The task merge control mounts beside the badge: it is the action
+        <ViewDiffButton handoff={handoff} onViewDiff={onViewDiff} />
+        {/* The task merge control sits beside the badge: it is the action
             that an approval of this commit unlocks. */}
         <span className={`ml-auto font-mono text-xs ${label.tone}`}>
           {label.text}
         </span>
+        <MergeTaskAction projectId={projectId} task={task} />
       </div>
 
       <Reviewer handoff={handoff} />
@@ -240,7 +272,7 @@ function History({
   onViewDiff,
 }: {
   task: TaskDetail;
-  onViewDiff?: (handoff: Handoff) => void;
+  onViewDiff: (handoff: Handoff) => void;
 }) {
   if (task.handoffs.length === 0) {
     return null;
@@ -273,7 +305,7 @@ function HistoryRow({
   handoff: Handoff;
   comment: Comment | null;
   current: boolean;
-  onViewDiff?: (handoff: Handoff) => void;
+  onViewDiff: (handoff: Handoff) => void;
 }) {
   const label = reviewLabel(handoff);
   const username = useUsername(handoff.created_by_user_id);
@@ -314,30 +346,35 @@ function HistoryRow({
             current
           </span>
         )}
-        <span
-          className="ml-auto"
-          title={
-            onViewDiff === undefined
-              ? "Diff viewing arrives with the merge and diff controls"
-              : undefined
-          }
-        >
-          <button
-            type="button"
-            disabled={onViewDiff === undefined}
-            onClick={() => {
-              onViewDiff?.(handoff);
-            }}
-            className="border-console-border hover:bg-console-raised hover:text-console-text rounded border px-1.5 py-px font-mono text-[0.6875rem] disabled:opacity-50 disabled:hover:bg-transparent"
-          >
-            View diff
-          </button>
+        <span className="ml-auto">
+          <ViewDiffButton handoff={handoff} onViewDiff={onViewDiff} />
         </span>
       </div>
       {comment !== null && comment.body.trim() !== "" && (
         <p className="max-w-prose text-xs">{commentExcerpt(comment.body)}</p>
       )}
     </li>
+  );
+}
+
+/** Opens the retained commit of one hand-off, wherever it is listed. */
+function ViewDiffButton({
+  handoff,
+  onViewDiff,
+}: {
+  handoff: Handoff;
+  onViewDiff: (handoff: Handoff) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        onViewDiff(handoff);
+      }}
+      className="border-console-border hover:bg-console-raised hover:text-console-text rounded border px-1.5 py-px font-mono text-[0.6875rem]"
+    >
+      View diff
+    </button>
   );
 }
 

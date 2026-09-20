@@ -6,8 +6,8 @@
 // first and goes to the one they care about — so a row is a link into the
 // patch below rather than a static line.
 
-import { EmptyState } from "../components";
-import type { Diff } from "../types";
+import { EmptyState } from "../EmptyState";
+import type { Diff } from "../../types";
 
 /** The letters `git diff --name-status` prints (`SPEC.md`, "Git"). */
 const STATUS_TINT: Record<string, string> = {

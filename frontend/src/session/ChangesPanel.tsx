@@ -13,21 +13,15 @@
 
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { Alert, DiffView, LoadingState } from "../components";
+import { Alert, DiffBody, LoadingState } from "../components";
 import { getDiff } from "../services/git";
 import { getProject, listBranches } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
-import type { PatchFile } from "../utils/diff";
-import { parseUnifiedPatch } from "../utils/diff";
 import { formatRelative, shortSha } from "../utils/format";
-import { ChangesFileList } from "./ChangesFileList";
 import { useSessionStore } from "./sessionStore";
 import type { SessionPanelProps } from "./sidePanels";
-
-/** Above this many changed lines a file opens collapsed. */
-const COLLAPSE_CHANGED_LINES = 500;
 
 export function ChangesPanel({ session }: SessionPanelProps) {
   const queryClient = useQueryClient();
@@ -66,19 +60,6 @@ export function ChangesPanel({ session }: SessionPanelProps) {
       queryKey: queryKeys.projects.diff(projectId, session.id, base ?? undefined),
     });
   }, [base, gitEventSeq, projectId, queryClient, session.id]);
-
-  const patch = diff.data?.patch ?? "";
-  const files = useMemo(() => parseUnifiedPatch(patch), [patch]);
-  const binaryPaths = useMemo(
-    () =>
-      new Set(files.filter((file) => file.binary).map((file) => file.path)),
-    [files],
-  );
-
-  const blocks = useRef(new Map<string, HTMLElement>());
-  const scrollToFile = (path: string) => {
-    blocks.current.get(path)?.scrollIntoView({ block: "start" });
-  };
 
   // Integration heads and upstream refs are both legal bases; session refs are
   // not, and the session's own branch is never something to compare against.
@@ -166,80 +147,8 @@ export function ChangesPanel({ session }: SessionPanelProps) {
           <LoadingState label="Loading the diff" />
         )
       ) : (
-        <>
-          <ChangesFileList
-            diff={diff.data}
-            binaryPaths={binaryPaths}
-            onSelect={scrollToFile}
-          />
-          {files.map((file) => (
-            <PatchFileBlock
-              key={file.path}
-              file={file}
-              anchor={(element) => {
-                if (element === null) {
-                  blocks.current.delete(file.path);
-                } else {
-                  blocks.current.set(file.path, element);
-                }
-              }}
-            />
-          ))}
-        </>
+        <DiffBody diff={diff.data} />
       )}
     </div>
-  );
-}
-
-interface PatchFileBlockProps {
-  file: PatchFile;
-  anchor: (element: HTMLElement | null) => void;
-}
-
-/** One file of the patch: a header that collapses it, and its hunks. */
-function PatchFileBlock({ file, anchor }: PatchFileBlockProps) {
-  const changed = file.hunks.reduce(
-    (sum, hunk) =>
-      sum + hunk.lines.filter((line) => line.type !== "context").length,
-    0,
-  );
-  const [expanded, setExpanded] = useState(changed <= COLLAPSE_CHANGED_LINES);
-
-  return (
-    <section ref={anchor} className="border-console-border rounded border">
-      <button
-        type="button"
-        onClick={() => {
-          setExpanded((value) => !value);
-        }}
-        aria-expanded={expanded}
-        className="flex w-full items-baseline gap-2 px-2 py-1 text-left font-mono text-xs"
-      >
-        <span className="text-console-text min-w-0 flex-1 truncate">
-          {file.path}
-        </span>
-        <span className="text-console-muted shrink-0">
-          {file.binary ? "binary" : `${String(changed)} changed`}
-        </span>
-      </button>
-      {expanded && (
-        <div className="space-y-2 px-2 pb-2">
-          {file.binary ? (
-            <p className="text-console-muted text-xs">
-              git could not show the contents of a binary file.
-            </p>
-          ) : (
-            file.hunks.map((hunk, index) => (
-              <div key={`${String(index)}:${hunk.header}`} className="space-y-1">
-                <p className="text-console-muted truncate font-mono text-xs">
-                  {hunk.header}
-                </p>
-                <DiffView lines={hunk.lines} />
-              </div>
-            ))
-          )}
-        </div>
-      )}
-    </section>
   );
 }

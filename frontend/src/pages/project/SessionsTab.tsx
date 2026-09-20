@@ -25,6 +25,7 @@ import { Link } from "react-router";
 import {
   Alert,
   EmptyState,
+  GitActionsPanel,
   LoadingState,
   SessionStatePill,
   SubmitButton,
@@ -302,8 +303,9 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
         )}
       </section>
 
-      {/* `GitActionsPanel` — ahead/behind, merge, rebase and push for the
-          session branches — is a separate task and mounts here. */}
+      {/* Ahead/behind, merge, rebase and push for the session branches; the
+          sessions above are what it acts on. */}
+      <GitActionsPanel project={project} />
     </div>
   );
 }

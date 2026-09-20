@@ -523,18 +523,25 @@ interface SessionState {
   messages: Record<string, Message>;       // id -> folded message
   pendingTools: Record<string, string>;    // tool_use_id -> message id awaiting a result
   subagents: Record<string, string[]>;     // parent_tool_use_id -> message ids nested under it
+  oldestSeq: number | null;                // lowest seq held: the `?before=` cursor for older history
+  hasMore: boolean;                        // older history remains behind oldestSeq
+  gitEventSeq: number;                     // seq of the last `git` event; the Changes panel refreshes on it
+  turnActive: boolean;                     // a turn is in progress: the composer's button reads "Interject"
+  lastRejection: { client_id: string; reason: string } | null;  // latest `input_rejected`, cleared by the next send
 }
 
 type Message =
-  | { id; kind: "user"; text; pending?: boolean }
+  | { id; kind: "user"; text; pending?: boolean; rejected?: string }
   | { id; kind: "assistant_text"; text; streaming: boolean }
-  | { id; kind: "thinking"; text }
-  | { id; kind: "tool"; name; input; result?; is_error?; running: boolean; children?: string[] }
-  | { id; kind: "system"; text; level: "info" | "warn" | "error" }
-  | { id; kind: "result"; ... };
+  | { id; kind: "thinking"; text; redacted: boolean }
+  | { id; kind: "tool"; tool_use_id; name; input; result?; is_error?; truncated?; running: boolean;
+      children?: string[]; subagent?: { description; agent_type?; is_error? } }
+  | { id; kind: "system"; text; level: "info" | "warn" | "error"; detail?: unknown }
+  | { id; kind: "result"; subtype; is_error; num_turns; duration_ms; cost_usd?; usage? }
+  | { id; kind: "raw"; native: unknown };
 ```
 
-`text_delta` appends to the current streaming assistant message; the following `text` replaces it and clears `streaming`. `tool_call` creates a tool message and registers it in `pendingTools`; `tool_result` completes it. Events carrying `parent_tool_use_id` are placed under the tool message with that id instead of at the top level. `user_message` with a `client_id` matching an optimistic message replaces it.
+`text_delta` appends to the current streaming assistant message; the following `text` replaces it and clears `streaming`. `tool_call` creates a tool message and registers it in `pendingTools`; `tool_result` completes it. Events carrying `parent_tool_use_id` are placed under the tool message with that id instead of at the top level. `user_message` with a `client_id` matching an optimistic message replaces it, keeping its place in `order`. Event-derived messages have the id `e<seq>` and an optimistic one `client:<client_id>`. A `tool_result` whose `tool_call` has not been seen becomes a tool message named `unknown`, and a subagent event whose parent has not been seen hangs under a placeholder tool message named `Agent` with the id `tool:<tool_use_id>`, so nothing is dropped; when an older history page later supplies the real `tool_call`, the two halves are reconciled into one message at the older position, so one `tool_use_id` is always one message. Older pages are folded on their own and prepended; `lastSeq` only ever moves forward and an event at or below it is ignored, which is what makes reconnect replay idempotent. A message the client itself has to show, such as a socket `error` frame, is appended as a `system` message with a `local:<n>` id and touches no cursor.
 
 **Transcript rendering.** One renderer per tool family, chosen by tool name: markdown for assistant text; a side-by-side or unified diff for edit and write tools (computed from `old_string`/`new_string` or file content); monospace with ANSI stripping for shell tools; a collapsed one-line summary for read, glob and grep tools that expands on click; a nested, collapsible transcript for subagents; a JSON tree for anything else and for `raw`. Long tool results are collapsed above 40 lines.
 

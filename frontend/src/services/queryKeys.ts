@@ -79,6 +79,12 @@ export const queryKeys = {
     list: () => ["users", "list"] as const,
     /** The signed-in user; refreshed in place after a self-service password change. */
     me: () => ["users", "me"] as const,
+    /**
+     * One user by id (`GET /users/{id}`, open to any user). Task cards name
+     * their assignee through it, so the same username is read once however
+     * many cards carry it.
+     */
+    detail: (id: string) => ["users", id] as const,
   },
 
   invites: {

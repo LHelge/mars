@@ -1,0 +1,195 @@
+// One card on the task board (`SPEC.md`, "Frontend", "Task board": priority,
+// labels, the holding session with a link, attempts when above one, assignee,
+// blocked and dependency indicators, and a parent badge).
+//
+// The whole card is a link to `/projects/{pid}/tasks/{number}` — the board
+// with that task's drawer open — apart from the holding session, which is a
+// link of its own into the transcript. Drag-and-drop is not part of v1; a task
+// moves from the drawer.
+//
+// Colour is information, not decoration (`CLAUDE.md`, "Frontend conventions").
+// A card is grey until something about it needs attention: a critical or high
+// priority, a task that is blocked, and the session currently holding it. P2
+// and P3 are set in the muted tone, because "ordinary" is the default and
+// should not compete for the eye.
+//
+// The card is memoised on task identity. The store installs a fresh snapshot
+// on every refresh, so this only pays off for the renders a sibling causes —
+// the search field, the drawer opening — but those are the frequent ones.
+
+import { useQuery } from "@tanstack/react-query";
+import { memo } from "react";
+import { Link } from "react-router";
+
+import { queryKeys } from "../services/queryKeys";
+import { getUser } from "../services/users";
+import type { Task, TaskPriority } from "../types";
+import { useTaskStore } from "./taskStore";
+import { selectTaskById } from "./taskStore";
+
+/** Quiet colour for the two priorities that mean "not later" (`SPEC.md`). */
+const PRIORITY_COLOUR: Record<TaskPriority, string> = {
+  0: "text-state-failed",
+  1: "text-state-parked",
+  2: "text-console-muted",
+  3: "text-console-muted",
+};
+
+const PRIORITY_MEANING: Record<TaskPriority, string> = {
+  0: "P0 — critical",
+  1: "P1 — high",
+  2: "P2 — normal",
+  3: "P3 — low",
+};
+
+const CHIP =
+  "border-console-border inline-flex items-center rounded border px-1 py-px font-mono text-[0.6875rem] leading-4";
+
+export interface TaskCardProps {
+  task: Task;
+  /** The task named by `/projects/:id/tasks/:number`: marked where it sits. */
+  selected?: boolean;
+}
+
+function TaskCardView({ task, selected }: TaskCardProps) {
+  // The parent is read from the same snapshot the card came from, so no card
+  // makes a request of its own to render its badge.
+  const parent = useTaskStore(
+    task.parent_id === null ? selectNothing : selectTaskById(task.parent_id),
+  );
+
+  const blockedBy = task.depends_on.filter(
+    (dependency) => dependency.kind === "blocks",
+  ).length;
+  const blocking = task.blocks.length;
+
+  return (
+    <article
+      aria-current={selected ? "true" : undefined}
+      className={`bg-console-surface hover:border-console-accent/60 rounded border transition-colors ${selected ? "border-console-accent" : "border-console-border"}`}
+    >
+      <Link
+        to={`/projects/${task.project_id}/tasks/${String(task.number)}`}
+        className="focus-visible:outline-console-accent block px-2.5 py-2 focus-visible:outline-2"
+      >
+        <div className="flex items-baseline gap-2">
+          <span className="text-console-muted shrink-0 font-mono text-xs">
+            #{task.number}
+          </span>
+          <span
+            title={PRIORITY_MEANING[task.priority]}
+            className={`shrink-0 font-mono text-xs ${PRIORITY_COLOUR[task.priority]}`}
+          >
+            P{task.priority}
+          </span>
+          <h3 className="text-console-text min-w-0 flex-1 text-sm">
+            {task.title}
+          </h3>
+        </div>
+
+        {task.needs_human_reason !== null && (
+          <p className="text-state-human mt-1 truncate text-xs">
+            {task.needs_human_reason}
+          </p>
+        )}
+
+        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+          {task.parent_id !== null && (
+            <span
+              className={`${CHIP} text-console-muted`}
+              title="This task is a child of another task"
+            >
+              part of #{parent === undefined ? "?" : parent.number}
+            </span>
+          )}
+
+          {task.blocked && (
+            <span
+              className={`${CHIP} border-state-failed/60 text-state-failed`}
+              title="Waiting on open children or unsatisfied dependencies"
+            >
+              blocked
+            </span>
+          )}
+
+          {(blockedBy > 0 || blocking > 0) && (
+            <span
+              className={`${CHIP} text-console-muted`}
+              title={dependencyTitle(blockedBy, blocking)}
+            >
+              {blockedBy > 0 && <span>↑{blockedBy}</span>}
+              {blockedBy > 0 && blocking > 0 && <span>&nbsp;</span>}
+              {blocking > 0 && <span>↓{blocking}</span>}
+            </span>
+          )}
+
+          {task.attempts > 1 && (
+            <span
+              className={`${CHIP} text-console-muted`}
+              title="Sessions that have picked this task up"
+            >
+              {task.attempts} attempts
+            </span>
+          )}
+
+          <Assignee id={task.assignee_user_id} />
+
+          {task.labels.map((label) => (
+            <span key={label} className={`${CHIP} text-console-muted`}>
+              {label}
+            </span>
+          ))}
+        </div>
+      </Link>
+
+      {task.lease_holder_session_id !== null && (
+        <div className="border-console-border/60 border-t px-2.5 py-1.5">
+          <Link
+            to={`/sessions/${task.lease_holder_session_id}`}
+            title="The session holding this task"
+            className={`${CHIP} border-console-accent/60 text-console-accent hover:bg-console-accent/10`}
+          >
+            held
+          </Link>
+        </div>
+      )}
+    </article>
+  );
+}
+
+export const TaskCard = memo(TaskCardView);
+
+/** No parent, no lookup: a selector that subscribes to nothing that changes. */
+function selectNothing(): undefined {
+  return undefined;
+}
+
+function dependencyTitle(blockedBy: number, blocking: number): string {
+  const parts: string[] = [];
+  if (blockedBy > 0) parts.push(`Blocked by ${String(blockedBy)}`);
+  if (blocking > 0) parts.push(`Blocks ${String(blocking)}`);
+  return parts.join("; ");
+}
+
+/**
+ * The assignee's username. `staleTime: Infinity` because a username barely
+ * changes and a board can carry the same one on fifty cards; until it lands,
+ * the id's first eight characters say who it is well enough to recognise.
+ */
+function Assignee({ id }: { id: string | null }) {
+  const user = useQuery({
+    queryKey: queryKeys.users.detail(id ?? ""),
+    queryFn: () => getUser(id ?? ""),
+    enabled: id !== null,
+    staleTime: Infinity,
+    retry: false,
+  });
+
+  if (id === null) return null;
+
+  return (
+    <span className={`${CHIP} text-console-muted`} title="Assignee">
+      @{user.data?.username ?? id.slice(0, 8)}
+    </span>
+  );
+}

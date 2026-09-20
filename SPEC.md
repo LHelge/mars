@@ -506,7 +506,7 @@ Structure:
 ```
 frontend/src/
 ├── components/     reusable UI: FormField, SubmitButton, Alert, LoadingState, EmptyState, PageLayout, AuthLayout, ProtectedRoute, AdminRoute, ...
-├── pages/          route-level: LoginPage, AcceptInvitePage, ChangePasswordPage, ForgotPasswordPage, ResetPasswordPage, DashboardPage, ProjectsPage, ProjectPage, SessionPage, TasksPage, SecretsPage, SettingsPage, ProfileEditorPage, AdminPage (users + invites)
+├── pages/          route-level: LoginPage, AcceptInvitePage, ChangePasswordPage, ForgotPasswordPage, ResetPasswordPage, DashboardPage, ProjectsPage, ProjectPage, SessionPage, SecretsPage, SettingsPage, ProfileEditorPage, AdminPage (users + invites)
 ├── session/        SessionView, Transcript, Composer, TerminalView, tool renderers, sessionStore (Zustand), useSessionSocket
 ├── tasks/          TaskBoard, TaskCard, TaskDetail, TaskStatesEditor, taskStore (Zustand), useTaskStream
 ├── services/       apiClient (fetch wrapper with refresh-on-401), auth, projects, profiles, sessions, tasks, taskStates, secrets, users, git

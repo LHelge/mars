@@ -259,18 +259,57 @@ const appDeps: TaskStoreDeps = {
 
 export const useTaskStore = createTaskStore(appDeps);
 
-/** One board column: a state and the tasks sitting in it. */
+/** The heading of the trailing bucket, and its React key. */
+export const UNKNOWN_COLUMN = "unknown";
+
+/**
+ * One board column: the tasks sitting in it, and the state they are in.
+ *
+ * `state` is `null` for the trailing bucket that catches tasks whose `state`
+ * name is not among the project's current states. That only happens between
+ * two reads of one refresh — a state renamed while the board was open — so the
+ * bucket is a column without a state row rather than a fabricated `TaskState`:
+ * nothing downstream can mistake it for a column the project actually has.
+ */
 export interface TaskColumn {
-  state: TaskState;
+  /** Stable across refreshes: the state's id, or `UNKNOWN_COLUMN`. */
+  key: string;
+  /** What the column is headed with. */
+  name: string;
+  state: TaskState | null;
   tasks: Task[];
 }
 
-/** Columns in `position` order, each keeping the API's task order. */
-export function selectColumns(state: TaskBoardState): TaskColumn[] {
-  return state.states.map((column) => ({
+/**
+ * Columns in `position` order, each keeping the API's task order, followed by
+ * the `unknown` bucket when — and only when — some task is in no current
+ * state. A task is never dropped; the next consistent snapshot files it.
+ *
+ * Takes the two arrays rather than the whole state so a view can select them
+ * one by one and derive the columns in a `useMemo`: this builds fresh arrays
+ * on every call, and a store subscription on it would re-render on each.
+ */
+export function selectColumns(
+  state: Pick<TaskBoardState, "states" | "tasks">,
+): TaskColumn[] {
+  const known = new Set(state.states.map((column) => column.name));
+  const columns: TaskColumn[] = state.states.map((column) => ({
+    key: column.id,
+    name: column.name,
     state: column,
     tasks: state.tasks.filter((task) => task.state === column.name),
   }));
+
+  const orphans = state.tasks.filter((task) => !known.has(task.state));
+  if (orphans.length > 0) {
+    columns.push({
+      key: UNKNOWN_COLUMN,
+      name: UNKNOWN_COLUMN,
+      state: null,
+      tasks: orphans,
+    });
+  }
+  return columns;
 }
 
 /** The task carrying a per-project `number` (the drawer's route parameter). */

@@ -29,6 +29,18 @@
 //! to hang a check on. A failed check ends the response — there is no frame to
 //! explain it with, so the log line is the explanation (ADR 0025).
 //!
+//! The very first thing written is a `: ready` comment, before the replay
+//! reads its first page (`SPEC.md`, "SSE: task stream"). A stream over a
+//! project with nothing to replay would otherwise write no body byte until
+//! the first keepalive fifteen seconds later, and a proxy that holds a
+//! response's headers until its first body byte — Vite's dev proxy does —
+//! delays `EventSource.onopen` by that much, which is the board's first REST
+//! load (`SPEC.md`, "Frontend"). It is a comment rather than an early
+//! keepalive tick because the keepalive tick is a re-authorization
+//! (`SPEC.md`, "Authentication") and its cadence is the documented fifteen
+//! seconds: the authorization has just been checked, and shifting the timer
+//! would shift every later check with it.
+//!
 //! No `retry:` field is ever written: the browser client disables automatic
 //! reconnect and reopens explicitly with a refreshed token (`SPEC.md`,
 //! "Authentication"), and a `retry:` would tell `EventSource` otherwise.
@@ -72,6 +84,10 @@ const TASK_EVENT: &str = "task";
 
 /// The keepalive comment's text, so the wire form is `: keepalive`.
 const KEEPALIVE: &str = "keepalive";
+
+/// The opening comment's text, so the wire form is `: ready`: one body byte
+/// written before the replay, for the reason the module comment gives.
+const READY: &str = "ready";
 
 /// The reconnect header `EventSource` sends, and the first place the cursor is
 /// looked for.
@@ -177,9 +193,11 @@ async fn task_stream(
         principal,
         cursor,
         rx,
-        pending: VecDeque::new(),
+        // The opening comment, queued before the first page is read so it is
+        // written as soon as the response body starts.
+        pending: VecDeque::from([Event::default().comment(READY)]),
         // Neither timer fires immediately: the stream is about to read from
-        // its cursor, and has nothing to keep alive before its first frame.
+        // its cursor, and the opening comment has already been written.
         safety: interval_at(Instant::now() + timings.safety_read, timings.safety_read),
         keepalive: interval_at(
             Instant::now() + timings.sse_keepalive,

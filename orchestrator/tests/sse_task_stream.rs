@@ -15,6 +15,9 @@
 //! - a lost notification is covered by the safety read, asserted with the
 //!   shared listener switched off so nothing *but* the safety read can deliver
 //!   the event;
+//! - the body opens with a `: ready` comment before the replay, so a stream
+//!   with nothing to replay still writes a body byte at once and a buffering
+//!   proxy cannot hold the client's `open` event back;
 //! - the keepalive comment is also the re-authorization tick: a revoked login
 //!   ends the body, silently, because there is nothing to send instead.
 //!
@@ -241,6 +244,52 @@ async fn the_open_response_carries_the_documented_headers_and_no_retry() {
         !body.contains("retry:"),
         "no reconnection delay is ever sent: {body}",
     );
+}
+
+#[tokio::test]
+async fn a_stream_with_nothing_to_replay_writes_its_first_frame_at_once() {
+    let app = TestApp::spawn().await;
+    let fixture = arrange(&app).await;
+
+    // No events at all: without the opening comment the first body byte would
+    // be the first keepalive, and a proxy that holds the headers until then
+    // holds the client's `open` event with it (`SPEC.md`, "SSE: task
+    // stream").
+    let started = std::time::Instant::now();
+    let mut reader = SseReader::new(
+        app.sse(fixture.project_id, &fixture.user.access_token, None, None)
+            .await,
+    );
+
+    let frame = tokio::time::timeout(Duration::from_secs(1), reader.next_frame())
+        .await
+        .expect("the first frame arrives at once")
+        .expect("the stream is open");
+
+    assert!(
+        frame.is_ready(),
+        "the body opens with `: ready`, before any replay: {frame:?}",
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the opening comment does not wait for a timer",
+    );
+}
+
+#[tokio::test]
+async fn the_opening_comment_precedes_the_replay() {
+    let app = TestApp::spawn().await;
+    let fixture = arrange(&app).await;
+    append(&app, fixture.project_id, 1).await;
+
+    let mut reader = SseReader::new(
+        app.sse(fixture.project_id, &fixture.user.access_token, None, None)
+            .await,
+    );
+
+    let first = reader.next_frame().await.expect("the stream is open");
+    assert!(first.is_ready(), "the comment comes first: {first:?}");
+    assert_eq!(task_event(&reader.event_within(WITHIN).await).seq, 1);
 }
 
 // ---- replay ----

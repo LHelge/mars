@@ -49,21 +49,6 @@ const DEFAULT_STATES = [
 /** A live refresh is coalesced, so nothing here asserts immediacy (ADR 0022). */
 const LIVE_TIMEOUT = 10_000;
 
-/**
- * How long the board's first snapshot is given.
- *
- * `useTaskStream` makes the stream's `open` handler the first REST load
- * (`SPEC.md`, "SSE: task stream": subscribe, then replay, then follow), and
- * Vite's dev proxy — what `npm run dev` and therefore this suite serve the
- * frontend through — holds a proxied response's headers until its first body
- * byte. A project with no task events to replay writes nothing until the
- * stream's 15 s keepalive, so its first board load waits that long here. The
- * orchestrator itself answers the stream's headers in milliseconds and sets
- * `X-Accel-Buffering: no`, so nginx is unaffected; this allowance is about the
- * development proxy alone.
- */
-const FIRST_LOAD_TIMEOUT = 25_000;
-
 interface Fixture {
   user: TestUser;
   client: Api;
@@ -92,9 +77,7 @@ function boardPath(project: Project): string {
 /** The board tab, waited for on the first column the project is created with. */
 async function openBoard(page: Page, project: Project): Promise<void> {
   await page.goto(boardPath(project));
-  await expect(page.getByTestId("column-backlog")).toBeVisible({
-    timeout: FIRST_LOAD_TIMEOUT,
-  });
+  await expect(page.getByTestId("column-backlog")).toBeVisible();
 }
 
 function column(page: Page, name: string): Locator {
@@ -514,17 +497,15 @@ test("a second browser context follows the first without reloading", async ({
 }) => {
   const first = await arrange(request, "live-a");
   const watcher = await createTestUser(request, { prefix: "live-b" });
-  // One task before either board opens, so both streams have a row to replay
-  // and neither pays the development proxy's first-byte wait.
+  // One task before either board opens, so the second context's arrival
+  // already shows what the first has.
   await createTask(first.client, first.project.id, { title: "Already here" });
   await loginViaToken(context, first.user);
   await openBoard(page, first.project);
 
   const second = await newLoggedInPage(browser, watcher);
   await second.goto(boardPath(first.project));
-  await expect(second.getByTestId("column-backlog")).toBeVisible({
-    timeout: FIRST_LOAD_TIMEOUT,
-  });
+  await expect(second.getByTestId("column-backlog")).toBeVisible();
 
   // Installed after the arrival navigation: from here on, every change the
   // second context shows must have come down the stream (ADR 0022).

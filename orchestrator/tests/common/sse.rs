@@ -6,8 +6,9 @@
 //!
 //! The parser is deliberately literal rather than complete. An SSE body is
 //! blocks separated by a blank line, and every block this orchestrator writes
-//! is either `id:` + `event:` + `data:` or the bare comment `: keepalive`, so
-//! a test that reads something else has found a bug worth failing on — which
+//! is either `id:` + `event:` + `data:` or a bare comment (`: ready` once at
+//! the start, then `: keepalive`), so a test that reads something else has
+//! found a bug worth failing on — which
 //! is why unknown field names are kept in neither the struct nor a bag, and
 //! multi-line `data:` is joined with a newline the way the specification says
 //! it is.
@@ -71,12 +72,20 @@ impl SseFrame {
         serde_json::from_str(data).expect("the data is the documented JSON")
     }
 
+    /// Whether this is a bare comment block: the opening `: ready`, the
+    /// periodic `: keepalive`, and nothing a task frame carries.
+    pub fn is_comment(&self) -> bool {
+        self.comment.is_some() && self.id.is_none() && self.event.is_none() && self.data.is_none()
+    }
+
     /// Whether this is the keepalive comment and nothing else.
     pub fn is_keepalive(&self) -> bool {
-        self.comment.as_deref() == Some("keepalive")
-            && self.id.is_none()
-            && self.event.is_none()
-            && self.data.is_none()
+        self.is_comment() && self.comment.as_deref() == Some("keepalive")
+    }
+
+    /// Whether this is the opening comment and nothing else.
+    pub fn is_ready(&self) -> bool {
+        self.is_comment() && self.comment.as_deref() == Some("ready")
     }
 }
 
@@ -117,16 +126,16 @@ where
         }
     }
 
-    /// The next frame that is not a keepalive comment, within `within`.
+    /// The next frame that is not a comment, within `within`.
     ///
-    /// Keepalives are filtered because they arrive on their own timer and a
-    /// scenario about events must not depend on where that timer happens to
-    /// fall.
+    /// Comments are filtered because they are framing rather than content:
+    /// the opening `: ready` precedes every replay, and keepalives arrive on
+    /// their own timer, so a scenario about events must not depend on either.
     pub async fn event_within(&mut self, within: Duration) -> SseFrame {
         tokio::time::timeout(within, async {
             loop {
                 let frame = self.next_frame().await.expect("the stream is still open");
-                if !frame.is_keepalive() {
+                if !frame.is_comment() {
                     return frame;
                 }
             }
@@ -162,7 +171,7 @@ where
 /// been seen.
 ///
 /// The SSE half of `common::app::collect_ws_events`, and the same contract:
-/// keepalives are skipped, every other frame must carry an `id` that is a
+/// comment frames are skipped, every other frame must carry an `id` that is a
 /// sequence, and a body that ends or a wait that runs out is a failure rather
 /// than a hang.
 pub async fn collect_sse_ids<S>(
@@ -182,7 +191,7 @@ where
                 .await
                 .unwrap_or_else(|| panic!("the stream ended before sequence {until_seq}"));
 
-            if frame.is_keepalive() {
+            if frame.is_comment() {
                 continue;
             }
 

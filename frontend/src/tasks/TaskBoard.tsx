@@ -12,13 +12,16 @@
 //   read failed, nothing an error with Retry — an empty board is never shown
 //   read failed, loaded  the previous snapshot, with the error above it
 //   stale but loaded     the previous snapshot, marked refreshing/reconnecting
+//   loaded, no matches   the columns, kept and empty, and `No matching tasks`
 //
-// Columns are derived with `useMemo` from the two arrays the store holds,
-// rather than subscribed to through `selectColumns`: that selector builds
+// Columns are derived with `useMemo` from the arrays the store holds, rather
+// than subscribed to through `selectVisibleColumns`: that selector builds
 // fresh arrays on every call, so subscribing to it would re-render the board
-// on every store write, refresh or not.
+// on every store write, refresh or not. The search query is one of its inputs,
+// so the query is reapplied to whatever the latest snapshot holds without the
+// snapshot itself ever being filtered (ADR 0031).
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { Alert } from "../components/Alert";
 import { EmptyState } from "../components/EmptyState";
@@ -27,9 +30,11 @@ import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
 import type { TaskState } from "../types";
 import { CreateTaskForm } from "./CreateTaskForm";
+import { normalizeQuery } from "./search";
 import { TaskCard } from "./TaskCard";
+import { TaskSearch } from "./TaskSearch";
 import { KIND_COLOUR, KIND_MEANING } from "./taskStateRules";
-import { selectColumns, UNKNOWN_COLUMN, useTaskStore } from "./taskStore";
+import { selectVisibleColumns, UNKNOWN_COLUMN, useTaskStore } from "./taskStore";
 import type { TaskColumn } from "./taskStore";
 
 /** `SPEC.md`, "User-facing features", "Task board", in one line. */
@@ -57,13 +62,31 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
   const error = useTaskStore((state) => state.error);
   const stream = useTaskStore((state) => state.stream);
   const refresh = useTaskStore((state) => state.refresh);
+  const query = useTaskStore((state) => state.query);
+  const setQuery = useTaskStore((state) => state.setQuery);
 
   const [creating, setCreating] = useState(false);
+  const searchInput = useRef<HTMLInputElement>(null);
 
   const columns = useMemo(
-    () => selectColumns({ states, tasks }),
-    [states, tasks],
+    () => selectVisibleColumns({ states, tasks, query }),
+    [states, tasks, query],
   );
+
+  const clearSearch = useCallback(() => {
+    setQuery("");
+    searchInput.current?.focus();
+  }, [setQuery]);
+
+  // The fourth board state, after loading, failed-with-nothing and loaded: a
+  // snapshot is on screen and the query matches none of it. It is decided from
+  // `loaded` and the query alone, so an empty project with no query keeps its
+  // `No tasks yet` invitation and a first load keeps its spinner.
+  const noMatches =
+    loaded &&
+    normalizeQuery(query) !== "" &&
+    columns.length > 0 &&
+    columns.every((column) => column.tasks.length === 0);
 
   const newTask = (
     <SubmitButton
@@ -131,13 +154,15 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
         />
       )}
 
+      <TaskSearch inputRef={searchInput} onClear={clearSearch} />
+
       {!loaded ? (
         // Before the first successful load there is no board to show. An
         // error has already been reported above; this is the other half.
         error === null && <LoadingState label="Loading the task board" />
       ) : (
         <>
-          {tasks.length === 0 && (
+          {tasks.length === 0 && !noMatches && (
             <EmptyState
               title="No tasks yet"
               description="Create the first one; agents pick their work up from the queue states below."
@@ -151,15 +176,37 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
               description="A board needs columns. Add them on the States tab."
             />
           ) : (
-            <div className="flex snap-x gap-3 overflow-x-auto pb-2">
-              {columns.map((column) => (
-                <BoardColumn
-                  key={column.key}
-                  column={column}
-                  openTaskNumber={openTaskNumber}
+            // The columns stay whatever the query hides, so the board keeps
+            // its shape while searching and the message below says why they
+            // are empty.
+            <>
+              <div className="flex snap-x gap-3 overflow-x-auto pb-2">
+                {columns.map((column) => (
+                  <BoardColumn
+                    key={column.key}
+                    column={column}
+                    openTaskNumber={openTaskNumber}
+                  />
+                ))}
+              </div>
+
+              {noMatches && (
+                <EmptyState
+                  title="No matching tasks"
+                  description="Nothing in this project matches that title or number. Clear the search to see the whole board."
+                  action={
+                    <SubmitButton
+                      type="button"
+                      variant="ghost"
+                      loading={false}
+                      onClick={clearSearch}
+                    >
+                      Clear search
+                    </SubmitButton>
+                  }
                 />
-              ))}
-            </div>
+              )}
+            </>
           )}
         </>
       )}

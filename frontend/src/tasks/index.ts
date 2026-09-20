@@ -38,3 +38,8 @@ export type { TaskCardProps } from "./TaskCard";
 
 export { CreateTaskForm } from "./CreateTaskForm";
 export type { CreateTaskFormProps } from "./CreateTaskForm";
+
+export { filterTasks, normalizeQuery } from "./search";
+export { selectVisibleColumns } from "./taskStore";
+export { TaskSearch } from "./TaskSearch";
+export type { TaskSearchProps } from "./TaskSearch";

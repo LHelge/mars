@@ -8,6 +8,7 @@ import type { Task, TaskEvent, TaskState } from "../types";
 import {
   createTaskStore,
   selectColumns,
+  selectVisibleColumns,
   UNKNOWN_COLUMN,
   type TaskStoreDeps,
 } from "./taskStore";
@@ -357,5 +358,115 @@ describe("selectColumns", () => {
 
     expect(columns).toHaveLength(2);
     expect(columns.every((c) => c.tasks.length === 0)).toBe(true);
+  });
+});
+
+describe("selectVisibleColumns", () => {
+  function titled(number: number, title: string, stateName: string): Task {
+    return { ...task(number, stateName), title };
+  }
+
+  const SNAPSHOT = {
+    states: [BACKLOG, READY],
+    tasks: [
+      titled(42, "Fix Login Redirect", "ready"),
+      titled(142, "Rotate the deploy key", "backlog"),
+      titled(7, "Ship the login banner", "ready"),
+    ],
+  };
+
+  it("is selectColumns itself while the query is empty", () => {
+    const visible = selectVisibleColumns({ ...SNAPSHOT, query: "  " });
+
+    expect(visible.map((c) => c.name)).toEqual(["backlog", "ready"]);
+    expect(visible.map((c) => c.tasks.map((t) => t.number))).toEqual([
+      [142],
+      [42, 7],
+    ]);
+  });
+
+  it("filters each column and keeps every column and its order", () => {
+    const visible = selectVisibleColumns({ ...SNAPSHOT, query: "login" });
+
+    expect(visible.map((c) => c.name)).toEqual(["backlog", "ready"]);
+    expect(visible[0].tasks).toEqual([]);
+    expect(visible[1].tasks.map((t) => t.number)).toEqual([42, 7]);
+  });
+
+  it("matches an exact number across all columns", () => {
+    const visible = selectVisibleColumns({ ...SNAPSHOT, query: "#142" });
+
+    expect(visible.map((c) => c.tasks.map((t) => t.number))).toEqual([
+      [142],
+      [],
+    ]);
+  });
+
+  it("leaves the snapshot arrays untouched", () => {
+    const states = [...SNAPSHOT.states];
+    const tasks = [...SNAPSHOT.tasks];
+    selectVisibleColumns({ states, tasks, query: "login" });
+
+    expect(states).toEqual(SNAPSHOT.states);
+    expect(tasks).toEqual(SNAPSHOT.tasks);
+  });
+
+  it("keeps an unknown bucket the query emptied", () => {
+    const visible = selectVisibleColumns({
+      states: [BACKLOG],
+      tasks: [titled(1, "Fix Login Redirect", "was-ready")],
+      query: "deploy",
+    });
+
+    // The bucket is decided by the unfiltered snapshot: a column that came and
+    // went with the query would read as a state appearing mid-search.
+    expect(visible.map((c) => c.name)).toEqual(["backlog", UNKNOWN_COLUMN]);
+    expect(visible.every((c) => c.tasks.length === 0)).toBe(true);
+  });
+});
+
+describe("the board's query", () => {
+  it("setQuery reads nothing: no listTasks, no listTaskStates", async () => {
+    const deps = harness();
+    const store = createTaskStore(deps);
+    store.getState().bindProject(PROJECT);
+    void store.getState().refresh();
+    await deps.settle(0, [READY], [task(1, "ready")]);
+
+    store.getState().setQuery("log");
+    store.getState().setQuery("login");
+    store.getState().setQuery("");
+    await flush();
+
+    expect(store.getState().query).toBe("");
+    // The one pair of reads is the load above; typing added none.
+    expect(deps.taskCalls).toHaveLength(1);
+    expect(deps.stateCalls).toHaveLength(1);
+    expect(store.getState().loading).toBe(false);
+  });
+
+  it("survives an event-triggered refresh", async () => {
+    const deps = harness();
+    const store = createTaskStore(deps);
+    store.getState().bindProject(PROJECT);
+    void store.getState().refresh();
+    await deps.settle(0, [READY], [task(1, "ready")]);
+
+    store.getState().setQuery("login");
+    expect(store.getState().noteEvent(event(1))).toBe(true);
+    await deps.settle(1, [READY], [task(1, "ready"), task(2, "ready")]);
+
+    expect(store.getState().query).toBe("login");
+    expect(store.getState().tasks).toHaveLength(2);
+  });
+
+  it("is cleared by binding another project", () => {
+    const deps = harness();
+    const store = createTaskStore(deps);
+    store.getState().bindProject(PROJECT);
+    store.getState().setQuery("login");
+
+    store.getState().bindProject(OTHER_PROJECT);
+    expect(store.getState().query).toBe("");
   });
 });

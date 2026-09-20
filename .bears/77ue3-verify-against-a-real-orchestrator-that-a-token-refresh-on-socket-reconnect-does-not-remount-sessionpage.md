@@ -1,10 +1,10 @@
 ---
 id: "77ue3"
 title: Verify against a real orchestrator that a token refresh on socket reconnect does not remount SessionPage
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-20T08:49:57.461269981Z"
-updated: "2026-09-20T20:10:16.767933458Z"
+updated: "2026-09-20T21:25:08.299103447Z"
 tags:
   - frontend
   - sessions

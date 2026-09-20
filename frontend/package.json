@@ -12,7 +12,10 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test:unit": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:up": "bash tests/e2e-stack.sh up",
+    "test:e2e:down": "bash tests/e2e-stack.sh down",
+    "test:e2e:status": "bash tests/e2e-stack.sh status"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",

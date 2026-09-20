@@ -1,6 +1,7 @@
-// Reads, searches and fetches: one line saying what was asked for, because the
-// answer is usually only interesting when something went wrong. Clicking opens
-// the full input and the result (`SPEC.md`, "Transcript rendering").
+// Reads, searches and fetches: one line saying what was asked for, with the
+// full input and the result under it. The frame around it starts folded, so by
+// the time this is drawn the user has asked to see the answer and it starts
+// open; the line still folds it away (`SPEC.md`, "Transcript rendering").
 
 import { useState } from "react";
 
@@ -14,7 +15,7 @@ export interface SummaryToolRendererProps {
 }
 
 export function SummaryToolRenderer({ message }: SummaryToolRendererProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const summary = summaryLine(message.name, message.input);
 
   return (

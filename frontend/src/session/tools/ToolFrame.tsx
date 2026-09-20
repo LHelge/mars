@@ -10,6 +10,7 @@ import { JsonToolRenderer } from "./JsonToolRenderer";
 import { toolRendererFor } from "./registry";
 // Populates the registry: a tool row is never drawn without this module.
 import "./renderers";
+import { headerSummary } from "./toolInput";
 
 /** What a result the orchestrator had to cut says about itself. */
 const TRUNCATED =
@@ -19,6 +20,8 @@ export interface ToolFrameProps {
   message: ToolMessage;
   /** The nested subagent transcript, when this tool ran one. */
   children?: ReactNode;
+  /** Start with the body showing; the transcript never does. */
+  defaultOpen?: boolean;
 }
 
 function StatusMark({ message }: { message: ToolMessage }) {
@@ -37,10 +40,19 @@ function StatusMark({ message }: { message: ToolMessage }) {
   );
 }
 
-export function ToolFrame({ message, children }: ToolFrameProps) {
-  // A subagent's meaning is its nested transcript, not the `Task` call's JSON,
-  // so the body starts folded for one and open for every other tool.
-  const [open, setOpen] = useState(message.subagent === undefined);
+export function ToolFrame({
+  message,
+  children,
+  defaultOpen = false,
+}: ToolFrameProps) {
+  // Every body starts folded: a working session is mostly tool calls, and the
+  // header's one line says what each of them was (`SPEC.md`, "Transcript
+  // rendering").
+  const [open, setOpen] = useState(defaultOpen);
+  const summary =
+    message.subagent === undefined
+      ? headerSummary(message.name, message.input)
+      : "";
 
   return (
     <div
@@ -55,12 +67,15 @@ export function ToolFrame({ message, children }: ToolFrameProps) {
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          className="text-console-text flex items-center gap-2 font-mono text-xs"
+          className="text-console-text flex min-w-0 items-center gap-2 font-mono text-xs"
         >
           <span aria-hidden="true" className="text-console-muted">
             {open ? "▾" : "▸"}
           </span>
           <span>{message.name}</span>
+          {!open && summary !== "" && (
+            <span className="text-console-muted truncate">{summary}</span>
+          )}
         </button>
         <StatusMark message={message} />
         {message.truncated === true && (

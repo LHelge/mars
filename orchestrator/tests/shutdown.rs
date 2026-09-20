@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use mars_orchestrator::cron::{CronService, JobName};
 use mars_orchestrator::email::LogEmailClient;
 use mars_orchestrator::engine::PlaceholderEngine;
 use mars_orchestrator::git::{CommitIdentity, PatCredentialProvider};
@@ -14,7 +15,7 @@ use mars_orchestrator::secrets::{MASTER_KEY_LEN, SecretsKeyring};
 use sqlx::postgres::PgPoolOptions;
 use std::collections::HashMap;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 /// Obviously fake values; nothing listens on port 1, so the health probe
 /// reports `database: false` when its own timeout fires (rule 3).
@@ -105,4 +106,58 @@ async fn both_listeners_serve_and_stop_on_one_shutdown_signal() {
         .expect("the server task does not panic");
 
     assert!(result.is_ok(), "run returned an error: {result:?}");
+}
+
+/// The cron loops stop on the same signal as the listeners, and stop fast.
+///
+/// `main` waits for the job handles after `run` returns and bounds that wait
+/// with `STOP_GRACE_SECS` (`ARCHITECTURE.md`, "Restart procedure"); this is
+/// the unbounded version of that wait, so a loop that only noticed the signal
+/// at its next tick would hang here instead of being papered over by the
+/// grace. Every job is a stub, so what is under test is the loop and nothing
+/// else.
+#[tokio::test]
+async fn the_cron_jobs_stop_on_the_same_signal_as_the_listeners() {
+    let api = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the api listener binds");
+    let mcp = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the mcp listener binds");
+
+    let state = test_state();
+    let (cron_shutdown, cron_shutdown_rx) = watch::channel(false);
+    let jobs = Arc::new(CronService::new(state.clone())).start(cron_shutdown_rx);
+    assert_eq!(jobs.len(), JobName::ALL.len(), "one loop per job");
+
+    let api_addr = api.local_addr().expect("the api listener has an address");
+    let (tx, rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(run(state, api, mcp, async move {
+        rx.await.ok();
+    }));
+
+    // One request first, so the deadline below covers the stopping and not the
+    // starting: `run` opens the shared Postgres listener before it serves, and
+    // against the unreachable database in `test_state` that connection attempt
+    // is the slowest thing in this file.
+    reqwest::get(format!("http://{api_addr}/api/health"))
+        .await
+        .expect("the api listener answers");
+
+    tx.send(()).expect("the server is still running");
+    cron_shutdown.send(true).expect("the loops are listening");
+
+    let stopped = async {
+        server
+            .await
+            .expect("the server task does not panic")
+            .expect("run returns cleanly");
+        for job in jobs {
+            job.await.expect("a cron loop does not panic");
+        }
+    };
+
+    tokio::time::timeout(Duration::from_secs(2), stopped)
+        .await
+        .expect("the listeners and the cron loops stop within the deadline");
 }

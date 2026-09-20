@@ -155,7 +155,7 @@ orchestrator/
 │   ├── tracker/               task-tracker domain service: mutation context, state changes, leases, graph rules, escalation
 │   ├── events/                AgentEvent / TaskEvent types, notify fan-out
 │   ├── email/                 EmailClient trait, Resend implementation, log fallback, mock
-│   └── cron/                  periodic jobs: mirror fetch, idle reaper, stuck-task reaper, token cleanup
+│   └── cron/                  periodic jobs: mirror fetch, idle reaper, stuck-task reaper, token cleanup, secret rotation, orphan cleanup
 └── tests/                     integration tests (TestApp with testcontainers Postgres)
 ```
 
@@ -431,7 +431,7 @@ On start the orchestrator:
 1. Runs migrations.
 2. Lists containers with the label `mars.session_id` through the engine. For each one whose session row is `running`, it re-creates a `SessionOwner`, reattaches stdin, and resumes tailing from `MAX(_offset)` of that session's events. Adoption leaves the existing MCP token hash and configuration unchanged because the process is already running (ADR 0029). If the container is gone — removed, never started, or in any state other than running or exited — the session is marked `parked` with a `state_change` event saying so, and the same applies when its stdin cannot be reattached. An ephemeral session is adopted without a stdin writer, as it was launched ("Claude Code invocation"). A container that has *exited* is adopted as well — including one that exits between the listing and the attach, which the engine refuses as a conflict — because only its owner can drain the rest of the transcript and read the exit code; the state that exit leads to is the ordinary one for it ("Session lifecycle"). An ephemeral session is never parked (ADR 0003), so wherever this step would park one it is `failed` with the same reason. A container whose `mars.session_id` label is not a session id is left alone, and so is every container belonging to a session that is already `parked`, `done` or `failed`: collecting those is the orphan-cleanup job's work ("Background jobs"). A duplicate container carrying a session's label, left by a crash between a create and a remove, is removed once the running one has been adopted.
 3. Marks every session in `creating` as `failed` with reason `orchestrator restarted during creation`, removes its labelled container and releases any task its launch claimed; the user can retry.
-4. Starts the cron jobs (mirror fetch, idle reaper, stuck-task reaper, token cleanup).
+4. Starts the cron jobs (mirror fetch, idle reaper, stuck-task reaper, token cleanup, secret rotation, orphan cleanup).
 
 Recovery runs after the engine's startup probe and before either listener accepts a request, so an adopted owner is in the registry before anything can launch or resume the same session, and a failure to list the containers at all is fatal: an orchestrator that does not know what is running would park sessions whose CLI is alive. A failure for one session — an engine that refuses the attach — parks that session and leaves the rest of the sweep to finish.
 
@@ -693,4 +693,4 @@ One cron service with independent intervals, mirroring the reference layout of a
 | secret rotation | 1 h | Re-wrap rows whose `key_version` is behind the newest key, if any. |
 | orphan cleanup | 1 h | Remove containers labelled `mars.session_id` whose session is `parked`/`done`/`failed`/missing; delete `/data/tmp` leftovers; under each project's git lock, remove `refs/handoffs/*` with no matching hand-off row. |
 
-Every job logs its outcome and never panics the process; a failing job is retried at its next interval.
+Every job logs its outcome and never panics the process; a failing job is retried at its next interval. Every job runs once when the service starts, after recovery, then at its interval; a tick never overlaps the same job's previous run. Outcomes with no work are logged at `debug`, everything else at `info`.

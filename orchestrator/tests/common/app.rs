@@ -40,6 +40,7 @@ use base64::engine::general_purpose::STANDARD;
 use chrono::{TimeDelta, Utc};
 use mars_orchestrator::auth::REFRESH_COOKIE;
 use mars_orchestrator::build_api_router;
+use mars_orchestrator::cron::CronService;
 use mars_orchestrator::email::EmailClient;
 use mars_orchestrator::email::mock::MockEmailClient;
 use mars_orchestrator::engine::mock::MockEngine;
@@ -330,6 +331,17 @@ impl TestApp {
             networks,
             _db: database,
         }
+    }
+
+    /// The periodic jobs over this app's state, for calling one directly:
+    /// `app.cron().idle_reaper(now).await`.
+    ///
+    /// Deliberately not started. `CronService::start` belongs to the binary,
+    /// and a suite whose rows a background tick could change at any moment
+    /// would be asserting on a race; a scenario that wants a job run says so,
+    /// and says with which `now` (`ARCHITECTURE.md`, "Background jobs").
+    pub fn cron(&self) -> CronService {
+        CronService::new(self.state.clone())
     }
 
     /// The engine the router calls. Also reachable from an
@@ -1306,6 +1318,11 @@ fn test_config(
         // `SIGINT` and `SIGTERM` without waiting out the production default of
         // 20 (`ARCHITECTURE.md`, "Stop semantics").
         ("STOP_GRACE_SECS", "1".to_string()),
+        // Deliberately not the documented default of 600: the cron suite
+        // asserts that `JobName::MirrorFetch` takes its period from the
+        // configuration rather than from a constant, and a value equal to the
+        // default could not tell the two apart.
+        ("MIRROR_FETCH_INTERVAL_SECS", "900".to_string()),
         // No `RESEND_API_KEY`: mail goes to the mock, and setting a key would
         // only make `MAIL_FROM` required as well (ADR 0026).
     ]

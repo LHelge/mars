@@ -20,6 +20,7 @@ import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
 import { projectErrorMessage } from "../pages/project/messages";
 import type { TaskDetail } from "../types";
+import { LaunchForTask } from "./LaunchForTask";
 import { MoveToState } from "./MoveToState";
 import { useTaskMutations } from "./useTaskMutations";
 
@@ -80,7 +81,6 @@ export function TaskActions({
           Release
         </SubmitButton>
 
-        {/* `LaunchForTask` — "open in session" and "run once" — mounts here. */}
         {/* The hand-off and review controls mount here. */}
 
         <div className="border-console-border ml-auto border-l pl-2">
@@ -102,6 +102,10 @@ export function TaskActions({
       </div>
 
       <MoveToState projectId={projectId} task={task} />
+
+      {/* A row of its own: the launch form opens full-width beneath its
+          two buttons, which the wrapping row above has no room for. */}
+      <LaunchForTask projectId={projectId} task={task} />
 
       {release.isError && (
         <Alert kind="error">{projectErrorMessage(release.error)}</Alert>

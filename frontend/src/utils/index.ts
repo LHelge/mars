@@ -6,6 +6,8 @@ export {
   shortSha,
 } from "./format";
 
+export { githubCompareUrl } from "./github";
+
 export { parseTaskRef } from "./taskRef";
 export type { TaskRef } from "./taskRef";
 

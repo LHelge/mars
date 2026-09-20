@@ -17,6 +17,12 @@ export type { DiffViewProps } from "./DiffView";
 export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
 
+export { ConflictList } from "./git/ConflictList";
+export type { ConflictListProps } from "./git/ConflictList";
+
+export { GitActionsPanel } from "./git/GitActionsPanel";
+export type { GitActionsPanelProps } from "./git/GitActionsPanel";
+
 export { FormField } from "./FormField";
 export type { FormFieldProps } from "./FormField";
 

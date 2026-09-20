@@ -23,15 +23,11 @@ import { useNavigate } from "react-router";
 import { Alert, SubmitButton } from "../components";
 import { ApiError } from "../services/apiClient";
 import { queryKeys } from "../services/queryKeys";
-import {
-  deleteSession,
-  endSession,
-  retrySession,
-  syncSession,
-} from "../services/sessions";
+import { deleteSession, endSession, retrySession } from "../services/sessions";
 import type { Session } from "../types";
 import { shortSha } from "../utils/format";
 import { getSessionStore } from "./sessionStore";
+import { useSyncSession } from "./useSyncSession";
 
 export interface SessionActionsProps {
   session: Session;
@@ -87,12 +83,12 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
     },
   });
 
-  const sync = useMutation({
-    mutationFn: () => syncSession(id),
+  // The same mutation the header's Branch section offers (`useSyncSession`).
+  const sync = useSyncSession(id, session.project_id, {
     onSuccess: (result) => {
       setNotice(`Synced ${result.ref} at ${shortSha(result.commit)}`);
     },
-    onError: (caught: unknown) => {
+    onError: (caught) => {
       setError(message(caught, "Could not sync the session branch"));
     },
   });

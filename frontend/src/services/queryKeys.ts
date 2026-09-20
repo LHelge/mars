@@ -32,6 +32,9 @@ export const queryKeys = {
     detail: (id: string) => ["projects", id] as const,
     /** The mirror's refs (`GET /projects/{id}/branches`). */
     branches: (id: string) => ["projects", id, "branches"] as const,
+    /** Session refs with ahead/behind (`GET /projects/{id}/git/session-branches`). */
+    sessionBranches: (id: string) =>
+      ["projects", id, "git", "session-branches"] as const,
     /**
      * One diff (`GET /projects/{id}/git/diff`), as the Changes panel reads it.
      * Without a `base` the server compares against the project's default

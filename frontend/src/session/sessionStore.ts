@@ -615,42 +615,115 @@ export function foldEvent(state: SessionState, event: AgentEvent): SessionState 
   }
 }
 
+/** Keeps the first occurrence of each id and drops everything merged away. */
+function compact(ids: string[], dropped: ReadonlySet<string>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (dropped.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 /**
- * Merges an older page folded on its own into the live state: the two orders
- * are concatenated and any `unknown` tool message the live half created for a
- * result whose `tool_call` sits in the older page is reconciled onto it.
+ * The subagent marking of a merged pair: whichever side saw the
+ * `subagent_start` describes it, whichever side saw the `subagent_end` decides
+ * `is_error`.
+ */
+function mergeSubagentInfo(
+  older: SubagentInfo | undefined,
+  live: SubagentInfo | undefined,
+): SubagentInfo | undefined {
+  if (!older && !live) return undefined;
+  const described =
+    older && older.description !== PLACEHOLDER_AGENT
+      ? older
+      : live && live.description !== PLACEHOLDER_AGENT
+        ? live
+        : (older ?? live);
+  return {
+    description: described?.description ?? PLACEHOLDER_AGENT,
+    agent_type: described?.agent_type,
+    is_error: older?.is_error ?? live?.is_error,
+  };
+}
+
+/**
+ * One tool message out of two halves of the same `tool_use_id`: the older
+ * message keeps its id and position, the real `tool_call` wins over a
+ * placeholder, and the completing half contributes the result.
+ */
+function mergeToolMessages(older: ToolMessage, live: ToolMessage): ToolMessage {
+  const call = isPlaceholderTool(older) && !isPlaceholderTool(live) ? live : older;
+  const completed = !older.running ? older : !live.running ? live : undefined;
+  const children =
+    older.children || live.children
+      ? [...(older.children ?? []), ...(live.children ?? [])]
+      : undefined;
+  return {
+    ...older,
+    name: call.name,
+    input: call.input,
+    result: completed?.result,
+    is_error: completed?.is_error,
+    truncated: completed?.truncated,
+    running: completed === undefined,
+    children,
+    subagent: mergeSubagentInfo(older.subagent, live.subagent),
+  };
+}
+
+/**
+ * Merges an older page folded on its own into the live state. The two orders
+ * are concatenated, and every placeholder tool message the live half had to
+ * invent — an `unknown` for a result without a call, an `Agent` for a subagent
+ * whose parent `tool_call` had scrolled out of view — is reconciled onto the
+ * real message from the older page so one `tool_use_id` is one message.
  */
 function mergeHistory(older: SessionState, live: SessionState): SessionState {
   const messages: Record<string, Message> = { ...older.messages, ...live.messages };
-  let order = [...older.order, ...live.order];
   const subagents: Record<string, string[]> = { ...older.subagents };
   for (const [key, ids] of Object.entries(live.subagents)) {
     subagents[key] = [...(subagents[key] ?? []), ...ids];
   }
   const pendingTools = { ...older.pendingTools, ...live.pendingTools };
+  const dropped = new Set<string>();
 
-  for (const [toolUseId, olderId] of Object.entries(older.pendingTools)) {
-    const duplicate = Object.values(live.messages).find(
-      (message) =>
-        message.kind === "tool" &&
-        message.tool_use_id === toolUseId &&
-        message.name === UNKNOWN_TOOL,
-    );
-    const call = messages[olderId];
-    if (!duplicate || duplicate.kind !== "tool" || call?.kind !== "tool") continue;
-    messages[olderId] = {
-      ...call,
-      result: duplicate.result,
-      is_error: duplicate.is_error,
-      truncated: duplicate.truncated,
-      running: false,
-    };
-    delete messages[duplicate.id];
-    order = order.filter((entry) => entry !== duplicate.id);
-    for (const [key, ids] of Object.entries(subagents)) {
-      subagents[key] = ids.filter((entry) => entry !== duplicate.id);
+  for (const liveMessage of Object.values(live.messages)) {
+    if (liveMessage.kind !== "tool" || !isPlaceholderTool(liveMessage)) continue;
+    const olderId = findToolMessageId(older, liveMessage.tool_use_id);
+    if (olderId === undefined) continue;
+    const olderMessage = older.messages[olderId];
+    if (olderMessage?.kind !== "tool") continue;
+
+    const merged = mergeToolMessages(olderMessage, liveMessage);
+    messages[olderId] = merged;
+    // Both halves may have invented the same `tool:<id>` placeholder, in which
+    // case there is nothing to drop and only the duplicate entries to compact.
+    if (liveMessage.id !== olderId) dropped.add(liveMessage.id);
+    if (merged.running) {
+      pendingTools[merged.tool_use_id] = olderId;
+    } else {
+      delete pendingTools[merged.tool_use_id];
     }
-    delete pendingTools[toolUseId];
+  }
+
+  // Nothing may keep pointing at a merged-away message: not `messages`, not
+  // `order`, not a subagent's list, not the `children` of the tool it was
+  // nested under.
+  for (const id of dropped) delete messages[id];
+  const order = compact([...older.order, ...live.order], dropped);
+  for (const [key, ids] of Object.entries(subagents)) {
+    subagents[key] = compact(ids, dropped);
+  }
+  for (const message of Object.values(messages)) {
+    if (message.kind !== "tool" || !message.children) continue;
+    messages[message.id] = { ...message, children: compact(message.children, dropped) };
+  }
+  for (const [toolUseId, id] of Object.entries(pendingTools)) {
+    if (dropped.has(id)) delete pendingTools[toolUseId];
   }
 
   return {
@@ -660,6 +733,12 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
     subagents,
     pendingTools,
     gitEventSeq: live.gitEventSeq || older.gitEventSeq,
+    // The first page is loaded into an empty store, so its tail decides whether
+    // a turn is in progress; later pages never revise the live answer.
+    turnActive:
+      live.lastSeq === 0 && live.order.length === 0
+        ? older.turnActive
+        : live.turnActive,
   };
 }
 

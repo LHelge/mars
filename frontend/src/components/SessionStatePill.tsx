@@ -1,5 +1,5 @@
 // The lifecycle state of one session (`ARCHITECTURE.md`, "Session lifecycle"),
-// as the sessions list and the session header show it.
+// as the sessions list and the session header both show it.
 //
 // The colours are `StatusBadge`'s — this is that badge, not a second one — with
 // the two things a session list needs on top of it: `creating` pulses, because
@@ -7,8 +7,8 @@
 // and a `failed` session carries the orchestrator's `error` as the row's
 // tooltip, so a failure can be read without opening the session.
 
-import { StatusBadge } from "../../components";
-import type { SessionState } from "../../types";
+import { StatusBadge } from "./StatusBadge";
+import type { SessionState } from "../types";
 
 export interface SessionStatePillProps {
   state: SessionState;

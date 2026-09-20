@@ -2,6 +2,23 @@
 export { Composer } from "./Composer";
 export type { ComposerProps } from "./Composer";
 
+// The session view and its parts (`SPEC.md`, "Frontend", Routes: `/sessions/:id`).
+export { SessionView } from "./SessionView";
+export type { SessionViewProps } from "./SessionView";
+export { SessionHeader } from "./SessionHeader";
+export type { SessionHeaderProps } from "./SessionHeader";
+// `SessionActions` itself is not re-exported: the store's action interface
+// already owns that name here, and only the header ever renders the buttons.
+export { SidePanel } from "./SidePanel";
+export type { SidePanelProps } from "./SidePanel";
+export { TasksPanel } from "./TasksPanel";
+export { panelsFor, sidePanels } from "./sidePanels";
+export type { SessionPanelProps, SidePanelEntry } from "./sidePanels";
+export {
+  SessionSocketContext,
+  useSessionSocketApi,
+} from "./SessionSocketContext";
+
 // The session transcript store (`SPEC.md`, "Frontend", "Session state").
 
 export {

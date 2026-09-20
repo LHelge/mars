@@ -37,7 +37,13 @@ export { ProtectedRoute } from "./ProtectedRoute";
 export { SecretsManager } from "./secrets/SecretsManager";
 export type { SecretsManagerProps } from "./secrets/SecretsManager";
 
+export { CopyLinkButton } from "./CopyLinkButton";
+export type { CopyLinkButtonProps } from "./CopyLinkButton";
+
 export { SectionHeader } from "./SectionHeader";
+
+export { SessionStatePill } from "./SessionStatePill";
+export type { SessionStatePillProps } from "./SessionStatePill";
 export type { SectionHeaderProps } from "./SectionHeader";
 
 export { StatusBadge } from "./StatusBadge";

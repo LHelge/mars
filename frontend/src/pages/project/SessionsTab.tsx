@@ -26,6 +26,7 @@ import {
   Alert,
   EmptyState,
   LoadingState,
+  SessionStatePill,
   SubmitButton,
 } from "../../components";
 import { ApiError } from "../../services/apiClient";
@@ -36,7 +37,6 @@ import type { Session, SessionState } from "../../types";
 import { formatRelative, formatUsd, PLACEHOLDER } from "../../utils/format";
 import { LaunchSessionForm } from "./LaunchSessionForm";
 import type { ProjectTabPanelProps } from "./tabs";
-import { SessionStatePill } from "./SessionStatePill";
 
 /** While a session is still starting or working, its row changes on its own. */
 const BUSY_POLL_MS = 10_000;

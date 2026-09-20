@@ -19,6 +19,8 @@ export { ProjectsPage } from "./ProjectsPage";
 
 export { ResetPasswordPage } from "./ResetPasswordPage";
 
+export { SessionPage } from "./SessionPage";
+
 export { SettingsPage } from "./SettingsPage";
 export { SecretsPage } from "./SecretsPage";
 

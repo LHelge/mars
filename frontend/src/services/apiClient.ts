@@ -223,6 +223,14 @@ export function apiPatch<T>(
   return request<T>("PATCH", path, body, init);
 }
 
-export function apiDelete(path: string, init?: RequestInit): Promise<void> {
-  return request<void>("DELETE", path, undefined, init);
+/**
+ * A delete is 204 and no body by default. A few documented endpoints answer
+ * 200 with a body instead — removing a task dependency returns the task — so
+ * the response type is a parameter with `void` as its default.
+ */
+export function apiDelete<T = void>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  return request<T>("DELETE", path, undefined, init);
 }

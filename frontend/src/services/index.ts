@@ -100,9 +100,27 @@ export {
 } from "./sessions";
 export type { ListEventsParams, ListSessionsParams } from "./sessions";
 
-export { getTask, listHumanTasks } from "./tasks";
+export {
+  addComment,
+  addDependency,
+  createTask,
+  deleteTask,
+  getTask,
+  listHumanTasks,
+  listTasks,
+  releaseTask,
+  removeDependency,
+  taskStreamUrl,
+  updateTask,
+} from "./tasks";
+export type { TaskFilters, TaskRef } from "./tasks";
 
-export { listTaskStates } from "./taskStates";
+export {
+  createTaskState,
+  deleteTaskState,
+  listTaskStates,
+  updateTaskState,
+} from "./taskStates";
 
 export {
   changePassword,

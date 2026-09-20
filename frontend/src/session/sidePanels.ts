@@ -13,6 +13,7 @@ import type { ComponentType } from "react";
 import type { Session } from "../types";
 import { ChangesPanel } from "./ChangesPanel";
 import { TasksPanel } from "./TasksPanel";
+import { TerminalView } from "./TerminalView";
 
 export interface SessionPanelProps {
   session: Session;
@@ -36,6 +37,7 @@ export const sidePanels: SidePanelEntry[] = [
     // A session that has not been created yet has no branch to diff.
     enabled: (session) => session.state !== "creating",
   },
+  { id: "terminal", label: "Terminal", component: TerminalView },
   { id: "tasks", label: "Tasks", component: TasksPanel },
 ];
 

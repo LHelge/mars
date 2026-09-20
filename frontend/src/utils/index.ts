@@ -7,6 +7,8 @@ export {
 } from "./format";
 
 export { githubCompareUrl } from "./github";
+export { debounce } from "./debounce";
+export type { Debounced } from "./debounce";
 
 export { parseTaskRef } from "./taskRef";
 export type { TaskRef } from "./taskRef";

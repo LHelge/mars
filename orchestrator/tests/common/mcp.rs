@@ -28,10 +28,125 @@ use rmcp::transport::streamable_http_client::{
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use mars_orchestrator::mcp::mcp_router;
+use mars_orchestrator::models::{
+    NewAgentProfile, NewProject, NewSession, ProfileKind, SessionState, StateChange,
+};
+use mars_orchestrator::repositories::{ProjectRepository, SessionRepository};
+use mars_orchestrator::session::initial_token;
 
 use super::TestApp;
+
+/// Not a real remote: the fixture value every project test stores (rule 3).
+const TEST_REMOTE: &str = "https://git.example.com/fake/repo.git";
+
+/// A session row and the raw bearer token that authenticates as it.
+///
+/// The raw token exists here and nowhere else in the process: production code
+/// keeps only the SHA-256 (`docs/data-model.md`, `sessions.mcp_token_hash`), so
+/// a test that wants to *present* a token has to be handed one at the moment it
+/// is generated.
+pub struct SeededSession {
+    pub session_id: Uuid,
+    pub token: String,
+}
+
+impl TestApp {
+    /// A project and an agent profile to hang MCP sessions off.
+    ///
+    /// No git repository and no default task states: the bearer middleware
+    /// reads the session row and the profile, and nothing else.
+    pub async fn seed_mcp_project(&self) -> (Uuid, Uuid) {
+        let projects = ProjectRepository::new(&self.pool);
+
+        let name = format!("mcp-{}", &Uuid::new_v4().simple().to_string()[..8]);
+        let new_project = NewProject::new(&name, TEST_REMOTE).expect("the project is valid");
+
+        let mut tx = self.pool.begin().await.expect("a transaction begins");
+        let project = projects
+            .insert(&mut tx, &new_project)
+            .await
+            .expect("the project inserts");
+        let profile = projects
+            .insert_profile(
+                &mut tx,
+                &NewAgentProfile::new(project.id, "default", "localhost/mars-session:test")
+                    .expect("the profile is valid"),
+            )
+            .await
+            .expect("the profile inserts");
+        tx.commit().await.expect("the transaction commits");
+
+        (project.id, profile.id)
+    }
+
+    /// A session in `state`, with a freshly generated bearer token.
+    ///
+    /// The row is inserted through [`SessionRepository`] with
+    /// `mcp_token_hash = token.hash()`, exactly as a real launch does (ADR
+    /// 0029), and then walked to `state` along the documented lifecycle edges.
+    /// The returned raw token is the test's copy of what a session container
+    /// would read out of its `mcp.json`.
+    pub async fn seed_mcp_session(
+        &self,
+        project_id: Uuid,
+        profile_id: Uuid,
+        state: SessionState,
+    ) -> SeededSession {
+        let token = initial_token();
+
+        let session = NewSession::new(
+            project_id,
+            profile_id,
+            ProfileKind::Conversational,
+            "main",
+            token.hash(),
+        );
+
+        let repository = SessionRepository::new(&self.pool);
+        let mut tx = self.pool.begin().await.expect("a transaction begins");
+        let inserted = repository
+            .insert(&mut tx, &session)
+            .await
+            .expect("the session inserts");
+        tx.commit().await.expect("the transaction commits");
+
+        for step in lifecycle_path(state) {
+            let change = if step == SessionState::Failed {
+                StateChange::failed("seeded")
+            } else {
+                StateChange::plain()
+            };
+            let mut tx = self.pool.begin().await.expect("a transaction begins");
+            repository
+                .set_state(&mut tx, inserted.id, step, &change)
+                .await
+                .expect("the transition is a documented edge");
+            tx.commit().await.expect("the transaction commits");
+        }
+
+        SeededSession {
+            session_id: inserted.id,
+            token: token.expose().to_string(),
+        }
+    }
+}
+
+/// The documented edges from `creating` to `state` (`ARCHITECTURE.md`, "Session
+/// lifecycle"). A session is inserted `creating`, so that one needs no step.
+fn lifecycle_path(state: SessionState) -> Vec<SessionState> {
+    use SessionState::*;
+
+    match state {
+        Creating => vec![],
+        Running => vec![Running],
+        Parked => vec![Running, Parked],
+        Done => vec![Running, Done],
+        Failed => vec![Failed],
+    }
+}
 
 /// Why `initialize` did not succeed.
 ///

@@ -15,9 +15,11 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 
 use crate::prelude::*;
 
+pub mod auth;
 pub mod context;
 pub mod server;
 
+pub use auth::require_session;
 pub use context::SessionContext;
 pub use server::McpServer;
 
@@ -39,15 +41,23 @@ pub use server::McpServer;
 /// Every other path answers 404 with the ordinary `{ "status", "error" }`
 /// body, so a session container that points at the wrong URL gets the same
 /// shape of answer the API gives.
+///
+/// [`require_session`] is installed with `route_layer` rather than `layer`, so
+/// it runs on `/mcp` — on its `POST`, its SSE `GET` and its session `DELETE`
+/// alike — and not on the fallback: a wrong path is `not found` whether or not
+/// the caller brought a token, which is the more useful answer and leaks
+/// nothing either way.
 pub fn mcp_router(state: AppState) -> Router {
+    let factory_state = state.clone();
     let service = StreamableHttpService::new(
-        move || Ok(McpServer::new(state.clone())),
+        move || Ok(McpServer::new(factory_state.clone())),
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default(),
     );
 
     Router::new()
         .nest_service("/mcp", service)
+        .route_layer(axum::middleware::from_fn_with_state(state, require_session))
         .fallback(not_found)
 }
 

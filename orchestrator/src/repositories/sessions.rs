@@ -159,6 +159,21 @@ pub struct AppendedRange {
     pub last_seq: i64,
 }
 
+/// What the MCP bearer middleware needs to know about the session a token
+/// belongs to ([`SessionRepository::find_by_mcp_token_hash`]).
+///
+/// Four columns rather than a whole [`Session`]: the middleware runs on every
+/// MCP request, and the id, the project, the profile to load and the state to
+/// refuse on are all it reads (`ARCHITECTURE.md`, "MCP design" →
+/// "Authentication").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpSessionRow {
+    pub session_id: Uuid,
+    pub project_id: Uuid,
+    pub profile_id: Uuid,
+    pub state: SessionState,
+}
+
 /// All SQL against `sessions` and `events` (`ARCHITECTURE.md`, "Orchestrator
 /// internals").
 ///
@@ -243,6 +258,33 @@ impl<'a> SessionRepository<'a> {
         .await?;
 
         Ok(session)
+    }
+
+    /// The session whose `mcp_token_hash` is `hash`, or `None`.
+    ///
+    /// The MCP bearer middleware's one query (`ARCHITECTURE.md`, "MCP design"
+    /// → "Authentication"): it hashes the presented token and looks the result
+    /// up here, so no live credential is ever compared or passed into a
+    /// repository (rule 3). `mcp_token_hash` is `UNIQUE`, so at most one row
+    /// can match and there is no "which one" to resolve.
+    ///
+    /// No cache sits in front of it: a relaunch that replaces the hash
+    /// invalidates the previous token on its very next request (ADR 0029), and
+    /// a session that has just ended is refused on its next call.
+    pub async fn find_by_mcp_token_hash(&self, hash: &str) -> Result<Option<McpSessionRow>> {
+        let row = sqlx::query_as!(
+            McpSessionRow,
+            r#"
+            SELECT id AS "session_id", project_id, profile_id, state AS "state: SessionState"
+            FROM sessions
+            WHERE mcp_token_hash = $1
+            "#,
+            hash,
+        )
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row)
     }
 
     /// The session with this id, or [`Error::NotFound`].

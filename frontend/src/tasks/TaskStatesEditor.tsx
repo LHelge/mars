@@ -46,6 +46,7 @@ import {
   KIND_MEANING,
   stateNameError,
 } from "./taskStateRules";
+import { useTaskStore } from "./taskStore";
 
 /** `SPEC.md`, "Task states", in the one line the tab has room for. */
 const STATES_HELP =
@@ -96,6 +97,10 @@ export function TaskStatesEditor({ projectId }: TaskStatesEditorProps) {
       }),
       queryClient.invalidateQueries({ queryKey: taskKeys.all(projectId) }),
     ]);
+    const board = useTaskStore.getState();
+    if (board.projectId === projectId) {
+      board.invalidate();
+    }
   }, [queryClient, projectId]);
 
   const rows = useMemo(

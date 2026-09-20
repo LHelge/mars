@@ -97,6 +97,10 @@ describe("useStickToBottom", () => {
   it("counts appended messages once the user scrolls up", () => {
     const { rerender } = render(<Harness order={["a"]} tailLength={1} />);
     const scroller = screen.getByTestId("scroller");
+    // The reader starts on the tail and pulls the viewport up to the top, which
+    // is the movement the hook reads as "stop following".
+    setGeometry(scroller, 1000, 400);
+    fireEvent.scroll(scroller);
     setGeometry(scroller, 1000, 0);
     fireEvent.scroll(scroller);
     expect(pinned()).toBe("false");
@@ -114,6 +118,8 @@ describe("useStickToBottom", () => {
   it("re-pins and clears the count on Jump to latest", () => {
     const { rerender } = render(<Harness order={["a"]} tailLength={1} />);
     const scroller = screen.getByTestId("scroller");
+    setGeometry(scroller, 1000, 400);
+    fireEvent.scroll(scroller);
     setGeometry(scroller, 1000, 0);
     fireEvent.scroll(scroller);
     rerender(<Harness order={["a", "b"]} tailLength={1} />);
@@ -143,6 +149,43 @@ describe("useStickToBottom", () => {
     expect(scroller.scrollTop).toBe(2400);
   });
 
+  // The virtualizer renders a tall row at the estimate and corrects the
+  // scroller from its own measurement callback, outside React's commit: the
+  // content below the viewport grows by thousands of pixels while the reader
+  // has not touched anything, and the `scroll` that correction fires reports a
+  // distance from the bottom far past `NEAR_BOTTOM_PX`.
+  it("stays pinned when a measurement moves the scroller far from the bottom", () => {
+    render(<Harness order={["a"]} tailLength={1} contentHeight={200} />);
+    const scroller = screen.getByTestId("scroller");
+    setGeometry(scroller, 1000, 400);
+    fireEvent.scroll(scroller);
+    expect(pinned()).toBe("true");
+
+    // The 8 KiB tool result is measured: the same messages at the same scroll
+    // position, with 8000 more pixels of content underneath.
+    setGeometry(scroller, 9000, 400);
+    fireEvent.scroll(scroller);
+
+    expect(pinned()).toBe("true");
+    expect(scroller.scrollTop).toBe(9000);
+  });
+
+  // The other half of the same rule: moving the viewport upwards is the one
+  // thing only a reader does.
+  it("unpins when the reader moves the viewport up", () => {
+    render(<Harness order={["a"]} tailLength={1} contentHeight={200} />);
+    const scroller = screen.getByTestId("scroller");
+    setGeometry(scroller, 1000, 400);
+    fireEvent.scroll(scroller);
+    expect(pinned()).toBe("true");
+
+    setGeometry(scroller, 1000, 100);
+    fireEvent.scroll(scroller);
+
+    expect(pinned()).toBe("false");
+    expect(scroller.scrollTop).toBe(100);
+  });
+
   // The transcript anchors a history request inside its scroll handler, where
   // `pinned` is still the value from the render before the gesture.
   it("answers the live flag from inside the scroll handler", () => {
@@ -159,10 +202,17 @@ describe("useStickToBottom", () => {
     const scroller = screen.getByTestId("scroller");
 
     // The reader jumps from the tail to the top in one gesture.
+    setGeometry(scroller, 1000, 400);
+    fireEvent.scroll(scroller);
     setGeometry(scroller, 1000, 0);
     fireEvent.scroll(scroller);
 
-    expect(seen).toEqual([[true, false]]);
+    // Still on the tail for the first event, and the second one reports the
+    // flag it has just flipped while the render still shows the old value.
+    expect(seen).toEqual([
+      [true, true],
+      [true, false],
+    ]);
   });
 
   it("re-pins as streaming text grows the tail message", () => {

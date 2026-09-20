@@ -5,6 +5,19 @@
 // moving under them. The flag is derived from `scroll` events rather than from
 // an observer so it also answers correctly for a container that is not
 // scrollable yet (nothing to scroll is "at the bottom").
+//
+// Distance from the bottom alone does not say who moved the view. A virtualised
+// list renders a tall row at an estimate and corrects itself once the row is
+// measured, which can leave the viewport thousands of pixels above the bottom
+// without the reader touching anything; reading that as "the reader scrolled
+// away" strands the transcript behind a "Jump to latest" nobody asked for. What
+// separates the two is the direction the viewport itself moved: growing content
+// and the virtualizer's own corrections push the bottom away, while only a
+// reader (wheel, touch, keyboard or scrollbar, all of which arrive as plain
+// `scroll` events) moves the viewport *upwards*. So unpinning takes both a
+// distance past `NEAR_BOTTOM_PX` and a `scrollTop` lower than the last one
+// observed; anything else that moved the bottom out of reach while pinned is
+// followed back down.
 
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
@@ -69,11 +82,18 @@ export function useStickToBottom(
   const [pinned, setPinned] = useState(true);
   const [newCount, setNewCount] = useState(0);
   const lastIdRef = useRef<string | null>(null);
+  // The viewport position as of the last time it was seen, to compare the next
+  // one against. `null` is "never seen": a first `scroll` event has nothing to
+  // be a movement relative to, so it is judged on its distance alone.
+  const lastTopRef = useRef<number | null>(null);
 
   const scrollToBottom = useCallback(() => {
     const element = scrollRef.current;
     if (element) {
       element.scrollTop = element.scrollHeight;
+      // The browser clamps that assignment to the scrollable range, and the
+      // clamped value is the position the next `scroll` event is read against.
+      lastTopRef.current = element.scrollTop;
     }
   }, [scrollRef]);
 
@@ -82,15 +102,27 @@ export function useStickToBottom(
     if (!element) {
       return;
     }
-    const distance =
-      element.scrollHeight - element.scrollTop - element.clientHeight;
-    const near = distance <= NEAR_BOTTOM_PX;
-    pinnedRef.current = near;
-    setPinned(near);
-    if (near) {
+    const top = element.scrollTop;
+    const previous = lastTopRef.current;
+    lastTopRef.current = top;
+    const distance = element.scrollHeight - top - element.clientHeight;
+    if (distance <= NEAR_BOTTOM_PX) {
+      pinnedRef.current = true;
+      setPinned(true);
       setNewCount(0);
+      return;
     }
-  }, [scrollRef]);
+    if (previous !== null && top >= previous) {
+      // The bottom moved away from a viewport that stayed where it was: the
+      // content grew, or the virtualizer corrected its own estimate. Follow it.
+      if (pinnedRef.current) {
+        scrollToBottom();
+      }
+      return;
+    }
+    pinnedRef.current = false;
+    setPinned(false);
+  }, [scrollRef, scrollToBottom]);
 
   useLayoutEffect(() => {
     // Counting from the previous tail id rather than from the previous length

@@ -277,21 +277,11 @@ async function launchFromUi(
   return id;
 }
 
-/**
- * Types `text` into the composer, sends it, and puts the transcript back on
- * the tail.
- *
- * The transcript's auto-follow gives up when a very tall row (the fixture's
- * 8 KiB tool result) is measured after the estimate it was rendered at, so the
- * view is left showing "Jump to latest" although the reader never scrolled.
- * Pressing that control is what a reader does, and what every assertion on the
- * newest rows here needs.
- */
+/** Types `text` into the composer and sends it. */
 async function compose(page: Page, text: string): Promise<void> {
   const form = composer(page);
   await form.getByLabel("Message", { exact: true }).fill(text);
   await form.getByRole("button", { name: /^(Send|Interject)$/ }).click();
-  await pinToLatest(page);
 }
 
 test("launch with a first message and watch the transcript", async ({
@@ -320,13 +310,21 @@ test("launch with a first message and watch the transcript", async ({
   expect(session.input_tokens).toBeGreaterThan(0);
   expect(session.output_tokens).toBeGreaterThan(0);
 
+  // The whole first turn arrives under a reader who never touches the
+  // scroller, and it carries the fixture's 8 KiB `Read` result: measuring a row
+  // that tall moves the bottom far out of reach, and the transcript has to
+  // follow it there. Its last row — the turn's own result, carrying the cost —
+  // is on screen without anything being pressed, and nothing offers to jump.
+  await expect(rows.getByText(TURN_COST_TEXT[0])).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^Jump to latest/ }),
+  ).toHaveCount(0);
+  await expect(rows.getByText("success").first()).toBeVisible();
+
   await reveal(
     page,
     rows.getByText(/a tiny demo project used to verify the Mars claude/),
   );
-  // The turn's own result row carries the turn's cost.
-  await reveal(page, rows.getByText(TURN_COST_TEXT[0]));
-  await expect(rows.getByText("success").first()).toBeVisible();
 
   // Everything above it is reached by reading back, because the transcript is
   // virtualised and pinned to the end.

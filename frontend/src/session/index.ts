@@ -24,3 +24,15 @@ export type {
   ToolMessage,
   UserMessage,
 } from "./sessionStore";
+
+// The session WebSocket (`SPEC.md`, "WebSocket: session stream").
+export { buildSessionSocketUrl } from "./socketUrl";
+export { SessionSocket, useSessionSocket } from "./useSessionSocket";
+export type {
+  SessionSocketApi,
+  SocketFactory,
+  SocketLike,
+  TerminalApi,
+  TerminalFrame,
+  TerminalListener,
+} from "./useSessionSocket";

@@ -1,10 +1,10 @@
 ---
 id: kjgr6
 title: Add the task merge action for approved hand-offs and the revision diff view by handoff_id
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:45:10.847523110Z"
-updated: "2026-09-16T20:45:10.847523110Z"
+updated: "2026-09-20T11:38:44.849462014Z"
 tags:
   - frontend
   - tracker
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - hs3jk
 parent: gn4y2
+attempts: 1
 ---
 
 ## Summary

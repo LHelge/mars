@@ -2,10 +2,10 @@
 id: gn4y2
 title: Frontend task board, task detail and hand-off controls
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:14:48.263481977Z"
-updated: "2026-09-16T20:15:57.354911242Z"
+updated: "2026-09-20T11:38:48.923490279Z"
 tags:
   - frontend
   - tracker

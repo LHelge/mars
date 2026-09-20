@@ -45,6 +45,7 @@ export {
   type BareRepo,
   type CreateBareRepoOptions,
   createBareRepoAt,
+  gitLogLast,
 } from "./git";
 
 export { logOffset, readLoggedLink, type LoggedLinkKind } from "./log";

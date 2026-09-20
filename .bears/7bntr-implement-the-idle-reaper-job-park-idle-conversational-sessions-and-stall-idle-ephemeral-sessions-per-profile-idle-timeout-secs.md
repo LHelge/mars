@@ -1,10 +1,10 @@
 ---
 id: "7bntr"
 title: "Implement the idle reaper job: park idle conversational sessions and stall idle ephemeral sessions per profile idle_timeout_secs"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:45:57.853060106Z"
-updated: "2026-09-16T20:45:57.853060106Z"
+updated: "2026-09-20T06:25:59.313700816Z"
 tags:
   - orchestrator
   - cron
@@ -13,6 +13,7 @@ depends_on:
   - yb2ny
   - "9pvaj"
 parent: cxmar
+attempts: 1
 ---
 
 ## Summary

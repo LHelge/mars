@@ -1,10 +1,10 @@
 ---
 id: a86fj
 title: "Implement the secret rotation job: hourly rewrap_outdated sweep with the report logged and unknown key versions warned"
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:44:51.980879695Z"
-updated: "2026-09-16T20:44:51.980879695Z"
+updated: "2026-09-20T06:25:59.354261956Z"
 tags:
   - orchestrator
   - cron
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - yb2ny
 parent: cxmar
+attempts: 1
 ---
 
 ## Summary

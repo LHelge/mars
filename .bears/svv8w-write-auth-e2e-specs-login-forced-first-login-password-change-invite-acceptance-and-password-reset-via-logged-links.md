@@ -1,10 +1,10 @@
 ---
 id: svv8w
 title: "Write auth E2E specs: login, forced first-login password change, invite acceptance and password reset via logged links"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:42:49.210367011Z"
-updated: "2026-09-16T20:42:49.210367011Z"
+updated: "2026-09-20T17:26:54.157850570Z"
 tags:
   - frontend
   - auth
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - ku8up
 parent: "6s8j7"
+attempts: 1
 ---
 
 ## Summary

@@ -40,8 +40,7 @@ mod common;
 
 use chrono::{DateTime, Utc};
 use common::TestApp;
-use common::mcp::McpClient;
-use rmcp::model::ErrorData;
+use common::mcp::{McpClient, code, refused, task_of};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -351,30 +350,6 @@ async fn count(app: &TestApp, sql: &'static str, task_id: Uuid) -> i64 {
         .fetch_one(&app.pool)
         .await
         .expect("the count runs")
-}
-
-/// The `data.code` every tool failure carries (`SPEC.md`, "MCP tool
-/// contracts").
-fn code(err: &ErrorData) -> String {
-    err.data
-        .as_ref()
-        .and_then(|data| data.get("code"))
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("every tool error carries data.code: {err:?}"))
-        .to_string()
-}
-
-/// The failure a call answered with, or a panic naming what came back instead.
-fn refused(result: std::result::Result<Value, ErrorData>) -> ErrorData {
-    match result {
-        Ok(value) => panic!("expected a refusal, got {value}"),
-        Err(err) => err,
-    }
-}
-
-/// The `{ task: Task }` body a tool answered with.
-fn task_of(value: &Value) -> TaskDto {
-    serde_json::from_value(value["task"].clone()).expect("the output carries a Task")
 }
 
 /// The one message that went out, or a failure naming how many did.

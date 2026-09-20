@@ -33,7 +33,7 @@ mod common;
 
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use common::mcp::McpClient;
+use common::mcp::{McpClient, code};
 use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::models::{
@@ -230,17 +230,6 @@ async fn call_err(client: &McpClient, tool: &str, args: Value) -> ErrorData {
         .call(tool, args)
         .await
         .expect_err("the call is refused")
-}
-
-/// The `data.code` every tool failure carries (`SPEC.md`, "MCP tool
-/// contracts").
-fn code(err: &ErrorData) -> String {
-    err.data
-        .as_ref()
-        .and_then(|data| data.get("code"))
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("every tool error carries data.code: {err:?}"))
-        .to_string()
 }
 
 /// The `number` of each summary `ready` answered, in the order it answered

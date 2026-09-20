@@ -27,7 +27,7 @@ mod common;
 
 use common::AuthenticatedUser;
 use common::handoffs::Fixture;
-use common::mcp::McpClient;
+use common::mcp::{McpClient, code, conflicts};
 use mars_orchestrator::git::testutil::{run_git, test_identity};
 use mars_orchestrator::git::{GitActor, GitRef, GitService, create_work_clone, refs, resolve_base};
 use mars_orchestrator::models::{SessionState, Task};
@@ -183,35 +183,6 @@ async fn work_clone(fixture: &Fixture, session_id: Uuid) {
     create_work_clone(&guard, &paths, session_id, &base, &test_identity())
         .await
         .expect("the work clone is created");
-}
-
-/// The `data.code` every tool failure carries (`SPEC.md`, "MCP tool
-/// contracts").
-#[track_caller]
-fn code(err: &ErrorData) -> String {
-    err.data
-        .as_ref()
-        .and_then(|data| data.get("code"))
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("every tool error carries data.code: {err:?}"))
-        .to_string()
-}
-
-/// The `data.conflicts` a merge or rebase that stopped on paths carries.
-#[track_caller]
-fn conflicts(err: &ErrorData) -> Vec<String> {
-    err.data
-        .as_ref()
-        .and_then(|data| data.get("conflicts"))
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("a stopped merge carries data.conflicts: {err:?}"))
-        .iter()
-        .map(|path| {
-            path.as_str()
-                .expect("a conflicting path is a string")
-                .to_string()
-        })
-        .collect()
 }
 
 /// A `revision` hand-off body, as `PUT /projects/{pid}/tasks/{id}` takes it.

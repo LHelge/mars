@@ -16,6 +16,7 @@ import { listTasks } from "../services/tasks";
 import { listTaskStates } from "../services/taskStates";
 import type { Task, TaskEvent, TaskState } from "../types";
 import { taskKeys, taskStateKeys } from "./queryKeys";
+import { filterTasks } from "./search";
 
 /** The two reads a refresh makes, injected so tests can control their timing. */
 export interface TaskStoreDeps {
@@ -310,6 +311,35 @@ export function selectColumns(
     });
   }
   return columns;
+}
+
+/**
+ * The columns with the board's search query applied to each, for `SPEC.md`,
+ * "Frontend", "Task-board search" (ADR 0031).
+ *
+ * Filtering happens here and nowhere else: `states` and `tasks` are left as the
+ * last snapshot installed them, so clearing the query restores every card
+ * without a read, and the next refresh reapplies the query to the titles it
+ * brings. Column order and the API's task order inside each column are the
+ * ones `selectColumns` produced.
+ *
+ * Every column the project has stays, empty or not — the query narrows what is
+ * on the board, it does not reshape the board. The trailing `unknown` bucket
+ * keeps the same rule: it appears when the *unfiltered* snapshot has an orphan
+ * and then stays even if the query matches none of them, because a bucket that
+ * came and went with the query would look like a state appearing mid-search.
+ *
+ * Like `selectColumns`, this builds fresh arrays on every call, so a view
+ * selects `states`, `tasks` and `query` one by one and derives the columns in a
+ * `useMemo` rather than subscribing to this.
+ */
+export function selectVisibleColumns(
+  state: Pick<TaskBoardState, "states" | "tasks" | "query">,
+): TaskColumn[] {
+  return selectColumns(state).map((column) => ({
+    ...column,
+    tasks: filterTasks(column.tasks, state.query),
+  }));
 }
 
 /** The task carrying a per-project `number` (the drawer's route parameter). */

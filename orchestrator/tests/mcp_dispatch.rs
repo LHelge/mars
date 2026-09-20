@@ -9,10 +9,6 @@
 //! not fit the tool's input type as `invalid_argument` — each with the
 //! documented message and a `data.code` the agent can branch on.
 //!
-//! The handlers themselves are stubs until the tool tasks land, so the last
-//! scenario asserts what a stub answers; it is retargeted or deleted one tool
-//! at a time as they do.
-//!
 //! Needs a container engine (`DOCKER_HOST`); see `tests/common/db.rs`.
 
 #![cfg(feature = "integration-tests")]
@@ -183,24 +179,4 @@ async fn a_malformed_task_argument_is_answered_with_the_documented_sentence() {
         err.message,
         r##"task must be a UUID, a number, or "#<number>""##,
     );
-}
-
-/// Every handler is a stub: valid input reaches it and it answers the generic
-/// `internal`. Retarget or delete one arm of this at a time as the tool tasks
-/// land. It names only the two tools that land last, so the tasks before them
-/// leave this file alone.
-#[tokio::test]
-async fn a_stubbed_tool_answers_the_generic_internal_error() {
-    let app = TestApp::spawn().await;
-    let client = client_with_tools(&app, &[]).await;
-
-    for (tool, args) in [("create_task", json!({ "title": "found along the way" }))] {
-        let err = client
-            .call(tool, args)
-            .await
-            .expect_err("the handler is still a stub");
-
-        assert_eq!(code(&err), "internal", "{tool}");
-        assert_eq!(err.message, "internal error", "{tool}");
-    }
 }

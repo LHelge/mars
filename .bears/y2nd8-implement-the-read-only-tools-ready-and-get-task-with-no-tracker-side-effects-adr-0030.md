@@ -1,10 +1,10 @@
 ---
 id: y2nd8
 title: Implement the read-only tools ready and get_task with no tracker side effects (ADR 0030)
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:44:32.498263983Z"
-updated: "2026-09-20T06:55:17.285434482Z"
+updated: "2026-09-20T08:19:08.353304278Z"
 tags:
   - orchestrator
   - mcp

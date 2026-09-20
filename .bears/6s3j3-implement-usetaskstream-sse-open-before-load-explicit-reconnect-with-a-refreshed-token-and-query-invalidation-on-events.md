@@ -1,10 +1,10 @@
 ---
 id: "6s3j3"
 title: "Implement useTaskStream: SSE open-before-load, explicit reconnect with a refreshed token and query invalidation on events"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:41:37.676114039Z"
-updated: "2026-09-16T20:41:37.676114039Z"
+updated: "2026-09-20T10:28:18.775431761Z"
 tags:
   - frontend
   - tracker
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - w9tuv
 parent: gn4y2
+attempts: 1
 ---
 
 ## Summary

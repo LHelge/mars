@@ -11,6 +11,7 @@ export { LoginPage } from "./LoginPage";
 
 export { NotFoundPage } from "./NotFoundPage";
 
+export { ProjectPage } from "./ProjectPage";
 export { ProjectsPage } from "./ProjectsPage";
 
 export { ResetPasswordPage } from "./ResetPasswordPage";

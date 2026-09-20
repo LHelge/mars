@@ -16,8 +16,7 @@ pub use refresh_tokens::RefreshTokenRepository;
 pub use secrets::{SecretListFilter, SecretRepository, UserFilter};
 pub use sessions::{
     AppendedRange, CostDelta, IdleSession, MAX_EVENT_PAGE, McpSessionRow, ProcessStart,
-    SessionRepository,
-    Transition,
+    SessionRepository, Transition,
 };
 pub use tasks::{TaskFilter, TaskRepository};
 pub use user_invites::UserInviteRepository;

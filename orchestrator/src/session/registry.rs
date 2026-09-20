@@ -261,6 +261,10 @@ impl SessionRegistry {
         };
 
         entry.phase = Phase::Running;
+        // A stop taken while the session was still `creating` is one the owner
+        // ignored; left set, it would answer the first real stop with
+        // `AlreadyStopping`.
+        entry.stopping_since = None;
         let drained: Vec<QueuedInput> = entry.queue.drain(..).collect();
 
         if !drained.is_empty() {

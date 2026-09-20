@@ -543,6 +543,42 @@ impl TaskRepository<'_> {
         Ok(states)
     }
 
+    /// The same list under the caller's lock, scoped to the project.
+    ///
+    /// The MCP `claim` tool reads the served states inside its own mutation:
+    /// `profile_states` is edited under the same project lock, so a list read
+    /// from the pool could be one a concurrent edit has already replaced, and
+    /// a pool read there would make the mutation hold two pooled connections
+    /// at once (`docs/data-model.md`, "Tracker mutation transactions").
+    ///
+    /// The `project_id` is in the `WHERE` clause rather than assumed: a
+    /// profile belongs to one project, and scoping the read says so where the
+    /// database can enforce it.
+    pub async fn list_profile_states_in(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        profile_id: Uuid,
+    ) -> Result<Vec<TaskState>> {
+        let states = sqlx::query_as!(
+            TaskState,
+            r#"
+            SELECT s.id, s.project_id, s.name, s.kind as "kind: TaskStateKind", s.position,
+                   s.created_at
+            FROM profile_states AS p
+            JOIN task_states AS s ON s.id = p.state_id
+            WHERE p.profile_id = $1 AND s.project_id = $2
+            ORDER BY s.position, s.name
+            "#,
+            profile_id,
+            project_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        Ok(states)
+    }
+
     /// Every profile of the project mapped to the state ids it serves, in
     /// board order.
     ///

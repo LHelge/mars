@@ -14,11 +14,13 @@
 // rest of the application writes ids and numbers; the prose is set in prose
 // width so a long description stays readable in a narrow panel.
 //
-// Editing, state moves, release and "open in session" arrive in the actions
-// task; the header keeps a slot for them beside `Copy link`.
+// Editing, state moves, release and delete are `TaskActions`, the bar at the
+// top of the body. It lives there rather than in the header because every one
+// of those actions needs the loaded task, and because the panels they open —
+// a confirmation, the edit form — need the width of the body.
 
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
@@ -33,8 +35,10 @@ import type { Task, TaskDetail as TaskDetailData } from "../types";
 import { formatDateTime, formatRelative, shortId } from "../utils/format";
 import { CommentForm } from "./CommentForm";
 import { CommentList } from "./CommentList";
-import { DependencyList } from "./DependencyList";
+import { DependencyEditor } from "./DependencyEditor";
 import { taskKeys } from "./queryKeys";
+import { TaskActions } from "./TaskActions";
+import { TaskEditForm } from "./TaskEditForm";
 import { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
 import { taskPath } from "./taskLink";
 import { selectTaskById, useTaskStore } from "./taskStore";
@@ -47,11 +51,9 @@ export interface TaskDetailProps {
    * A route parameter that names no task is answered without a request.
    */
   number: number | null;
-  /** The drawer's own actions, added by the tracker-actions task. */
-  actions?: ReactNode;
 }
 
-export function TaskDetail({ projectId, number, actions }: TaskDetailProps) {
+export function TaskDetail({ projectId, number }: TaskDetailProps) {
   const navigate = useNavigate();
   const [search] = useSearchParams();
 
@@ -109,7 +111,6 @@ export function TaskDetail({ projectId, number, actions }: TaskDetailProps) {
             {task?.title ?? "Task"}
           </h2>
           <div className="flex shrink-0 items-center gap-2">
-            {actions}
             {task !== undefined && (
               <CopyLinkButton
                 path={taskPath(task.project_id, task.number)}
@@ -184,27 +185,45 @@ function TaskBody({
   projectId: string;
   task: TaskDetailData;
 }) {
+  // Edit mode replaces the fields it edits rather than sitting beside them, so
+  // the drawer never shows a title twice with two different values in it.
+  const [editing, setEditing] = useState(false);
+
   return (
     <div className="space-y-6">
-      <Meta projectId={projectId} task={task} />
+      <TaskActions
+        projectId={projectId}
+        task={task}
+        editing={editing}
+        onEditingChange={setEditing}
+      />
 
-      <Section title="Description">
-        {task.description === null || task.description.trim() === "" ? (
-          <p className="text-console-muted text-sm">No description</p>
-        ) : (
-          <div className="text-console-text max-w-prose text-sm">
-            <MarkdownBody>{task.description}</MarkdownBody>
-          </div>
-        )}
-      </Section>
+      {editing ? (
+        <TaskEditForm
+          projectId={projectId}
+          task={task}
+          onDone={() => {
+            setEditing(false);
+          }}
+        />
+      ) : (
+        <>
+          <Meta projectId={projectId} task={task} />
+
+          <Section title="Description">
+            {task.description === null || task.description.trim() === "" ? (
+              <p className="text-console-muted text-sm">No description</p>
+            ) : (
+              <div className="text-console-text max-w-prose text-sm">
+                <MarkdownBody>{task.description}</MarkdownBody>
+              </div>
+            )}
+          </Section>
+        </>
+      )}
 
       <Section title="Dependencies">
-        <DependencyList
-          projectId={projectId}
-          dependsOn={task.depends_on}
-          blocks={task.blocks}
-          known={task.children}
-        />
+        <DependencyEditor projectId={projectId} task={task} />
       </Section>
 
       <Section title="Children">

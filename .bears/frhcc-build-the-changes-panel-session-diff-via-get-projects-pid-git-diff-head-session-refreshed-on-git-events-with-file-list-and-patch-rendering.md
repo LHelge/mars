@@ -1,10 +1,10 @@
 ---
 id: frhcc
 title: "Build the Changes panel: session diff via GET /projects/{pid}/git/diff?head=<session>, refreshed on git events, with file list and patch rendering"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:47:49.074761568Z"
-updated: "2026-09-20T08:35:25.650960389Z"
+updated: "2026-09-20T08:49:47.738611443Z"
 tags:
   - frontend
   - sessions

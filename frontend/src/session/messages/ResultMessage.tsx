@@ -1,15 +1,10 @@
 // The end of a turn: what it cost and how long it took.
 
 import type { ResultMessage as ResultMessageData } from "../sessionStore";
+import { formatUsd } from "../../utils/format";
 
-/**
- * A turn costs cents, so the two decimals `formatUsd` gives a column of
- * accumulated totals would round most turns to `$0.00`. The transcript shows
- * four.
- */
-function formatTurnCost(value: number): string {
-  return `$${value.toFixed(4)}`;
-}
+/** A turn costs cents, so the transcript asks `formatUsd` for four decimals. */
+const COST_DECIMALS = 4;
 
 function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
@@ -34,7 +29,7 @@ export function ResultMessage({ message }: ResultMessageProps) {
       </span>
       <span>{formatDuration(message.duration_ms)}</span>
       {message.cost_usd !== undefined && (
-        <span>{formatTurnCost(message.cost_usd)}</span>
+        <span>{formatUsd(message.cost_usd, COST_DECIMALS)}</span>
       )}
     </div>
   );

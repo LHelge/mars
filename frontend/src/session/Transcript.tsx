@@ -43,6 +43,9 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stick = useStickToBottom(scrollRef, { order, tailLength });
 
+  // `SPEC.md` names this library for the transcript; the React Compiler skips
+  // components that use it, which costs this one file its auto-memoisation.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: order.length,
     getScrollElement: () => scrollRef.current,

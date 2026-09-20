@@ -1,10 +1,10 @@
 ---
 id: q666f
 title: Carry client_id on POST /sessions/{id}/input so an input sent over the HTTP fallback reconciles its optimistic message
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-20T07:58:26.273980356Z"
-updated: "2026-09-20T07:59:03.735923277Z"
+updated: "2026-09-20T08:23:03.642074904Z"
 tags:
   - orchestrator
   - frontend

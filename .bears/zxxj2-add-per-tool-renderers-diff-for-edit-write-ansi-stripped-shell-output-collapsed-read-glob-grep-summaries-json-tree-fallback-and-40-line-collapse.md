@@ -1,10 +1,10 @@
 ---
 id: zxxj2
 title: "Add per-tool renderers: diff for edit/write, ANSI-stripped shell output, collapsed read/glob/grep summaries, JSON tree fallback and 40-line collapse"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:45:51.403793733Z"
-updated: "2026-09-20T08:02:56.240050498Z"
+updated: "2026-09-20T08:17:05.956734116Z"
 tags:
   - frontend
   - sessions

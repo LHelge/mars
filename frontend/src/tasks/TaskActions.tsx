@@ -81,7 +81,9 @@ export function TaskActions({
           Release
         </SubmitButton>
 
-        {/* The hand-off and review controls mount here. */}
+        {/* The hand-off and review controls are not here: they live in the
+            drawer's "Code hand-off" section, beside the commit and review
+            badge they talk about, where their forms have the body's width. */}
 
         <div className="border-console-border ml-auto border-l pl-2">
           <SubmitButton

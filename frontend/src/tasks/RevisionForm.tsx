@@ -1,0 +1,238 @@
+// Publishing a new revision from the drawer (`SPEC.md`, "Code hand-offs and
+// review": a `PUT` whose `handoff` is `{ kind: "revision", source_session_id,
+// commit, comment }`, together with a different target state).
+//
+// The form is four fields in the order the decision is made: which session's
+// work this is, which commit of it, what the next agent needs to know, and
+// where the task goes. Nothing is prefilled except a single unambiguous
+// source, because every other default would be the UI choosing whose branch
+// gets published — the one thing `SPEC.md`, "Frontend", "Hand-off controls",
+// says it must never do silently.
+//
+// The commit is checked here only so the obvious mistake (a branch name, an
+// abbreviation) is refused before a round trip, in the server's own words. The
+// real check is the server's: the source session's synced tip must equal this
+// exact commit, and a 409 saying otherwise is shown verbatim, because it names
+// both tips and is the most useful sentence on the screen.
+
+import { useState } from "react";
+import type { FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
+
+import { Alert } from "../components/Alert";
+import { SubmitButton } from "../components/SubmitButton";
+import { projectErrorMessage } from "../pages/project/messages";
+import { queryKeys } from "../services/queryKeys";
+import { listProjectSessions } from "../services/sessions";
+import type { TaskDetail } from "../types";
+import { shortId } from "../utils/format";
+import {
+  COMMIT_HINT,
+  STATE_HINT,
+  commitIdError,
+  defaultSourceSession,
+  orderSessionsForPicker,
+} from "./handoffRules";
+import { CONTROL } from "./taskChrome";
+import { useTaskStore } from "./taskStore";
+import { useTaskMutations } from "./useTaskMutations";
+
+export interface RevisionFormProps {
+  projectId: string;
+  task: TaskDetail;
+  /** The panel closes the form again once the revision is published. */
+  onDone: () => void;
+}
+
+const FIELD = `${CONTROL} w-full placeholder:text-console-muted`;
+
+export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
+  const states = useTaskStore((store) => store.states);
+  const { update } = useTaskMutations(projectId, task.number);
+
+  const sessions = useQuery({
+    queryKey: queryKeys.projects.sessions(projectId),
+    queryFn: () => listProjectSessions(projectId),
+  });
+
+  const rows = orderSessionsForPicker(
+    sessions.data ?? [],
+    task.sessions.map((touch) => touch.session_id),
+  );
+
+  const [source, setSource] = useState<string | null>(null);
+  const [commit, setCommit] = useState("");
+  const [comment, setComment] = useState("");
+  const [state, setState] = useState("");
+  const [shownError, setShownError] = useState<string | null>(null);
+
+  // Derived until the user touches it, so the single-candidate default is
+  // right the moment the session list lands and no effect writes state.
+  const chosen = source ?? defaultSourceSession(rows);
+
+  const commitProblem = commitIdError(commit);
+  // The commit's *shape* is not part of readiness: a button that goes dead
+  // while someone types a commit id says nothing about why. It is checked on
+  // submit instead, and answered in a sentence.
+  const filled =
+    chosen !== "" &&
+    commit.trim() !== "" &&
+    comment.trim() !== "" &&
+    state !== "";
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!filled) {
+      return;
+    }
+    if (commitProblem !== null) {
+      setShownError(commitProblem);
+      return;
+    }
+    setShownError(null);
+    update.mutate(
+      {
+        state,
+        handoff: {
+          kind: "revision",
+          source_session_id: chosen,
+          commit: commit.trim(),
+          comment: comment.trim(),
+        },
+      },
+      { onSuccess: onDone },
+    );
+  }
+
+  return (
+    <form
+      onSubmit={onSubmit}
+      aria-label="Publish revision"
+      className="border-console-border bg-console-bg space-y-3 rounded border p-3"
+    >
+      {sessions.isError && (
+        <Alert kind="error">Could not load the project&rsquo;s sessions.</Alert>
+      )}
+
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="handoff-source" className="text-console-muted text-xs">
+          Source session
+        </label>
+        <select
+          id="handoff-source"
+          name="handoff-source"
+          value={chosen}
+          disabled={update.isPending}
+          onChange={(event) => {
+            setSource(event.target.value);
+          }}
+          className={FIELD}
+        >
+          <option value="">Choose the session whose work this is</option>
+          {rows.map((session) => (
+            <option
+              key={session.id}
+              value={session.id}
+              disabled={session.branch === null}
+            >
+              {session.title ?? "Untitled session"} — {session.state} —{" "}
+              {shortId(session.id, 8)}
+              {session.branch === null ? " (no branch yet)" : ""}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="handoff-commit" className="text-console-muted text-xs">
+          Commit
+        </label>
+        <input
+          id="handoff-commit"
+          name="handoff-commit"
+          value={commit}
+          spellCheck={false}
+          autoComplete="off"
+          disabled={update.isPending}
+          placeholder="0000000000000000000000000000000000000000"
+          aria-describedby="handoff-commit-hint"
+          onChange={(event) => {
+            setCommit(event.target.value);
+            setShownError(null);
+          }}
+          className={FIELD}
+        />
+        <p id="handoff-commit-hint" className="text-console-muted text-xs">
+          {COMMIT_HINT}
+        </p>
+        {shownError !== null && <Alert kind="error">{shownError}</Alert>}
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="handoff-comment" className="text-console-muted text-xs">
+          Comment
+        </label>
+        <textarea
+          id="handoff-comment"
+          name="handoff-comment"
+          rows={4}
+          value={comment}
+          disabled={update.isPending}
+          placeholder="What is in this commit, and what should the next agent do with it?"
+          onChange={(event) => {
+            setComment(event.target.value);
+          }}
+          className={FIELD}
+        />
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="handoff-state" className="text-console-muted text-xs">
+          Move to
+        </label>
+        <select
+          id="handoff-state"
+          name="handoff-state"
+          value={state}
+          disabled={update.isPending}
+          aria-describedby="handoff-state-hint"
+          onChange={(event) => {
+            setState(event.target.value);
+          }}
+          className={FIELD}
+        >
+          <option value="">Choose a state</option>
+          {states
+            .filter((row) => row.name !== task.state)
+            .map((row) => (
+              <option key={row.id} value={row.name}>
+                {row.name}
+              </option>
+            ))}
+        </select>
+        <p id="handoff-state-hint" className="text-console-muted text-xs">
+          {STATE_HINT}
+        </p>
+      </div>
+
+      {update.isError && (
+        <Alert kind="error">{projectErrorMessage(update.error)}</Alert>
+      )}
+
+      <div className="flex items-center gap-2">
+        <SubmitButton loading={update.isPending} disabled={!filled}>
+          Publish revision
+        </SubmitButton>
+        <SubmitButton
+          type="button"
+          variant="ghost"
+          loading={false}
+          disabled={update.isPending}
+          onClick={onDone}
+        >
+          Cancel
+        </SubmitButton>
+      </div>
+    </form>
+  );
+}

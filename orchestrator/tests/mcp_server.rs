@@ -1,11 +1,12 @@
 //! The MCP transport skeleton: the router, the handshake and the 404
 //! (`ARCHITECTURE.md`, "MCP design").
 //!
-//! No authentication yet — the bearer middleware is its own task — so a
-//! connection here succeeds whatever token it carries. What the suite pins is
-//! the shape of the listener: `/mcp` speaks MCP, everything else answers the
-//! ordinary error body, and the handshake advertises the tools capability with
-//! no tools behind it until the dispatch task lands.
+//! A connection is made as a real session: the bearer middleware authenticates
+//! every request on `/mcp` (`tests/mcp_auth.rs` is its own suite). What this
+//! suite pins is the shape of the listener: `/mcp` speaks MCP, everything else
+//! answers the ordinary error body — unauthenticated, because the 404 fallback
+//! is outside the middleware — and the handshake advertises the tools
+//! capability with no tools behind it until the dispatch task lands.
 //!
 //! Needs a container engine (`DOCKER_HOST`); see `tests/common/db.rs`.
 
@@ -17,15 +18,27 @@ use axum::Router;
 use axum::routing::any;
 use common::TestApp;
 use common::mcp::McpClient;
+use mars_orchestrator::models::SessionState;
 use serde_json::Value;
+
+/// An app with one live session, and that session's raw bearer token.
+async fn app_with_session() -> (TestApp, String) {
+    let app = TestApp::spawn().await;
+    let (project_id, profile_id) = app.seed_mcp_project().await;
+    let seeded = app
+        .seed_mcp_session(project_id, profile_id, SessionState::Running)
+        .await;
+
+    (app, seeded.token)
+}
 
 #[tokio::test]
 async fn a_client_connects_and_the_server_lists_no_tools_yet() {
-    let app = TestApp::spawn().await;
+    let (app, token) = app_with_session().await;
 
-    let client = McpClient::connect(&app, "not-a-real-session-token")
+    let client = McpClient::connect(&app, &token)
         .await
-        .expect("the handshake succeeds while nothing authenticates it");
+        .expect("a running session's token authenticates");
 
     assert!(
         client.list_tools().await.is_empty(),
@@ -35,8 +48,8 @@ async fn a_client_connects_and_the_server_lists_no_tools_yet() {
 
 #[tokio::test]
 async fn every_other_path_is_the_ordinary_404() {
-    let app = TestApp::spawn().await;
-    let client = McpClient::connect(&app, "not-a-real-session-token")
+    let (app, token) = app_with_session().await;
+    let client = McpClient::connect(&app, &token)
         .await
         .expect("the handshake succeeds");
 
@@ -54,9 +67,10 @@ async fn every_other_path_is_the_ordinary_404() {
 }
 
 /// The status of a refused `initialize` has to reach the caller, because the
-/// bearer middleware's own suite asserts 401 and 403 on exactly this path.
-/// Nothing refuses anything yet, so the refusal is arranged with a stub router
-/// in the real one's place.
+/// bearer middleware's own suite asserts 401 and 403 on exactly this path. The
+/// refusal is arranged with a stub router rather than the real middleware, so
+/// this stays a test of the client helper's error reporting and of nothing
+/// else.
 #[tokio::test]
 async fn a_refused_initialize_carries_its_http_status() {
     let refusing = Router::new().route(

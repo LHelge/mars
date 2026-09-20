@@ -609,6 +609,45 @@ impl<'a> SecretRepository<'a> {
         Ok(deleted)
     }
 
+    /// Delete every scoped secret whose scope row is gone, reporting how many
+    /// rows went.
+    ///
+    /// The token-cleanup job's sweep (`ARCHITECTURE.md`, "Background jobs":
+    /// "...and secrets whose scope row no longer exists"). `secrets.scope_id`
+    /// carries no foreign key, because the scope decides which table it points
+    /// at (`docs/data-model.md`, `secrets`), so nothing in the schema removes
+    /// these: deleting a user or a project removes its secrets in its own
+    /// transaction, and what is left here is the residue of a deletion that
+    /// was interrupted between the two.
+    ///
+    /// `global` rows have no scope row to lose and are never touched — their
+    /// `scope_id` is NULL, so the `NOT EXISTS` halves would match every one of
+    /// them if the `scope =` guards were dropped. Each secret takes its
+    /// `secret_uses` rows with it through the table's `ON DELETE CASCADE`,
+    /// which is what is wanted: the audit belongs to a scope that no longer
+    /// exists.
+    ///
+    /// No `now`, and no lock: the statement's own predicate is the whole
+    /// condition, and a row it matches has no owner left to race with.
+    pub async fn delete_orphans(&self) -> Result<u64> {
+        let result = sqlx::query!(
+            r#"
+            DELETE FROM secrets
+            WHERE (scope = 'user'
+                   AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = secrets.scope_id))
+               OR (scope = 'project'
+                   AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = secrets.scope_id))
+            "#,
+        )
+        .execute(self.pool)
+        .await?;
+
+        let deleted = result.rows_affected();
+        debug!(deleted, "orphaned secrets deleted");
+
+        Ok(deleted)
+    }
+
     /// One rotation batch: up to `limit` rows still wrapped by a master key
     /// older than `below_version`.
     ///

@@ -192,10 +192,17 @@ impl<'a> PasswordResetTokenRepository<'a> {
     /// Spent-but-unexpired rows stay until they expire, so that replaying a
     /// link within its window is still recognised as spent rather than as
     /// unknown.
-    pub async fn delete_expired(&self) -> Result<u64> {
-        let result = sqlx::query!("DELETE FROM password_reset_tokens WHERE expires_at <= NOW()")
-            .execute(self.pool)
-            .await?;
+    ///
+    /// The cut-off is the caller's `now` rather than `NOW()`, because the job
+    /// takes its clock from the scheduler and a test has to be able to place a
+    /// row on either side of it (`ARCHITECTURE.md`, "Background jobs").
+    pub async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query!(
+            "DELETE FROM password_reset_tokens WHERE expires_at < $1",
+            now
+        )
+        .execute(self.pool)
+        .await?;
 
         let deleted = result.rows_affected();
         debug!(deleted, "expired password reset tokens deleted");

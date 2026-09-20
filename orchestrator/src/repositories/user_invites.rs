@@ -358,9 +358,19 @@ impl<'a> UserInviteRepository<'a> {
     ///
     /// The hourly token-cleanup job (`ARCHITECTURE.md`, "Background jobs").
     /// Accepted invites are kept: they are history, not garbage.
-    pub async fn delete_expired(&self) -> Result<u64> {
+    ///
+    /// Deleting the row is also what frees the address again:
+    /// `user_invites_open_email_idx` is partial on `accepted_at IS NULL` only,
+    /// so an expired unaccepted invite occupies its email until this statement
+    /// takes it (`docs/data-model.md`, `user_invites`).
+    ///
+    /// The cut-off is the caller's `now` rather than `NOW()`, because the job
+    /// takes its clock from the scheduler and a test has to be able to place a
+    /// row on either side of it (`ARCHITECTURE.md`, "Background jobs").
+    pub async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
         let result = sqlx::query!(
-            "DELETE FROM user_invites WHERE accepted_at IS NULL AND expires_at <= NOW()",
+            "DELETE FROM user_invites WHERE accepted_at IS NULL AND expires_at < $1",
+            now,
         )
         .execute(self.pool)
         .await?;

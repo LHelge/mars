@@ -226,8 +226,12 @@ impl<'a> RefreshTokenRepository<'a> {
     /// costs one row while `refresh_tokens_token_hash_key` keeps a replayed
     /// token from being re-inserted. `refresh_tokens_expires_at_idx` serves
     /// the scan. Deleting a user cascades the rest.
-    pub async fn delete_expired(&self) -> Result<u64> {
-        let result = sqlx::query!("DELETE FROM refresh_tokens WHERE expires_at < NOW()")
+    ///
+    /// The cut-off is the caller's `now` rather than `NOW()`, because the job
+    /// takes its clock from the scheduler and a test has to be able to place
+    /// a row on either side of it (`ARCHITECTURE.md`, "Background jobs").
+    pub async fn delete_expired(&self, now: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query!("DELETE FROM refresh_tokens WHERE expires_at < $1", now)
             .execute(self.pool)
             .await?;
 

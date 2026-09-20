@@ -1,10 +1,10 @@
 ---
 id: xn26a
 title: Audit E2E coverage against SPEC user-facing features, harden flaky waits and write back the E2E documentation
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-16T20:48:02.931989676Z"
-updated: "2026-09-20T18:50:44.488937122Z"
+updated: "2026-09-20T21:25:08.378695991Z"
 tags:
   - frontend
   - docs
@@ -24,6 +24,7 @@ depends_on:
   - "77ue3"
   - nvjt5
 parent: "6s8j7"
+attempts: 1
 ---
 
 ## Summary

@@ -19,15 +19,13 @@ import {
 } from "../services/auth";
 import { listEvents, sendInput, stopSession } from "../services/sessions";
 import type { ClientMessage, ServerMessage, SessionInput } from "../types";
+import { backoffDelay } from "../utils/backoff";
 import type { ConnectionStatus, SessionStore } from "./sessionStore";
 import { getSessionStore, useSessionStore } from "./sessionStore";
 import { buildSessionSocketUrl } from "./socketUrl";
 
 /** The history page size; the endpoint caps `limit` at 500. */
 const PAGE_SIZE = 200;
-const BASE_DELAY_MS = 1000;
-const MAX_DELAY_MS = 30_000;
-const JITTER = 0.2;
 /** The close code the orchestrator uses after `authentication required`. */
 const AUTH_CLOSE_CODE = 1008;
 /** A second auth close inside this window means refreshing did not help. */
@@ -291,13 +289,12 @@ export class SessionSocket {
 
   private scheduleRetry(): void {
     if (this.disposed || this.retryTimer !== null) return;
-    const base = Math.min(BASE_DELAY_MS * 2 ** this.attempt, MAX_DELAY_MS);
+    const delay = backoffDelay(this.attempt);
     this.attempt += 1;
-    const delay = base * (1 + (Math.random() * 2 - 1) * JITTER);
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       this.connect();
-    }, Math.round(delay));
+    }, delay);
   }
 
   private cancelRetry(): void {

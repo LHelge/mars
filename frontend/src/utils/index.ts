@@ -32,3 +32,10 @@ export { stripAnsi } from "./ansi";
 
 export { DIFF_LINE_CAP, lineDiff, lineDiffCapped, parseUnifiedPatch } from "./diff";
 export type { DiffLine, PatchFile, PatchHunk } from "./diff";
+
+export {
+  BACKOFF_BASE_MS,
+  BACKOFF_JITTER,
+  BACKOFF_MAX_MS,
+  backoffDelay,
+} from "./backoff";

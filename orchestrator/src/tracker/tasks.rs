@@ -53,7 +53,7 @@ use crate::models::{
 use crate::prelude::*;
 use crate::repositories::TaskRepository;
 use crate::repositories::foreign_key_violation;
-use crate::repositories::tasks::StateFields;
+use crate::repositories::tasks::{PARENT_NOT_TOP_LEVEL, StateFields};
 // What a `depends_on` entry naming nothing in this project is told (400).
 // Creation resolves every entry inside this project, so an id from another
 // project and an id from nowhere get the same answer here — the message the
@@ -611,13 +611,17 @@ pub async fn delete_task(m: &mut TrackerMutation<'_>, task: &Task) -> Result<()>
 /// clause, so a task of another project is indistinguishable from one that
 /// does not exist, and the row is held `FOR UPDATE` because the re-parenting
 /// is about to depend on whether it has a parent of its own.
+///
+/// A reference that names nothing is the same 400 the repository gives a
+/// `parent_id` it cannot use, on creation and on re-parenting alike
+/// (`SPEC.md`, "Tasks"): the parent is a field of the body, not the address.
 async fn locked_task(m: &mut TrackerMutation<'_>, reference: TaskRef) -> Result<Task> {
     let project_id = m.project_id();
 
     TaskRepository::new(m.pool())
         .find_task_for_update(m.conn(), project_id, reference)
         .await?
-        .ok_or(Error::NotFound)
+        .ok_or_else(|| Error::BadRequest(PARENT_NOT_TOP_LEVEL.into()))
 }
 
 /// This mutation's view of a task of this project, which must be there.

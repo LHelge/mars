@@ -576,12 +576,17 @@ async fn a_parent_that_already_has_a_parent_is_refused_and_null_detaches() {
     assert_eq!(code(&err), "invalid_argument");
     assert_eq!(err.message, "a task cannot be its own parent");
 
-    // A parent that names no task of this project is not found.
+    // A parent that names no task of this project is refused as REST refuses
+    // an unusable `parent_id`.
     let err = board
         .update(json!({ "task": task.number, "parent": 9999 }))
         .await
-        .expect_err("an unknown parent is not found");
-    assert_eq!(code(&err), "not_found");
+        .expect_err("an unknown parent cannot be used");
+    assert_eq!(code(&err), "invalid_argument");
+    assert_eq!(
+        err.message,
+        "parent must be a top-level task of the same project"
+    );
 
     // The top level one is allowed, and `null` puts it back.
     board

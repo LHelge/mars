@@ -1,7 +1,7 @@
 // `SPEC.md`, "Tasks": the cross-project escalation list the dashboard reads.
 // The task board extends this module with the project-scoped endpoints.
 
-import type { Task } from "../types";
+import type { Task, TaskDetail } from "../types";
 import { apiGet } from "./apiClient";
 
 /**
@@ -11,4 +11,16 @@ import { apiGet } from "./apiClient";
  */
 export function listHumanTasks(): Promise<Task[]> {
   return apiGet<Task[]>("/tasks?state_kind=human");
+}
+
+/**
+ * `GET /projects/{pid}/tasks/{id}` — one task with its comments, hand-offs,
+ * children and touching sessions. `idOrNumber` is the task's UUID or its
+ * per-project number.
+ */
+export function getTask(
+  pid: string,
+  idOrNumber: string | number,
+): Promise<TaskDetail> {
+  return apiGet<TaskDetail>(`/projects/${pid}/tasks/${idOrNumber}`);
 }

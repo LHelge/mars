@@ -1,0 +1,34 @@
+// `SPEC.md`, "Agent profiles (`/api/projects/{pid}/profiles`)". `PUT` replaces
+// the whole profile rather than patching it.
+
+import type { Profile, ProfileInput } from "../types";
+import { apiDelete, apiGet, apiPost, apiPut } from "./apiClient";
+
+/** Oldest first. */
+export function listProfiles(pid: string): Promise<Profile[]> {
+  return apiGet<Profile[]>(`/projects/${pid}/profiles`);
+}
+
+export function getProfile(pid: string, id: string): Promise<Profile> {
+  return apiGet<Profile>(`/projects/${pid}/profiles/${id}`);
+}
+
+export function createProfile(
+  pid: string,
+  input: ProfileInput,
+): Promise<Profile> {
+  return apiPost<Profile>(`/projects/${pid}/profiles`, input);
+}
+
+export function updateProfile(
+  pid: string,
+  id: string,
+  input: ProfileInput,
+): Promise<Profile> {
+  return apiPut<Profile>(`/projects/${pid}/profiles/${id}`, input);
+}
+
+/** 204; 409 for the project's default profile or one that has sessions. */
+export function deleteProfile(pid: string, id: string): Promise<void> {
+  return apiDelete(`/projects/${pid}/profiles/${id}`);
+}

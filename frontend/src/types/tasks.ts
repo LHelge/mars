@@ -62,3 +62,18 @@ export interface Task {
   updated_at: string;
   closed_at: string | null;
 }
+
+/** A row of `TaskDetail.sessions`: a session that touched the task. */
+export interface TaskSessionTouch {
+  session_id: string;
+  first_touched_at: string;
+  last_touched_at: string;
+}
+
+/** `GET /projects/{pid}/tasks/{id}`; hand-offs are ordered oldest first. */
+export interface TaskDetail extends Task {
+  comments: Comment[];
+  handoffs: Handoff[];
+  children: Task[];
+  sessions: TaskSessionTouch[];
+}

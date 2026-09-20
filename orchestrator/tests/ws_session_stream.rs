@@ -49,6 +49,14 @@ const WITHIN: Duration = Duration::from_secs(2);
 /// (rule 3).
 const PASSWORD: &str = "not-a-real-password";
 
+/// How many of a `TestApp`'s pooled connections a test can hold at once.
+///
+/// The pool is built one larger than the harness default precisely because the
+/// shared listener holds one of them permanently (`tests/common/app.rs`), so
+/// the default is what is left for everybody else — and holding all of it is
+/// how the scenario below stalls a handler.
+const POOL_CONNECTIONS: usize = common::db::DEFAULT_MAX_CONNECTIONS as usize;
+
 /// The rows one socket needs: a user to open it as and a session to watch.
 struct Fixture {
     user: AuthenticatedUser,
@@ -166,6 +174,22 @@ async fn expect_session(socket: &mut axum_test::TestWebSocket) -> Value {
     assert_eq!(frame["type"], "session", "the first frame is the snapshot");
 
     frame["session"].clone()
+}
+
+/// Read the socket for `during`, answering pings and failing on anything the
+/// server should not be sending.
+///
+/// A socket has to be *polled* for tungstenite to answer a ping, so "wait"
+/// and "stay alive" are the same loop.
+async fn poll_for(socket: &mut axum_test::TestWebSocket, during: Duration) {
+    let deadline = tokio::time::Instant::now() + during;
+
+    while let Ok(message) = tokio::time::timeout_at(deadline, socket.receive_message()).await {
+        match message {
+            WsMessage::Ping(_) | WsMessage::Pong(_) => {}
+            other => panic!("the socket received {other:?} while it was only being kept alive"),
+        }
+    }
 }
 
 /// The next frame, asserted to be an `event`.
@@ -508,6 +532,50 @@ async fn the_server_pings_and_closes_after_two_missed_pongs() {
         1001,
         "two missed pongs close the socket with 1001",
     );
+}
+
+#[tokio::test]
+async fn a_stalled_handler_does_not_spend_the_pong_budget_in_one_instant() {
+    let app = TestApp::spawn().await;
+    let fixture = arrange(&app).await;
+
+    let mut socket = app
+        .ws(fixture.session_id, &fixture.user.access_token, 0)
+        .await;
+
+    expect_session(&mut socket).await;
+
+    // Every connection the app's pool has, held by the test: the socket's loop
+    // reaches its next re-authorization or safety read and waits there, which
+    // is what a busy orchestrator does to it. No ping goes out while it waits,
+    // so the client owes no pong.
+    let mut held = Vec::new();
+    tokio::time::timeout(WITHIN, async {
+        while held.len() < POOL_CONNECTIONS {
+            held.push(app.pool.acquire().await.expect("a connection is acquired"));
+        }
+    })
+    .await
+    .expect("the pool's connections can all be held");
+
+    // Longer than the two ping intervals that close a silent socket, and the
+    // socket is polled throughout: what is being arranged is a stalled
+    // *server*, not a client that stopped reading.
+    poll_for(&mut socket, 4 * TEST_TIMINGS.ping).await;
+
+    drop(held);
+
+    // The ticks the stall swallowed must not now fire back to back: two pings
+    // in the same instant would reach `MAX_MISSED_PONGS` before the client
+    // could answer either, and close a socket that never missed a pong
+    // (`SPEC.md`, "WebSocket: session stream").
+    poll_for(&mut socket, 4 * TEST_TIMINGS.ping).await;
+
+    append_events(&app, fixture.session_id, 1).await;
+    let event = expect_event(&mut socket).await;
+    assert_eq!(event["seq"], 1, "the socket survived the stall");
+
+    socket.close().await;
 }
 
 #[tokio::test]

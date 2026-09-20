@@ -46,8 +46,8 @@ use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
 use axum::response::Response;
 use axum::routing::get;
-use futures_util::SinkExt;
 use futures_util::stream::{SplitStream, StreamExt};
+use futures_util::{FutureExt, SinkExt};
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -377,24 +377,61 @@ async fn stream(
     let timings = context.state.realtime_timings;
     let mut safety = tokio::time::interval(timings.safety_read);
     let mut ping = tokio::time::interval(timings.ping);
+    // Neither timer catches up on the ticks a slow turn of this loop swallowed.
+    // A tick here is not an event to deliver but a period to observe, and the
+    // default burst would spend the whole pong budget in one instant: two
+    // pings fired back to back reach [`MAX_MISSED_PONGS`] before the client
+    // has been given a chance to answer either, and close a socket that never
+    // missed a pong. `SPEC.md`, "WebSocket: session stream" says two *missed*
+    // pongs, which is two ping periods with no answer in between. The safety
+    // read is the same argument with nothing at stake: replaying the reads a
+    // stall swallowed would only re-read from a cursor that has not moved.
+    safety.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Both fire immediately on their first tick; the stream has just read from
     // its cursor and has nothing to ping about yet.
     safety.tick().await;
     ping.tick().await;
 
     loop {
-        let step = tokio::select! {
-            notice = rx.recv() => on_notice(context, out, notice).await,
-            _ = safety.tick() => drain(context, out).await,
-            _ = ping.tick() => on_ping(context, out).await,
-            frame = incoming.next() => on_frame(context, out, frame).await,
-            output = terminal_rx.recv() => on_terminal_output(context, out, output).await,
+        // Which arm fired, rather than what to do about it: the ping arm needs
+        // `incoming`, which another arm of the same `select!` already borrows,
+        // so the handling happens after it — the move `sse::StreamContext`
+        // makes for the same reason.
+        let woke = tokio::select! {
+            notice = rx.recv() => Woke::Notice(notice),
+            _ = safety.tick() => Woke::Safety,
+            _ = ping.tick() => Woke::Ping,
+            frame = incoming.next() => Woke::Frame(frame),
+            output = terminal_rx.recv() => Woke::Terminal(output),
+        };
+
+        let step = match woke {
+            Woke::Notice(notice) => on_notice(context, out, notice).await,
+            Woke::Safety => drain(context, out).await,
+            Woke::Ping => on_ping(context, out, incoming).await,
+            Woke::Frame(frame) => on_frame(context, out, frame).await,
+            Woke::Terminal(output) => on_terminal_output(context, out, output).await,
         };
 
         if let Err(end) = step {
             return end;
         }
     }
+}
+
+/// What woke the live loop.
+enum Woke {
+    /// The fan-out published, lagged or closed.
+    Notice(std::result::Result<Notice, RecvError>),
+    /// The safety-read period elapsed.
+    Safety,
+    /// The ping period elapsed.
+    Ping,
+    /// The client sent a frame, or the socket ended.
+    Frame(Option<std::result::Result<Message, axum::Error>>),
+    /// The terminal produced output, or ended.
+    Terminal(Option<TerminalOutput>),
 }
 
 /// One notice from the fan-out.
@@ -420,15 +457,31 @@ async fn on_notice(
     }
 }
 
-/// One ping tick: re-authorize, ping, and count the pong that has not come.
+/// One ping tick: take what the client already sent, re-authorize, ping, and
+/// count the pong that has not come.
 ///
 /// The count is raised *after* the ping is sent, so it names the pings still
 /// outstanding: reaching [`MAX_MISSED_PONGS`] means two ticks passed with no
 /// pong in between, which is the documented close.
+///
+/// The frames that are already there are read first, and that is not a
+/// nicety. This loop's other arms wait on the database — the safety read, the
+/// re-authorization below — and while one of them is waiting no frame is
+/// taken from the socket, so a pong the client sent promptly can still be
+/// unread when this tick comes round. Counting it as missed would close a
+/// socket whose client answered every ping, for no reason but that the
+/// *server* was slow, which is the opposite of what `SPEC.md`, "WebSocket:
+/// session stream" describes. `next()` on this stream is cancel-safe, so
+/// taking only the frames that are ready loses nothing.
 async fn on_ping(
     context: &mut SocketContext,
     out: &mpsc::Sender<Message>,
+    incoming: &mut SplitStream<WebSocket>,
 ) -> std::result::Result<(), End> {
+    while let Some(frame) = incoming.next().now_or_never() {
+        on_frame(context, out, frame).await?;
+    }
+
     ensure_authorized(context).await?;
 
     out.send(Message::Ping(PING_PAYLOAD.into()))

@@ -2,10 +2,10 @@
 id: cxmar
 title: Background jobs
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:14:15.701334950Z"
-updated: "2026-09-16T20:15:46.819502633Z"
+updated: "2026-09-20T07:00:34.279778854Z"
 tags:
   - orchestrator
   - cron

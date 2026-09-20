@@ -46,7 +46,7 @@ use crate::tracker::Locked;
 
 /// The parent named by the caller is not a task of this project, or is not
 /// there at all.
-const PARENT_NOT_TOP_LEVEL: &str = "parent must be a top-level task of the same project";
+pub(crate) const PARENT_NOT_TOP_LEVEL: &str = "parent must be a top-level task of the same project";
 /// The task being re-parented is itself an epic.
 const CHILD_HAS_CHILDREN: &str = "a task with children cannot get a parent";
 /// The proposed parent is itself a child.

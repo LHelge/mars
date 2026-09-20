@@ -80,6 +80,9 @@ pub use handoffs::HandoffMergeCandidate;
 /// re-export is how the tracker names the type at all.
 pub(crate) use rows::StateFields;
 pub use rows::{DeadHolder, TaskFilter, TaskSummaryRow};
+// The one refusal the tracker words for the repository: a parent reference
+// that names nothing is answered as an unusable `parent_id` is.
+pub(crate) use rows::PARENT_NOT_TOP_LEVEL;
 
 use crate::prelude::*;
 use crate::repositories::ProjectRepository;

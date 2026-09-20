@@ -1,10 +1,10 @@
 ---
 id: "4cvu4"
 title: Implement the lease tools claim, release, comment and needs_human with events and session links committed in the mutation transaction
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:45:14.375442189Z"
-updated: "2026-09-16T20:45:14.375442189Z"
+updated: "2026-09-20T06:55:13.921645982Z"
 tags:
   - orchestrator
   - mcp
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - h9u3c
 parent: qgj33
+attempts: 1
 ---
 
 ## Summary

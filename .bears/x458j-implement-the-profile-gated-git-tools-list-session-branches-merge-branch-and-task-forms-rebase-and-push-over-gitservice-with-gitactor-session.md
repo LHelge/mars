@@ -1,10 +1,10 @@
 ---
 id: x458j
 title: "Implement the profile-gated git tools list_session_branches, merge (branch and task forms), rebase and push over GitService with GitActor::Session"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:45:49.832206573Z"
-updated: "2026-09-16T20:45:49.832206573Z"
+updated: "2026-09-20T06:55:15.567671398Z"
 tags:
   - orchestrator
   - mcp
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - h9u3c
 parent: qgj33
+attempts: 1
 ---
 
 ## Summary

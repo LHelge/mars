@@ -107,6 +107,56 @@ async fn a_request_without_an_authorization_header_is_refused_before_the_server(
     assert!(body.get("result").is_none(), "{body}");
 }
 
+/// An authenticated `initialize` sent under `host`, as a session container
+/// sends it: the `Host` is whatever authority its MCP config names, never the
+/// loopback address the other tests connect to.
+async fn initialize_as(fixture: &Fixture, host: &str) -> reqwest::Response {
+    let (client, live) = fixture.connected().await;
+    let bearer = format!("Bearer {}", live.token);
+
+    client
+        .raw_post(
+            &[
+                ("host", host),
+                ("authorization", &bearer),
+                ("content-type", "application/json"),
+                ("accept", "application/json, text/event-stream"),
+            ],
+            INITIALIZE,
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_request_under_the_mcp_url_host_is_served() {
+    let fixture = Fixture::create().await;
+    let host = fixture
+        .app
+        .state
+        .config
+        .mcp_url
+        .parse::<axum::http::Uri>()
+        .expect("MCP_URL is a URL")
+        .authority()
+        .expect("with a host")
+        .to_string();
+    // The point of the test: the configured host is not a loopback name.
+    assert!(host.starts_with("orchestrator"), "{host}");
+
+    let response = initialize_as(&fixture, &host).await;
+
+    assert_eq!(response.status().as_u16(), 200);
+}
+
+#[tokio::test]
+async fn a_request_under_a_foreign_host_is_refused() {
+    let fixture = Fixture::create().await;
+
+    let response = initialize_as(&fixture, "rebound.example.invalid").await;
+
+    assert_eq!(response.status().as_u16(), 403);
+}
+
 #[tokio::test]
 async fn a_scheme_other_than_bearer_is_refused() {
     let fixture = Fixture::create().await;

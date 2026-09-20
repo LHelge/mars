@@ -41,88 +41,54 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { expect, test } from "@playwright/test";
-import type { APIRequestContext, BrowserContext, Locator, Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import type { Project, SyncResult } from "../src/types";
-import type { Api, BareRepo, TestUser } from "./utils/test-helpers";
+import type { Api, BareRepo } from "./utils/test-helpers";
+import { expect, test } from "./utils/fixtures";
+import type { SessionTracker } from "./utils/fixtures";
 import {
-  api,
   commitInSessionWorkClone,
   commitToBareRepo,
-  createBareRepo,
-  createProject,
-  createTestUser,
-  endSession,
   gitIsAncestor,
   gitLogLast,
   gitRevParse,
-  launchSession,
   listBranches,
   loginViaToken,
   mirrorPath,
   sessionWorkPath,
+  transcript,
   waitFor,
   waitForSessionState,
 } from "./utils/test-helpers";
+
+// The upstream every scenario here clones: the file the commits rewrite.
+test.use({ repoFiles: { "src/app.txt": "v1\n" } });
 
 // A container start, a clone and, in the longer scenarios, four git operations
 // the orchestrator serialises per project.
 test.setTimeout(180_000);
 
-/** Every session a scenario launched, ended in `afterEach`. */
-let launched: { client: Api; id: string }[] = [];
-
-test.beforeEach(() => {
-  launched = [];
-});
-
-test.afterEach(async () => {
-  for (const session of launched) {
-    // Best effort: a scenario that failed must still not leave a container
-    // behind, and one whose session is already gone is fine.
-    await endSession(session.client, session.id).catch(() => undefined);
-  }
-});
-
 interface Stage {
-  user: TestUser;
-  client: Api;
-  repo: BareRepo;
-  project: Project;
   sessionId: string;
   /** `<DATA_DIR>/projects/<pid>/repo.git`, where every ref assertion is made. */
   mirror: string;
 }
 
 /**
- * A fresh user, a local bare upstream with `README.md` and `src/app.txt`, a
- * project that finished cloning, and a launched session waited to `running` —
- * which is what says its work clone exists.
+ * A session on the `project` fixture, launched from `main` and waited to
+ * `running` — which is what says its work clone exists.
  */
 async function stage(
-  request: APIRequestContext,
-  context: BrowserContext,
-  prefix: string,
+  sessions: SessionTracker,
+  client: Api,
+  project: Project,
 ): Promise<Stage> {
-  const user = await createTestUser(request, { prefix });
-  const client = api(request, user.access_token);
-  const repo = createBareRepo(prefix, { files: { "src/app.txt": "v1\n" } });
-  const project = await createProject(client, { remote_url: repo.url });
-  await loginViaToken(context, user);
-
-  const session = await launchSession(client, project.id, { base_ref: "main" });
-  launched.push({ client, id: session.id });
+  const session = await sessions.launch(client, project.id, {
+    base_ref: "main",
+  });
   await waitForSessionState(client, session.id, "running", 120_000);
-
-  return {
-    user,
-    client,
-    repo,
-    project,
-    sessionId: session.id,
-    mirror: mirrorPath(project.id),
-  };
+  return { sessionId: session.id, mirror: mirrorPath(project.id) };
 }
 
 // --- REST shorthands --------------------------------------------------------
@@ -223,11 +189,6 @@ async function openRowForm(
   return form;
 }
 
-/** The transcript, where the `git` outcome events are read. */
-function transcript(page: Page): Locator {
-  return page.getByTestId("transcript-scroll");
-}
-
 /** The session view's open side panel. */
 function panel(page: Page): Locator {
   return page.getByRole("tabpanel");
@@ -254,13 +215,13 @@ async function openBranchSection(page: Page): Promise<void> {
 test("the changes panel shows the session diff after a sync", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, sessionId, mirror } = await stage(
-    request,
-    context,
-    "changes",
-  );
+  await loginViaToken(context, user);
+  const { sessionId, mirror } = await stage(sessions, api, project);
 
   const changes = await openChanges(page, sessionId);
   // Nothing has been written into the clone yet, so the branch is its base.
@@ -277,7 +238,7 @@ test("the changes panel shows the session diff after a sync", async ({
   // the view stands still until the session is synced.
   await expect(changes.getByText("No changes against main")).toBeVisible();
 
-  const synced = await syncSession(client, sessionId);
+  const synced = await syncSession(api, sessionId);
   expect(synced.ref).toBe(`refs/sessions/${sessionId}`);
   expect(synced.commit).toBe(commit);
   // `SPEC.md`, "AgentEvent", `git`: the explicit sync's outcome reaches the
@@ -308,9 +269,13 @@ test("the changes panel shows the session diff after a sync", async ({
 test("the diff endpoint's own fetch-back emits no git event", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, sessionId } = await stage(request, context, "noloop");
+  await loginViaToken(context, user);
+  const { sessionId } = await stage(sessions, api, project);
 
   const changes = await openChanges(page, sessionId);
   await expect(changes.getByText("No changes against main")).toBeVisible({
@@ -318,7 +283,7 @@ test("the diff endpoint's own fetch-back emits no git event", async ({
   });
 
   commitInSessionWorkClone(sessionId, { "src/app.txt": "v2\n" }, "feat: change");
-  await syncSession(client, sessionId);
+  await syncSession(api, sessionId);
   await expect(transcript(page).getByText("Git sync succeeded")).toBeVisible({
     timeout: 30_000,
   });
@@ -341,16 +306,17 @@ test("the diff endpoint's own fetch-back emits no git event", async ({
 test("the session branch list shows ahead and behind", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  repo,
+  project,
+  sessions,
 }) => {
-  const { client, project, repo, sessionId } = await stage(
-    request,
-    context,
-    "counts",
-  );
+  await loginViaToken(context, user);
+  const { sessionId } = await stage(sessions, api, project);
 
   commitInSessionWorkClone(sessionId, { "src/app.txt": "v2\n" }, "feat: ahead");
-  await syncSession(client, sessionId);
+  await syncSession(api, sessionId);
 
   await page.goto(`/projects/${project.id}?tab=sessions`);
   const row = branchRow(page, sessionId);
@@ -371,7 +337,7 @@ test("the session branch list shows ahead and behind", async ({
   await page.getByRole("button", { name: "Fetch now" }).click();
   await waitFor(
     async () => {
-      const list = await listBranches(client, project.id);
+      const list = await listBranches(api, project.id);
       return list.find((one) => one.name === "origin/main")?.commit === moved
         ? list
         : null;
@@ -397,19 +363,20 @@ test("the session branch list shows ahead and behind", async ({
 test("merging a session branch into main", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  repo,
+  project,
+  sessions,
 }) => {
-  const { user, client, project, repo, sessionId, mirror } = await stage(
-    request,
-    context,
-    "merge",
-  );
+  await loginViaToken(context, user);
+  const { sessionId, mirror } = await stage(sessions, api, project);
 
   // The histories have to diverge for git to write a merge commit at all, so
   // the upstream moves first: otherwise the merge fast-forwards and there is no
   // commit of the orchestrator's own to read an identity off.
   await moveUpstreamInto(
-    client,
+    api,
     project,
     repo,
     { "CHANGELOG.md": "# Changelog\n" },
@@ -421,7 +388,7 @@ test("merging a session branch into main", async ({
     { "src/app.txt": "v2\n" },
     "feat: session work",
   );
-  await syncSession(client, sessionId);
+  await syncSession(api, sessionId);
 
   await page.goto(`/projects/${project.id}?tab=sessions`);
   const form = await openRowForm(page, sessionId, "merge");
@@ -451,22 +418,23 @@ test("merging a session branch into main", async ({
 test("rebasing the session branch onto main", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  repo,
+  project,
+  sessions,
 }) => {
-  const { client, project, repo, sessionId, mirror } = await stage(
-    request,
-    context,
-    "rebase",
-  );
+  await loginViaToken(context, user);
+  const { sessionId, mirror } = await stage(sessions, api, project);
 
   const original = commitInSessionWorkClone(
     sessionId,
     { "src/app.txt": "v2\n" },
     "feat: session work",
   );
-  await syncSession(client, sessionId);
+  await syncSession(api, sessionId);
   await moveUpstreamInto(
-    client,
+    api,
     project,
     repo,
     { "CHANGELOG.md": "# Changelog\n" },
@@ -499,22 +467,23 @@ test("rebasing the session branch onto main", async ({
 test("a rebase onto a dirty checkout asks the session to reconcile", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  repo,
+  project,
+  sessions,
 }) => {
-  const { client, project, repo, sessionId } = await stage(
-    request,
-    context,
-    "dirty",
-  );
+  await loginViaToken(context, user);
+  const { sessionId } = await stage(sessions, api, project);
 
   const before = commitInSessionWorkClone(
     sessionId,
     { "src/app.txt": "v2\n" },
     "feat: session work",
   );
-  await syncSession(client, sessionId);
+  await syncSession(api, sessionId);
   await moveUpstreamInto(
-    client,
+    api,
     project,
     repo,
     { "CHANGELOG.md": "# Changelog\n" },
@@ -565,20 +534,21 @@ test("a rebase onto a dirty checkout asks the session to reconcile", async ({
 test("pushing to the bare upstream, without a compare link for a file:// remote", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  repo,
+  project,
+  sessions,
 }) => {
-  const { client, project, repo, sessionId, mirror } = await stage(
-    request,
-    context,
-    "push",
-  );
+  await loginViaToken(context, user);
+  const { sessionId, mirror } = await stage(sessions, api, project);
 
   const commit = commitInSessionWorkClone(
     sessionId,
     { "src/app.txt": "v2\n" },
     "feat: session work",
   );
-  await syncSession(client, sessionId);
+  await syncSession(api, sessionId);
 
   await page.goto(`/projects/${project.id}?tab=sessions`);
   const form = await openRowForm(page, sessionId, "push");
@@ -623,20 +593,21 @@ test("pushing to the bare upstream, without a compare link for a file:// remote"
 test("a non-fast-forward push is refused until it is forced", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  repo,
+  project,
+  sessions,
 }) => {
-  const { client, project, repo, sessionId, mirror } = await stage(
-    request,
-    context,
-    "nonff",
-  );
+  await loginViaToken(context, user);
+  const { sessionId, mirror } = await stage(sessions, api, project);
 
   const commit = commitInSessionWorkClone(
     sessionId,
     { "src/app.txt": "v2\n" },
     "feat: session work",
   );
-  await syncSession(client, sessionId);
+  await syncSession(api, sessionId);
 
   await page.goto(`/projects/${project.id}?tab=sessions`);
   const form = await openRowForm(page, sessionId, "push");
@@ -680,17 +651,18 @@ test("a non-fast-forward push is refused until it is forced", async ({
 test("a merge conflict lists the conflicting paths and leaves main alone", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  repo,
+  project,
+  sessions,
 }) => {
-  const { client, project, repo, sessionId, mirror } = await stage(
-    request,
-    context,
-    "conflict",
-  );
+  await loginViaToken(context, user);
+  const { sessionId, mirror } = await stage(sessions, api, project);
 
   // Both sides rewrite the same file from the same merge base.
   await moveUpstreamInto(
-    client,
+    api,
     project,
     repo,
     { "src/app.txt": "upstream\n" },
@@ -701,7 +673,7 @@ test("a merge conflict lists the conflicting paths and leaves main alone", async
     { "src/app.txt": "session\n" },
     "feat: rewrite the file in the session",
   );
-  await syncSession(client, sessionId);
+  await syncSession(api, sessionId);
 
   const before = gitRevParse(mirror, "main");
 
@@ -720,16 +692,16 @@ test("a merge conflict lists the conflicting paths and leaves main alone", async
 test("an upstream-tracking ref cannot be a mutation target", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, project, sessionId } = await stage(
-    request,
-    context,
-    "upstream-target",
-  );
+  await loginViaToken(context, user);
+  const { sessionId } = await stage(sessions, api, project);
 
   commitInSessionWorkClone(sessionId, { "src/app.txt": "v2\n" }, "feat: work");
-  await syncSession(client, sessionId);
+  await syncSession(api, sessionId);
 
   await page.goto(`/projects/${project.id}?tab=sessions`);
   // The UI cannot express the request at all: the target select offers
@@ -745,7 +717,7 @@ test("an upstream-tracking ref cannot be a mutation target", async ({
   ).toHaveCount(1);
 
   // Asked for directly, the orchestrator refuses it with 400.
-  const refused = await client.send(
+  const refused = await api.send(
     "POST",
     `/projects/${project.id}/git/merge`,
     { source: "main", target: "origin/main" },

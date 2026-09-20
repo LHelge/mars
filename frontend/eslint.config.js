@@ -27,4 +27,16 @@ export default tseslint.config(
       "react-hooks/exhaustive-deps": "error",
     },
   },
+  {
+    // The Playwright suite is Node, not React. A fixture is
+    // `async ({ deps }, use) => { await use(value) }`: `use` there is
+    // Playwright's own hand-over, which the React Hooks rule mistakes for
+    // `React.use`, and a fixture that depends on nothing still has to
+    // destructure an empty object for Playwright to read its dependencies off.
+    files: ["tests/**/*.ts"],
+    rules: {
+      "react-hooks/rules-of-hooks": "off",
+      "no-empty-pattern": "off",
+    },
+  },
 );

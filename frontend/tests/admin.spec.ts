@@ -17,9 +17,9 @@
 // other half of the same paragraph — self-demotion is allowed while another
 // administrator remains, and self-deletion never is.
 
-import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
+import { expect, test } from "./utils/fixtures";
 import {
   api,
   createTestUser,
@@ -44,8 +44,7 @@ function userRow(page: Page, username: string) {
   return page.getByRole("row").filter({ hasText: username });
 }
 
-test("a member cannot open /admin", async ({ page, context, request }) => {
-  const user = await createTestUser(request, { prefix: "member" });
+test("a member cannot open /admin", async ({ page, context, user }) => {
   await loginViaToken(context, user);
 
   await page.goto("/admin");

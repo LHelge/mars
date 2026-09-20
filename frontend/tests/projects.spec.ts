@@ -27,22 +27,17 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
 import type { Project, Session, SharedDir } from "../src/types";
 import { PROFILE_GATED_TOOLS } from "../src/types";
+import { expect, test } from "./utils/fixtures";
 import {
-  api,
   commitToBareRepo,
-  createBareRepo,
   createBareRepoAt,
-  createProject,
-  createTestUser,
   dataDir,
   defaultProfile,
   gitRevParse,
-  launchSession,
   listBranches,
   loginViaToken,
   randomSuffix,
@@ -51,6 +46,9 @@ import {
   waitFor,
   waitForSessionState,
 } from "./utils/test-helpers";
+
+// The upstream the `repo` fixture builds for this file.
+test.use({ repoFiles: { "src/lib.rs": "pub fn ok() {}\n" } });
 
 /** A `file://` clone of a fixture repository is fast; 60 s is the cliff. */
 const CLONE_TIMEOUT = 60_000;
@@ -86,11 +84,10 @@ function acceptConfirms(page: Page): void {
 test("the new-project form refuses a remote that is not https", async ({
   page,
   context,
-  request,
+  user,
+  repo,
 }) => {
-  const user = await createTestUser(request, { prefix: "form" });
   await loginViaToken(context, user);
-  const repo = createBareRepo("form-fixture");
 
   await page.goto("/projects");
   // The header and the empty list both offer the button; either opens the form.
@@ -111,20 +108,17 @@ test("the new-project form refuses a remote that is not https", async ({
 test("a project created from a bare repository reaches ready without a reload", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  repo,
 }) => {
-  const user = await createTestUser(request, { prefix: "create" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
 
-  const repo = createBareRepo("create-fixture", {
-    files: { "src/lib.rs": "pub fn ok() {}\n" },
-  });
   const name = uniqueName("e2e-created");
 
   // `POST /projects` answers 201 with `status: cloning` (`SPEC.md`,
   // "Projects"); the row on the list then settles on its own.
-  const created = await client.send("POST", "/projects", {
+  const created = await api.send("POST", "/projects", {
     name,
     remote_url: repo.url,
   });
@@ -167,10 +161,9 @@ test("a project created from a bare repository reaches ready without a reload", 
 test("a clone that fails shows its message and the retry succeeds", async ({
   page,
   context,
-  request,
+  user,
+  api,
 }) => {
-  const user = await createTestUser(request, { prefix: "retry" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
 
   // Named before it exists: the retry is what makes it a repository. It lives
@@ -179,7 +172,7 @@ test("a clone that fails shows its message and the retry succeeds", async ({
   expect(existsSync(path)).toBe(false);
 
   const name = uniqueName("e2e-broken");
-  const project = await client.post<Project>("/projects", {
+  const project = await api.post<Project>("/projects", {
     name,
     remote_url: `file://${path}`,
   });
@@ -203,7 +196,7 @@ test("a clone that fails shows its message and the retry succeeds", async ({
   });
   await expect(header.getByText("main", { exact: true })).toBeVisible();
 
-  const branches = await listBranches(client, project.id);
+  const branches = await listBranches(api, project.id);
   expect(
     branches.find((branch) => branch.name === "main")?.commit,
   ).toBe(repo.initialCommit);
@@ -212,16 +205,14 @@ test("a clone that fails shows its message and the retry succeeds", async ({
 test("fetch now moves the upstream ref and leaves the integration head", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  repo,
+  project,
 }) => {
-  const user = await createTestUser(request, { prefix: "fetch" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
 
-  const repo = createBareRepo("fetch-fixture");
-  const project = await createProject(client, { remote_url: repo.url });
-
-  const before = await listBranches(client, project.id);
+  const before = await listBranches(api, project.id);
   expect(before.find((b) => b.name === "main")?.kind).toBe("head");
   expect(before.find((b) => b.name === "origin/main")?.kind).toBe("upstream");
   expect(before.find((b) => b.name === "origin/main")?.commit).toBe(
@@ -242,7 +233,7 @@ test("fetch now moves the upstream ref and leaves the integration head", async (
   // the refs themselves are read back out of the orchestrator.
   const after = await waitFor(
     async () => {
-      const branches = await listBranches(client, project.id);
+      const branches = await listBranches(api, project.id);
       const upstream = branches.find((b) => b.name === "origin/main");
       return upstream?.commit === moved ? branches : null;
     },
@@ -260,15 +251,12 @@ test("fetch now moves the upstream ref and leaves the integration head", async (
 test("the default profile is edited and an ephemeral one is created beside it", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const user = await createTestUser(request, { prefix: "profile" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
   acceptConfirms(page);
-
-  const repo = createBareRepo("profile-fixture");
-  const project = await createProject(client, { remote_url: repo.url });
 
   await page.goto(`/projects/${project.id}?tab=profiles`);
   await page
@@ -303,7 +291,7 @@ test("the default profile is edited and an ephemeral one is created beside it", 
   await page.reload();
   await expect(plannerRow.getByText("backlog", { exact: true })).toBeVisible();
   await expect(plannerRow.getByText("300s", { exact: true })).toBeVisible();
-  const stored = await defaultProfile(client, project.id);
+  const stored = await defaultProfile(api, project.id);
   expect(stored.name).toBe("planner");
   expect(stored.serves_states).toEqual(["backlog"]);
   expect(stored.partial_messages).toBe(false);
@@ -329,7 +317,7 @@ test("the default profile is edited and an ephemeral one is created beside it", 
   await expect(
     plannerRow.getByRole("button", { name: "Delete" }),
   ).toBeDisabled();
-  const refused = await client.send(
+  const refused = await api.send(
     "DELETE",
     `/projects/${project.id}/profiles/${stored.id}`,
     undefined,
@@ -345,15 +333,13 @@ test("the default profile is edited and an ephemeral one is created beside it", 
 test("an unknown served state or tool is a 400 the editor cannot produce", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const user = await createTestUser(request, { prefix: "profval" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
 
-  const repo = createBareRepo("profval-fixture");
-  const project = await createProject(client, { remote_url: repo.url });
-  const base = await defaultProfile(client, project.id);
+  const base = await defaultProfile(api, project.id);
 
   function body(overrides: Record<string, unknown>) {
     return {
@@ -374,7 +360,7 @@ test("an unknown served state or tool is a 400 the editor cannot produce", async
     };
   }
 
-  const badState = await client.send(
+  const badState = await api.send(
     "POST",
     `/projects/${project.id}/profiles`,
     body({ serves_states: ["nope"] }),
@@ -383,7 +369,7 @@ test("an unknown served state or tool is a 400 the editor cannot produce", async
   expect(badState.status).toBe(400);
   expect((badState.body as { error: string }).error).not.toBe("");
 
-  const badTool = await client.send(
+  const badTool = await api.send(
     "POST",
     `/projects/${project.id}/profiles`,
     body({ mcp_tools: ["nope"] }),
@@ -419,15 +405,12 @@ test("an unknown served state or tool is a 400 the editor cannot produce", async
 test("a shared directory is added, refused twice, cleared and removed", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const user = await createTestUser(request, { prefix: "shared" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
   acceptConfirms(page);
-
-  const repo = createBareRepo("shared-fixture");
-  const project = await createProject(client, { remote_url: repo.url });
 
   await page.goto(`/projects/${project.id}?tab=shared-dirs`);
   const form = page.getByRole("form", { name: "Add a shared directory" });
@@ -466,31 +449,31 @@ test("a shared directory is added, refused twice, cleared and removed", async ({
 
   await row.getByRole("button", { name: "Remove" }).click();
   await expect(page.getByText("No shared directories yet")).toBeVisible();
-  expect(await client.get<SharedDir[]>(`/projects/${project.id}/shared-dirs`))
-    .toEqual([]);
+  expect(
+    await api.get<SharedDir[]>(`/projects/${project.id}/shared-dirs`),
+  ).toEqual([]);
 });
 
 test("clearing and removing a shared directory are refused while a session runs", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
   test.setTimeout(120_000);
 
-  const user = await createTestUser(request, { prefix: "sharedlive" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
   acceptConfirms(page);
 
-  const repo = createBareRepo("sharedlive-fixture");
-  const project = await createProject(client, { remote_url: repo.url });
-  await client.post<SharedDir>(`/projects/${project.id}/shared-dirs`, {
+  await api.post<SharedDir>(`/projects/${project.id}/shared-dirs`, {
     name: "target",
     container_path: "/session/work/target",
   });
 
-  const session = await launchSession(client, project.id);
-  await waitForSessionState(client, session.id, "running");
+  const session = await sessions.launch(api, project.id);
+  await waitForSessionState(api, session.id, "running");
 
   // Straight to the tab, without opening the sessions tab first: the buttons
   // are only pre-disabled when a cached sessions list has already shown a live
@@ -509,12 +492,11 @@ test("clearing and removing a shared directory are refused while a session runs"
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(row).toBeVisible();
   expect(
-    (await client.get<SharedDir[]>(`/projects/${project.id}/shared-dirs`))
-      .length,
+    (await api.get<SharedDir[]>(`/projects/${project.id}/shared-dirs`)).length,
   ).toBe(1);
 
-  await client.post<Session>(`/sessions/${session.id}/end`);
-  await waitForSessionState(client, session.id, ["done", "failed"]);
+  await api.post<Session>(`/sessions/${session.id}/end`);
+  await waitForSessionState(api, session.id, ["done", "failed"]);
 
   await page.reload();
   await row.getByRole("button", { name: "Remove" }).click();
@@ -524,14 +506,12 @@ test("clearing and removing a shared directory are refused while a session runs"
 test("the settings form renames the project and bounds max_attempts", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const user = await createTestUser(request, { prefix: "settings" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
 
-  const repo = createBareRepo("settings-fixture");
-  const project = await createProject(client, { remote_url: repo.url });
   const renamed = uniqueName("e2e-renamed");
 
   await page.goto(`/projects/${project.id}`);
@@ -555,7 +535,7 @@ test("the settings form renames the project and bounds max_attempts", async ({
     form.getByRole("button", { name: "Save settings" }),
   ).toBeDisabled();
 
-  const stored = await client.get<Project>(`/projects/${project.id}`);
+  const stored = await api.get<Project>(`/projects/${project.id}`);
   expect(stored.name).toBe(renamed);
   expect(stored.max_attempts).toBe(5);
 });
@@ -563,25 +543,21 @@ test("the settings form renames the project and bounds max_attempts", async ({
 test("a project is deleted once its running session has ended", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
   test.setTimeout(120_000);
 
-  const user = await createTestUser(request, { prefix: "delete" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
 
-  const repo = createBareRepo("delete-fixture");
-  const name = uniqueName("e2e-doomed");
-  const project = await createProject(client, {
-    name,
-    remote_url: repo.url,
-  });
+  const name = project.name;
   const directory = join(dataDir(), "projects", project.id);
   expect(existsSync(directory)).toBe(true);
 
-  const session = await launchSession(client, project.id);
-  await waitForSessionState(client, session.id, "running");
+  const session = await sessions.launch(api, project.id);
+  await waitForSessionState(api, session.id, "running");
 
   await page.goto(`/projects/${project.id}`);
   await page.getByRole("button", { name: "Delete", exact: true }).click();
@@ -591,8 +567,8 @@ test("a project is deleted once its running session has ended", async ({
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/projects/${project.id}`));
 
-  await client.post<Session>(`/sessions/${session.id}/end`);
-  await waitForSessionState(client, session.id, ["done", "failed"]);
+  await api.post<Session>(`/sessions/${session.id}/end`);
+  await waitForSessionState(api, session.id, ["done", "failed"]);
 
   await page.getByRole("button", { name: "Delete", exact: true }).click();
   await page.getByRole("button", { name: "Delete project" }).click();
@@ -602,7 +578,7 @@ test("a project is deleted once its running session has ended", async ({
   await expect(() => {
     expect(existsSync(directory)).toBe(false);
   }).toPass({ timeout: 15_000 });
-  const gone = await client.send("GET", `/projects/${project.id}`, undefined, {
+  const gone = await api.send("GET", `/projects/${project.id}`, undefined, {
     allow: [404],
   });
   expect(gone.status).toBe(404);

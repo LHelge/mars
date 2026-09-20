@@ -15,22 +15,17 @@
 // files run against the same orchestrator, so nothing asserts on counts: every
 // scenario looks for its own uniquely named rows and deletes what it created.
 
-import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
 import type { SecretMeta } from "../src/types";
+import { apiClient, expect, test } from "./utils/fixtures";
 import {
-  api,
-  createBareRepo,
-  createProject,
   createTestUser,
-  launchSession,
   loginViaToken,
   newLoggedInPage,
   randomSuffix,
   setProfileSecrets,
   setProjectSecret,
-  uniqueName,
   waitFor,
   waitForSessionState,
   type Api,
@@ -125,10 +120,9 @@ async function readSecret(
 test("a global secret is created, replaced, renamed, flagged and deleted without ever showing its value", async ({
   page,
   context,
-  request,
+  user,
+  api,
 }) => {
-  const user = await createTestUser(request, { prefix: "secret" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
 
   const name = secretName("API_TOKEN");
@@ -154,8 +148,8 @@ test("a global secret is created, replaced, renamed, flagged and deleted without
   await expectValueNeverShown(page, VALUE);
 
   const afterCreate = trackSecret(
-    client,
-    await readSecret(client, "?scope=global", name),
+    api,
+    await readSecret(api, "?scope=global", name),
   );
   expect(afterCreate.scope).toBe("global");
   expect(afterCreate.scope_id).toBeNull();
@@ -183,7 +177,7 @@ test("a global secret is created, replaced, renamed, flagged and deleted without
 
   const afterReplace = await waitFor(
     async () => {
-      const secret = await readSecret(client, "?scope=global", name);
+      const secret = await readSecret(api, "?scope=global", name);
       return secret.updated_at === afterCreate.updated_at ? null : secret;
     },
     { description: `${name} to record a new updated_at` },
@@ -220,7 +214,7 @@ test("a global secret is created, replaced, renamed, flagged and deleted without
     ),
   ).toBeVisible();
   expect(
-    (await readSecret(client, "?scope=global", renamed)).orchestrator_only,
+    (await readSecret(api, "?scope=global", renamed)).orchestrator_only,
   ).toBe(true);
 
   // --- a duplicate name is refused ------------------------------------------
@@ -229,7 +223,7 @@ test("a global secret is created, replaced, renamed, flagged and deleted without
   await expect(
     page.getByText("A secret with that name already exists in this scope."),
   ).toBeVisible();
-  const duplicate = await client.send(
+  const duplicate = await api.send(
     "POST",
     "/secrets",
     { scope: "global", name: renamed, value: VALUE },
@@ -243,7 +237,7 @@ test("a global secret is created, replaced, renamed, flagged and deleted without
   await renamedRow.getByRole("button", { name: "Delete" }).click();
   await expect(secretRow(page, renamed)).toHaveCount(0);
 
-  const remaining = await client.get<SecretMeta[]>("/secrets?scope=global");
+  const remaining = await api.get<SecretMeta[]>("/secrets?scope=global");
   expect(remaining.some((secret) => secret.name === renamed)).toBe(false);
 });
 
@@ -252,22 +246,18 @@ test("project secrets are shared and user secrets are the owner's or an admin's"
   context,
   request,
   browser,
+  user: owner,
+  api: ownerClient,
+  project,
 }) => {
-  const owner = await createTestUser(request, { prefix: "owner" });
   const other = await createTestUser(request, { prefix: "other" });
   const admin = await createTestUser(request, {
     prefix: "scope-admin",
     admin: true,
   });
-  const ownerClient = api(request, owner.access_token);
-  const otherClient = api(request, other.access_token);
-  const adminClient = api(request, admin.access_token);
+  const otherClient = apiClient(request, other.access_token);
+  const adminClient = apiClient(request, admin.access_token);
 
-  const repo = createBareRepo("secret-scopes");
-  const project = await createProject(ownerClient, {
-    name: uniqueName("e2e-secret-scopes"),
-    remote_url: repo.url,
-  });
   const projectKey = secretName("PROJECT_KEY");
   const myKey = secretName("MY_KEY");
 
@@ -377,31 +367,25 @@ test("project secrets are shared and user secrets are the owner's or an admin's"
 test("a launch writes a use, and the uses view lists it without the value", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
   test.slow();
 
-  const user = await createTestUser(request, { prefix: "uses" });
-  const client = api(request, user.access_token);
-
-  const repo = createBareRepo("secret-uses");
-  const project = await createProject(client, {
-    name: uniqueName("e2e-secret-uses"),
-    remote_url: repo.url,
-  });
-
   const name = secretName("PROJECT_KEY");
-  trackSecret(client, await setProjectSecret(client, project.id, name, VALUE));
-  await setProfileSecrets(client, project.id, [name]);
+  trackSecret(api, await setProjectSecret(api, project.id, name, VALUE));
+  await setProfileSecrets(api, project.id, [name]);
 
-  const session = await launchSession(client, project.id, {
+  const session = await sessions.launch(api, project.id, {
     title: "secret uses",
   });
-  await waitForSessionState(client, session.id, "running");
+  await waitForSessionState(api, session.id, "running");
   // `end` stops the container and fetches the branch back; the audit row was
   // written at launch either way (`ARCHITECTURE.md`, "Launch sequence").
-  await client.post(`/sessions/${session.id}/end`);
-  await waitForSessionState(client, session.id, ["done", "failed"]);
+  await api.post(`/sessions/${session.id}/end`);
+  await waitForSessionState(api, session.id, ["done", "failed"]);
 
   await loginViaToken(context, user);
   await page.goto(`/projects/${project.id}?tab=secrets`);
@@ -419,7 +403,7 @@ test("a launch writes a use, and the uses view lists it without the value", asyn
   await expectValueNeverShown(page, VALUE);
 
   const meta = await readSecret(
-    client,
+    api,
     `?scope=project&scope_id=${project.id}`,
     name,
   );
@@ -429,17 +413,16 @@ test("a launch writes a use, and the uses view lists it without the value", asyn
 test("a name that is not an environment-variable name is refused", async ({
   page,
   context,
-  request,
+  user,
+  api,
 }) => {
-  const user = await createTestUser(request, { prefix: "secret-name" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
 
   // The API is the authority: `^[A-Z][A-Z0-9_]{0,127}$` (`docs/data-model.md`,
   // `secrets`), and anything else is a 400 whether or not a browser checked
   // first.
   for (const name of ["", "WITH SPACES"]) {
-    const refused = await client.send(
+    const refused = await api.send(
       "POST",
       "/secrets",
       { scope: "global", name, value: VALUE },
@@ -470,6 +453,6 @@ test("a name that is not an environment-variable name is refused", async ({
   ).toBeVisible();
 
   // Nothing was created under either spelling.
-  const globals = await client.get<SecretMeta[]>("/secrets?scope=global");
+  const globals = await api.get<SecretMeta[]>("/secrets?scope=global");
   expect(globals.some((secret) => secret.name.includes(" "))).toBe(false);
 });

@@ -31,17 +31,12 @@
 // here; every task state in this file is produced by the orchestrator itself
 // or by the user, as a user would.
 
-import { expect, test } from "@playwright/test";
-import type {
-  APIRequestContext,
-  BrowserContext,
-  Locator,
-  Page,
-} from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import type { Profile, Project, Session } from "../src/types";
+import { apiClient, expect, test } from "./utils/fixtures";
+import type { SessionTracker } from "./utils/fixtures";
 import {
-  api,
   createBareRepo,
   createProject,
   createTask,
@@ -49,16 +44,21 @@ import {
   defaultProfile,
   endSession,
   getTask,
-  launchSession,
   loggedEmail,
   loginViaToken,
   logOffset,
+  reveal,
   sleep,
+  taskCardTestId,
+  transcript,
   waitFor,
   waitForSessionState,
   type Api,
-  type TestUser,
 } from "./utils/test-helpers";
+
+// The upstream every scenario here clones: the file the fixture's `Edit` tool
+// rewrites.
+test.use({ repoFiles: { "src/app.py": 'def main():\n    print("hello")\n' } });
 
 // A container start, a git clone and a replayed turn or two, as in
 // `sessions.spec.ts`.
@@ -67,46 +67,6 @@ test.setTimeout(180_000);
 /** A live board refresh is coalesced, so nothing here asserts immediacy. */
 const LIVE_TIMEOUT = 10_000;
 
-/** Every session a scenario launched, ended in `afterEach`. */
-let launched: { client: Api; id: string }[] = [];
-
-test.beforeEach(() => {
-  launched = [];
-});
-
-test.afterEach(async () => {
-  for (const session of launched) {
-    // Best effort: a scenario that already ended its session is fine, and one
-    // that failed must still not leave a container behind.
-    await endSession(session.client, session.id).catch(() => undefined);
-  }
-});
-
-interface Stage {
-  user: TestUser;
-  client: Api;
-  project: Project;
-}
-
-/**
- * A fresh user, a local bare upstream and a project that finished cloning,
- * with the browser context already signed in as that user.
- */
-async function stage(
-  request: APIRequestContext,
-  context: BrowserContext,
-  prefix: string,
-): Promise<Stage> {
-  const user = await createTestUser(request, { prefix });
-  const client = api(request, user.access_token);
-  const repo = createBareRepo(prefix, {
-    files: { "src/app.py": 'def main():\n    print("hello")\n' },
-  });
-  const project = await createProject(client, { remote_url: repo.url });
-  await loginViaToken(context, user);
-  return { user, client, project };
-}
-
 // --- the board and its drawer -----------------------------------------------
 
 function boardPath(project: Project): string {
@@ -114,7 +74,7 @@ function boardPath(project: Project): string {
 }
 
 function card(page: Page, number: number): Locator {
-  return page.getByTestId(`task-card-${String(number)}`);
+  return page.getByTestId(taskCardTestId(number));
 }
 
 /** The task drawer of `/projects/:id/tasks/:number`. */
@@ -159,59 +119,27 @@ async function openLaunchForm(
 async function submitLaunch(
   page: Page,
   form: Locator,
+  tracker: SessionTracker,
   client: Api,
   action: "Open in session" | "Run once",
 ): Promise<string> {
   await form.getByRole("button", { name: action, exact: true }).click();
   await page.waitForURL(/\/sessions\/[0-9a-f-]{8}-/);
   const id = page.url().slice(page.url().lastIndexOf("/") + 1);
-  launched.push({ client, id });
-  return id;
+  return tracker.track(client, id);
 }
 
 /** Launches a session for a task over REST, without driving the drawer. */
-async function claimWithSession(
+function claimWithSession(
+  tracker: SessionTracker,
   client: Api,
   project: Project,
   taskNumber: number,
 ): Promise<Session> {
-  const session = await launchSession(client, project.id, {
-    task_id: taskNumber,
-  });
-  launched.push({ client, id: session.id });
-  return session;
+  return tracker.launch(client, project.id, { task_id: taskNumber });
 }
 
 // --- the session view -------------------------------------------------------
-
-/** The virtualised transcript; only the rows in view are in the DOM. */
-function transcript(page: Page): Locator {
-  return page.getByTestId("transcript-scroll");
-}
-
-/**
- * Scrolls the transcript back until `target` is in the DOM and returns it.
- *
- * The transcript is virtualised and pins itself to the newest row, so a row
- * from the start of the session is not merely off-screen, it is not rendered
- * at all (`sessions.spec.ts` reads back the same way).
- */
-async function reveal(page: Page, target: Locator): Promise<Locator> {
-  const scroller = transcript(page);
-  for (let step = 0; step < 60; step += 1) {
-    if ((await target.count()) > 0) break;
-    const atTop = await scroller.evaluate((element) => {
-      const next = Math.max(0, element.scrollTop - element.clientHeight * 0.7);
-      const was = element.scrollTop;
-      element.scrollTop = next;
-      return was === 0;
-    });
-    if (atTop) break;
-    await page.waitForTimeout(80);
-  }
-  await expect(target.first()).toBeVisible();
-  return target.first();
-}
 
 /**
  * The side panel's `Tasks` tab, opened and returned as its `Launched for`
@@ -242,14 +170,17 @@ function dashboardSection(page: Page, title: string): Locator {
 test("open in session claims the task and the card shows its session", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, project } = await stage(request, context, "open");
-  await createTask(client, project.id, {
+  await loginViaToken(context, user);
+  await createTask(api, project.id, {
     title: "Implement greeting",
     state: "ready",
   });
-  const profile = await defaultProfile(client, project.id);
+  const profile = await defaultProfile(api, project.id);
 
   const panel = await openTask(page, project, 1);
   const form = await openLaunchForm(panel, "Open in session");
@@ -262,7 +193,7 @@ test("open in session claims the task and the card shows its session", async ({
     form.getByLabel("Agent profile").locator("option").first(),
   ).toHaveText(`${profile.name} — serves ready`);
 
-  const sessionId = await submitLaunch(page, form, client, "Open in session");
+  const sessionId = await submitLaunch(page, form, sessions, api, "Open in session");
 
   // The title defaults to the task's own (`SPEC.md`, "Sessions").
   await expect(
@@ -283,7 +214,7 @@ test("open in session claims the task and the card shows its session", async ({
   await expect(tasks.getByText("held by this session")).toBeVisible();
 
   // The claim itself: the lease, the count and the card's link back.
-  const claimed = await getTask(client, project.id, 1);
+  const claimed = await getTask(api, project.id, 1);
   expect(claimed.lease_holder_session_id).toBe(sessionId);
   expect(claimed.attempts).toBe(1);
   expect(claimed.state).toBe("ready");
@@ -303,11 +234,14 @@ test("open in session claims the task and the card shows its session", async ({
 test("a held task cannot be opened in a second session", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, project } = await stage(request, context, "held");
-  await createTask(client, project.id, { title: "Only once", state: "ready" });
-  const session = await claimWithSession(client, project, 1);
+  await loginViaToken(context, user);
+  await createTask(api, project.id, { title: "Only once", state: "ready" });
+  const session = await claimWithSession(sessions, api, project, 1);
 
   const panel = await openTask(page, project, 1);
 
@@ -325,8 +259,8 @@ test("a held task cannot be opened in a second session", async ({
 
   // The server stays the authority, and says the same thing (`SPEC.md`,
   // "Sessions": 409 if `task_id` names a task that is held).
-  const profile = await defaultProfile(client, project.id);
-  const refused = await client.send(
+  const profile = await defaultProfile(api, project.id);
+  const refused = await api.send(
     "POST",
     `/projects/${project.id}/sessions`,
     { profile_id: profile.id, task_id: 1 },
@@ -335,23 +269,24 @@ test("a held task cannot be opened in a second session", async ({
   expect(refused.status).toBe(409);
   expect(refused.text).toContain("task is not claimable");
 
-  const sessions = await client.get<Session[]>(
-    `/projects/${project.id}/sessions`,
-  );
-  expect(sessions.map((row) => row.id)).toEqual([session.id]);
+  const held = await api.get<Session[]>(`/projects/${project.id}/sessions`);
+  expect(held.map((row) => row.id)).toEqual([session.id]);
 });
 
 test("release from the drawer clears the claim without escalating", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, project } = await stage(request, context, "release");
-  await createTask(client, project.id, {
+  await loginViaToken(context, user);
+  await createTask(api, project.id, {
     title: "Give it back",
     state: "ready",
   });
-  const session = await claimWithSession(client, project, 1);
+  const session = await claimWithSession(sessions, api, project, 1);
 
   const panel = await openTask(page, project, 1);
   await expect(holderLink(page, 1)).toBeVisible();
@@ -363,13 +298,13 @@ test("release from the drawer clears the claim without escalating", async ({
 
   // A user release keeps the state and never escalates, and `attempts` stays
   // where the claim put it (`SPEC.md`, "Tasks").
-  const released = await getTask(client, project.id, 1);
+  const released = await getTask(api, project.id, 1);
   expect(released.lease_holder_session_id).toBeNull();
   expect(released.state).toBe("ready");
   expect(released.attempts).toBe(1);
 
   // The session is untouched by its task being taken away.
-  const still = await client.get<Session>(`/sessions/${session.id}`);
+  const still = await api.get<Session>(`/sessions/${session.id}`);
   expect(still.ended_at).toBeNull();
   expect(["creating", "running"]).toContain(still.state);
 });
@@ -377,28 +312,31 @@ test("release from the drawer clears the claim without escalating", async ({
 test("ending the session releases its task and says so on the thread", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, project } = await stage(request, context, "end");
-  await createTask(client, project.id, {
+  await loginViaToken(context, user);
+  await createTask(api, project.id, {
     title: "Held to the end",
     state: "ready",
   });
-  const session = await claimWithSession(client, project, 1);
-  await waitForSessionState(client, session.id, "running", 90_000);
+  const session = await claimWithSession(sessions, api, project, 1);
+  await waitForSessionState(api, session.id, "running", 90_000);
 
   await openTask(page, project, 1);
   await expect(holderLink(page, 1)).toBeVisible();
 
-  await endSession(client, session.id);
-  await waitForSessionState(client, session.id, ["done", "failed"], 90_000);
+  await endSession(api, session.id);
+  await waitForSessionState(api, session.id, ["done", "failed"], 90_000);
 
   // The session hooks release on the spot; the stuck-task reaper is only the
   // backstop (`ARCHITECTURE.md`, "Session lifecycle"; "Task tracker" →
   // "Liveness comes from the session, not from tool calls").
   const released = await waitFor(
     async () => {
-      const task = await getTask(client, project.id, 1);
+      const task = await getTask(api, project.id, 1);
       return task.lease_holder_session_id === null ? task : null;
     },
     {
@@ -427,16 +365,19 @@ test("ending the session releases its task and says so on the thread", async ({
 test("run once runs an ephemeral profile on the task and gives it back", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, project } = await stage(request, context, "oneshot");
-  await createTask(client, project.id, {
+  await loginViaToken(context, user);
+  await createTask(api, project.id, {
     title: "Run me once",
     state: "ready",
   });
   // `Run once` needs an ephemeral profile to offer; a project is created with
   // a conversational one only (`orchestrator/src/projects/create.rs`).
-  const oneshot = await client.post<Profile>(
+  const oneshot = await api.post<Profile>(
     `/projects/${project.id}/profiles`,
     { name: "oneshot", kind: "ephemeral", serves_states: ["ready"] },
   );
@@ -445,7 +386,7 @@ test("run once runs an ephemeral profile on the task and gives it back", async (
   const form = await openLaunchForm(panel, "Run once");
   await expect(form.getByLabel("Agent profile")).toHaveValue(oneshot.id);
 
-  const sessionId = await submitLaunch(page, form, client, "Run once");
+  const sessionId = await submitLaunch(page, form, sessions, api, "Run once");
 
   // An ephemeral session runs one prompt and takes no further input, so there
   // is no composer at all (`SPEC.md`, "Frontend", "Composer").
@@ -465,12 +406,12 @@ test("run once runs an ephemeral profile on the task and gives it back", async (
   // The owner marks an ephemeral session `done` when the first `result`
   // arrives (`ARCHITECTURE.md`, "Claude Code invocation"), and ending releases
   // the task.
-  const done = await waitForSessionState(client, sessionId, "done", 120_000);
+  const done = await waitForSessionState(api, sessionId, "done", 120_000);
   expect(done.task_id).not.toBeNull();
 
   const released = await waitFor(
     async () => {
-      const task = await getTask(client, project.id, 1);
+      const task = await getTask(api, project.id, 1);
       return task.lease_holder_session_id === null ? task : null;
     },
     {
@@ -492,10 +433,12 @@ test("run once runs an ephemeral profile on the task and gives it back", async (
 test("the launch form discloses the base the session will start from", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const { client, project } = await stage(request, context, "base");
-  await createTask(client, project.id, {
+  await loginViaToken(context, user);
+  await createTask(api, project.id, {
     title: "No hand-off",
     state: "ready",
   });
@@ -521,11 +464,13 @@ test("the launch form discloses the base the session will start from", async ({
 test("a task moved into needs_human shows on the dashboard", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const { client, project } = await stage(request, context, "human");
+  await loginViaToken(context, user);
   const title = `Decide the schema ${String(Date.now())}`;
-  await createTask(client, project.id, { title, state: "ready" });
+  await createTask(api, project.id, { title, state: "ready" });
 
   const panel = await openTask(page, project, 1);
   await panel.getByLabel("Move to").selectOption("needs_human");
@@ -549,54 +494,56 @@ test("a task moved into needs_human shows on the dashboard", async ({
   // A user's own move is not an escalation: it emits `state_changed`, not
   // `escalated`, and owes no email (`ARCHITECTURE.md`, "Task tracker" →
   // "Notification"). The escalation that does owe one is the next scenario.
-  const moved = await getTask(client, project.id, 1);
+  const moved = await getTask(api, project.id, 1);
   expect(moved.state).toBe("needs_human");
   expect(moved.needs_human_reason).toBeNull();
 });
 
 test("an escalation at the attempt limit emails the assignee, and not one who opted out", async ({
-  context,
   request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { user, client, project } = await stage(request, context, "escalate");
   // One attempt, so the first release the orchestrator makes is the one that
   // escalates (`SPEC.md`, "Tasks"; `ARCHITECTURE.md`, "Attempts and
   // escalation").
-  await client.put(`/projects/${project.id}`, { max_attempts: 1 });
+  await api.put(`/projects/${project.id}`, { max_attempts: 1 });
 
   const quiet = await createTestUser(request, { prefix: "quiet" });
-  const quietClient = api(request, quiet.access_token);
+  const quietClient = apiClient(request, quiet.access_token);
   await quietClient.patch("/users/me", { notify_email: false });
 
-  const mine = await createTask(client, project.id, {
+  const mine = await createTask(api, project.id, {
     title: "Escalate to me",
     state: "ready",
   });
-  const theirs = await createTask(client, project.id, {
+  const theirs = await createTask(api, project.id, {
     title: "Escalate to nobody",
     state: "ready",
   });
-  await client.put(`/projects/${project.id}/tasks/${mine.number}`, {
+  await api.put(`/projects/${project.id}/tasks/${mine.number}`, {
     assignee_user_id: user.id,
   });
-  await client.put(`/projects/${project.id}/tasks/${theirs.number}`, {
+  await api.put(`/projects/${project.id}/tasks/${theirs.number}`, {
     assignee_user_id: quiet.id,
   });
 
   const off = logOffset();
 
   for (const task of [mine, theirs]) {
-    const session = await claimWithSession(client, project, task.number);
-    await waitForSessionState(client, session.id, "running", 90_000);
-    await endSession(client, session.id);
-    await waitForSessionState(client, session.id, ["done", "failed"], 90_000);
+    const session = await claimWithSession(sessions, api, project, task.number);
+    await waitForSessionState(api, session.id, "running", 90_000);
+    await endSession(api, session.id);
+    await waitForSessionState(api, session.id, ["done", "failed"], 90_000);
   }
 
   // Both tasks are escalated by the release, whoever is told about it.
   for (const task of [mine, theirs]) {
     const escalated = await waitFor(
       async () => {
-        const row = await getTask(client, project.id, task.number);
+        const row = await getTask(api, project.id, task.number);
         return row.state === "needs_human" ? row : null;
       },
       {
@@ -630,32 +577,33 @@ test("an escalation at the attempt limit emails the assignee, and not one who op
 test("the dashboard lists running and parked sessions across projects", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const first = await stage(request, context, "dash-a");
+  await loginViaToken(context, user);
   const secondRepo = createBareRepo("dash-b");
-  const second = await createProject(first.client, {
+  const second = await createProject(api, {
     remote_url: secondRepo.url,
   });
 
   const runningTitle = `Still running ${String(Date.now())}`;
   const parkedTitle = `Parked here ${String(Date.now())}`;
 
-  const running = await launchSession(first.client, first.project.id, {
+  const running = await sessions.launch(api, project.id, {
     title: runningTitle,
     message: "hello stub",
   });
-  launched.push({ client: first.client, id: running.id });
-  const parked = await launchSession(first.client, second.id, {
+  const parked = await sessions.launch(api, second.id, {
     title: parkedTitle,
     message: "hello stub",
   });
-  launched.push({ client: first.client, id: parked.id });
 
-  await waitForSessionState(first.client, running.id, "running", 90_000);
-  await waitForSessionState(first.client, parked.id, "running", 90_000);
-  await first.client.send("POST", `/sessions/${parked.id}/stop`);
-  await waitForSessionState(first.client, parked.id, "parked", 90_000);
+  await waitForSessionState(api, running.id, "running", 90_000);
+  await waitForSessionState(api, parked.id, "running", 90_000);
+  await api.send("POST", `/sessions/${parked.id}/stop`);
+  await waitForSessionState(api, parked.id, "parked", 90_000);
 
   await page.goto("/");
 
@@ -668,7 +616,7 @@ test("the dashboard lists running and parked sessions across projects", async ({
     dashboardSection(page, "Running sessions")
       .getByRole("row")
       .filter({ hasText: runningTitle }),
-  ).toContainText(first.project.name);
+  ).toContainText(project.name);
 
   const parkedRow = dashboardSection(page, "Parked sessions").getByRole(
     "link",
@@ -685,13 +633,8 @@ test("the dashboard lists running and parked sessions across projects", async ({
 
   // The list is polled every 30 seconds; navigating away and back is the
   // cheaper way to see the next answer (`SPEC.md`, "Frontend", Dashboard).
-  await endSession(first.client, running.id);
-  await waitForSessionState(
-    first.client,
-    running.id,
-    ["done", "failed"],
-    90_000,
-  );
+  await endSession(api, running.id);
+  await waitForSessionState(api, running.id, ["done", "failed"], 90_000);
   await page.goto("/projects");
   await page.goto("/");
   await expect(

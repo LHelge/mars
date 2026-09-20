@@ -157,6 +157,9 @@ export async function dropConnection(
     }
     return (drop as () => number)();
   }, DROP_HOOK);
+  // The one deliberate sleep in the suite: `offlineMs` *is* the outage. There
+  // is nothing to wait for here — the point is that for this long every request
+  // the page makes, the reconnect's token refresh among them, fails.
   await page.waitForTimeout(offlineMs);
   await context.setOffline(false);
   return dropped;

@@ -187,18 +187,16 @@ async fn a_malformed_task_argument_is_answered_with_the_documented_sentence() {
 
 /// Every handler is a stub: valid input reaches it and it answers the generic
 /// `internal`. Retarget or delete one arm of this at a time as the tool tasks
-/// land.
+/// land. It names only the two tools that land last, so the tasks before them
+/// leave this file alone.
 #[tokio::test]
 async fn a_stubbed_tool_answers_the_generic_internal_error() {
     let app = TestApp::spawn().await;
-    let client = client_with_tools(&app, &["merge"]).await;
+    let client = client_with_tools(&app, &[]).await;
 
     for (tool, args) in [
-        ("ready", json!({ "limit": 5 })),
-        ("claim", json!({ "task": 12 })),
-        ("get_task", json!({ "task": "#12" })),
-        ("comment", json!({ "task": 12, "body": "looking at it" })),
-        ("merge", json!({ "target": "main", "source": "feature" })),
+        ("update", json!({ "task": 12, "title": "a clearer title" })),
+        ("create_task", json!({ "title": "found along the way" })),
     ] {
         let err = client
             .call(tool, args)

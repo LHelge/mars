@@ -98,7 +98,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::events::{MAX_TEXT_BYTES, SessionEvent, SessionInput, TaskActor};
+use crate::events::{MAX_TEXT_BYTES, SessionEvent, SessionInput, TaskActor, validate_client_id};
 use crate::git::{DataPaths, resolve_base};
 use crate::models::{
     AgentProfile, NewSession, ProjectStatus, Session, SessionKind, SessionState, SessionTitle,
@@ -823,12 +823,30 @@ fn service(state: &AppState) -> SessionService {
     SessionService::new(state)
 }
 
-/// `POST /sessions/{id}/input` (`SessionInput`) → 202 with no body.
+/// The body of `POST /sessions/{id}/input`: a `SessionInput` and, optionally,
+/// the caller's own `client_id`.
+///
+/// Flattened rather than nested, so the body stays `{kind, text}` for every
+/// caller that sends no id — the shape this endpoint had before the fallback
+/// needed one (`SPEC.md`, "Sessions"). The id is the same echo key the socket
+/// carries: a client that sends an input over this route because its socket is
+/// closed still gets its `user_message` back with the id it reconciles its
+/// optimistic message by.
+#[derive(Debug, Deserialize)]
+struct InputBody {
+    #[serde(flatten)]
+    input: SessionInput,
+    client_id: Option<String>,
+}
+
+/// `POST /sessions/{id}/input` (`{kind, text, client_id?}`) → 202 with no body.
 ///
 /// The acknowledgement is acceptance by the orchestrator and not delivery to
 /// the CLI, which is why it is a 202 and why it carries nothing: a parked
 /// session is being relaunched as this returns, and the state it ends up in
-/// arrives over the socket (ADR 0020; `SPEC.md`, "Sessions").
+/// arrives over the socket (ADR 0020; `SPEC.md`, "Sessions"). A `client_id` is
+/// not an idempotency key here any more than it is over the socket (ADR 0020);
+/// it is only echoed back on the `user_message` this input produces.
 ///
 /// An unknown `kind` and a malformed body are both 400 from the [`Json`]
 /// extractor. The text is never logged (rule 3).
@@ -836,14 +854,15 @@ async fn input(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Path(id): Path<Uuid>,
-    Json(body): Json<SessionInput>,
+    Json(body): Json<InputBody>,
 ) -> Result<StatusCode> {
-    body.validate()?;
+    body.input.validate()?;
+    if let Some(client_id) = &body.client_id {
+        validate_client_id(client_id)?;
+    }
 
-    // No `client_id`: that is the socket's echo key, and a REST caller has the
-    // response instead (`SPEC.md`, "WebSocket: session stream").
     service(&state)
-        .send_input(id, body, Some(user.id), None)
+        .send_input(id, body.input, Some(user.id), body.client_id)
         .await?;
 
     Ok(StatusCode::ACCEPTED)

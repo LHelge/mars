@@ -1,10 +1,10 @@
 ---
 id: "4t5n5"
 title: "Add the MCP bearer middleware: hash lookup against sessions.mcp_token_hash, 401 unknown, 403 for done/failed, SessionContext attached to the request"
-status: in_progress
+status: done
 priority: P0
 created: "2026-09-16T20:42:11.805742741Z"
-updated: "2026-09-20T04:50:20.721815074Z"
+updated: "2026-09-20T06:39:32.997478125Z"
 tags:
   - orchestrator
   - mcp

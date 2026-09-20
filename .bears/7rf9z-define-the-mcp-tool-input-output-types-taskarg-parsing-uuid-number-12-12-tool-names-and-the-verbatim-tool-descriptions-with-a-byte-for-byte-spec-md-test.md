@@ -1,10 +1,10 @@
 ---
 id: "7rf9z"
 title: "Define the MCP tool input/output types, TaskArg parsing (UUID, number, \"12\", \"#12\"), tool names and the verbatim tool descriptions with a byte-for-byte SPEC.md test"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:43:24.180888141Z"
-updated: "2026-09-16T20:43:24.180888141Z"
+updated: "2026-09-20T06:39:34.662267456Z"
 tags:
   - orchestrator
   - mcp
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - "8a6qd"
 parent: qgj33
+attempts: 1
 ---
 
 ## Summary

@@ -1,3 +1,12 @@
+# The Playwright suite against the real stack (CLAUDE.md, "Testing
+# expectations" → Frontend E2E): a Postgres container, the stub session image
+# built from `images/stub`, an orchestrator built with
+# `--features integration-tests` running on the host, and a Vite dev server
+# started by Playwright's own `webServer`.
+#
+# Everything but the browser is brought up by `frontend/tests/e2e-stack.sh`
+# (`npm run test:e2e:up|down`), the same script a developer runs, so CI and a
+# local run cannot drift (README.md, "Development" → "End-to-end tests").
 name: E2E
 
 on:
@@ -6,6 +15,7 @@ on:
     paths: ["orchestrator/**", "frontend/**", "images/**", ".github/workflows/e2e.yml"]
   pull_request:
     paths: ["orchestrator/**", "frontend/**", "images/**", ".github/workflows/e2e.yml"]
+  workflow_dispatch:
 
 concurrency:
   group: e2e-${{ github.ref }}
@@ -15,13 +25,38 @@ permissions:
   contents: read
 
 jobs:
+  # Rootless Podman is the engine here, not the runner's Docker daemon. A
+  # GitHub-hosted runner is uid 1001, and Docker maps no user namespace, so the
+  # uid contract of ARCHITECTURE.md, "Uid contract", would need a container-side
+  # `user: 1000` and a chown of every bind source before a session container
+  # could write its workspace. Podman's `keep-id:uid=1000,gid=1000` maps the
+  # runner to uid 1000 inside the container instead, which is what ADR 0004
+  # targets anyway. The socket setup mirrors `engine.yml`, which runs the same
+  # engine on the same image.
   playwright:
     name: Playwright
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: frontend
+    env:
+      # The stack script builds the orchestrator itself, out of a subshell that
+      # inherits this environment (only the orchestrator *process* is started
+      # under `env -i`), so these reach that `cargo build`. Offline sqlx means
+      # the build needs no database; Orchestrator CI is what catches a stale
+      # `.sqlx/`.
+      SQLX_OFFLINE: "true"
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+      # No debugger and no core dumps in CI, so debug info only inflates the
+      # build, the link and the cache entry.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      E2E_ENGINE: podman
+      # Podman stores an unqualified tag under `localhost/`, and naming it in
+      # full is what lets the orchestrator's `image_exists` find it without a
+      # registry lookup.
+      E2E_STUB_IMAGE: localhost/mars-session-stub:ci
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
@@ -33,20 +68,130 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # rustup reads orchestrator/rust-toolchain.toml here and installs the
+      # pinned channel; the stack script's `cargo build` then uses it.
+      - name: Install the pinned toolchain
+        working-directory: orchestrator
+        run: |
+          rustup show
+          rustc --version
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: orchestrator
+          # The feature the stack builds with: a cache entry from a build
+          # without it would not carry the mock engine, email and git
+          # implementations this suite needs.
+          key: e2e-integration-tests
+          # A scenario failure is a normal outcome here; saving anyway keeps
+          # the next attempt from recompiling the crate.
+          cache-on-failure: true
+
       - name: Install dependencies
         run: npm ci
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
-      # Session images epic: build images/stub
+      # Ubuntu 24.04's own package is Podman 4.9.x, which has both
+      # `host-gateway` in ExtraHosts and `keep-id:uid=,gid=`; the OpenSUSE
+      # kubic repository is therefore not needed. uidmap supplies newuidmap and
+      # newgidmap, slirp4netns the rootless network and fuse-overlayfs the
+      # rootless storage driver.
+      - name: Install Podman
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          podman version
 
-      # End-to-end tests epic: start Postgres 18 service, build orchestrator with --features integration-tests, export PLAYWRIGHT_API_URL
+      # Rootless Podman keeps its runtime state here. A hosted runner has no
+      # login session, so the directory does not exist until it is made.
+      - name: Set XDG_RUNTIME_DIR
+        working-directory: .
+        run: |
+          dir="/run/user/$(id -u)"
+          sudo mkdir -p "${dir}"
+          sudo chown "$(id -u):$(id -g)" "${dir}"
+          sudo chmod 0700 "${dir}"
+          echo "XDG_RUNTIME_DIR=${dir}" >> "$GITHUB_ENV"
 
+      # Rootless Podman needs a sub-uid and sub-gid range for the runner user.
+      # GitHub's image normally has one; create it when it does not.
+      - name: Ensure sub-uid and sub-gid ranges
+        working-directory: .
+        run: |
+          if ! grep -q "^$(id -un):" /etc/subuid || ! grep -q "^$(id -un):" /etc/subgid; then
+            sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+            podman system migrate
+          fi
+          grep "^$(id -un):" /etc/subuid /etc/subgid
+
+      # ADR 0004 targets rootless Podman and `keep-id:uid=1000,gid=1000` needs
+      # subordinate ids: without them `/proc/self/uid_map` has the single root
+      # line, every session container fails on a permission error and the
+      # suite's diagnosis would be a screenshot of a stuck session. Fail here
+      # instead, in one line.
+      - name: Report the engine and check the rootless user namespace
+        working-directory: .
+        run: |
+          podman info --format '{{.Host.Security.Rootless}} {{.Version.Version}}'
+          podman unshare cat /proc/self/uid_map
+          lines="$(podman unshare cat /proc/self/uid_map | grep -c . || true)"
+          if [ "${lines:-0}" -le 1 ]; then
+            echo "::error::rootless Podman with subordinate ids required"
+            exit 1
+          fi
+
+      # The orchestrator talks to the engine over the Docker-compatible API
+      # (bollard), and the stack script points `DOCKER_HOST` at the user socket
+      # under XDG_RUNTIME_DIR unless one is already exported. `systemctl --user`
+      # is the usual way to start it, but a hosted runner has no user systemd
+      # instance, so the socket is started the way `engine.yml` starts it.
+      - name: Start the Podman user socket
+        working-directory: .
+        run: |
+          mkdir -p "${XDG_RUNTIME_DIR}/podman"
+          socket="${XDG_RUNTIME_DIR}/podman/podman.sock"
+          nohup podman system service --time=0 "unix://${socket}" \
+            > "${RUNNER_TEMP}/podman-service.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if [ -S "${socket}" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ ! -S "${socket}" ]; then
+            echo "::error::the Podman user socket never appeared"
+            cat "${RUNNER_TEMP}/podman-service.log"
+            exit 1
+          fi
+          curl -sf --unix-socket "${socket}" http://d/v1.41/version
+
+      # Postgres, the stub image and the orchestrator, from the same script a
+      # developer runs. It writes frontend/.e2e/env, which playwright.config.ts
+      # reads, so the test step needs no connection variables of its own. The
+      # stub image build is cached by podman's own layer cache only; nothing is
+      # pushed.
+      - name: Bring the end-to-end stack up
+        run: npm run test:e2e:up
+
+      # `CI=true` is what turns on the config's one retry, the HTML reporter and
+      # a fresh Vite dev server per run (`reuseExistingServer: false`).
       - name: End-to-end tests
         run: npm run test:e2e
         env:
           CI: "true"
+
+      # Runs even when `up` failed halfway, so no session container or Postgres
+      # is left behind. `E2E_KEEP_LOG=1` keeps frontend/.e2e/orchestrator.log
+      # for the upload below; the rest of the run directory is removed.
+      - name: Bring the end-to-end stack down
+        if: always()
+        run: npm run test:e2e:down
+        env:
+          E2E_KEEP_LOG: "1"
 
       - name: Upload the Playwright report
         if: failure()
@@ -54,3 +199,35 @@ jobs:
         with:
           name: playwright-report
           path: frontend/playwright-report
+          if-no-files-found: ignore
+
+      # Traces, screenshots and videos, written per failed test by
+      # `trace: "retain-on-failure"`.
+      - name: Upload the Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-traces
+          path: frontend/test-results
+          if-no-files-found: ignore
+
+      # The orchestrator's own log, which is where a failed session scenario is
+      # diagnosed. It carries invitation links for throwaway users created by
+      # the test-only endpoint and the stack's own fake secrets, never a real
+      # credential (CLAUDE.md, rule 3; ADR 0026).
+      - name: Upload the orchestrator log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: orchestrator-log
+          path: frontend/.e2e/orchestrator.log
+          if-no-files-found: ignore
+
+      # Diagnostics only: `down` removes this stack's containers, so anything
+      # left here died mid-flight.
+      - name: Leftover containers and the Podman service log
+        if: always()
+        working-directory: .
+        run: |
+          podman ps -a
+          cat "${RUNNER_TEMP}/podman-service.log" || true

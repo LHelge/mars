@@ -20,6 +20,7 @@
 //! `Err`. A sweep that returns `Err` does not stop the others either: the job
 //! logs it, counts one failure and runs the next sweep.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -30,10 +31,10 @@ use uuid::Uuid;
 
 use super::{CronService, JobReport};
 use crate::engine::{EngineError, LABEL_SESSION_ID};
-use crate::git::DataPaths;
+use crate::git::{DataPaths, refs};
 use crate::models::SessionState;
 use crate::prelude::*;
-use crate::repositories::SessionRepository;
+use crate::repositories::{ProjectRepository, SessionRepository, TaskRepository};
 
 /// How young a container is protected whatever its session row says.
 ///
@@ -52,6 +53,16 @@ const CONTAINER_GRACE: TimeDelta = TimeDelta::minutes(5);
 /// hour is far longer than any merge, rebase or startup probe
 /// (`ARCHITECTURE.md`, "Storage", "Git model").
 const TMP_MAX_AGE: TimeDelta = TimeDelta::hours(1);
+
+/// How long a hand-off ref must have been orphaned before it is removed.
+///
+/// The second half of the two-sighting rule: an orphan first seen less than
+/// this ago is only remembered. The sweep runs hourly, so in practice a
+/// leftover ref lives for one extra tick — long enough that a publication
+/// whose tracker transaction commits after the git lock was released has
+/// finished many times over, and short enough that nothing accumulates
+/// (`ARCHITECTURE.md`, "Task tracker" → "Code hand-offs").
+const ORPHAN_REF_GRACE: TimeDelta = TimeDelta::hours(1);
 
 impl CronService {
     /// Remove what other paths left behind: containers, `/data/tmp` entries
@@ -294,11 +305,148 @@ impl CronService {
     }
 
     /// Remove `refs/handoffs/*` with no matching hand-off row, under each
-    /// project's git lock (`ARCHITECTURE.md`, "Git model", "Merge, rebase,
-    /// push"). Implemented by the hand-off ref task in this epic.
+    /// project's git lock (`ARCHITECTURE.md`, "Background jobs"; "Task
+    /// tracker" → "Code hand-offs").
+    ///
+    /// Two guards, and it takes both to be safe. The first is the project git
+    /// lock: publication pins its ref and commits its tracker transaction
+    /// under that lock, so a listing taken while holding it can never catch a
+    /// publication between the two. The second is the sighting rule — a ref is
+    /// removed only when it was found orphaned on an earlier run too, at least
+    /// [`ORPHAN_REF_GRACE`] ago — which covers the case the lock does not: a
+    /// publication whose database half commits after the lock was released,
+    /// and a task deletion interrupted between its rows and its refs, whose
+    /// retry this sweep then is.
+    ///
+    /// The sightings are rebuilt from scratch each run rather than edited:
+    /// whatever is not sighted now is forgotten, which drops the refs that
+    /// gained a row, the ones just removed, and the entries of projects that
+    /// no longer exist, in one assignment. A project whose sweep failed
+    /// forgets its sightings with them and simply starts counting again.
+    ///
+    /// # Errors
+    ///
+    /// Only the project listing. Everything after it is per project: a
+    /// repository that vanished under the sweep, or a git command that failed,
+    /// costs one `failures` and the loop continues.
     async fn cleanup_handoff_refs(&self, now: DateTime<Utc>) -> Result<JobReport> {
-        let _ = now;
-        Ok(JobReport::default())
+        let project_ids = ProjectRepository::new(&self.state.pool).list_ids().await?;
+        let paths = DataPaths::from_config(&self.state.config);
+
+        // A snapshot rather than the live map: the lock must not be held
+        // across the git lock, and the new map is written once at the end.
+        let previous = self.handoff_sightings.lock().await.clone();
+        let mut sighted = HashMap::new();
+        let mut report = JobReport::default();
+
+        for project_id in project_ids {
+            let mirror = paths.project_repo(project_id);
+
+            // A project that has no repository yet — still cloning, or one
+            // whose clone failed — has no refs to sweep and is not a failure.
+            if !mirror.exists() {
+                continue;
+            }
+
+            match self
+                .sweep_project_handoffs(project_id, &mirror, now, &previous, &mut sighted)
+                .await
+            {
+                Ok(swept) => {
+                    report.items += swept.items;
+                    report.skipped += swept.skipped;
+                    report.failures += swept.failures;
+                }
+                Err(e) => {
+                    warn!(project_id = %project_id, error = %e, "could not sweep a project's hand-off refs");
+                    report.failures += 1;
+                }
+            }
+        }
+
+        *self.handoff_sightings.lock().await = sighted;
+
+        Ok(report)
+    }
+
+    /// One project's hand-off refs, under its git lock.
+    ///
+    /// The lock is taken here and released when this returns, so it covers the
+    /// listing, the `existing_handoff_ids` read and the removals together and
+    /// is never held across another project. The read is an autocommit query
+    /// on the pool: a transaction opened here would be a database lock taken
+    /// under the git lock, which is the allowed order but buys nothing
+    /// (`ARCHITECTURE.md`, "Git model" → Serialization).
+    ///
+    /// Removal is decided against the ids this run's query returned and never
+    /// against the sighting map alone, so a ref whose row appeared between two
+    /// runs is safe even though it is still remembered.
+    ///
+    /// # Errors
+    ///
+    /// Listing the refs, which is the repository being gone or unreadable, and
+    /// the database read. A removal that fails is counted in
+    /// [`JobReport::failures`] and the remaining refs are still considered.
+    async fn sweep_project_handoffs(
+        &self,
+        project_id: Uuid,
+        mirror: &Path,
+        now: DateTime<Utc>,
+        previous: &HashMap<(Uuid, Uuid), DateTime<Utc>>,
+        sighted: &mut HashMap<(Uuid, Uuid), DateTime<Utc>>,
+    ) -> Result<JobReport> {
+        let _guard = self.state.git_locks.lock(project_id).await;
+        let mut report = JobReport::default();
+
+        let listed = refs::list_handoffs(mirror).await?;
+        if listed.is_empty() {
+            return Ok(report);
+        }
+
+        let ids: Vec<Uuid> = listed.iter().map(|(id, _)| *id).collect();
+        let existing: HashSet<Uuid> = TaskRepository::new(&self.state.pool)
+            .existing_handoff_ids(project_id, &ids)
+            .await?
+            .into_iter()
+            .collect();
+
+        for id in ids {
+            if existing.contains(&id) {
+                continue;
+            }
+
+            let key = (project_id, id);
+            let first_seen = previous.get(&key).copied();
+
+            match first_seen {
+                Some(seen) if now - seen >= ORPHAN_REF_GRACE => {
+                    match refs::remove_handoff(mirror, id).await {
+                        Ok(()) => {
+                            info!(project_id = %project_id, handoff_id = %id, "removed orphan hand-off ref");
+                            report.items += 1;
+                        }
+                        Err(e) => {
+                            warn!(project_id = %project_id, handoff_id = %id, error = %e, "could not remove an orphan hand-off ref");
+                            report.failures += 1;
+                            // Keep the sighting: the next run retries without
+                            // waiting out the grace again.
+                            sighted.insert(key, seen);
+                        }
+                    }
+                }
+                Some(seen) => {
+                    // Seen before, but not long enough ago.
+                    sighted.insert(key, seen);
+                    report.skipped += 1;
+                }
+                None => {
+                    sighted.insert(key, now);
+                    report.skipped += 1;
+                }
+            }
+        }
+
+        Ok(report)
     }
 }
 

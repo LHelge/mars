@@ -172,6 +172,23 @@ impl<'a> ProjectRepository<'a> {
     /// stale while the sweep worked through the list. `ORDER BY id` so a sweep
     /// visits projects in the same order every tick, which makes a log of two
     /// consecutive runs comparable.
+    /// The ids of every project, whatever its status, in a stable order.
+    ///
+    /// [`ProjectRepository::list_ids_by_status`]'s companion for the sweeps
+    /// that are about what is on disk rather than about what may be fetched:
+    /// the orphan-cleanup job's hand-off refs live in the repository of a
+    /// project in *any* status, including one stuck in `error` or
+    /// `retry-clone`, and leaving those out would leave their leftovers
+    /// forever (`ARCHITECTURE.md`, "Background jobs"). `ORDER BY id` for the
+    /// same reason: two consecutive runs visit projects in the same order.
+    pub async fn list_ids(&self) -> Result<Vec<Uuid>> {
+        let ids = sqlx::query_scalar!(r#"SELECT id FROM projects ORDER BY id"#)
+            .fetch_all(self.pool)
+            .await?;
+
+        Ok(ids)
+    }
+
     pub async fn list_ids_by_status(&self, status: ProjectStatus) -> Result<Vec<Uuid>> {
         let ids = sqlx::query_scalar!(
             r#"SELECT id FROM projects WHERE status = $1 ORDER BY id"#,

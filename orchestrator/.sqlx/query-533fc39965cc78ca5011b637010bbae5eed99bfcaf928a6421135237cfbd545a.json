@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT h.id\n            FROM task_handoffs AS h\n            JOIN tasks AS t ON t.id = h.task_id\n            WHERE t.project_id = $1 AND h.id = ANY($2)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "533fc39965cc78ca5011b637010bbae5eed99bfcaf928a6421135237cfbd545a"
+}

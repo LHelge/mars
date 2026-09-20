@@ -340,6 +340,13 @@ impl TestApp {
     /// and a suite whose rows a background tick could change at any moment
     /// would be asserting on a race; a scenario that wants a job run says so,
     /// and says with which `now` (`ARCHITECTURE.md`, "Background jobs").
+    ///
+    /// A *new* service every call. Everything a job decides lives in the
+    /// database or on disk, with one exception: the orphan cleanup's hand-off
+    /// sightings, which live on the service itself. A scenario that asserts on
+    /// the two-sighting rule therefore binds one value — `let cron =
+    /// app.cron();` — and runs it repeatedly, because a fresh service per run
+    /// would sight every orphan for the first time forever.
     pub fn cron(&self) -> CronService {
         CronService::new(self.state.clone())
     }

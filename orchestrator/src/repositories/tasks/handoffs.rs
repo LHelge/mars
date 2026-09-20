@@ -276,6 +276,38 @@ impl TaskRepository<'_> {
         Ok(candidate)
     }
 
+    /// Which of `ids` are hand-off records of this project, in one round trip.
+    ///
+    /// The orphan-cleanup job's question, and the only one it asks the
+    /// database: it holds the project git lock, lists `refs/handoffs/*` and
+    /// needs to know which of those ids have a row behind them, so that the
+    /// rest can be considered for removal (`ARCHITECTURE.md`, "Background
+    /// jobs"; `docs/data-model.md`, `task_handoffs`).
+    ///
+    /// A plain autocommit read with no transaction and no row lock, because
+    /// the caller holds the git lock and a transaction opened under it could
+    /// only ever be one more thing to wait on (`ARCHITECTURE.md`, "Git model"
+    /// → Serialization). Ids the caller did not ask about are not returned,
+    /// and ids belonging to another project are answered as absent — which is
+    /// correct for the sweep, as another project's ref has no business in this
+    /// repository either.
+    pub async fn existing_handoff_ids(&self, project_id: Uuid, ids: &[Uuid]) -> Result<Vec<Uuid>> {
+        let existing = sqlx::query_scalar!(
+            r#"
+            SELECT h.id
+            FROM task_handoffs AS h
+            JOIN tasks AS t ON t.id = h.task_id
+            WHERE t.project_id = $1 AND h.id = ANY($2)
+            "#,
+            project_id,
+            ids,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(existing)
+    }
+
     /// A task's hand-offs, oldest first.
     ///
     /// `TaskDetail.handoffs`, which "are ordered oldest first" (`SPEC.md`,

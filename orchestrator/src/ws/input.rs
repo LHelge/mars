@@ -30,22 +30,10 @@ use axum::http::StatusCode;
 use tokio::sync::mpsc;
 
 use super::{End, INTERNAL, SESSION_NOT_FOUND, SocketContext, send};
-use crate::events::SessionInput;
+use crate::events::{SessionInput, validate_client_id};
 use crate::prelude::*;
 use crate::repositories::SessionRepository;
 use crate::ws::protocol::ServerMessage;
-
-/// The longest `client_id` the socket echoes.
-///
-/// The id is the client's own reconciliation key (`SPEC.md`, "WebSocket:
-/// session stream") and a UUID is twice inside this; the bound exists because
-/// the string is echoed back and would otherwise let a client decide how much
-/// this orchestrator allocates and writes per input.
-const MAX_CLIENT_ID_BYTES: usize = 128;
-
-/// What an over-long `client_id` is refused with, before the service is asked
-/// anything at all.
-const CLIENT_ID_TOO_LONG: &str = "client_id too long";
 
 /// `input { client_id, input }` (`SPEC.md`, "WebSocket: session stream").
 ///
@@ -59,13 +47,16 @@ pub(super) async fn handle_input(
     client_id: String,
     input: SessionInput,
 ) -> std::result::Result<(), End> {
-    if client_id.len() > MAX_CLIENT_ID_BYTES {
+    // The bound is the shared one both input paths check
+    // ([`validate_client_id`]), refused here before the service is asked
+    // anything at all.
+    if let Err(invalid) = validate_client_id(&client_id) {
         debug!(
             session_id = %context.session_id,
             bytes = client_id.len(),
             "an input carried a client_id over the bound",
         );
-        return reject(out, client_id, CLIENT_ID_TOO_LONG.to_string()).await;
+        return reject(out, client_id, invalid.user_message()).await;
     }
 
     // Blank text and text over the cap are the REST route's two 400s, and the

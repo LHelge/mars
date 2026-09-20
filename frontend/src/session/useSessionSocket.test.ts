@@ -316,15 +316,48 @@ describe("SessionSocket", () => {
     const socket = track(new SessionSocket(SESSION_ID, factory));
     await socket.start(); // opened but never accepted: readyState stays 0
 
-    socket.send({ kind: "message", text: "hello" });
+    const clientId = socket.send({ kind: "message", text: "hello" });
     socket.stop();
 
-    expect(sendInput).toHaveBeenCalledWith(SESSION_ID, {
-      kind: "message",
-      text: "hello",
-    });
+    expect(sendInput).toHaveBeenCalledWith(
+      SESSION_ID,
+      { kind: "message", text: "hello" },
+      clientId,
+    );
     expect(stopSession).toHaveBeenCalledWith(SESSION_ID);
     expect(last().frames).toEqual([]);
+  });
+
+  it("reconciles the optimistic message of a REST fallback send", async () => {
+    listEvents.mockResolvedValueOnce({ events: [], has_more: false });
+    sendInput.mockResolvedValue(undefined);
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+    await socket.start(); // opened but never accepted: readyState stays 0
+
+    const clientId = socket.send({ kind: "message", text: "hello" });
+    expect(store().order).toEqual([`client:${clientId}`]);
+
+    // The orchestrator recorded the input and echoed the id back, as it does
+    // for the socket path (`SPEC.md`, "Sessions").
+    last().accept();
+    last().text({
+      type: "event",
+      event: {
+        seq: 1,
+        ts: "2026-01-01T00:00:00Z",
+        kind: "user_message",
+        text: "hello",
+        user_id: null,
+        client_id: clientId,
+      },
+    });
+
+    expect(store().order).toEqual(["e1"]);
+    expect(store().messages["e1"]).toMatchObject({
+      kind: "user",
+      text: "hello",
+    });
+    expect(store().messages["e1"]).not.toHaveProperty("pending", true);
   });
 
   it("refuses terminal_open unless the session is running", async () => {

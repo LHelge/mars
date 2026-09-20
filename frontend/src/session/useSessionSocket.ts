@@ -333,8 +333,10 @@ export class SessionSocket {
     const clientId = globalThis.crypto.randomUUID();
     this.store.getState().addOptimisticUser(clientId, input);
     if (!this.sendJson({ type: "input", client_id: clientId, input })) {
-      // Closed or reconnecting: the REST equivalent accepts it with 202.
-      void sendInput(this.sessionId, input).catch((error: unknown) => {
+      // Closed or reconnecting: the REST equivalent accepts it with 202, and
+      // carries the same `client_id`, so the `user_message` that follows
+      // replaces the optimistic message instead of doubling it.
+      void sendInput(this.sessionId, input, clientId).catch((error: unknown) => {
         this.store.getState().inputRejected(clientId, reason(error));
       });
     }

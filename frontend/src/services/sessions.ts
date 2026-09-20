@@ -86,9 +86,22 @@ export function listEvents(
   );
 }
 
-/** 202 with no body: acceptance by the orchestrator, not delivery (ADR 0020). */
-export function sendInput(id: string, input: SessionInput): Promise<void> {
-  return apiPost<void>(`/sessions/${id}/input`, input);
+/**
+ * 202 with no body: acceptance by the orchestrator, not delivery (ADR 0020).
+ *
+ * `clientId` is the same echo key the socket sends: the `user_message` that
+ * records this input carries it back, so an input sent here while the socket
+ * is closed still reconciles its optimistic message.
+ */
+export function sendInput(
+  id: string,
+  input: SessionInput,
+  clientId?: string,
+): Promise<void> {
+  return apiPost<void>(
+    `/sessions/${id}/input`,
+    clientId === undefined ? input : { ...input, client_id: clientId },
+  );
 }
 
 /** 202 with no body: SIGINT, then SIGTERM after the grace period. */

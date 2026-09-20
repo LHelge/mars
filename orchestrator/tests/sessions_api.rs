@@ -1758,6 +1758,44 @@ async fn input_to_a_running_session_reaches_the_transcript() {
     let payload = wait_for_event(&app, id, "user_message").await;
     assert_eq!(payload["text"], json!("have a look at the login form"));
     assert_eq!(payload["user_id"], json!(fixture.user.user.id));
+    // No `client_id` was sent, so the event carries none.
+    assert_eq!(payload.get("client_id"), None);
+}
+
+/// The socket's echo key on the REST route: a client whose socket is closed
+/// sends its input here and still gets the id back on the `user_message`, so
+/// its optimistic message reconciles (`SPEC.md`, "Sessions"; "WebSocket:
+/// session stream").
+#[tokio::test]
+async fn input_echoes_the_client_id_on_the_user_message() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let (id, _container_id) = launched_session(&app, &fixture).await;
+
+    let response = app
+        .post_as(&fixture.user, &action_path(id, "input"))
+        .json(&json!({
+            "kind": "message",
+            "text": "and the signup form",
+            "client_id": "client-1",
+        }))
+        .await;
+    response.assert_status(StatusCode::ACCEPTED);
+
+    let payload = wait_for_event(&app, id, "user_message").await;
+    assert_eq!(payload["text"], json!("and the signup form"));
+    assert_eq!(payload["client_id"], json!("client-1"));
+
+    // The same bound the socket applies, in bytes.
+    let response = app
+        .post_as(&fixture.user, &action_path(id, "input"))
+        .json(&json!({
+            "kind": "message",
+            "text": "anything",
+            "client_id": "x".repeat(129),
+        }))
+        .await;
+    assert_error(&response, StatusCode::BAD_REQUEST, "client_id too long");
 }
 
 #[tokio::test]

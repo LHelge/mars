@@ -22,6 +22,9 @@ pub use agent_event::{
     TOOL_RESULT_MAX_BYTES,
 };
 pub use fanout::{Channel, EventFanout, Notice, PayloadError, parse_payload};
-pub use input::{EMPTY_TEXT, LONG_TEXT, MAX_TEXT_BYTES, SessionInput};
+pub use input::{
+    CLIENT_ID_TOO_LONG, EMPTY_TEXT, LONG_TEXT, MAX_CLIENT_ID_BYTES, MAX_TEXT_BYTES, SessionInput,
+    validate_client_id,
+};
 pub use listener::spawn_listener;
 pub use task_event::{TaskActor, TaskEvent, TaskEventKind, TaskEventPayload, TaskEventRowParts};

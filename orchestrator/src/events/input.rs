@@ -15,6 +15,33 @@ pub const EMPTY_TEXT: &str = "text must not be empty";
 /// What an input whose `text` is over [`MAX_TEXT_BYTES`] is refused with (400).
 pub const LONG_TEXT: &str = "text too long";
 
+/// What an input whose `client_id` is over [`MAX_CLIENT_ID_BYTES`] is refused
+/// with (400 over REST, `input_rejected` over the socket).
+pub const CLIENT_ID_TOO_LONG: &str = "client_id too long";
+
+/// The longest `client_id` an input may carry.
+///
+/// The id is the client's own reconciliation key (`SPEC.md`, "WebSocket:
+/// session stream") and a UUID is twice inside this; the bound exists because
+/// the string is echoed back — in `input_accepted` and in the `user_message`
+/// that records the input — and would otherwise let a client decide how much
+/// this orchestrator allocates and writes per input.
+pub const MAX_CLIENT_ID_BYTES: usize = 128;
+
+/// What is wrong with a `client_id` before anything is asked of the session.
+///
+/// Both paths that accept one — the socket's `input` message and `POST
+/// /sessions/{id}/input` — check it here, so the bound cannot drift between
+/// them; the socket turns the 400 into `input_rejected`, as it does for the
+/// text's own refusals.
+pub fn validate_client_id(client_id: &str) -> Result<()> {
+    if client_id.len() > MAX_CLIENT_ID_BYTES {
+        return Err(Error::BadRequest(CLIENT_ID_TOO_LONG.to_string()));
+    }
+
+    Ok(())
+}
+
 /// The longest `text` one input may carry (`SPEC.md`, "Sessions").
 ///
 /// A mebibyte is far more than anything typed and far more than a pasted log or
@@ -131,6 +158,19 @@ mod tests {
             .validate()
             .expect_err("the cap counts bytes");
         assert_eq!(error.to_string(), LONG_TEXT);
+    }
+
+    /// The echo key is bounded in bytes, and the bound is the one both the
+    /// socket and `POST /sessions/{id}/input` apply.
+    #[test]
+    fn a_client_id_is_bounded() {
+        validate_client_id("").expect("no id at all is an id of length zero");
+        validate_client_id("11111111-1111-4111-8111-111111111111").expect("a UUID");
+        validate_client_id(&"x".repeat(MAX_CLIENT_ID_BYTES)).expect("the bound itself");
+
+        let error = validate_client_id(&"x".repeat(MAX_CLIENT_ID_BYTES + 1))
+            .expect_err("an id over the bound is refused");
+        assert_eq!(error.to_string(), CLIENT_ID_TOO_LONG);
     }
 
     /// `answer` was a kind until the probe showed nothing can ask (ADR 0033).

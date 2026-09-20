@@ -104,6 +104,21 @@ export async function reveal(page: Page, target: Locator): Promise<Locator> {
 }
 
 /**
+ * Reveals a tool row by its header button and opens it if it is folded.
+ *
+ * Every tool row and every subagent group starts collapsed (`SPEC.md`,
+ * "Transcript rendering"), so a scenario that asserts on a row's body — a
+ * command, a diff, a nested transcript — opens it first.
+ */
+export async function openRow(page: Page, header: Locator): Promise<Locator> {
+  const button = (await reveal(page, header)).first();
+  if ((await button.getAttribute("aria-expanded")) === "false") {
+    await button.click();
+  }
+  return button;
+}
+
+/**
  * How many rows the transcript is folding, which is the identity check every
  * "no duplicates, no gaps" assertion rests on.
  *

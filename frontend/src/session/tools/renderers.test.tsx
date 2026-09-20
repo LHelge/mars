@@ -174,7 +174,7 @@ describe("ShellToolRenderer", () => {
 });
 
 describe("SummaryToolRenderer", () => {
-  it("summarises a read in one line and expands to the result", () => {
+  it("summarises a read in one line over its result and folds it away", () => {
     render(
       <SummaryToolRenderer
         message={tool({
@@ -186,9 +186,9 @@ describe("SummaryToolRenderer", () => {
     );
 
     expect(screen.getByText("Read README.md :10-20")).toBeDefined();
-    expect(screen.queryByText("# Mars")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { expanded: false }));
     expect(screen.getByText("# Mars")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: /Read README.md/ }));
+    expect(screen.queryByText("# Mars")).toBeNull();
   });
 
   it("summarises the search and web tools", () => {
@@ -292,14 +292,44 @@ describe("JsonToolRenderer", () => {
 });
 
 describe("ToolFrame", () => {
-  it("picks the family renderer for the tool's name", () => {
-    render(<ToolFrame message={tool({ name: "Bash", input: { command: "ls" } })} />);
-    expect(screen.getByText("ls")).toBeDefined();
+  it("starts folded with the call summarised beside the tool's name", () => {
+    render(
+      <ToolFrame
+        message={tool({
+          name: "Bash",
+          input: { command: "cargo test", description: "Run the tests" },
+          result: "ok",
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("button", { expanded: false })).toBeDefined();
+    expect(screen.getByText("Run the tests")).toBeDefined();
+    expect(screen.queryByText("ok")).toBeNull();
+  });
+
+  it("picks the family renderer for the tool's name once opened", () => {
+    render(
+      <ToolFrame
+        message={tool({
+          name: "Read",
+          input: { file_path: "a.rs" },
+          result: "fn main",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("a.rs")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: /Read/ }));
+    // One click reaches the result: the summary renderer starts open.
+    expect(screen.getByText("Read a.rs")).toBeDefined();
+    expect(screen.getByText("fn main")).toBeDefined();
   });
 
   it("says when the orchestrator cut the result", () => {
     render(
       <ToolFrame
+        defaultOpen
         message={tool({
           name: "Bash",
           input: { command: "cat big" },

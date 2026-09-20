@@ -100,8 +100,7 @@ describe("Transcript", () => {
   it("collapses a finished subagent and nests its messages when expanded", () => {
     mount(events(subagentFixture));
 
-    // One top-level row, the `Task` call; the subagent has ended, so its
-    // transcript starts folded away.
+    // One top-level row, the `Task` call; its transcript starts folded away.
     expect(renderedKinds()).toEqual(["tool"]);
     expect(screen.getByText("Survey the routes")).toBeDefined();
     expect(screen.queryByTestId("subagent-children")).toBeNull();
@@ -118,12 +117,17 @@ describe("Transcript", () => {
     expect(nested.textContent).toContain("Looking at the router.");
   });
 
-  it("leaves a running subagent expanded", () => {
+  it("folds a running subagent too, behind a frame that says it is running", () => {
     // The same fixture up to `subagent_start`: the agent is still working.
     mount(events(subagentFixture).slice(0, 4));
 
-    const nested = screen.getByTestId("subagent-children");
-    expect(nested.textContent).toContain("Looking at the router.");
+    expect(screen.queryByTestId("subagent-children")).toBeNull();
+    expect(screen.getByText("running")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: /Survey the routes/ }));
+    expect(screen.getByTestId("subagent-children").textContent).toContain(
+      "Looking at the router.",
+    );
   });
 
   it("marks a streaming assistant message with a cursor", () => {

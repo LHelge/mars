@@ -22,13 +22,10 @@ export interface SubagentGroupProps {
   children?: ReactNode;
 }
 
-/** A subagent that has ended is history; a running one is what is happening. */
-function endedSubagent(message: ToolMessage): boolean {
-  return !message.running || message.subagent?.is_error !== undefined;
-}
-
 export function SubagentGroup({ message, children }: SubagentGroupProps) {
-  const [open, setOpen] = useState(!endedSubagent(message));
+  // Folded whether it is running or has ended: the frame above says `running`,
+  // and the nested transcript is one click away.
+  const [open, setOpen] = useState(false);
   const subagent = message.subagent;
   const failed = subagent?.is_error === true;
 

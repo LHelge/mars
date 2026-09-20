@@ -160,3 +160,21 @@ export function summaryLine(name: string, input: unknown): string {
   }
   return name;
 }
+
+/**
+ * What a collapsed tool row says about its call, beside the tool's name: the
+ * command, the file or the pattern. Empty when the input has nothing of the
+ * kind, and for a subagent, whose group row already carries its description.
+ */
+export function headerSummary(name: string, input: unknown): string {
+  if (isShellInput(input)) {
+    return input.description ?? input.command.split("\n", 1)[0];
+  }
+  const path =
+    inputString(input, "file_path") ?? inputString(input, "notebook_path");
+  if (path !== undefined) {
+    return path;
+  }
+  const line = summaryLine(name, input);
+  return line === name ? "" : line.slice(name.length).trim();
+}

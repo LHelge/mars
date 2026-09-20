@@ -99,4 +99,10 @@ export {
   taskColumnTestId,
 } from "./test-ids";
 
-export { pinToLatest, reveal, rowCount, transcript } from "./transcript";
+export {
+  openRow,
+  pinToLatest,
+  reveal,
+  rowCount,
+  transcript,
+} from "./transcript";

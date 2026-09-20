@@ -35,6 +35,7 @@ import {
   gitRevParse,
   loginViaToken,
   mirrorPath,
+  openRow,
   reveal,
   sendInput,
   sessionContainers,
@@ -294,25 +295,38 @@ test("second and third turns render subagent, edit diff, shell, deltas and denia
   await waitForTurn(api, sessionId, 1);
   await reveal(page, rows.getByText(TURN_COST_TEXT[1]));
 
-  // The `Bash` commit renders monospace, prefixed by the shell renderer.
-  await reveal(page, rows.getByText(/git add -A && git commit/).first());
-
-  // The `Edit` card renders a diff carrying both halves of the edit.
-  await reveal(page, rows.getByText('print("hello, world")').first());
-  await expect(rows.getByText('print("hello")').first()).toBeVisible();
-  await expect(rows.getByText("/session/work/src/app.py").first()).toBeVisible();
-
-  // The subagent call is a collapsible nested transcript. It folds itself away
-  // once the subagent has ended, so it is opened here to reach the child.
-  const group = await reveal(
+  // Tool rows start folded to a header that says what the call was: the
+  // `Bash` commit shows its description there, and its command — monospace,
+  // prefixed by the shell renderer — once the row is opened.
+  await openRow(
     page,
-    rows.getByRole("button", { name: /general-purpose/ }),
+    rows.getByRole("button", {
+      name: "Bash Stage and commit the greeting change",
+    }),
   );
-  if ((await group.getAttribute("aria-expanded")) === "false") {
-    await group.click();
-  }
+  await expect(
+    rows.getByText(/git add -A && git commit/).first(),
+  ).toBeVisible();
+
+  // The `Edit` row's header carries the path; opened, it renders a diff with
+  // both halves of the edit.
+  await openRow(
+    page,
+    rows.getByRole("button", { name: "Edit /session/work/src/app.py" }),
+  );
+  await expect(rows.getByText('print("hello, world")').first()).toBeVisible();
+  await expect(rows.getByText('print("hello")').first()).toBeVisible();
+
+  // The subagent call is a collapsible nested transcript that starts folded,
+  // and so does the tool row inside it.
+  await openRow(page, rows.getByRole("button", { name: /general-purpose/ }));
   const children = page.getByTestId("subagent-children").first();
-  await expect(children.getByRole("button", { name: "Bash" })).toBeVisible();
+  await openRow(
+    page,
+    children.getByRole("button", {
+      name: "Bash Search recursively for literal token 'main'",
+    }),
+  );
   await expect(
     children.getByText("grep -rn 'main' . --exclude-dir=.git"),
   ).toBeVisible();

@@ -22,3 +22,6 @@ export {
   deletionReason,
   stateNameError,
 } from "./taskStateRules";
+
+export { TaskStream, useTaskStream } from "./useTaskStream";
+export type { EventSourceFactory, EventSourceLike } from "./useTaskStream";

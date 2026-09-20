@@ -235,7 +235,12 @@ function BoardColumn({ column, openTaskNumber }: BoardColumnProps) {
   const kind = column.state?.kind;
 
   return (
-    <div className="flex w-64 shrink-0 snap-start flex-col gap-2">
+    <div
+      // The end-to-end suite addresses a column by its state's name: the
+      // heading alone is ambiguous against the cards' own headings.
+      data-testid={`column-${column.name}`}
+      className="flex w-64 shrink-0 snap-start flex-col gap-2"
+    >
       <div className="border-console-border flex items-baseline gap-2 border-b pb-1.5">
         <span
           aria-hidden="true"

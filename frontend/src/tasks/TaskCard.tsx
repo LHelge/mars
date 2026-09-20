@@ -46,6 +46,8 @@ function TaskCardView({ task, selected }: TaskCardProps) {
 
   return (
     <article
+      // The end-to-end suite addresses a card by its per-project number.
+      data-testid={`task-card-${String(task.number)}`}
       aria-current={selected ? "true" : undefined}
       className={`bg-console-surface hover:border-console-accent/60 rounded border transition-colors ${selected ? "border-console-accent" : "border-console-border"}`}
     >

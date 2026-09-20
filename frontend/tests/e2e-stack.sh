@@ -9,8 +9,8 @@
 #
 # Usage: tests/e2e-stack.sh up|down|status
 #
-# Knobs: E2E_ENGINE (podman|docker), E2E_PG_PORT, E2E_API_PORT, E2E_MCP_PORT,
-# E2E_BASE_URL, E2E_STUB_IMAGE, E2E_SKIP_IMAGE_BUILD, E2E_SKIP_CARGO_BUILD,
+# Knobs: E2E_ENGINE (podman|docker), E2E_PG_PORT, E2E_PG_CONTAINER, E2E_API_PORT,
+# E2E_MCP_PORT, E2E_BASE_URL, E2E_STUB_IMAGE, E2E_SKIP_IMAGE_BUILD, E2E_SKIP_CARGO_BUILD,
 # E2E_KEEP_LOG. README.md, "Development" → "End-to-end tests".
 
 set -euo pipefail
@@ -27,7 +27,9 @@ LOG_FILE="$E2E_DIR/orchestrator.log"
 PID_FILE="$E2E_DIR/orchestrator.pid"
 ENV_FILE="$E2E_DIR/env"
 
-PG_CONTAINER="mars-e2e-pg"
+# One stack per container name: a second stack on the same engine (a parallel
+# agent, a second checkout) names its own.
+PG_CONTAINER="${E2E_PG_CONTAINER:-mars-e2e-pg}"
 PG_IMAGE="docker.io/library/postgres:18"
 
 ENGINE_NAME="${E2E_ENGINE:-podman}"

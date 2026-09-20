@@ -73,3 +73,5 @@ export {
   setProfileIdleTimeout,
   waitForContainerRemoved,
 } from "./resources";
+
+export { loggedEmail } from "./log";

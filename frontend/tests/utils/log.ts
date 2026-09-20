@@ -83,3 +83,52 @@ export async function readLoggedLink(
     await sleep(LINK_POLL_MS);
   }
 }
+
+/**
+ * How much of a record's tail the subject is looked for in; a logged message is
+ * `to`, then `subject`, then the body, and no body here is anywhere near this
+ * long.
+ */
+const RECORD_WINDOW = 8_000;
+
+/**
+ * Whether a message to `email` carrying `subject` was logged after
+ * `sinceOffset`.
+ *
+ * The escalation a task's move into the human state owes has no link of its
+ * own to look for — the task link it carries is not a token-bearing one — so
+ * this is the recipient-and-subject form of [`readLoggedLink`], for the
+ * scenarios that assert an escalation went out (`README.md`, "Operating
+ * notes"; ADR 0026). It answers a boolean and never returns the message, so a
+ * failing assertion says which message was missing and nothing about what was
+ * in it.
+ *
+ * `LogEmailClient` writes one `info` record with `to`, `subject` and `text` in
+ * that order, so the subject is looked for after the recipient rather than
+ * anywhere in the tail: another record for another user, logged in between,
+ * then cannot satisfy half of the search.
+ */
+export function loggedEmail(
+  email: string,
+  subject: string,
+  sinceOffset: number,
+): boolean {
+  let tail: string;
+  try {
+    // Bytes, for the same reason `readLoggedLink` slices bytes.
+    tail = readFileSync(orchestratorLogPath())
+      .subarray(sinceOffset)
+      .toString("utf8");
+  } catch {
+    return false;
+  }
+
+  for (
+    let at = tail.indexOf(email);
+    at >= 0;
+    at = tail.indexOf(email, at + 1)
+  ) {
+    if (tail.slice(at, at + RECORD_WINDOW).includes(subject)) return true;
+  }
+  return false;
+}

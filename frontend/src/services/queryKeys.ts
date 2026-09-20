@@ -10,12 +10,19 @@ export const queryKeys = {
     /** Without a state: every session the dashboard's list endpoint returns. */
     list: (state?: SessionState) =>
       ["sessions", "list", state ?? "all"] as const,
+    /** One session, as the session page reads it and the socket keeps it current. */
+    detail: (id: string) => ["sessions", id] as const,
+    /** The tasks one session touched (`GET /sessions/{id}/tasks`). */
+    tasks: (id: string) => ["sessions", id, "tasks"] as const,
   },
 
   tasks: {
     all: ["tasks"] as const,
     /** Tasks waiting in a human state, across all projects. */
     human: () => ["tasks", "human"] as const,
+    /** One task with its comments and hand-offs, by UUID or per-project number. */
+    detail: (projectId: string, idOrNumber: string | number) =>
+      ["tasks", projectId, String(idOrNumber)] as const,
   },
 
   projects: {

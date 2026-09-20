@@ -18,9 +18,6 @@ export { SessionsTab } from "./SessionsTab";
 export { LaunchSessionForm } from "./LaunchSessionForm";
 export type { LaunchSessionFormProps } from "./LaunchSessionForm";
 
-export { SessionStatePill } from "./SessionStatePill";
-export type { SessionStatePillProps } from "./SessionStatePill";
-
 export { DEFAULT_PROJECT_TAB, PROJECT_TABS, parseProjectTab } from "./tabs";
 export type { ProjectTab, ProjectTabPanelProps } from "./tabs";
 

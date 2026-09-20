@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { formatDateTime, formatRelative, formatUsd, PLACEHOLDER } from "./format";
+import {
+  formatDateTime,
+  formatRelative,
+  formatTokens,
+  formatUsd,
+  PLACEHOLDER,
+  shortId,
+} from "./format";
 
 const NOW = new Date("2026-03-01T12:00:00Z");
 
@@ -43,5 +50,33 @@ describe("formatUsd", () => {
   it("answers the placeholder for a missing amount", () => {
     expect(formatUsd(null)).toBe(PLACEHOLDER);
     expect(formatUsd(Number.NaN)).toBe(PLACEHOLDER);
+  });
+});
+
+describe("formatTokens", () => {
+  it("groups thousands", () => {
+    // The separator is the runner's locale; only the digits are ours.
+    expect(formatTokens(1234567).replace(/\D/g, "")).toBe("1234567");
+    expect(formatTokens(0)).toBe("0");
+  });
+
+  it("answers the placeholder for a missing counter", () => {
+    expect(formatTokens(null)).toBe(PLACEHOLDER);
+    expect(formatTokens(Number.NaN)).toBe(PLACEHOLDER);
+  });
+});
+
+describe("shortId", () => {
+  it("keeps the first twelve characters by default", () => {
+    expect(shortId("0123456789abcdef0123")).toBe("0123456789ab");
+  });
+
+  it("leaves an id shorter than the cut alone", () => {
+    expect(shortId("abc")).toBe("abc");
+  });
+
+  it("answers the placeholder for a missing id", () => {
+    expect(shortId(null)).toBe(PLACEHOLDER);
+    expect(shortId("")).toBe(PLACEHOLDER);
   });
 });

@@ -71,6 +71,37 @@ export function formatUsd(
   return `$${value.toFixed(decimals)}`;
 }
 
+const TOKENS = new Intl.NumberFormat();
+
+/**
+ * A token counter. Grouped, because the interesting comparison between two
+ * runs is the order of magnitude and a bare seven-digit number hides it.
+ */
+export function formatTokens(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return PLACEHOLDER;
+  }
+  return TOKENS.format(value);
+}
+
+/** How many characters of a container or session id the header shows. */
+const SHORT_ID = 12;
+
+/**
+ * The leading characters of a long opaque id — a container id, a CLI session
+ * id — as the engines themselves abbreviate one. The caller keeps the full
+ * value in a `title`, so nothing is lost by shortening it.
+ */
+export function shortId(
+  value: string | null | undefined,
+  length = SHORT_ID,
+): string {
+  if (value === null || value === undefined || value === "") {
+    return PLACEHOLDER;
+  }
+  return value.slice(0, length);
+}
+
 /** How many characters of a commit id are enough to recognise it. */
 const SHORT_SHA = 7;
 

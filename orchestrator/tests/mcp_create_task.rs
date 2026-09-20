@@ -423,7 +423,7 @@ async fn a_parent_that_has_a_parent_is_refused_and_creates_nothing() {
 }
 
 #[tokio::test]
-async fn a_parent_naming_no_task_of_the_project_is_not_found() {
+async fn a_parent_naming_no_task_of_the_project_is_refused_as_rest_refuses_it() {
     let app = TestApp::spawn().await;
     let fixture = seed(&app).await;
     let (client, _) = session(&app, &fixture).await;
@@ -437,8 +437,11 @@ async fn a_parent_naming_no_task_of_the_project_is_not_found() {
             .await,
     );
 
-    assert_eq!(code(&err), "not_found");
-    assert_eq!(err.message, "parent task not found");
+    assert_eq!(code(&err), "invalid_argument");
+    assert_eq!(
+        err.message,
+        "parent must be a top-level task of the same project"
+    );
     assert_eq!(task_count(&app, fixture.project_id).await, 0);
 }
 

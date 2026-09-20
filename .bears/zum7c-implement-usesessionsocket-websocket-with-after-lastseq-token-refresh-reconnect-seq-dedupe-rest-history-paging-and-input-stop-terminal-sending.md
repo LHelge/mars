@@ -1,10 +1,10 @@
 ---
 id: zum7c
 title: "Implement useSessionSocket: WebSocket with after=lastSeq, token-refresh reconnect, seq dedupe, REST history paging and input/stop/terminal sending"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:43:20.254778222Z"
-updated: "2026-09-16T20:43:20.254778222Z"
+updated: "2026-09-20T07:49:41.269793552Z"
 tags:
   - frontend
   - sessions
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - bxhas
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

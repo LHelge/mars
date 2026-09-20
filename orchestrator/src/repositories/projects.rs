@@ -164,6 +164,25 @@ impl<'a> ProjectRepository<'a> {
         Ok(projects)
     }
 
+    /// The ids of every project in `status`, in a stable order.
+    ///
+    /// Ids and nothing else, because the one caller — the periodic mirror
+    /// fetch (`ARCHITECTURE.md`, "Background jobs") — re-reads each project
+    /// under `fetch_project` anyway and must not act on a row that has gone
+    /// stale while the sweep worked through the list. `ORDER BY id` so a sweep
+    /// visits projects in the same order every tick, which makes a log of two
+    /// consecutive runs comparable.
+    pub async fn list_ids_by_status(&self, status: ProjectStatus) -> Result<Vec<Uuid>> {
+        let ids = sqlx::query_scalar!(
+            r#"SELECT id FROM projects WHERE status = $1 ORDER BY id"#,
+            status as ProjectStatus,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(ids)
+    }
+
     /// Apply the set fields of `update` and return the stored row, or `None`
     /// when no project has this id (the route decides whether that is a 404).
     ///

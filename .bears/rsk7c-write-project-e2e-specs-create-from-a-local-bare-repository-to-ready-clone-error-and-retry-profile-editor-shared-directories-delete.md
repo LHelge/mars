@@ -1,10 +1,10 @@
 ---
 id: rsk7c
 title: "Write project E2E specs: create from a local bare repository to ready, clone error and retry, profile editor, shared directories, delete"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:43:21.620546626Z"
-updated: "2026-09-16T20:43:21.620546626Z"
+updated: "2026-09-20T17:26:54.185599268Z"
 tags:
   - frontend
   - projects
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - ku8up
 parent: "6s8j7"
+attempts: 1
 ---
 
 ## Summary

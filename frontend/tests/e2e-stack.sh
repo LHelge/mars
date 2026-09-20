@@ -267,9 +267,13 @@ pid_is_orchestrator() {
     comm="$(cat "/proc/$pid/comm" 2>/dev/null || true)"
     # Linux truncates /proc/<pid>/comm to 15 characters.
     case "$comm" in
-    mars-orchestr*) return 0 ;;
+    mars-orchestr*) ;;
     *) return 1 ;;
     esac
+    # The name alone also fits a developer's own orchestrator; only this
+    # stack's runs from its run directory.
+    [ -d "$RUN_DIR" ] || return 1
+    [ "$(readlink "/proc/$pid/cwd" 2>/dev/null || true)" = "$(cd "$RUN_DIR" && pwd -P)" ]
 }
 
 # Whether that pid is a live orchestrator rather than one this shell has yet to

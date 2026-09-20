@@ -521,12 +521,6 @@ test("sending a message to a parked session relaunches it", async ({
 
   await composer(page).getByRole("button", { name: "Stop" }).click();
   await waitForSessionState(client, sessionId, "parked");
-  // The owner clears `container_id` after the state change and only then hands
-  // the session back to the registry. A message sent before it has done so is
-  // accepted with 202 and silently dropped — an orchestrator race reported with
-  // this task — so the scenario waits for the documented rest state of `parked`
-  // ("Container: removed") first.
-  await waitForContainerRemoved(client, sessionId);
   await expectState(page, "parked");
 
   await compose(page, "resumed hello");

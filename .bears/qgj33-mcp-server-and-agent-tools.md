@@ -2,10 +2,10 @@
 id: qgj33
 title: MCP server and agent tools
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:14:07.871123795Z"
-updated: "2026-09-16T20:15:44.443140356Z"
+updated: "2026-09-20T10:33:10.547792582Z"
 tags:
   - orchestrator
   - mcp

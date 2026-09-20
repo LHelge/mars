@@ -11,6 +11,7 @@
 import type { ComponentType } from "react";
 
 import type { Session } from "../types";
+import { ChangesPanel } from "./ChangesPanel";
 import { TasksPanel } from "./TasksPanel";
 
 export interface SessionPanelProps {
@@ -28,6 +29,13 @@ export interface SidePanelEntry {
 }
 
 export const sidePanels: SidePanelEntry[] = [
+  {
+    id: "changes",
+    label: "Changes",
+    component: ChangesPanel,
+    // A session that has not been created yet has no branch to diff.
+    enabled: (session) => session.state !== "creating",
+  },
   { id: "tasks", label: "Tasks", component: TasksPanel },
 ];
 

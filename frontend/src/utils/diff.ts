@@ -26,6 +26,14 @@ export interface PatchHunk {
 export interface PatchFile {
   path: string;
   hunks: PatchHunk[];
+  /**
+   * git refused to diff this file's contents, so it has no hunks and no line
+   * counts. The Changes panel reads it to write `bin` where the counts go: the
+   * endpoint reports zero additions and zero deletions for a binary file
+   * (`SPEC.md`, "Git"), which is also what a mode-only change reports, so the
+   * patch is the only place that tells the two apart.
+   */
+  binary: boolean;
 }
 
 /** Above this many lines on either side the alignment is not attempted. */
@@ -175,9 +183,27 @@ function headerPath(raw: string): string | null {
 }
 
 /**
+ * Both spellings of "this file has no readable diff": the one-line notice of a
+ * plain `git diff` and the header of a `--binary` patch.
+ */
+function isBinaryNotice(line: string): boolean {
+  return (
+    (line.startsWith("Binary files ") && line.endsWith(" differ")) ||
+    line === "GIT binary patch"
+  );
+}
+
+/**
  * A unified patch as the git diff endpoint returns it, split per file and per
- * hunk. Lines git could not attribute to a file (`index`, mode changes, binary
- * notices) are dropped: the panel lists what changed, not how git said it.
+ * hunk. Lines git could not attribute to a file (`index`, mode changes) are
+ * dropped: the panel lists what changed, not how git said it. A binary notice
+ * is the exception — it carries the only signal that a file has no line counts,
+ * so it sets `binary` instead of being dropped.
+ *
+ * A file is named by the `b/` side of its `diff --git` header, so a rename
+ * appears under its new path. The diff endpoint passes `--no-renames`
+ * (`ARCHITECTURE.md`, "Git model"), so in practice a rename arrives as a
+ * deletion and an addition; a patch from anywhere else still parses.
  */
 export function parseUnifiedPatch(patch: string): PatchFile[] {
   const files: PatchFile[] = [];
@@ -196,7 +222,7 @@ export function parseUnifiedPatch(patch: string): PatchFile[] {
   for (const line of source) {
     const git = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
     if (git) {
-      file = { path: git[2], hunks: [] };
+      file = { path: git[2], hunks: [], binary: false };
       files.push(file);
       hunk = null;
       continue;
@@ -204,7 +230,7 @@ export function parseUnifiedPatch(patch: string): PatchFile[] {
     if (line.startsWith("--- ")) {
       const path = headerPath(line.slice(4));
       if (file === null && path !== null) {
-        file = { path, hunks: [] };
+        file = { path, hunks: [], binary: false };
         files.push(file);
         hunk = null;
       }
@@ -214,7 +240,7 @@ export function parseUnifiedPatch(patch: string): PatchFile[] {
       const path = headerPath(line.slice(4));
       if (path !== null) {
         if (file === null) {
-          file = { path, hunks: [] };
+          file = { path, hunks: [], binary: false };
           files.push(file);
           hunk = null;
         } else {
@@ -227,7 +253,7 @@ export function parseUnifiedPatch(patch: string): PatchFile[] {
     const bounds = HUNK.exec(line);
     if (bounds) {
       if (file === null) {
-        file = { path: "", hunks: [] };
+        file = { path: "", hunks: [], binary: false };
         files.push(file);
       }
       oldNo = Number(bounds[1]);
@@ -238,6 +264,9 @@ export function parseUnifiedPatch(patch: string): PatchFile[] {
     }
 
     if (hunk === null) {
+      if (file !== null && isBinaryNotice(line)) {
+        file.binary = true;
+      }
       continue;
     }
     if (line.startsWith("\\")) {

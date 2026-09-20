@@ -1,10 +1,10 @@
 ---
 id: "9udyu"
 title: Code-split the frontend by route so the session view's markdown, virtualizer and xterm load on demand
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-20T08:35:21.475715524Z"
-updated: "2026-09-20T08:50:19.368696706Z"
+updated: "2026-09-20T08:54:49.509376831Z"
 tags:
   - frontend
   - perf

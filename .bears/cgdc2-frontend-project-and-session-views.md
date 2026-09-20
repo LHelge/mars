@@ -2,10 +2,10 @@
 id: cgdc2
 title: Frontend project and session views
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:14:37.780218089Z"
-updated: "2026-09-16T20:15:52.462086216Z"
+updated: "2026-09-20T08:54:55.691293735Z"
 tags:
   - frontend
   - sessions

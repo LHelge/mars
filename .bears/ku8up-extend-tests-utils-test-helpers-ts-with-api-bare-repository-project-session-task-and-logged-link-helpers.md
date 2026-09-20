@@ -1,16 +1,17 @@
 ---
 id: ku8up
 title: Extend tests/utils/test-helpers.ts with API, bare-repository, project, session, task and logged-link helpers
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:41:40.471303092Z"
-updated: "2026-09-16T20:41:40.471303092Z"
+updated: "2026-09-20T17:25:47.372731050Z"
 tags:
   - frontend
   - tests
 depends_on:
   - arsch
 parent: "6s8j7"
+attempts: 1
 ---
 
 ## Summary

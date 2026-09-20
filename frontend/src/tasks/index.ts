@@ -117,3 +117,21 @@ export {
   reviewLabel,
 } from "./handoffRules";
 export type { ReviewDecision, ReviewLabel } from "./handoffRules";
+
+export { MergeTaskAction } from "./MergeTaskAction";
+export type { MergeTaskActionProps } from "./MergeTaskAction";
+
+export { HandoffDiff } from "./HandoffDiff";
+export type { HandoffDiffProps } from "./HandoffDiff";
+
+export {
+  MERGE_ACTION,
+  MERGE_BLOCKED,
+  canMerge,
+  isStaleMerge,
+  mergeConflict,
+  mergeCoverLine,
+  mergeErrorMessage,
+  mergedMessage,
+} from "./mergeRules";
+export type { MergeConflict } from "./mergeRules";

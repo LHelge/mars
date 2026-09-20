@@ -7,19 +7,33 @@
 // store behind it is a singleton bound to one project at a time, so a second
 // mounted stream would be a second connection writing the same snapshot; the
 // panel is where the project id and the route's task number are both in hand.
+//
+// The route parameter arrives as it was written, not as a number: a `:number`
+// that is not a task number still opens the drawer, which says so without
+// asking the server. Having no `:number` at all is the other thing, and means
+// no drawer.
 
-import { useTaskStream, TaskBoard } from "../../tasks";
+import { TaskBoard, TaskDetail, parseTaskNumber, useTaskStream } from "../../tasks";
 import type { ProjectTabPanelProps } from "./tabs";
 
 export interface BoardTabProps extends ProjectTabPanelProps {
-  /** The `:number` of `/projects/:id/tasks/:number`, when the route has one. */
-  taskNumber?: number;
+  /** The `:number` of `/projects/:id/tasks/:number`, exactly as written. */
+  taskParam?: string;
 }
 
-export function BoardTab({ project, taskNumber }: BoardTabProps) {
+export function BoardTab({ project, taskParam }: BoardTabProps) {
   // The status is read from the store by the board itself; this call is here
   // for its lifetime, which is the tab's.
   useTaskStream(project.id);
 
-  return <TaskBoard projectId={project.id} openTaskNumber={taskNumber} />;
+  const number = taskParam === undefined ? null : parseTaskNumber(taskParam);
+
+  return (
+    <>
+      <TaskBoard projectId={project.id} openTaskNumber={number ?? undefined} />
+      {taskParam !== undefined && (
+        <TaskDetail projectId={project.id} number={number} />
+      )}
+    </>
+  );
 }

@@ -18,6 +18,7 @@ import {
   SecretsManager,
   SubmitButton,
 } from "../components";
+import { TaskStatesEditor } from "../tasks";
 import type { Project } from "../types";
 import { NotFoundPage } from "./NotFoundPage";
 import {
@@ -164,15 +165,15 @@ function ProjectPanel({ project, tab }: { project: Project; tab: ProjectTab }) {
     return <SharedDirsTab project={project} />;
   }
 
-  // `board` and `states`: the mount point for `TaskBoard` and
-  // `TaskStatesEditor` from `src/tasks/`, delivered by the task board epic.
+  if (tab === "states") {
+    return <TaskStatesEditor projectId={project.id} />;
+  }
+
+  // `board`: the mount point for `TaskBoard` from `src/tasks/`, delivered by
+  // the task board epic.
   return (
     <EmptyState
-      title={
-        tab === "board"
-          ? "The task board is not here yet"
-          : "The task states editor is not here yet"
-      }
+      title="The task board is not here yet"
       description="It arrives with the frontend task board epic."
     />
   );

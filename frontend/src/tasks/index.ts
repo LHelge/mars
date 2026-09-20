@@ -14,3 +14,11 @@ export {
   type TaskStoreHook,
   type TaskStreamStatus,
 } from "./taskStore";
+
+export { TaskStatesEditor } from "./TaskStatesEditor";
+export type { TaskStatesEditorProps } from "./TaskStatesEditor";
+export {
+  countTasksByState,
+  deletionReason,
+  stateNameError,
+} from "./taskStateRules";

@@ -40,19 +40,11 @@ use crate::mcp::{McpError, McpResult, SessionContext};
 use crate::models::{Label, TaskRef, TaskTitle};
 use crate::prelude::*;
 use crate::repositories::TaskRepository;
+use crate::repositories::tasks::PARENT_NOT_TOP_LEVEL;
 // The tracker's input shape shares its name with the tool's; the alias keeps
 // both readable in one function.
 use crate::tracker::tasks::{CreateTaskInput as NewTaskInput, CreatedBy, create_task};
 use crate::tracker::{TaskDto, TrackerMutation};
-
-/// What a `parent` naming no task of this project is told.
-///
-/// The argument is named, unlike the bare `task not found` a `task` argument
-/// gets: a creation carries up to three task references, and "task not found"
-/// alone would leave the agent guessing which of them it got wrong. A
-/// `depends_on` entry is the tracker's own refusal and keeps the tracker's
-/// wording, so REST and MCP answer that one alike.
-pub const PARENT_NOT_FOUND: &str = "parent task not found";
 
 /// The task references an input carries, parsed.
 ///
@@ -176,14 +168,17 @@ async fn create(
 /// hangs the child off.
 ///
 /// Whether it *may* be a parent — top-level, of this project, not the task
-/// itself — is the repository's rule and is left to it.
+/// itself — is the repository's rule and is left to it. A reference that names
+/// nothing gets the repository's refusal too, the 400 REST gives an unusable
+/// `parent_id` and `update` gives an unusable `parent`: the message names the
+/// argument, and one mistake has one answer on every surface.
 async fn resolve_parent(m: &mut TrackerMutation<'_>, reference: TaskRef) -> McpResult<Uuid> {
     let project_id = m.project_id();
 
     let parent = TaskRepository::new(m.pool())
         .find_task_for_update(m.conn(), project_id, reference)
         .await?
-        .ok_or_else(|| McpError::not_found(PARENT_NOT_FOUND))?;
+        .ok_or_else(|| McpError::invalid_argument(PARENT_NOT_TOP_LEVEL))?;
 
     Ok(parent.id)
 }

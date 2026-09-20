@@ -17,6 +17,7 @@ pub mod types;
 
 pub mod claim;
 pub mod comment;
+pub mod common;
 pub mod create_task;
 pub mod get_task;
 pub mod list_session_branches;

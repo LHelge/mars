@@ -70,7 +70,11 @@ const NOT_SERVED: &str = "task is not in a state this profile serves";
 const NOT_HELD: &str = "task is not held";
 /// The conflict an agent releasing a task it does not hold answers with
 /// (`SPEC.md`, `release`).
-const NOT_HELD_BY_SESSION: &str = "task is not held by this session";
+///
+/// Public because the MCP boundary refuses the same thing earlier, before a
+/// comment row is written (`mcp::tools::common::require_holder`), and the two
+/// refusals must be the same sentence.
+pub const NOT_HELD_BY_SESSION: &str = "task is not held by this session";
 /// The conflict `needs_human` answers when somebody else holds the task.
 const HELD_BY_ANOTHER: &str = "task is held by another session";
 /// `TaskEvent.reason` on a release a user made (`SPEC.md`, "TaskEvent").

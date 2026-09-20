@@ -1,10 +1,10 @@
 ---
 id: "7sdvv"
 title: "Add cross-stack real-time acceptance tests: many subscribers, mixed WebSocket and SSE under one combined transaction, listener loss recovery through the streams, and ADR 0028 ordering at the client"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:47:49.728820951Z"
-updated: "2026-09-19T23:23:21.918846911Z"
+updated: "2026-09-20T00:31:58.902915098Z"
 tags:
   - orchestrator
   - realtime

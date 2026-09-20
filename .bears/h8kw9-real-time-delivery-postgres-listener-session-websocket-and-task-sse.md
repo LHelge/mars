@@ -2,10 +2,10 @@
 id: h8kw9
 title: "Real-time delivery: Postgres listener, session WebSocket and task SSE"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:13:30.687434815Z"
-updated: "2026-09-16T20:15:36.814691635Z"
+updated: "2026-09-20T00:32:02.384052901Z"
 tags:
   - orchestrator
   - realtime

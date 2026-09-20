@@ -29,6 +29,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use futures_util::FutureExt;
+use mars_orchestrator::cron::CronService;
 use mars_orchestrator::email::{EmailClient, LogEmailClient, ResendClient};
 use mars_orchestrator::engine::{EngineError, bootstrap_engine};
 use mars_orchestrator::git::{
@@ -39,6 +40,8 @@ use mars_orchestrator::secrets;
 use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 /// Connections in the pool. The orchestrator's own work is short queries plus
 /// the session owners' event appends; 20 leaves headroom for both without
@@ -283,8 +286,8 @@ async fn serve(bootstrap: Bootstrap) {
     // engine's startup probe is already done, so nothing is adopted through an
     // engine that has not been verified. A listing that fails is fatal: an
     // orchestrator that does not know which containers are running would park
-    // sessions whose CLI is alive. The cron jobs start after this, which is
-    // step 4 — the background-jobs epic adds `CronService::start` here.
+    // sessions whose CLI is alive. The cron jobs start right after this, which
+    // is step 4.
     match mars_orchestrator::session::recover(&state).await {
         Ok(report) => info!(
             adopted = report.adopted,
@@ -298,10 +301,28 @@ async fn serve(bootstrap: Bootstrap) {
         }
     }
 
-    // One signal future, watched twice: once by the listeners, which start
-    // draining, and once by the deadline, which gives up on a request that
-    // will not finish.
+    // Step 4 of the restart procedure: the cron jobs, after recovery and
+    // before either listener accepts a request, so the first sweep sees the
+    // state recovery left rather than one a request has already changed
+    // (`ARCHITECTURE.md`, "Restart procedure", "Background jobs"). Every job
+    // runs once here and then at its own interval.
+    let (cron_shutdown, cron_shutdown_rx) = watch::channel(false);
+    let cron_jobs = Arc::new(CronService::new(state.clone())).start(cron_shutdown_rx);
+
+    // One signal future, watched three times: by the listeners, which start
+    // draining, by the deadline, which gives up on a request that will not
+    // finish, and by the cron loops, which take a `watch` rather than a future
+    // because each of the six holds its own end of it.
     let signal = shutdown_signal().shared();
+    tokio::spawn({
+        let signal = signal.clone();
+        async move {
+            signal.await;
+            // The receivers outlive this task; a send that finds none is the
+            // loops having already stopped, which is the state it wanted.
+            let _ = cron_shutdown.send(true);
+        }
+    });
     let deadline = {
         let signal = signal.clone();
         async move {
@@ -325,7 +346,36 @@ async fn serve(bootstrap: Bootstrap) {
         }
     }
 
+    // After the listeners, on the same grace: a job mid-tick is a transaction
+    // that is better committed than abandoned, and the six loops stop between
+    // ticks, so the usual wait here is the tail of one job.
+    await_cron_jobs(cron_jobs, drain_grace).await;
+
     info!("orchestrator stopped");
+}
+
+/// Wait for the cron loops to stop, for at most `grace`.
+///
+/// Dropping a handle only detaches its task, so the timeout is what the
+/// process actually exits on; the `warn!` is there so an operator can tell a
+/// slow job from a hung one.
+async fn await_cron_jobs(jobs: Vec<JoinHandle<()>>, grace: Duration) {
+    let drained = async {
+        for job in jobs {
+            // A loop that panicked has already been logged by whatever
+            // unwound it; there is nothing to do here but not hide it.
+            if let Err(err) = job.await {
+                error!(error = %err, "a cron loop did not stop cleanly");
+            }
+        }
+    };
+
+    if tokio::time::timeout(grace, drained).await.is_err() {
+        warn!(
+            grace_secs = grace.as_secs(),
+            "background jobs still running at the drain deadline; exiting anyway"
+        );
+    }
 }
 
 /// Pick the delivery path for outgoing mail, or exit.

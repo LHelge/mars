@@ -1,16 +1,17 @@
 ---
 id: "9pvaj"
 title: Add StopReason (user, idle, stalled) to the owner stop path so idle conversational sessions park and idle ephemeral sessions fail as stalled
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:42:55.195112567Z"
-updated: "2026-09-16T20:51:52.250363933Z"
+updated: "2026-09-20T05:02:31.082979485Z"
 tags:
   - orchestrator
   - sessions
 depends_on:
   - xjaah
 parent: cxmar
+attempts: 1
 ---
 
 ## Summary

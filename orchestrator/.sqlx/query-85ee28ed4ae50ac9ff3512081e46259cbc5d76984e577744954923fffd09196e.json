@@ -1,0 +1,82 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT t.project_id, s.id AS session_id,\n                   s.state AS \"session_state: SessionState\", s.error AS session_error,\n                   COUNT(*) AS \"held!\"\n            FROM tasks t\n            JOIN sessions s ON s.id = t.lease_holder_session_id\n            WHERE s.state IN ('done', 'failed')\n            GROUP BY t.project_id, s.id, s.state, s.error\n            ORDER BY t.project_id, s.id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "project_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "session_state: SessionState",
+        "type_info": {
+          "Custom": {
+            "name": "session_state",
+            "kind": {
+              "Enum": [
+                "creating",
+                "running",
+                "parked",
+                "done",
+                "failed"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "session_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "error"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "held!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "85ee28ed4ae50ac9ff3512081e46259cbc5d76984e577744954923fffd09196e"
+}

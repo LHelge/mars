@@ -38,7 +38,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::models::{NewTask, Task, TaskError, TaskRef, TaskStateKind, TaskUpdate};
+use crate::models::{NewTask, SessionState, Task, TaskError, TaskRef, TaskStateKind, TaskUpdate};
 use crate::prelude::*;
 use crate::repositories::ProjectRepository;
 use crate::repositories::tasks::TaskRepository;
@@ -135,6 +135,31 @@ pub struct TaskSummaryRow {
     pub attempts: i16,
     /// Outgoing `task_dependencies` edges of every kind.
     pub depends_on_count: i64,
+}
+
+/// A dead session that still holds leases, as the stuck-task reaper finds it
+/// (`ARCHITECTURE.md`, "Background jobs").
+///
+/// One row per holder, not per task: the reaper releases a session's whole
+/// backlog in that session's single tracker mutation, so what it needs of a
+/// task is only how many there were.
+///
+/// `session_state` and `session_error` are what decide the release reason —
+/// `failed` with error `stalled` is the idle reaper's doing, everything else
+/// is a session that simply ended (`SPEC.md`, "TaskEvent") — and they are read
+/// here rather than inferred, because the same sweep answers for both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadHolder {
+    /// The project whose row the release will lock.
+    pub project_id: Uuid,
+    /// The holder, which is `done` or `failed`.
+    pub session_id: Uuid,
+    pub session_state: SessionState,
+    /// `sessions.error`, which is `stalled` for a session the idle reaper
+    /// failed.
+    pub session_error: Option<String>,
+    /// How many tasks this session held when the sweep listed it.
+    pub held: i64,
 }
 
 impl TaskRepository<'_> {
@@ -857,6 +882,42 @@ impl TaskRepository<'_> {
         .await?;
 
         Ok(tasks)
+    }
+
+    /// Every session that is `done` or `failed` and still holds a lease.
+    ///
+    /// The stuck-task reaper's sweep (`ARCHITECTURE.md`, "Background jobs"
+    /// and "Task tracker" → "Liveness comes from the session, not from tool
+    /// calls"): one row per dead holder rather than one per task, so the
+    /// reaper opens one tracker mutation per session and releases everything
+    /// that session held in it. `tasks_lease_holder_idx` is what makes the
+    /// join cheap on a database whose leases are nearly all held by live
+    /// sessions.
+    ///
+    /// A read on the pool and deliberately outside any transaction: nothing
+    /// here is authoritative — a lease may be given back, taken over or
+    /// escalated between this listing and the release — and the locked re-read
+    /// inside
+    /// [`release_leases_for_session`](crate::tracker::release_leases_for_session)
+    /// is what decides (ADR 0021).
+    pub async fn list_dead_lease_holders(&self) -> Result<Vec<DeadHolder>> {
+        let holders = sqlx::query_as!(
+            DeadHolder,
+            r#"
+            SELECT t.project_id, s.id AS session_id,
+                   s.state AS "session_state: SessionState", s.error AS session_error,
+                   COUNT(*) AS "held!"
+            FROM tasks t
+            JOIN sessions s ON s.id = t.lease_holder_session_id
+            WHERE s.state IN ('done', 'failed')
+            GROUP BY t.project_id, s.id, s.state, s.error
+            ORDER BY t.project_id, s.id
+            "#,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(holders)
     }
 
     /// The same list, read inside a tracker mutation and scoped to its

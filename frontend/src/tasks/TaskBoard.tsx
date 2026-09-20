@@ -29,6 +29,7 @@ import { LoadingState } from "../components/LoadingState";
 import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
 import type { TaskState } from "../types";
+import { taskColumnTestId } from "../utils/testIds";
 import { CreateTaskForm } from "./CreateTaskForm";
 import { normalizeQuery } from "./search";
 import { TaskCard } from "./TaskCard";
@@ -238,7 +239,7 @@ function BoardColumn({ column, openTaskNumber }: BoardColumnProps) {
     <div
       // The end-to-end suite addresses a column by its state's name: the
       // heading alone is ambiguous against the cards' own headings.
-      data-testid={`column-${column.name}`}
+      data-testid={taskColumnTestId(column.name)}
       className="flex w-64 shrink-0 snap-start flex-col gap-2"
     >
       <div className="border-console-border flex items-baseline gap-2 border-b pb-1.5">

@@ -5,6 +5,7 @@
 // same way.
 
 import { MarkdownBody } from "../../components/Markdown";
+import { STREAMING_CURSOR } from "../../utils/testIds";
 import type { AssistantTextMessage } from "../sessionStore";
 
 export interface AssistantTextProps {
@@ -17,7 +18,7 @@ export function AssistantText({ message }: AssistantTextProps) {
       <MarkdownBody>{message.text}</MarkdownBody>
       {message.streaming && (
         <span
-          data-testid="streaming-cursor"
+          data-testid={STREAMING_CURSOR}
           aria-hidden="true"
           className="bg-console-accent ml-0.5 inline-block h-[1em] w-[0.4em] animate-pulse align-text-bottom"
         />

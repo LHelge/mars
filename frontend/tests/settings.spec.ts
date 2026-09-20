@@ -7,15 +7,9 @@
 // checkbox that never reached the orchestrator would look identical until one
 // of those two happens.
 
-import { expect, test } from "@playwright/test";
-
 import type { User } from "../src/types";
-import {
-  api,
-  createTestUser,
-  currentUser,
-  loginViaToken,
-} from "./utils/test-helpers";
+import { expect, test } from "./utils/fixtures";
+import { currentUser, loginViaToken } from "./utils/test-helpers";
 
 /** The opt-out checkbox, found by the sentence beside it. */
 const NOTIFY_LABEL = /Email me when a task I am assigned to/;
@@ -23,14 +17,13 @@ const NOTIFY_LABEL = /Email me when a task I am assigned to/;
 test("the escalation opt-out is saved, survives a reload and is what the API reports", async ({
   page,
   context,
-  request,
+  user,
+  api,
 }) => {
-  const user = await createTestUser(request, { prefix: "settings" });
-  const client = api(request, user.access_token);
   await loginViaToken(context, user);
 
   // A fresh account is opted in; the scenario is about turning it off.
-  expect((await currentUser(client)).notify_email).toBe(true);
+  expect((await currentUser(api)).notify_email).toBe(true);
 
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
@@ -50,14 +43,14 @@ test("the escalation opt-out is saved, survives a reload and is what the API rep
   await page.reload();
   await expect(page.getByLabel(NOTIFY_LABEL)).not.toBeChecked();
 
-  const me = await currentUser(client);
+  const me = await currentUser(api);
   expect(me.notify_email).toBe(false);
 
   // And back on, so the toggle is shown to be a toggle and not a one-way door.
   await page.getByLabel(NOTIFY_LABEL).click();
   await expect(page.getByText("Preferences saved")).toBeVisible();
   await expect
-    .poll(async () => (await client.get<User>("/users/me")).notify_email, {
+    .poll(async () => (await api.get<User>("/users/me")).notify_email, {
       message: "PATCH /users/me to have turned the preference back on",
     })
     .toBe(true);
@@ -66,9 +59,8 @@ test("the escalation opt-out is saved, survives a reload and is what the API rep
 test("the settings page carries the password form and no administration", async ({
   page,
   context,
-  request,
+  user,
 }) => {
-  const user = await createTestUser(request, { prefix: "settings-nav" });
   await loginViaToken(context, user);
 
   await page.goto("/settings");

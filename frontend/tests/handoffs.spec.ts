@@ -45,11 +45,9 @@
 //     not the session it came from, and a second container per scenario buys
 //     the assertion nothing.
 
-import { expect, test } from "@playwright/test";
 import type {
   APIRequestContext,
   Browser,
-  BrowserContext,
   Locator,
   Page,
 } from "@playwright/test";
@@ -61,25 +59,29 @@ import type {
   SyncResult,
   TaskDetail,
 } from "../src/types";
-import type { Api, BareRepo, TestUser } from "./utils/test-helpers";
+import type { Api } from "./utils/test-helpers";
+import { apiClient, expect, test } from "./utils/fixtures";
+import type { SessionTracker } from "./utils/fixtures";
 import {
-  api,
   commitInSessionWorkClone,
-  createBareRepo,
-  createProject,
   createTask,
-  createTestUser,
   endSession,
+  createTestUser,
   getTask,
   gitIsAncestor,
   gitRevParse,
-  launchSession,
   loginViaToken,
   mirrorPath,
   newLoggedInPage,
+  reveal,
+  transcript,
   waitFor,
   waitForSessionState,
+  type TestUser,
 } from "./utils/test-helpers";
+
+// The upstream every scenario here clones: the file the commits rewrite.
+test.use({ repoFiles: { "src/app.txt": "v1\n" } });
 
 // A container start, a clone, a hand-off publication that syncs, and — in the
 // reviewer scenario — three sessions in a row.
@@ -88,48 +90,28 @@ test.setTimeout(240_000);
 /** A live board refresh is coalesced, so nothing here asserts immediacy. */
 const LIVE_TIMEOUT = 15_000;
 
-/** Every session a scenario launched, ended in `afterEach`. */
-let launched: { client: Api; id: string }[] = [];
-
-test.beforeEach(() => {
-  launched = [];
-});
-
-test.afterEach(async () => {
-  for (const session of launched) {
-    // Best effort: a scenario that failed must still not leave a container
-    // behind, and one whose session is already gone is fine.
-    await endSession(session.client, session.id).catch(() => undefined);
-  }
-});
-
 interface Stage {
-  user: TestUser;
   client: Api;
-  repo: BareRepo;
   project: Project;
+  sessions: SessionTracker;
   /** `<DATA_DIR>/projects/<pid>/repo.git`, where every ref assertion is made. */
   mirror: string;
 }
 
 /**
- * The implementer U1: a fresh user, a local bare upstream, a project that
- * finished cloning and one task `Add greeting` in `ready`, with the browser
- * context already signed in as that user.
+ * The implementer U1's arrangement on top of the shared fixtures: one task
+ * `Add greeting` in `ready`, on the project the `project` fixture cloned.
  */
 async function stage(
-  request: APIRequestContext,
-  context: BrowserContext,
-  prefix: string,
+  sessions: SessionTracker,
+  client: Api,
+  project: Project,
 ): Promise<Stage> {
-  const user = await createTestUser(request, { prefix });
-  const client = api(request, user.access_token);
-  const repo = createBareRepo(prefix, { files: { "src/app.txt": "v1\n" } });
-  const project = await createProject(client, { remote_url: repo.url });
-  await createTask(client, project.id, { title: "Add greeting", state: "ready" });
-  await loginViaToken(context, user);
-
-  return { user, client, repo, project, mirror: mirrorPath(project.id) };
+  await createTask(client, project.id, {
+    title: "Add greeting",
+    state: "ready",
+  });
+  return { client, project, sessions, mirror: mirrorPath(project.id) };
 }
 
 /**
@@ -138,10 +120,9 @@ async function stage(
  * `task-sessions.spec.ts`; here it is arrangement.
  */
 async function implementer(stage: Stage): Promise<string> {
-  const session = await launchSession(stage.client, stage.project.id, {
+  const session = await stage.sessions.launch(stage.client, stage.project.id, {
     task_id: 1,
   });
-  launched.push({ client: stage.client, id: session.id });
   await waitForSessionState(stage.client, session.id, "running", 120_000);
   return session.id;
 }
@@ -304,42 +285,16 @@ async function openLaunchForm(panel: Locator): Promise<Locator> {
 async function submitLaunch(
   page: Page,
   form: Locator,
+  tracker: SessionTracker,
   client: Api,
 ): Promise<string> {
   await form.getByRole("button", { name: "Open in session", exact: true }).click();
   await page.waitForURL(/\/sessions\/[0-9a-f-]{8}-/);
   const id = page.url().slice(page.url().lastIndexOf("/") + 1);
-  launched.push({ client, id });
-  return id;
+  return tracker.track(client, id);
 }
 
 // --- the session view -------------------------------------------------------
-
-/** The virtualised transcript; only the rows in view are in the DOM. */
-function transcript(page: Page): Locator {
-  return page.getByTestId("transcript-scroll");
-}
-
-/**
- * Scrolls the transcript back until `target` is in the DOM and returns it —
- * the generated first message is the oldest row there is.
- */
-async function reveal(page: Page, target: Locator): Promise<Locator> {
-  const scroller = transcript(page);
-  for (let step = 0; step < 60; step += 1) {
-    if ((await target.count()) > 0) break;
-    const atTop = await scroller.evaluate((element) => {
-      const next = Math.max(0, element.scrollTop - element.clientHeight * 0.7);
-      const was = element.scrollTop;
-      element.scrollTop = next;
-      return was === 0;
-    });
-    if (atTop) break;
-    await page.waitForTimeout(80);
-  }
-  await expect(target.first()).toBeVisible();
-  return target.first();
-}
 
 /** A second browser signed in as the reviewer U2. */
 async function reviewer(
@@ -349,7 +304,7 @@ async function reviewer(
   const user = await createTestUser(request, { prefix: "reviewer" });
   return {
     user,
-    client: api(request, user.access_token),
+    client: apiClient(request, user.access_token),
     page: await newLoggedInPage(browser, user),
   };
 }
@@ -359,9 +314,13 @@ async function reviewer(
 test("publishing a revision pins the commit and moves the task to review", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const fixture = await stage(request, context, "revision");
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
   const session = await implementer(fixture);
   const commit = commitInSessionWorkClone(
     session,
@@ -369,7 +328,7 @@ test("publishing a revision pins the commit and moves the task to review", async
     "feat: greeting",
   );
 
-  const panel = await openTask(page, fixture.project);
+  const panel = await openTask(page, project);
   await expect(handoffSection(panel).getByText("No code hand-off")).toBeVisible();
 
   const form = await openRevisionForm(panel);
@@ -466,8 +425,13 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
   context,
   request,
   browser,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const fixture = await stage(request, context, "defaultbase");
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
   const session = await implementer(fixture);
   const commit = commitInSessionWorkClone(
     session,
@@ -483,7 +447,7 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
   );
 
   const second = await reviewer(browser, request);
-  const panel = await openTask(second.page, fixture.project);
+  const panel = await openTask(second.page, project);
 
   // `SPEC.md`, "Frontend", "Hand-off controls": the launch defaults to the
   // hand-off commit and says so, with nothing to disclose.
@@ -495,7 +459,7 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
   ).toBeVisible();
   await expect(form.getByText(/Base overridden/)).toHaveCount(0);
 
-  const reviewSession = await submitLaunch(second.page, form, second.client);
+  const reviewSession = await submitLaunch(second.page, form, sessions, second.client);
 
   // The session records the commit, not the branch (`SPEC.md`, "Sessions").
   const started = await second.client.get<Session>(`/sessions/${reviewSession}`);
@@ -535,7 +499,7 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
     },
   );
 
-  const again = await openTask(second.page, fixture.project);
+  const again = await openTask(second.page, project);
   form = await openLaunchForm(again);
   await form.locator("summary").click();
   await form.getByLabel("Override base ref").fill("main");
@@ -545,7 +509,7 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
     ),
   ).toBeVisible();
 
-  const overridden = await submitLaunch(second.page, form, second.client);
+  const overridden = await submitLaunch(second.page, form, sessions, second.client);
   const third = await second.client.get<Session>(`/sessions/${overridden}`);
   expect(third.base_ref).toBe("main");
   // An explicit base is not a hand-off selection, so the session records none
@@ -564,8 +528,13 @@ test("approving forwards the hand-off to merge and unlocks the task merge", asyn
   context,
   request,
   browser,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const fixture = await stage(request, context, "approve");
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
   const session = await implementer(fixture);
   const commit = commitInSessionWorkClone(
     session,
@@ -574,7 +543,7 @@ test("approving forwards the hand-off to merge and unlocks the task merge", asyn
   );
 
   const second = await reviewer(browser, request);
-  const panel = await openTask(second.page, fixture.project);
+  const panel = await openTask(second.page, project);
   await expect(handoffSection(panel).getByText("No code hand-off")).toBeVisible();
 
   // The board's live refresh reaches the open drawer: the hand-off U1 publishes
@@ -632,9 +601,13 @@ test("approving forwards the hand-off to merge and unlocks the task merge", asyn
 test("the task merge lands the pinned commit even after the branch advanced", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const fixture = await stage(request, context, "taskmerge");
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
   const session = await implementer(fixture);
   const approved = commitInSessionWorkClone(
     session,
@@ -667,7 +640,7 @@ test("the task merge lands the pinned commit even after the branch advanced", as
   const synced = await syncSession(fixture.client, session);
   expect(synced.commit).toBe(later);
 
-  const panel = await openTask(page, fixture.project);
+  const panel = await openTask(page, project);
   await mergeButton(panel).click();
   const form = panel.getByRole("form", { name: "Merge approved hand-off" });
   await expect(form).toBeVisible();
@@ -711,9 +684,13 @@ test("the task merge lands the pinned commit even after the branch advanced", as
 test("the merge control is shut without an approval and a superseded review is refused", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const fixture = await stage(request, context, "stale");
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
   const session = await implementer(fixture);
   const first = commitInSessionWorkClone(
     session,
@@ -728,7 +705,7 @@ test("the merge control is shut without an approval and a superseded review is r
     "review",
   );
 
-  const panel = await openTask(page, fixture.project);
+  const panel = await openTask(page, project);
   // `tasks/mergeRules.ts`: an unreviewed hand-off is not mergeable, and the
   // button carries the reason rather than sending a request that earns a 409.
   await expect(mergeButton(panel)).toBeDisabled();
@@ -798,8 +775,13 @@ test("requesting changes sends the task back and a new revision resets the revie
   context,
   request,
   browser,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const fixture = await stage(request, context, "changes");
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
   const session = await implementer(fixture);
   const commit = commitInSessionWorkClone(
     session,
@@ -809,7 +791,7 @@ test("requesting changes sends the task back and a new revision resets the revie
   await publishRevision(fixture, session, commit, "Ready for review", "review");
 
   const second = await reviewer(browser, request);
-  const reviewPanel = await openTask(second.page, fixture.project);
+  const reviewPanel = await openTask(second.page, project);
   const form = await openReviewForm(reviewPanel, "Request changes");
   await expect(
     form.getByText(`Requesting changes on commit ${commit.slice(0, 10)}`),
@@ -843,7 +825,7 @@ test("requesting changes sends the task back and a new revision resets the revie
     { "greeting.txt": "hello, world\n" },
     "fix: rename",
   );
-  const panel = await openTask(page, fixture.project);
+  const panel = await openTask(page, project);
   const revision = await openRevisionForm(panel);
   await submitRevision(revision, {
     source: session,
@@ -868,9 +850,13 @@ test("requesting changes sends the task back and a new revision resets the revie
 test("the revision diff is read by hand-off id without syncing anything", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const fixture = await stage(request, context, "diff");
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
   const session = await implementer(fixture);
   const commit = commitInSessionWorkClone(
     session,
@@ -885,7 +871,7 @@ test("the revision diff is read by hand-off id without syncing anything", async 
     "review",
   );
 
-  const panel = await openTask(page, fixture.project);
+  const panel = await openTask(page, project);
   await handoffSection(panel)
     .getByRole("button", { name: "View diff" })
     .first()
@@ -920,9 +906,13 @@ test("the revision diff is read by hand-off id without syncing anything", async 
 test("a commit that is not the source session's tip is refused", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const fixture = await stage(request, context, "mismatch");
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
   const session = await implementer(fixture);
   const tip = commitInSessionWorkClone(
     session,
@@ -930,7 +920,7 @@ test("a commit that is not the source session's tip is refused", async ({
     "feat: greeting",
   );
 
-  const panel = await openTask(page, fixture.project);
+  const panel = await openTask(page, project);
   const form = await openRevisionForm(panel);
   // A well-formed object id that is nothing: the form lets it through, because
   // the tip is the server's fact to check (`SPEC.md`: 409 `session branch tip

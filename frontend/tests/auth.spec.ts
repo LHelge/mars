@@ -19,10 +19,11 @@
 // every later scenario in the run. It is covered by the backend integration
 // tests.
 
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import type { Browser, Page } from "@playwright/test";
 
 import { TOKEN_STORAGE_KEY } from "../src/services/auth";
 import type { User } from "../src/types";
+import { expect, test } from "./utils/fixtures";
 import {
   api,
   apiBaseUrl,
@@ -168,8 +169,7 @@ test.describe("the seeded administrator", () => {
   });
 });
 
-test("login rejects a wrong password", async ({ page, request }) => {
-  const user = await createTestUser(request, { prefix: "badpw" });
+test("login rejects a wrong password", async ({ page, user }) => {
 
   await page.goto("/login");
   await submitLogin(page, user.username, "not-the-password");
@@ -181,8 +181,7 @@ test("login rejects a wrong password", async ({ page, request }) => {
   expect(await storedToken(page)).toBeNull();
 });
 
-test("login and logout", async ({ page, request }) => {
-  const user = await createTestUser(request, { prefix: "inout" });
+test("login and logout", async ({ page, user }) => {
 
   await login(page, user.username, user.password);
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
@@ -195,8 +194,7 @@ test("login and logout", async ({ page, request }) => {
   await expect(page).toHaveURL(/\/login$/);
 });
 
-test("a deep link is preserved through login", async ({ page, request }) => {
-  const user = await createTestUser(request, { prefix: "deep" });
+test("a deep link is preserved through login", async ({ page, user }) => {
 
   // `ProtectedRoute` stashes the blocked destination in router state
   // (`SPEC.md`, "Frontend", Copy links).
@@ -310,9 +308,8 @@ test("a revoked invitation cannot be accepted", async ({
 
 test("a password reset through the logged link replaces the password", async ({
   page,
-  request,
+  user,
 }) => {
-  const user = await createTestUser(request, { prefix: "reset" });
 
   await page.goto("/forgot-password");
   await page.getByLabel("Username or email").fill(user.username);
@@ -358,9 +355,8 @@ test("the settings page changes the password and keeps only this session", async
   page,
   context,
   browser,
-  request,
+  user,
 }) => {
-  const user = await createTestUser(request, { prefix: "settings" });
 
   // A second browser holding the pair `POST /test/users` issued, signed in
   // before the change and left open across it.

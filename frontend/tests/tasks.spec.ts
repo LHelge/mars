@@ -15,12 +15,11 @@
 // thirty seconds creating one through a form. What each scenario asserts
 // through the browser is only what it is about.
 
-import { expect, test } from "@playwright/test";
-import type { APIRequestContext, Locator, Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import type { Project } from "../src/types";
+import { expect, test } from "./utils/fixtures";
 import {
-  api,
   baseUrl,
   createBareRepo,
   createProject,
@@ -30,9 +29,10 @@ import {
   loginViaToken,
   moveTask,
   newLoggedInPage,
+  TASK_COLUMN_PREFIX,
+  taskCardTestId,
+  taskColumnTestId,
   uniqueName,
-  type Api,
-  type TestUser,
 } from "./utils/test-helpers";
 
 /** `docs/data-model.md`, `task_states`: what every project is created with. */
@@ -49,27 +49,6 @@ const DEFAULT_STATES = [
 /** A live refresh is coalesced, so nothing here asserts immediacy (ADR 0022). */
 const LIVE_TIMEOUT = 10_000;
 
-interface Fixture {
-  user: TestUser;
-  client: Api;
-  project: Project;
-}
-
-/** A fresh user, a bare upstream and a project that finished cloning. */
-async function arrange(
-  request: APIRequestContext,
-  prefix: string,
-): Promise<Fixture> {
-  const user = await createTestUser(request, { prefix });
-  const client = api(request, user.access_token);
-  const repo = createBareRepo(prefix);
-  const project = await createProject(client, {
-    name: uniqueName(prefix),
-    remote_url: repo.url,
-  });
-  return { user, client, project };
-}
-
 function boardPath(project: Project): string {
   return `/projects/${project.id}?tab=board`;
 }
@@ -77,15 +56,15 @@ function boardPath(project: Project): string {
 /** The board tab, waited for on the first column the project is created with. */
 async function openBoard(page: Page, project: Project): Promise<void> {
   await page.goto(boardPath(project));
-  await expect(page.getByTestId("column-backlog")).toBeVisible();
+  await expect(page.getByTestId(taskColumnTestId("backlog"))).toBeVisible();
 }
 
 function column(page: Page, name: string): Locator {
-  return page.getByTestId(`column-${name}`);
+  return page.getByTestId(taskColumnTestId(name));
 }
 
 function card(page: Page, number: number): Locator {
-  return page.getByTestId(`task-card-${String(number)}`);
+  return page.getByTestId(taskCardTestId(number));
 }
 
 /** The task drawer of `/projects/:id/tasks/:number`. */
@@ -104,9 +83,13 @@ async function openCard(page: Page, number: number): Promise<Locator> {
 /** The board's column names, in the order they are rendered. */
 function columnNames(page: Page): Promise<string[]> {
   return page
-    .locator("[data-testid^='column-']")
-    .evaluateAll((nodes) =>
-      nodes.map((node) => (node.getAttribute("data-testid") ?? "").slice(7)),
+    .locator(`[data-testid^='${TASK_COLUMN_PREFIX}']`)
+    .evaluateAll(
+      (nodes, prefix: string) =>
+        nodes.map((node) =>
+          (node.getAttribute("data-testid") ?? "").slice(prefix.length),
+        ),
+      TASK_COLUMN_PREFIX,
     );
 }
 
@@ -120,9 +103,9 @@ async function moveFromDrawer(panel: Locator, to: string): Promise<void> {
 test("columns show the default states in order and an empty project invites a first task", async ({
   page,
   context,
-  request,
+  user,
+  project,
 }) => {
-  const { user, project } = await arrange(request, "board");
   await loginViaToken(context, user);
 
   await openBoard(page, project);
@@ -137,9 +120,9 @@ test("columns show the default states in order and an empty project invites a fi
 test("a task created from the board form lands in backlog and opens in the drawer", async ({
   page,
   context,
-  request,
+  user,
+  project,
 }) => {
-  const { user, project } = await arrange(request, "create");
   await loginViaToken(context, user);
   await openBoard(page, project);
 
@@ -151,7 +134,7 @@ test("a task created from the board form lands in backlog and opens in the drawe
   await form.getByRole("button", { name: "Create task" }).click();
 
   // `POST` answers 201 in the project's first queue state (`SPEC.md`, "Tasks").
-  const first = column(page, "backlog").getByTestId("task-card-1");
+  const first = column(page, "backlog").getByTestId(taskCardTestId(1));
   await expect(first).toBeVisible();
   await expect(first).toContainText("Write docs");
   await expect(first).toContainText("P1");
@@ -167,10 +150,11 @@ test("a task created from the board form lands in backlog and opens in the drawe
 test("an edit and a comment made in the drawer survive a reload", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const { user, client, project } = await arrange(request, "edit");
-  await createTask(client, project.id, { title: "Draft the plan" });
+  await createTask(api, project.id, { title: "Draft the plan" });
   await loginViaToken(context, user);
   await openBoard(page, project);
 
@@ -206,27 +190,28 @@ test("an edit and a comment made in the drawer survive a reload", async ({
 test("the drawer moves a card across columns and closes and reopens it", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const { user, client, project } = await arrange(request, "move");
-  await createTask(client, project.id, { title: "Ship the thing" });
+  await createTask(api, project.id, { title: "Ship the thing" });
   await loginViaToken(context, user);
   await openBoard(page, project);
 
   const panel = await openCard(page, 1);
 
   await moveFromDrawer(panel, "ready");
-  await expect(column(page, "ready").getByTestId("task-card-1")).toBeVisible();
+  await expect(column(page, "ready").getByTestId(taskCardTestId(1))).toBeVisible();
   await expect(panel.getByText("Closed", { exact: true })).toHaveCount(0);
 
   // A terminal state sets `closed_at`, which the drawer shows as `Closed`.
   await moveFromDrawer(panel, "done");
-  await expect(column(page, "done").getByTestId("task-card-1")).toBeVisible();
+  await expect(column(page, "done").getByTestId(taskCardTestId(1))).toBeVisible();
   await expect(panel.getByText("Closed", { exact: true })).toBeVisible();
 
   await moveFromDrawer(panel, "backlog");
   await expect(
-    column(page, "backlog").getByTestId("task-card-1"),
+    column(page, "backlog").getByTestId(taskCardTestId(1)),
   ).toBeVisible();
   await expect(panel.getByText("Closed", { exact: true })).toHaveCount(0);
 });
@@ -234,11 +219,12 @@ test("the drawer moves a card across columns and closes and reopens it", async (
 test("a blocks dependency blocks a card, clears when it closes, and refuses a cycle", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const { user, client, project } = await arrange(request, "deps");
-  await createTask(client, project.id, { title: "Alpha" });
-  await createTask(client, project.id, { title: "Beta" });
+  await createTask(api, project.id, { title: "Alpha" });
+  await createTask(api, project.id, { title: "Beta" });
   await loginViaToken(context, user);
   await openBoard(page, project);
 
@@ -254,7 +240,7 @@ test("a blocks dependency blocks a card, clears when it closes, and refuses a cy
   await expect(card(page, 2)).toContainText("↑1");
 
   // Closing Alpha from outside the browser unblocks Beta through the stream.
-  await moveTask(client, project.id, 1, "done");
+  await moveTask(api, project.id, 1, "done");
   await expect(card(page, 2)).not.toContainText("blocked", {
     timeout: LIVE_TIMEOUT,
   });
@@ -272,22 +258,23 @@ test("a blocks dependency blocks a card, clears when it closes, and refuses a cy
 
   await expect(alpha.getByText(/cycle/)).toBeVisible();
   await expect(alpha.getByRole("heading", { name: "Blocks on" })).toHaveCount(0);
-  const detail = await getTask(client, project.id, 1);
+  const detail = await getTask(api, project.id, 1);
   expect(detail.depends_on).toEqual([]);
 });
 
 test("a parent closes by itself when its last child closes", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const { user, client, project } = await arrange(request, "parent");
-  const parent = await createTask(client, project.id, { title: "The epic" });
-  await createTask(client, project.id, {
+  const parent = await createTask(api, project.id, { title: "The epic" });
+  await createTask(api, project.id, {
     title: "First child",
     parent_id: parent.id,
   });
-  await createTask(client, project.id, {
+  await createTask(api, project.id, {
     title: "Second child",
     parent_id: parent.id,
   });
@@ -300,37 +287,38 @@ test("a parent closes by itself when its last child closes", async ({
   await expect(panel.getByRole("link", { name: /First child/ })).toBeVisible();
   await expect(panel.getByRole("link", { name: /Second child/ })).toBeVisible();
 
-  await moveTask(client, project.id, 2, "done");
-  await moveTask(client, project.id, 3, "done");
+  await moveTask(api, project.id, 2, "done");
+  await moveTask(api, project.id, 3, "done");
 
   // `ARCHITECTURE.md`, "Task tracker": the last closing child closes the
   // parent, as a `state_changed` carrying actor `system`. The tracker writes
   // no comment for it, so the drawer has none to render.
-  await expect(column(page, "done").getByTestId("task-card-1")).toBeVisible({
+  await expect(column(page, "done").getByTestId(taskCardTestId(1))).toBeVisible({
     timeout: LIVE_TIMEOUT,
   });
   await expect(panel.getByText("Closed", { exact: true })).toBeVisible({
     timeout: LIVE_TIMEOUT,
   });
-  expect((await getTask(client, project.id, 1)).state).toBe("done");
+  expect((await getTask(api, project.id, 1)).state).toBe("done");
 });
 
 test("board search matches titles and exact numbers, and resets on a project change", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const { user, client, project } = await arrange(request, "search");
-  await createTask(client, project.id, { title: "Fix Login Redirect" });
-  await createTask(client, project.id, { title: "login page copy" });
-  await createTask(client, project.id, { title: "Other" });
+  await createTask(api, project.id, { title: "Fix Login Redirect" });
+  await createTask(api, project.id, { title: "login page copy" });
+  await createTask(api, project.id, { title: "Other" });
   // Up to #12, so `#2` has a `#12` to not match.
   for (let n = 4; n <= 12; n += 1) {
-    await createTask(client, project.id, { title: `Filler ${String(n)}` });
+    await createTask(api, project.id, { title: `Filler ${String(n)}` });
   }
 
   const second = createBareRepo("search-second");
-  const other = await createProject(client, {
+  const other = await createProject(api, {
     name: uniqueName("search-other"),
     remote_url: second.url,
   });
@@ -366,7 +354,7 @@ test("board search matches titles and exact numbers, and resets on a project cha
 
   // A refresh reapplies the query to the new snapshot rather than dropping it.
   await search.fill("login");
-  await createTask(client, project.id, { title: "login smoke test" });
+  await createTask(api, project.id, { title: "login smoke test" });
   await expect(card(page, 13)).toBeVisible({ timeout: LIVE_TIMEOUT });
   await expect(search).toHaveValue("login");
   await expect(card(page, 3)).toHaveCount(0);
@@ -379,11 +367,12 @@ test("board search matches titles and exact numbers, and resets on a project cha
 test("a task link opens the drawer directly and Copy link writes the canonical URL", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const { user, client, project } = await arrange(request, "link");
-  await createTask(client, project.id, { title: "First" });
-  await createTask(client, project.id, { title: "Second" });
+  await createTask(api, project.id, { title: "First" });
+  await createTask(api, project.id, { title: "Second" });
   await loginViaToken(context, user);
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
 
@@ -405,9 +394,10 @@ test("a task link opens the drawer directly and Copy link writes the canonical U
 test("the states editor adds, renames and removes a column, and says why it cannot", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const { user, client, project } = await arrange(request, "states");
   await loginViaToken(context, user);
 
   // The editor confirms a removal with `window.confirm`.
@@ -441,8 +431,8 @@ test("the states editor adds, renames and removes a column, and says why it cann
   ]);
 
   // A task in the column, so the rename has something to carry with it.
-  await createTask(client, project.id, { title: "Under test", state: "qa" });
-  await expect(column(page, "qa").getByTestId("task-card-1")).toBeVisible({
+  await createTask(api, project.id, { title: "Under test", state: "qa" });
+  await expect(column(page, "qa").getByTestId(taskCardTestId(1))).toBeVisible({
     timeout: LIVE_TIMEOUT,
   });
 
@@ -454,7 +444,7 @@ test("the states editor adds, renames and removes a column, and says why it cann
   await expect(row("verify")).toBeVisible();
 
   await openBoard(page, project);
-  await expect(column(page, "verify").getByTestId("task-card-1")).toBeVisible();
+  await expect(column(page, "verify").getByTestId(taskCardTestId(1))).toBeVisible();
   await expect(column(page, "qa")).toHaveCount(0);
 
   // The three refusals `SPEC.md` answers 409 with, each shown beside a
@@ -476,7 +466,7 @@ test("the states editor adds, renames and removes a column, and says why it cann
   );
 
   // Emptied, the column can go.
-  await moveTask(client, project.id, 1, "backlog");
+  await moveTask(api, project.id, 1, "backlog");
   await page.reload();
   await expect(
     row("verify").getByRole("button", { name: "Remove" }),
@@ -486,7 +476,7 @@ test("the states editor adds, renames and removes a column, and says why it cann
 
   await openBoard(page, project);
   await expect(column(page, "verify")).toHaveCount(0);
-  await expect(column(page, "backlog").getByTestId("task-card-1")).toBeVisible();
+  await expect(column(page, "backlog").getByTestId(taskCardTestId(1))).toBeVisible();
 });
 
 test("a second browser context follows the first without reloading", async ({
@@ -494,18 +484,22 @@ test("a second browser context follows the first without reloading", async ({
   context,
   request,
   browser,
+  user,
+  api,
+  project,
 }) => {
-  const first = await arrange(request, "live-a");
   const watcher = await createTestUser(request, { prefix: "live-b" });
   // One task before either board opens, so the second context's arrival
   // already shows what the first has.
-  await createTask(first.client, first.project.id, { title: "Already here" });
-  await loginViaToken(context, first.user);
-  await openBoard(page, first.project);
+  await createTask(api, project.id, { title: "Already here" });
+  await loginViaToken(context, user);
+  await openBoard(page, project);
 
   const second = await newLoggedInPage(browser, watcher);
-  await second.goto(boardPath(first.project));
-  await expect(second.getByTestId("column-backlog")).toBeVisible();
+  await second.goto(boardPath(project));
+  await expect(
+    second.getByTestId(taskColumnTestId("backlog")),
+  ).toBeVisible();
 
   // Installed after the arrival navigation: from here on, every change the
   // second context shows must have come down the stream (ADR 0022).
@@ -522,23 +516,23 @@ test("a second browser context follows the first without reloading", async ({
   await form.getByRole("button", { name: "Create task" }).click();
   await expect(card(page, 2)).toBeVisible();
 
-  await expect(
-    column(second, "backlog").getByTestId("task-card-2"),
-  ).toBeVisible({ timeout: LIVE_TIMEOUT });
-  await expect(second.getByTestId("task-card-2")).toContainText(
-    "Seen from over there",
+  await expect(column(second, "backlog").getByTestId(taskCardTestId(2))).toBeVisible(
+    { timeout: LIVE_TIMEOUT },
   );
+  await expect(card(second, 2)).toContainText("Seen from over there");
 
   // Moved in the first browser, from the drawer.
   const panel = await openCard(page, 2);
   await moveFromDrawer(panel, "ready");
-  await expect(column(page, "ready").getByTestId("task-card-2")).toBeVisible();
-  await expect(column(second, "ready").getByTestId("task-card-2")).toBeVisible({
-    timeout: LIVE_TIMEOUT,
-  });
+  await expect(
+    column(page, "ready").getByTestId(taskCardTestId(2)),
+  ).toBeVisible();
+  await expect(
+    column(second, "ready").getByTestId(taskCardTestId(2)),
+  ).toBeVisible({ timeout: LIVE_TIMEOUT });
 
   // A state renamed: `states_changed` refreshes the columns themselves.
-  await page.goto(`/projects/${first.project.id}?tab=states`);
+  await page.goto(`/projects/${project.id}?tab=states`);
   const row = page.getByRole("row").filter({ hasText: "ready" });
   await row.getByRole("button", { name: "Rename" }).click();
   const rename = page.getByRole("form", { name: "Rename ready" });
@@ -549,11 +543,9 @@ test("a second browser context follows the first without reloading", async ({
   await expect(column(second, "ready")).toHaveCount(0);
 
   // Deleted: the card goes with it.
-  await first.client.delete(`/projects/${first.project.id}/tasks/2`);
-  await expect(second.getByTestId("task-card-2")).toHaveCount(0, {
-    timeout: LIVE_TIMEOUT,
-  });
-  await expect(second.getByTestId("task-card-1")).toBeVisible();
+  await api.delete(`/projects/${project.id}/tasks/2`);
+  await expect(card(second, 2)).toHaveCount(0, { timeout: LIVE_TIMEOUT });
+  await expect(card(second, 1)).toBeVisible();
 
   expect(loads).toBe(0);
   expect(second.url()).toBe(url);
@@ -564,10 +556,11 @@ test("a second browser context follows the first without reloading", async ({
 test("release is disabled while no session holds the task", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
 }) => {
-  const { user, client, project } = await arrange(request, "release");
-  await createTask(client, project.id, { title: "Nobody has this" });
+  await createTask(api, project.id, { title: "Nobody has this" });
   await loginViaToken(context, user);
   await openBoard(page, project);
 

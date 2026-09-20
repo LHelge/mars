@@ -18,35 +18,34 @@
 //
 // The transcript is virtualised and pins itself to the tail, so every read of
 // an older row goes through `reveal`, and every assertion on the newest rows
-// goes through `pinToLatest`. Both are local copies on purpose: `sessions.spec
-// .ts` carries its own and the two files are edited independently.
+// goes through `pinToLatest`, both from `tests/utils/transcript.ts`.
 
-import { expect, test } from "@playwright/test";
-import type {
-  APIRequestContext,
-  BrowserContext,
-  Locator,
-  Page,
-} from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
-import type { Api, TestUser } from "./utils/test-helpers";
+import type { Api } from "./utils/test-helpers";
 import type { Profile, Project, Session } from "../src/types";
+import { expect, test } from "./utils/fixtures";
+import type { SessionTracker } from "./utils/fixtures";
 import {
-  api,
   armSocketDrop,
   baseUrl,
-  createBareRepo,
-  createProject,
   createTestUser,
   defaultProfile,
   dropConnection,
-  endSession,
   loginViaToken,
   newLoggedInPage,
+  pinToLatest,
+  reveal,
+  rowCount,
+  transcript,
   waitFor,
   waitForContainerRemoved,
   waitForSessionState,
 } from "./utils/test-helpers";
+
+// The upstream every scenario here clones: the file the fixture's `Edit` tool
+// rewrites.
+test.use({ repoFiles: { "src/app.py": 'def main():\n    print("hello")\n' } });
 
 // A container start, a git clone and up to three replayed turns per scenario.
 test.setTimeout(180_000);
@@ -62,46 +61,6 @@ const TURN_COST_TEXT = ["$0.0727", "$0.1448", "$0.1633"] as const;
  * enforces on `limit` (`SPEC.md`, "Sessions": `GET /sessions/{id}/events`).
  */
 const PAGE_SIZE = 200;
-
-/** Every session a scenario launched, ended in `afterEach`. */
-let launched: { client: Api; id: string }[] = [];
-
-test.beforeEach(() => {
-  launched = [];
-});
-
-test.afterEach(async () => {
-  for (const session of launched) {
-    // Best effort: a scenario that already ended its session is fine, and one
-    // that failed must still not leave a container behind.
-    await endSession(session.client, session.id).catch(() => undefined);
-  }
-});
-
-interface Stage {
-  user: TestUser;
-  client: Api;
-  project: Project;
-}
-
-/**
- * A fresh user, a local bare upstream and a project that finished cloning, with
- * the browser context already signed in as that user.
- */
-async function stage(
-  request: APIRequestContext,
-  context: BrowserContext,
-  prefix: string,
-): Promise<Stage> {
-  const user = await createTestUser(request, { prefix });
-  const client = api(request, user.access_token);
-  const repo = createBareRepo("session-view", {
-    files: { "src/app.py": 'def main():\n    print("hello")\n' },
-  });
-  const project = await createProject(client, { remote_url: repo.url });
-  await loginViaToken(context, user);
-  return { user, client, project };
-}
 
 // --- the view's furniture ----------------------------------------------------
 
@@ -123,11 +82,6 @@ function headerField(page: Page, label: string): Locator {
     .locator("dd");
 }
 
-/** The virtualised transcript; only the rows in view are in the DOM. */
-function transcript(page: Page): Locator {
-  return page.getByTestId("transcript-scroll");
-}
-
 /** The composer form, which carries no accessible name of its own. */
 function composer(page: Page): Locator {
   return page.locator("form").filter({
@@ -145,83 +99,6 @@ async function expectState(page: Page, state: string): Promise<void> {
 /** The connection dot's accessible name (`SessionHeader`, `role="status"`). */
 function connection(page: Page, status: string): Locator {
   return header(page).getByRole("status", { name: `Connection ${status}` });
-}
-
-/**
- * Pins the transcript back to the newest row after a read-back.
- *
- * Scrolling up unpins the list, and the auto-follow also gives up when a very
- * tall row (the fixture's 8 KiB tool result) is measured after the estimate it
- * was rendered at — so the view can be left showing "Jump to latest" although
- * the reader never scrolled (g4s53). Pressing that control is what a reader
- * does, and what every assertion on the newest rows here needs.
- */
-async function pinToLatest(page: Page): Promise<void> {
-  const jump = page.getByRole("button", { name: /^Jump to latest/ });
-  if ((await jump.count()) > 0) {
-    await jump.first().click();
-  }
-  await transcript(page).evaluate((element) => {
-    element.scrollTop = element.scrollHeight;
-  });
-}
-
-/**
- * Scrolls the transcript back until `target` is in the DOM and returns it.
- *
- * The transcript is virtualised and pinned to the newest row, so a row from
- * earlier in a turn is not merely off-screen, it is not rendered at all.
- */
-async function reveal(page: Page, target: Locator): Promise<Locator> {
-  const scroller = transcript(page);
-  // From the tail downwards, so a row below the current position is found too.
-  await pinToLatest(page);
-  for (let step = 0; step < 60; step += 1) {
-    if ((await target.count()) > 0) return target;
-    const atTop = await scroller.evaluate((element) => {
-      const next = Math.max(0, element.scrollTop - element.clientHeight * 0.7);
-      const was = element.scrollTop;
-      element.scrollTop = next;
-      return was === 0;
-    });
-    if (atTop) break;
-    await page.waitForTimeout(80);
-  }
-  await expect(target.first()).toBeVisible();
-  return target;
-}
-
-/**
- * How many rows the transcript is folding, which is the identity check every
- * "no duplicates, no gaps" assertion here rests on.
- *
- * The list is virtualised, so counting mounted rows would count a window, not
- * a transcript. What the virtualizer does publish is each mounted row's
- * position in the whole list (`data-index`), and the newest row is mounted
- * whenever the view is pinned to the tail — so the highest index in the DOM,
- * read while pinned, is the length of the store's `order`.
- */
-async function rowCount(page: Page): Promise<number> {
-  await pinToLatest(page);
-  const read = (): Promise<number> =>
-    transcript(page).evaluate((element) => {
-      let highest = -1;
-      for (const row of element.querySelectorAll<HTMLElement>("[data-index]")) {
-        const index = Number(row.dataset.index);
-        if (Number.isFinite(index) && index > highest) highest = index;
-      }
-      return highest + 1;
-    });
-  // Measuring a row can mount the next one, so the count is taken once it has
-  // stopped moving rather than on the first render after the scroll.
-  let previous = -1;
-  for (let step = 0; step < 20; step += 1) {
-    const current = await read();
-    if (current === previous && current > 0) return current;
-    previous = current;
-    await page.waitForTimeout(150);
-  }
-  return previous;
 }
 
 // --- session arrangement -----------------------------------------------------
@@ -260,6 +137,7 @@ function waitForTurn(
  */
 async function launchFromUi(
   page: Page,
+  sessions: SessionTracker,
   client: Api,
   project: Project,
   message: string,
@@ -277,8 +155,7 @@ async function launchFromUi(
 
   await page.waitForURL(/\/sessions\/[0-9a-f-]{8}-/);
   const id = page.url().slice(page.url().lastIndexOf("/") + 1);
-  launched.push({ client, id });
-  return id;
+  return sessions.track(client, id);
 }
 
 /** Types `text` into the composer, sends it, and puts the view back on the tail. */
@@ -292,10 +169,17 @@ async function compose(page: Page, text: string): Promise<void> {
 /** A running session whose transcript holds the fixture's first two turns. */
 async function twoTurns(
   page: Page,
+  sessions: SessionTracker,
   client: Api,
   project: Project,
 ): Promise<string> {
-  const sessionId = await launchFromUi(page, client, project, "hello stub");
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    client,
+    project,
+    "hello stub",
+  );
   await waitForTurn(client, sessionId, 0);
   await compose(page, "next");
   await waitForTurn(client, sessionId, 1);
@@ -312,9 +196,13 @@ test("full history after reload and in a second tab", async ({
   context,
   request,
   browser,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { user, client, project } = await stage(request, context, "history");
-  const sessionId = await twoTurns(page, client, project);
+  await loginViaToken(context, user);
+  const sessionId = await twoTurns(page, sessions, api, project);
 
   const rows = transcript(page);
   const before = await rowCount(page);
@@ -350,7 +238,7 @@ test("full history after reload and in a second tab", async ({
 
   // …and it keeps up with what the first browser does next.
   await compose(page, "more");
-  await waitForTurn(client, sessionId, 2);
+  await waitForTurn(api, sessionId, 2);
   const denial = transcript(second).getByText(
     /The command was denied by your permission settings/,
   );
@@ -365,13 +253,16 @@ test("full history after reload and in a second tab", async ({
 test("reconnect resumes without duplicates", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, project } = await stage(request, context, "reconnect");
+  await loginViaToken(context, user);
   // Before the first navigation: the drop works by closing the socket from
   // inside the page (`armSocketDrop`).
   await armSocketDrop(context);
-  const sessionId = await twoTurns(page, client, project);
+  const sessionId = await twoTurns(page, sessions, api, project);
 
   const rows = transcript(page);
   const before = await rowCount(page);
@@ -395,7 +286,7 @@ test("reconnect resumes without duplicates", async ({
 
   // And the reopened socket carries the next turn as usual.
   await compose(page, "more");
-  await waitForTurn(client, sessionId, 2);
+  await waitForTurn(api, sessionId, 2);
   await reveal(
     page,
     rows.getByText(/The command was denied by your permission settings/),
@@ -407,10 +298,23 @@ test("reconnect resumes without duplicates", async ({
   await expect(rows.getByText(TURN_COST_TEXT[2])).toHaveCount(1);
 });
 
-test("older history loads on scroll-up", async ({ page, context, request }) => {
-  const { client, project } = await stage(request, context, "paginate");
-  const sessionId = await launchFromUi(page, client, project, "hello stub");
-  const first = await waitForTurn(client, sessionId, 0);
+test("older history loads on scroll-up", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
+  const first = await waitForTurn(api, sessionId, 0);
 
   // The three recorded turns are 90 events; past them every stdin line is one
   // `Stub reply to:` turn of three. The initial window is `PAGE_SIZE` events,
@@ -423,14 +327,14 @@ test("older history loads on scroll-up", async ({ page, context, request }) => {
   // Sent straight at the API: these turns are the transcript's ballast, not
   // the thing under test, and the CLI queues stdin lines in order.
   for (const text of texts) {
-    await client.send("POST", `/sessions/${sessionId}/input`, {
+    await api.send("POST", `/sessions/${sessionId}/input`, {
       kind: "message",
       text,
     });
   }
   const filled = await waitFor(
     async () => {
-      const session = await client.get<Session>(`/sessions/${sessionId}`);
+      const session = await api.get<Session>(`/sessions/${sessionId}`);
       return session.last_seq > PAGE_SIZE + 10 ? session : null;
     },
     {
@@ -455,12 +359,17 @@ test("older history loads on scroll-up", async ({ page, context, request }) => {
   // Reading back to the top pages the rest in, once each. A landed page keeps
   // the reader where they were, which puts the scroller back below the
   // trigger — so the top is asked for again until there is nothing left.
+  // A landed page keeps the reader where they were, which puts the scroller
+  // back below the trigger, so the top is asked for again until nothing is
+  // left: each pass scrolls to the top and then waits for the indicator to go,
+  // rather than sleeping for a page fetch that is usually far quicker.
   await expect(async () => {
     await transcript(page).evaluate((element) => {
       element.scrollTop = 0;
     });
-    await page.waitForTimeout(500);
-    await expect(page.getByText("Loading earlier messages")).toHaveCount(0);
+    await expect(page.getByText("Loading earlier messages")).toHaveCount(0, {
+      timeout: 2000,
+    });
   }).toPass({ timeout: 60_000 });
 
   await reveal(page, rows.getByText("hello stub", { exact: true }));
@@ -475,10 +384,19 @@ test("older history loads on scroll-up", async ({ page, context, request }) => {
 test("terminal into a running container", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, project } = await stage(request, context, "terminal");
-  const sessionId = await launchFromUi(page, client, project, "hello stub");
+  await loginViaToken(context, user);
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
   await expectState(page, "running");
 
   await page.getByRole("tab", { name: "Terminal" }).click();
@@ -513,8 +431,8 @@ test("terminal into a running container", async ({
   // A `parked` session has no container to exec into, and the server refuses
   // `terminal_open` for one — so the panel does not offer it.
   await composer(page).getByRole("button", { name: "Stop" }).click();
-  await waitForSessionState(client, sessionId, "parked", 90_000);
-  await waitForContainerRemoved(client, sessionId);
+  await waitForSessionState(api, sessionId, "parked", 90_000);
+  await waitForContainerRemoved(api, sessionId);
   await expectState(page, "parked");
   await expect(
     page.getByText("Terminal is available while the session is running"),
@@ -524,14 +442,28 @@ test("terminal into a running container", async ({
 
 // --- the link ----------------------------------------------------------------
 
-test("copy link", async ({ page, context, request, browser }) => {
+test("copy link", async ({
+  page,
+  context,
+  browser,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
   // Chromium refuses a clipboard write that was not granted (`SPEC.md`,
   // "Frontend", "Copy links").
   await context.grantPermissions(["clipboard-read", "clipboard-write"], {
     origin: baseUrl(),
   });
-  const { user, client, project } = await stage(request, context, "copylink");
-  const sessionId = await launchFromUi(page, client, project, "hello stub");
+  await loginViaToken(context, user);
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
   await expectState(page, "running");
 
   // The canonical route on the current origin, with no query and no token.
@@ -562,9 +494,12 @@ test("copy link", async ({ page, context, request, browser }) => {
 test("ephemeral run once from the project page", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, project } = await stage(request, context, "oneshot");
+  await loginViaToken(context, user);
 
   // A profile written the way an operator writes one: the profiles tab, the
   // editor, `kind: ephemeral` — which turns partial messages off by itself
@@ -578,7 +513,7 @@ test("ephemeral run once from the project page", async ({
   await expect(editor.getByLabel("Stream partial messages")).not.toBeChecked();
   await editor.getByRole("button", { name: "Create profile" }).click();
 
-  const profiles = await client.get<Profile[]>(
+  const profiles = await api.get<Profile[]>(
     `/projects/${project.id}/profiles`,
   );
   const oneshot = profiles.find((profile) => profile.name === "oneshot");
@@ -598,7 +533,7 @@ test("ephemeral run once from the project page", async ({
 
   // The form never sends the request the server would answer 400, so the
   // refusal itself is asserted where it lives (`SPEC.md`, "Sessions").
-  const refused = await client.send(
+  const refused = await api.send(
     "POST",
     `/projects/${project.id}/sessions`,
     { profile_id: oneshot.id, base_ref: "main" },
@@ -610,11 +545,13 @@ test("ephemeral run once from the project page", async ({
   await run.getByLabel(/^Message/).fill("summarise");
   await run.getByRole("button", { name: "Run" }).click();
   await page.waitForURL(/\/sessions\/[0-9a-f-]{8}-/);
-  const sessionId = page.url().slice(page.url().lastIndexOf("/") + 1);
-  launched.push({ client, id: sessionId });
+  const sessionId = sessions.track(
+    api,
+    page.url().slice(page.url().lastIndexOf("/") + 1),
+  );
 
   // `-p`: the CLI replays every turn and exits, and the session ends itself.
-  const done = await waitForSessionState(client, sessionId, "done", 120_000);
+  const done = await waitForSessionState(api, sessionId, "done", 120_000);
   expect(done.ended_at).not.toBeNull();
   await expectState(page, "done");
 
@@ -643,7 +580,7 @@ test("ephemeral run once from the project page", async ({
   await expect(page.getByLabel("Message", { exact: true })).toHaveCount(0);
 
   // An ephemeral session takes no input, ever.
-  const rejected = await client.send(
+  const rejected = await api.send(
     "POST",
     `/sessions/${sessionId}/input`,
     { kind: "message", text: "one more thing" },
@@ -654,9 +591,22 @@ test("ephemeral run once from the project page", async ({
 
 // --- the metadata strip ------------------------------------------------------
 
-test("metadata header", async ({ page, context, request }) => {
-  const { client, project } = await stage(request, context, "metadata");
-  const sessionId = await launchFromUi(page, client, project, "hello stub");
+test("metadata header", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
   await expectState(page, "running");
 
   // What the header can show before a state change: the identity of the
@@ -673,7 +623,7 @@ test("metadata header", async ({ page, context, request }) => {
   // one the last state change carried — so the session is stopped, and the
   // `running → parked` change is what brings the recorded id into the strip
   // (`SPEC.md`, "WebSocket: session stream").
-  const turn = await waitForTurn(client, sessionId, 0);
+  const turn = await waitForTurn(api, sessionId, 0);
   expect(turn.cli_session_id).not.toBeNull();
   await composer(page).getByRole("button", { name: "Stop" }).click();
   await expectState(page, "parked");
@@ -686,6 +636,6 @@ test("metadata header", async ({ page, context, request }) => {
 
   // The session is the launching user's, which the API carries even though
   // the header's strip does not name them.
-  const session = await client.get<Session>(`/sessions/${sessionId}`);
+  const session = await api.get<Session>(`/sessions/${sessionId}`);
   expect(session.created_by).not.toBeNull();
 });

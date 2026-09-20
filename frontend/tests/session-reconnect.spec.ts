@@ -32,29 +32,21 @@
 //      is named after: the refresh is answered 200, the stored token really
 //      rotates, and the page has to survive that too.
 
-import { expect, test } from "@playwright/test";
-import type {
-  APIRequestContext,
-  BrowserContext,
-  Locator,
-  Page,
-} from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
-import type { Api, TestUser } from "./utils/test-helpers";
-import type { Project } from "../src/types";
+import { expect, test } from "./utils/fixtures";
 import {
-  api,
   armSocketDrop,
   closeSockets,
-  createBareRepo,
-  createProject,
-  createTestUser,
   dropConnection,
-  endSession,
-  launchSession,
   loginViaToken,
+  TRANSCRIPT_SCROLL,
   waitForSessionState,
 } from "./utils/test-helpers";
+
+// The upstream this scenario clones: the file the fixture's `Edit` tool
+// rewrites.
+test.use({ repoFiles: { "src/app.py": 'def main():\n    print("hello")\n' } });
 
 // A container start, a git clone, a replayed turn and two reconnects.
 test.setTimeout(180_000);
@@ -64,44 +56,6 @@ const DRAFT = "half-written thought, never sent";
 
 /** Where `services/auth.ts` keeps the access token. */
 const TOKEN_KEY = "mars.access_token";
-
-/** Every session a scenario launched, ended in `afterEach`. */
-let launched: { client: Api; id: string }[] = [];
-
-test.beforeEach(() => {
-  launched = [];
-});
-
-test.afterEach(async () => {
-  for (const session of launched) {
-    // Best effort: a scenario that failed must still not leave a container.
-    await endSession(session.client, session.id).catch(() => undefined);
-  }
-});
-
-interface Stage {
-  user: TestUser;
-  client: Api;
-  project: Project;
-}
-
-/** A signed-in browser, a cloned project, and the socket drop armed. */
-async function stage(
-  request: APIRequestContext,
-  context: BrowserContext,
-): Promise<Stage> {
-  const user = await createTestUser(request, { prefix: "remount" });
-  const client = api(request, user.access_token);
-  const repo = createBareRepo("session-reconnect", {
-    files: { "src/app.py": 'def main():\n    print("hello")\n' },
-  });
-  const project = await createProject(client, { remote_url: repo.url });
-  await loginViaToken(context, user);
-  // Before the first navigation: both closes work from inside the page, and
-  // the init script has to be in place when that page loads.
-  await armSocketDrop(context);
-  return { user, client, project };
-}
 
 /** The session header band, scoped past the application shell's own header. */
 function header(page: Page): Locator {
@@ -169,9 +123,9 @@ function countOf(calls: Call[], method: string, path: string): number {
  * remount, so the marks live exactly as long as this mount does.
  */
 async function markMount(page: Page): Promise<void> {
-  await page.evaluate(() => {
+  await page.evaluate((scrollTestId: string) => {
     const scroller = document.querySelector<HTMLElement>(
-      '[data-testid="transcript-scroll"]',
+      `[data-testid="${scrollTestId}"]`,
     );
     if (scroller === null) throw new Error("markMount: no transcript scroller");
     scroller.dataset.marsMark = "mounted";
@@ -181,7 +135,7 @@ async function markMount(page: Page): Promise<void> {
     if (area === null) throw new Error("markMount: no composer text area");
     (area as unknown as Record<string, unknown>).marsMark = "mounted";
     (window as unknown as Record<string, unknown>).marsMark = "loaded";
-  });
+  }, TRANSCRIPT_SCROLL);
 }
 
 interface Marks {
@@ -192,9 +146,9 @@ interface Marks {
 
 /** What [`markMount`] left behind; `null` wherever the node was replaced. */
 function readMarks(page: Page): Promise<Marks> {
-  return page.evaluate(() => {
+  return page.evaluate((scrollTestId: string) => {
     const scroller = document.querySelector<HTMLElement>(
-      '[data-testid="transcript-scroll"]',
+      `[data-testid="${scrollTestId}"]`,
     );
     const area = document.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Message"]',
@@ -205,7 +159,7 @@ function readMarks(page: Page): Promise<Marks> {
       textArea:
         (area as unknown as Record<string, unknown> | null)?.marsMark ?? null,
     };
-  });
+  }, TRANSCRIPT_SCROLL);
 }
 
 const MOUNTED: Marks = {
@@ -228,14 +182,20 @@ async function openTerminal(page: Page): Promise<void> {
 test("a reconnect keeps the session page mounted, refresh and all", async ({
   page,
   context,
-  request,
+  user,
+  api,
+  project,
+  sessions,
 }) => {
-  const { client, project } = await stage(request, context);
-  const session = await launchSession(client, project.id, {
+  await loginViaToken(context, user);
+  // Before the first navigation: both closes work from inside the page, and
+  // the init script has to be in place when that page loads.
+  await armSocketDrop(context);
+
+  const session = await sessions.launch(api, project.id, {
     message: "hello stub",
   });
-  launched.push({ client, id: session.id });
-  await waitForSessionState(client, session.id, "running", 120_000);
+  await waitForSessionState(api, session.id, "running", 120_000);
 
   await page.goto(`/sessions/${session.id}`);
   await expect(connection(page, "live")).toBeVisible({ timeout: 60_000 });

@@ -5,6 +5,10 @@
 // git, the orchestrator log, the browser, and the resource factories — and
 // re-exported here so a spec has one import and the documented path stays the
 // documented path.
+//
+// The one thing a spec does *not* get from here is `test` and `expect`: those
+// come from `./fixtures`, the `test.extend` that supplies the `user`, `api`,
+// `repo`, `project` and `sessions` fixtures a scenario arranges with.
 
 export {
   apiBaseUrl,
@@ -23,6 +27,9 @@ export {
 
 export {
   api,
+  // The same factory under the name a spec uses when the `api` fixture already
+  // holds that identifier (`utils/fixtures.ts`).
+  api as apiClient,
   ApiCallError,
   createTestUser,
   currentUser,
@@ -82,3 +89,14 @@ export {
 } from "./resources";
 
 export { loggedEmail } from "./log";
+
+export {
+  STREAMING_CURSOR,
+  SUBAGENT_CHILDREN,
+  TASK_COLUMN_PREFIX,
+  TRANSCRIPT_SCROLL,
+  taskCardTestId,
+  taskColumnTestId,
+} from "./test-ids";
+
+export { pinToLatest, reveal, rowCount, transcript } from "./transcript";

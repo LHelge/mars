@@ -8,13 +8,10 @@
 // Unlike `smoke.spec.ts` this needs `npm run test:e2e:up`; without it the
 // first helper throws the accessor's error naming the missing variable.
 
-import { expect, test } from "@playwright/test";
-
 import type { Invite, InviteLookup } from "../src/types";
+import { expect, test } from "./utils/fixtures";
 import {
   api,
-  createBareRepo,
-  createProject,
   createTestUser,
   currentUser,
   gitRevParse,
@@ -24,13 +21,14 @@ import {
   readLoggedLink,
 } from "./utils/test-helpers";
 
-test("a fresh user is signed in and answers GET /users/me", async ({
-  request,
-}) => {
-  const user = await createTestUser(request, { prefix: "me" });
-  const client = api(request, user.access_token);
+// The upstream the `repo` fixture builds for this file.
+test.use({ repoFiles: { "src/main.rs": "fn main() {}\n" } });
 
-  const me = await currentUser(client);
+test("a fresh user is signed in and answers GET /users/me", async ({
+  user,
+  api,
+}) => {
+  const me = await currentUser(api);
 
   expect(me.id).toBe(user.id);
   expect(me.username).toBe(user.username);
@@ -39,11 +37,8 @@ test("a fresh user is signed in and answers GET /users/me", async ({
   expect(user.refresh_cookie).not.toBe("");
 });
 
-test("an unknown path throws with its status and body", async ({ request }) => {
-  const user = await createTestUser(request, { prefix: "err" });
-  const client = api(request, user.access_token);
-
-  await expect(client.get("/projects/not-a-uuid")).rejects.toThrow(
+test("an unknown path throws with its status and body", async ({ api }) => {
+  await expect(api.get("/projects/not-a-uuid")).rejects.toThrow(
     /GET \/projects\/not-a-uuid → 4\d\d/,
   );
 });
@@ -51,9 +46,8 @@ test("an unknown path throws with its status and body", async ({ request }) => {
 test("a token-seeded browser lands on the dashboard", async ({
   page,
   context,
-  request,
+  user,
 }) => {
-  const user = await createTestUser(request, { prefix: "seed" });
   await loginViaToken(context, user);
 
   await page.goto("/");
@@ -63,22 +57,17 @@ test("a token-seeded browser lands on the dashboard", async ({
 });
 
 test("a bare repository is created at its initial commit and clones into a project", async ({
-  request,
+  api,
+  repo,
+  project,
 }) => {
-  const user = await createTestUser(request, { prefix: "repo", admin: true });
-  const client = api(request, user.access_token);
-
-  const repo = createBareRepo("fixture", {
-    files: { "src/main.rs": "fn main() {}\n" },
-  });
   expect(gitRevParse(repo.path, "main")).toBe(repo.initialCommit);
   expect(repo.url.startsWith("file:///")).toBe(true);
 
-  const project = await createProject(client, { remote_url: repo.url });
   expect(project.status).toBe("ready");
   expect(project.default_branch).toBe("main");
 
-  const branches = await listBranches(client, project.id);
+  const branches = await listBranches(api, project.id);
   const names = branches.map((branch) => branch.name);
   expect(names).toContain("main");
   expect(names).toContain("origin/main");

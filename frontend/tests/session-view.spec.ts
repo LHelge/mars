@@ -122,6 +122,43 @@ function waitForCost(
   );
 }
 
+/**
+ * Sends one ballast turn, tolerating the owner's back-pressure.
+ *
+ * A burst of inputs can outrun the session owner's command channel; the
+ * orchestrator refuses the one that does not fit with 409 `input queue full`
+ * rather than reordering it behind the next one that does
+ * (`orchestrator/src/session/registry.rs`). The documented answer is to resend,
+ * which is what a composer's user would do, so the send is retried until the
+ * owner has drained enough to take it.
+ */
+async function sendBallast(
+  client: Api,
+  sessionId: string,
+  text: string,
+): Promise<void> {
+  await waitFor(
+    async () => {
+      const result = await client.send(
+        "POST",
+        `/sessions/${sessionId}/input`,
+        { kind: "message", text },
+        { allow: [409] },
+      );
+      if (result.status === 202) return true;
+      if (result.text.includes("input queue full")) return null;
+      throw new Error(
+        `POST /sessions/${sessionId}/input answered ${String(result.status)}: ${result.text}`,
+      );
+    },
+    {
+      timeoutMs: 60_000,
+      intervalMs: 250,
+      description: `session ${sessionId} to accept one more input`,
+    },
+  );
+}
+
 /** Waits for the orchestrator's own accounting to reach turn `index`. */
 function waitForTurn(
   client: Api,
@@ -327,10 +364,7 @@ test("older history loads on scroll-up", async ({
   // Sent straight at the API: these turns are the transcript's ballast, not
   // the thing under test, and the CLI queues stdin lines in order.
   for (const text of texts) {
-    await api.send("POST", `/sessions/${sessionId}/input`, {
-      kind: "message",
-      text,
-    });
+    await sendBallast(api, sessionId, text);
   }
   const filled = await waitFor(
     async () => {

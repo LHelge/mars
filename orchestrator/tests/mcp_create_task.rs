@@ -41,9 +41,8 @@ mod common;
 
 use chrono::Utc;
 use common::TestApp;
-use common::mcp::McpClient;
-use rmcp::model::ErrorData;
-use serde_json::{Value, json};
+use common::mcp::{McpClient, code, refused, task_of};
+use serde_json::json;
 use uuid::Uuid;
 
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
@@ -219,37 +218,24 @@ async fn links(app: &TestApp, task_id: Uuid) -> i64 {
         .expect("the count runs")
 }
 
-/// The `data.code` every tool failure carries (`SPEC.md`, "MCP tool
-/// contracts").
-fn code(err: &ErrorData) -> String {
-    err.data
-        .as_ref()
-        .and_then(|data| data.get("code"))
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("every tool error carries data.code: {err:?}"))
-        .to_string()
-}
-
-/// The failure a call answered with, or a panic naming what came back instead.
-fn refused(result: std::result::Result<Value, ErrorData>) -> ErrorData {
-    match result {
-        Ok(value) => panic!("expected a refusal, got {value}"),
-        Err(err) => err,
-    }
-}
-
-/// The `{ task: Task }` body a tool answered with.
-fn task_of(value: &Value) -> TaskDto {
-    serde_json::from_value(value["task"].clone()).expect("the output carries a Task")
-}
-
-/// The edges of a kind the answer lists, in order.
+/// The edges of a kind the answer lists, sorted.
+///
+/// Sorted rather than in the caller's order: `Task.depends_on` is loaded
+/// `ORDER BY task_id, depends_on_task_id, kind`, so which of two prerequisites
+/// comes first is decided by two random UUIDs and not by the order they were
+/// asked for. `SPEC.md`, "Tasks" fixes the *content* of the list and not its
+/// order, and an assertion that reads the order as meaningful passes or fails
+/// by coin toss.
 fn edges(task: &TaskDto, kind: TaskDependencyKind) -> Vec<Uuid> {
-    task.depends_on
+    let mut edges: Vec<Uuid> = task
+        .depends_on
         .iter()
         .filter(|edge| edge.kind == kind)
         .map(|edge| edge.task_id)
-        .collect()
+        .collect();
+    edges.sort();
+
+    edges
 }
 
 // ---- the plain creation ----
@@ -469,10 +455,12 @@ async fn depends_on_creates_one_blocks_edge_per_entry_and_blocks_the_task() {
             .expect("both prerequisites resolve"),
     );
 
+    let mut expected = [first.id, second.id];
+    expected.sort();
     assert_eq!(
         edges(&created, TaskDependencyKind::Blocks),
-        [first.id, second.id],
-        "one edge per entry, in the order they were given",
+        expected,
+        "one edge per entry",
     );
     assert!(created.blocked, "both prerequisites are open");
 

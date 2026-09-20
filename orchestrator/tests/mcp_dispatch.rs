@@ -16,9 +16,8 @@
 mod common;
 
 use common::TestApp;
-use common::mcp::McpClient;
-use rmcp::model::ErrorData;
-use serde_json::{Value, json};
+use common::mcp::{McpClient, code};
+use serde_json::json;
 
 use mars_orchestrator::mcp::ToolName;
 use mars_orchestrator::models::SessionState;
@@ -35,17 +34,6 @@ async fn client_with_tools(app: &TestApp, mcp_tools: &[&str]) -> McpClient {
     McpClient::connect(app, &seeded.token)
         .await
         .expect("a running session's token authenticates")
-}
-
-/// The `data.code` every tool failure carries (`SPEC.md`, "MCP tool
-/// contracts").
-fn code(err: &ErrorData) -> String {
-    err.data
-        .as_ref()
-        .and_then(|data| data.get("code"))
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("every tool error carries data.code: {err:?}"))
-        .to_string()
 }
 
 /// The names `tools/list` answered, in the order it answered them.

@@ -38,7 +38,7 @@ mod common;
 use chrono::Utc;
 use common::TestApp;
 use common::handoffs::Fixture as GitFixture;
-use common::mcp::McpClient;
+use common::mcp::{McpClient, code, task_of};
 use rmcp::model::ErrorData;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -269,24 +269,6 @@ async fn events(app: &TestApp, project_id: Uuid) -> Vec<TaskEvent> {
         .into_iter()
         .map(|row| TaskEvent::from_row(row).expect("the row is a documented event"))
         .collect()
-}
-
-/// The `data.code` every tool failure carries (`SPEC.md`, "MCP tool
-/// contracts").
-#[track_caller]
-fn code(err: &ErrorData) -> String {
-    err.data
-        .as_ref()
-        .and_then(|data| data.get("code"))
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("every tool error carries data.code: {err:?}"))
-        .to_string()
-}
-
-/// The `{ task }` body of a successful call.
-#[track_caller]
-fn task_of(value: &Value) -> TaskDto {
-    serde_json::from_value(value["task"].clone()).expect("the output is { task: Task }")
 }
 
 // ---- path A: the ordinary update ----

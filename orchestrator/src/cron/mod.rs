@@ -7,8 +7,8 @@
 //! the tick, the panic and error isolation and the outcome logging, which is
 //! why a job body never has to think about any of them.
 //!
-//! The bodies land in their own files as further `impl CronService` blocks,
-//! one per job, each added by its own task in this epic:
+//! The bodies live in their own files as further `impl CronService` blocks,
+//! one per job:
 //!
 //! - `cron/mirror_fetch.rs` — `git fetch --prune` on every `ready` mirror;
 //! - `cron/idle_reaper.rs` — delegating to `session/idle_reaper.rs`;
@@ -17,10 +17,10 @@
 //! - `cron/secret_rotation.rs` — re-wrap rows behind the newest master key;
 //! - `cron/orphan_cleanup.rs` — leftover containers, `/data/tmp` and refs.
 //!
-//! Until then each method below is the signature and nothing else. The `now`
-//! parameter is named rather than dropped because it is part of that
-//! signature: every job takes its clock from the caller so a test can place
-//! one side of a timeout on either side of `now`.
+//! What every one of them shares is the signature: a `now` taken from the
+//! caller rather than read from the clock, so a test can place one side of a
+//! timeout on either side of it — and, for a job that decides nothing by
+//! time, so the dispatch below can stay one shape.
 
 use std::fmt;
 use std::time::Duration;
@@ -32,6 +32,7 @@ use tokio::task::JoinHandle;
 use crate::prelude::*;
 
 pub mod idle_reaper;
+mod mirror_fetch;
 pub mod orphan_cleanup;
 pub mod scheduler;
 mod secret_rotation;
@@ -180,12 +181,5 @@ impl CronService {
                 )
             })
             .collect()
-    }
-
-    /// `git fetch --prune` on every `ready` mirror. Implemented by the mirror
-    /// fetch task in this epic; the body lives in `cron/mirror_fetch.rs`.
-    pub async fn mirror_fetch(&self, now: DateTime<Utc>) -> Result<JobReport> {
-        let _ = now;
-        Ok(JobReport::default())
     }
 }

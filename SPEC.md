@@ -482,7 +482,18 @@ Description: "Push a mirror branch to the upstream remote. Only do this when a h
 
 Input `{ ref: string, remote_branch?: string, force?: boolean = false }`. Output `{ remote_branch: string, commit: string }`. Only integration heads or session refs may be pushed, and only the selected upstream branch is updated. A non-fast-forward rejection returns `conflict` without changing local refs. Force pushes are refused unless `force` is true and the profile has `push` in `mcp_tools`; session refs are pushed as `refs/heads/session/<id>` by default.
 
-Error codes used across tools: `unauthorized` (bad token), `forbidden` (tool not in profile), `not_found`, `conflict`, `invalid_argument`, `internal`.
+Error codes used across tools: `unauthorized` (bad token), `forbidden` (tool not in profile), `not_found`, `conflict`, `invalid_argument`, `internal`. A tool failure is a JSON-RPC error object, never a result with `is_error`; its `message` is the text quoted in the tool sections above, and its `data.code` is the string code:
+
+| `data.code` | JSON-RPC `code` |
+| --- | --- |
+| `unauthorized` | -32001 |
+| `forbidden` | -32003 |
+| `not_found` | -32004 |
+| `conflict` | -32009 |
+| `invalid_argument` | -32602 |
+| `internal` | -32603 |
+
+`data.code` is always present; `data.conflicts` (a list of paths, in git's order) is present only on a `merge` or `rebase` that stopped on conflicting paths. Every `internal` failure is logged with its detail and answered with the message `internal error` and no other `data` keys, so no internal detail, credential or git stderr reaches the agent.
 
 ## Frontend
 

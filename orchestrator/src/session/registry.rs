@@ -285,11 +285,84 @@ impl SessionRegistry {
     pub fn mark_parked(&self, session_id: Uuid) {
         let mut state = self.state();
         if let Some(entry) = state.sessions.get_mut(&session_id) {
-            entry.phase = Phase::Parked;
-            entry.tx = None;
-            entry.stopping_since = None;
-            debug!(session_id = %session_id, "session owner detached; session parked");
+            park(session_id, entry);
         }
+    }
+
+    /// Park a session's entry and claim its relaunch, in one step.
+    ///
+    /// What an owner calls the instant its `parked` transition is committed,
+    /// before it removes the container (`ARCHITECTURE.md`, "Session
+    /// lifecycle"). Parking and taking the launch guard under one acquisition
+    /// of the mutex is what closes the window the endpoint used to fall into:
+    /// from here on an input queues instead of being handed to a channel
+    /// nobody reads any more, and because the guard is held it is answered
+    /// [`SubmitResult::Queued`], so nothing starts a container while the owner
+    /// is still removing the old one. The owner drops the guard when its
+    /// clean-up is done and relaunches the session itself if anything queued
+    /// ([`SessionRegistry::return_inputs`]).
+    ///
+    /// `None` when the session has no entry — nothing to park — or when a
+    /// launch already holds the guard, in which case the entry is parked all
+    /// the same and that launch drains whatever queues.
+    pub fn begin_parking(&self, session_id: Uuid) -> Option<LaunchGuard> {
+        let mut state = self.state();
+        let entry = state.sessions.get_mut(&session_id)?;
+        park(session_id, entry);
+
+        if !state.launching.insert(session_id) {
+            debug!(
+                session_id = %session_id,
+                "a launch of this session is already in progress; it owns the relaunch",
+            );
+            return None;
+        }
+
+        Some(LaunchGuard {
+            session_id,
+            state: Arc::clone(&self.state),
+        })
+    }
+
+    /// Put inputs a departing owner never read at the head of its session's
+    /// queue and say how many are waiting afterwards.
+    ///
+    /// The other half of [`SessionRegistry::begin_parking`]: an input accepted
+    /// while the owner was already on its way out sits in the owner's channel
+    /// rather than in this queue, and the owner hands those back here — oldest
+    /// first, in front of anything accepted since — so the relaunch delivers
+    /// them in the order they were accepted. An unknown id answers 0 and drops
+    /// them, which is the `done` or `failed` session the caller warns about.
+    /// Never logs the text (rule 3).
+    pub fn return_inputs(&self, session_id: Uuid, inputs: Vec<QueuedInput>) -> usize {
+        let mut state = self.state();
+        let Some(entry) = state.sessions.get_mut(&session_id) else {
+            if !inputs.is_empty() {
+                warn!(
+                    session_id = %session_id,
+                    dropped = inputs.len(),
+                    "dropping inputs handed back for a session with no entry",
+                );
+            }
+            return 0;
+        };
+
+        // Oldest first if they do not all fit: they were accepted before
+        // anything else in the queue, so the ones kept are the ones in front.
+        let room = MAX_QUEUED.saturating_sub(entry.queue.len());
+        let dropped = inputs.len().saturating_sub(room);
+        for input in inputs.into_iter().take(room).rev() {
+            entry.queue.push_front(input);
+        }
+        if dropped > 0 {
+            warn!(
+                session_id = %session_id,
+                dropped,
+                "the input queue is full; inputs handed back by the owner were dropped",
+            );
+        }
+
+        entry.queue.len()
     }
 
     /// Forget a session entirely: it ended, failed or was deleted.
@@ -595,6 +668,15 @@ fn submit_to(state: &mut State, session_id: Uuid, input: QueuedInput) -> SubmitR
     }
 }
 
+/// Put one entry into [`Phase::Parked`]: no owner, no stop under way, queue
+/// kept.
+fn park(session_id: Uuid, entry: &mut Entry) {
+    entry.phase = Phase::Parked;
+    entry.tx = None;
+    entry.stopping_since = None;
+    debug!(session_id = %session_id, "session owner detached; session parked");
+}
+
 /// Park an entry whose channel turned out to be closed and queue the input
 /// that could not be sent, so the caller's relaunch delivers it.
 fn park_and_queue(
@@ -607,9 +689,7 @@ fn park_and_queue(
         session_id = %session_id,
         "the session owner is gone; queueing the input and parking the session"
     );
-    entry.phase = Phase::Parked;
-    entry.tx = None;
-    entry.stopping_since = None;
+    park(session_id, entry);
 
     push(session_id, entry, input, queued_answer(relaunching))
 }
@@ -796,6 +876,57 @@ mod tests {
 
         let texts: Vec<&str> = drained.iter().map(|input| input.input.text()).collect();
         assert_eq!(texts, vec!["one", "two"]);
+    }
+
+    /// What an owner does when its `parked` transition commits: the entry is
+    /// parked and the relaunch is its own until the container is gone, so an
+    /// input arriving in that window queues instead of being handed to a
+    /// channel nobody reads (task `dthk8`).
+    #[tokio::test]
+    async fn parking_takes_the_relaunch_with_it_until_the_owner_is_done() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        registry.mark_running(session);
+
+        let guard = registry
+            .begin_parking(session)
+            .expect("nothing else is launching this session");
+        assert_eq!(registry.phase(session), Some(Phase::Parked));
+        assert!(!registry.is_live(session), "the channel is still open");
+        assert!(
+            registry.holds_container(session),
+            "the owner is still removing its container",
+        );
+
+        // Nobody else is asked to relaunch while the owner holds the claim.
+        assert_eq!(
+            registry.submit(session, message("two")),
+            SubmitResult::Queued,
+        );
+
+        // What the owner's channel still held is older than that, so it goes
+        // in front of it.
+        drop(rx);
+        assert_eq!(registry.return_inputs(session, vec![message("one")]), 2);
+        drop(guard);
+
+        let _rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        let drained = registry.mark_running(session);
+        let texts: Vec<&str> = drained.iter().map(|input| input.input.text()).collect();
+        assert_eq!(texts, vec!["one", "two"]);
+    }
+
+    /// A session that ended has no entry, so inputs handed back have nowhere to
+    /// go and the caller is told none are waiting.
+    #[tokio::test]
+    async fn inputs_handed_back_for_a_forgotten_session_are_dropped() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+
+        assert!(registry.begin_parking(session).is_none());
+        assert_eq!(registry.return_inputs(session, vec![message("one")]), 0);
+        assert_eq!(registry.phase(session), None);
     }
 
     #[tokio::test]

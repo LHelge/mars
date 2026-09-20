@@ -335,6 +335,37 @@ async fn wait_until(what: &str, condition: impl Fn() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
+/// Wait until the session row reads `state`, or fail saying what it reads.
+async fn wait_for_state(app: &TestApp, session_id: Uuid, state: SessionState) {
+    let deadline = tokio::time::Instant::now() + WITHIN;
+    while tokio::time::Instant::now() < deadline {
+        let now = reload(app, session_id).await.state;
+        if now == state {
+            return;
+        }
+        tokio::time::sleep(POLL).await;
+    }
+
+    panic!(
+        "timed out waiting for the session to reach {}; it reads {}",
+        state.as_str(),
+        reload(app, session_id).await.state.as_str(),
+    );
+}
+
+/// Wait until the session has an event of `kind`, or fail.
+async fn wait_for_event(app: &TestApp, session_id: Uuid, kind: &str) {
+    let deadline = tokio::time::Instant::now() + WITHIN;
+    while tokio::time::Instant::now() < deadline {
+        if kinds(app, session_id).await.iter().any(|had| had == kind) {
+            return;
+        }
+        tokio::time::sleep(POLL).await;
+    }
+
+    panic!("timed out waiting for a {kind} event");
+}
+
 /// The commit `refs/sessions/<sid>` points at in the project repository, or
 /// `None` when the mirror has no such ref.
 async fn mirror_session_ref(app: &TestApp, fixture: &Fixture) -> Option<String> {
@@ -415,6 +446,68 @@ async fn a_message_to_a_parked_session_resumes_it() {
         reload(&app, fixture.id()).await.state,
         SessionState::Running
     );
+}
+
+/// The window task `dthk8` closed: a message sent the instant the row reads
+/// `parked` used to be answered 202 and dropped.
+///
+/// The session's owner writes the `parked` state change and then removes the
+/// container, which takes a few hundred milliseconds on a real engine, so the
+/// message arrived while the registry still said `Running` with a channel the
+/// owner had stopped reading. Holding the mock's removal is what makes that
+/// window a moment the test chooses rather than one it hopes for: the row reads
+/// `parked`, the owner is inside its clean-up, and the message goes in there.
+#[tokio::test]
+async fn a_message_that_arrives_as_the_session_parks_relaunches_it() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    record_cli_session_id(&app, fixture.id()).await;
+
+    // A real owner on a real (mock) container, the way the other lifecycle
+    // scenarios here get one.
+    Launcher::from_state(&app.state)
+        .launch(fixture.id(), LaunchMode::Resume)
+        .expect("nothing else is launching this session")
+        .await
+        .expect("the launch task does not panic");
+    let container_id = ContainerId(
+        reload(&app, fixture.id())
+            .await
+            .container_id
+            .expect("a running session records its container"),
+    );
+
+    let engine = app.engine();
+    engine.hold_removals();
+    // A clean exit parks a conversational session.
+    assert!(engine.exit(&container_id, 0), "the container is the mock's");
+    wait_for_state(&app, fixture.id(), SessionState::Parked).await;
+
+    // Exactly the window: the row says `parked` and the owner is still in its
+    // clean-up, holding the container it has not removed yet.
+    assert!(
+        engine.state_of(&container_id).is_some(),
+        "the removal was not held",
+    );
+    SessionService::new(&app.state)
+        .send_input(
+            fixture.id(),
+            SessionInput::Message {
+                text: "are you still there".to_string(),
+            },
+            Some(fixture.user_id),
+            Some("client-race".to_string()),
+        )
+        .await
+        .expect("a parked session accepts a message");
+
+    engine.resume_removals();
+
+    wait_for_state(&app, fixture.id(), SessionState::Running).await;
+    wait_for_event(&app, fixture.id(), "user_message").await;
+    let recorded = last_event(&app, fixture.id(), "user_message").await;
+    assert_eq!(recorded["text"], "are you still there");
+    assert_eq!(recorded["client_id"], "client-race");
 }
 
 #[tokio::test]

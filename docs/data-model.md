@@ -189,7 +189,7 @@ Per-project configuration of one kind of agent. Every project gets one default c
 | `image` | `TEXT` | NOT NULL | Container image reference for sessions of this profile. |
 | `runtime` | `TEXT` | NULL | Container runtime name (`runsc`, `kata`), passed as `HostConfig.Runtime`. NULL means engine default. |
 | `mcp_tools` | `TEXT[]` | NOT NULL DEFAULT `'{}'` | Names of MCP tools this profile may call. Empty means the task-tracker set only; see `SPEC.md`, "MCP tool contracts". |
-| `secrets` | `TEXT[]` | NOT NULL DEFAULT `'{}'` | Secret names to inject. Orchestrator-only secrets are never injected even if listed. |
+| `secrets` | `TEXT[]` | NOT NULL DEFAULT `'{}'` | Secret names to inject beside the backend's agent credential, which is never listed here (ADR 0036). Orchestrator-only secrets are never injected even if listed. |
 | `partial_messages` | `BOOLEAN` | NOT NULL | Whether to request partial (streaming) messages from the CLI. No column default: the model sets `true` for `conversational` and `false` for `ephemeral` when the caller does not specify it. |
 | `idle_timeout_secs` | `INTEGER` | NOT NULL DEFAULT 1800 | Time without any event after which a running conversational session is parked, or a running ephemeral session is treated as stalled and failed (`ARCHITECTURE.md`, "Task tracker"). |
 | `is_default` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Exactly one per project. |
@@ -493,6 +493,7 @@ Constraints and indexes:
 - `UNIQUE NULLS NOT DISTINCT (scope, scope_id, name)`.
 - `CHECK ((scope = 'global') = (scope_id IS NULL))`.
 - `secrets_key_version_idx (key_version)` for rotation sweeps.
+- `secrets_claude_credential_idx`: `UNIQUE NULLS NOT DISTINCT (scope, scope_id) WHERE name IN ('ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN')`. One agent credential per scope for the `claude` backend (ADR 0036; `ARCHITECTURE.md`, "Secrets", Agent credentials). The names are the backend's `credential_names`, repeated here because an index predicate is a literal; a test asserts the two agree. A further backend adds its own index, so credentials of different backends coexist at one scope. The secrets service checks the rule first to answer 409 with the name already there; the index is what holds under concurrent writes.
 
 Additional authenticated data (AAD) for the value encryption is the UTF-8 string `<scope>:<scope_id or empty>:<name>`, so a ciphertext copied to another row fails to decrypt. Renaming a secret therefore re-encrypts the value under the new AAD (decrypt, re-encrypt, one transaction); it does not change the data key.
 

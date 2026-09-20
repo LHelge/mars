@@ -367,10 +367,9 @@ End-to-end tests need a browser once per machine:
 
 ```bash
 npx playwright install --with-deps chromium
-npm run test:e2e             # starts the dev server itself, or reuses a running one
 ```
 
-`PLAYWRIGHT_BASE_URL` points Playwright at the frontend under test (default `http://localhost:5173`, the Vite dev server) and `PLAYWRIGHT_API_URL` at the orchestrator its helpers call directly (default `http://localhost:7000`).
+The suite itself runs against a real stack, which "End-to-end tests" below brings up. `PLAYWRIGHT_BASE_URL` points Playwright at the frontend under test (default `http://localhost:5173`, the Vite dev server, which Playwright starts itself or reuses) and `PLAYWRIGHT_API_URL` at the orchestrator its helpers call directly; the stack writes both, and a helper that finds `PLAYWRIGHT_API_URL` unset fails naming `npm run test:e2e:up`.
 
 ### End-to-end tests
 

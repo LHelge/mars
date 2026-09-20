@@ -1,10 +1,10 @@
 ---
 id: zazd5
 title: Add task, task-state, hand-off and TaskEvent types and the tasks and taskStates services
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:40:01.621395700Z"
-updated: "2026-09-16T20:51:52.376503703Z"
+updated: "2026-09-20T10:10:50.039182009Z"
 tags:
   - frontend
   - tracker
@@ -13,6 +13,7 @@ depends_on:
   - h8kw9
   - xjaah
 parent: gn4y2
+attempts: 1
 ---
 
 ## Summary

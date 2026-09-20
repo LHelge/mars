@@ -9,12 +9,15 @@
 // until the snapshot arrives, and fills in on the next render rather than
 // making a read per edge.
 //
-// Adding and removing edges belongs to the actions task; this renders the
-// lists.
+// Removing an edge is offered on the task's own outgoing dependencies only.
+// The "Blocked by this task" group is the other task's edge — it is removed
+// from that task's drawer, where the kind and the owner are both unambiguous.
+// Adding edges is `DependencyEditor`, which mounts this list.
 
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 
+import { SubmitButton } from "../components/SubmitButton";
 import type { Task, TaskDependency, TaskDependencyKind } from "../types";
 import { CHIP } from "./taskChrome";
 import { taskPath } from "./taskLink";
@@ -38,6 +41,10 @@ export interface DependencyListProps {
   blocks: string[];
   /** Tasks the drawer already holds — its children — as a second lookup. */
   known: Task[];
+  /** Offers Remove on each outgoing edge; omitted, the list is read-only. */
+  onRemove?: (taskId: string, kind: TaskDependencyKind) => void;
+  /** A removal is in flight: every Remove waits for it. */
+  removing?: boolean;
 }
 
 export function DependencyList({
@@ -45,6 +52,8 @@ export function DependencyList({
   dependsOn,
   blocks,
   known,
+  onRemove,
+  removing = false,
 }: DependencyListProps) {
   if (dependsOn.length === 0 && blocks.length === 0) {
     return (
@@ -67,6 +76,14 @@ export function DependencyList({
                 projectId={projectId}
                 taskId={edge.task_id}
                 known={known}
+                onRemove={
+                  onRemove === undefined
+                    ? undefined
+                    : () => {
+                        onRemove(edge.task_id, kind);
+                      }
+                }
+                removing={removing}
               />
             ))}
           </Group>
@@ -81,6 +98,7 @@ export function DependencyList({
               projectId={projectId}
               taskId={id}
               known={known}
+              removing={removing}
             />
           ))}
         </Group>
@@ -108,29 +126,52 @@ interface TaskRefLinkProps {
   projectId: string;
   taskId: string;
   known: Task[];
+  /** Removes this very edge — this task and this kind — when offered. */
+  onRemove?: () => void;
+  removing: boolean;
 }
 
 /** One edge: `#12 Rewrite the importer`, linking to that task's own drawer. */
-function TaskRefLink({ projectId, taskId, known }: TaskRefLinkProps) {
+function TaskRefLink({
+  projectId,
+  taskId,
+  known,
+  onRemove,
+  removing,
+}: TaskRefLinkProps) {
   const fromBoard = useTaskStore(selectTaskById(taskId));
   const task = fromBoard ?? known.find((candidate) => candidate.id === taskId);
+
+  const remove =
+    onRemove === undefined ? null : (
+      <SubmitButton
+        type="button"
+        variant="ghost"
+        loading={false}
+        disabled={removing}
+        onClick={onRemove}
+      >
+        Remove
+      </SubmitButton>
+    );
 
   if (task === undefined) {
     return (
       <li
-        className="text-console-muted font-mono text-xs"
+        className="text-console-muted flex items-baseline gap-2 font-mono text-xs"
         title={`Task ${taskId}, not on this board yet`}
       >
-        #?
+        <span className="min-w-0 flex-1">#?</span>
+        {remove}
       </li>
     );
   }
 
   return (
-    <li className="min-w-0">
+    <li className="flex min-w-0 items-baseline gap-2">
       <Link
         to={taskPath(projectId, task.number)}
-        className="hover:bg-console-raised flex items-baseline gap-2 rounded px-1 py-0.5"
+        className="hover:bg-console-raised flex min-w-0 flex-1 items-baseline gap-2 rounded px-1 py-0.5"
       >
         <span className="text-console-muted shrink-0 font-mono text-xs">
           #{task.number}
@@ -144,6 +185,7 @@ function TaskRefLink({ projectId, taskId, known }: TaskRefLinkProps) {
           </span>
         )}
       </Link>
+      {remove}
     </li>
   );
 }

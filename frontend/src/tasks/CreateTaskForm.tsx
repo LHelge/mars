@@ -21,6 +21,7 @@ import { SubmitButton } from "../components/SubmitButton";
 import { createTask } from "../services/tasks";
 import type { Task, TaskPriority, TaskState } from "../types";
 import { useFormSubmit } from "../hooks/useFormSubmit";
+import { CONTROL } from "./taskChrome";
 import { labelsError, parseLabels } from "./taskLabels";
 import { useTaskStore } from "./taskStore";
 
@@ -33,9 +34,6 @@ const PRIORITIES: { value: TaskPriority; label: string }[] = [
   { value: 2, label: "P2 — normal" },
   { value: 3, label: "P3 — low" },
 ];
-
-const CONTROL =
-  "border-console-border bg-console-bg text-console-text rounded border px-2.5 py-1.5 font-mono text-sm";
 
 export interface CreateTaskFormProps {
   projectId: string;

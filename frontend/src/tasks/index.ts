@@ -59,3 +59,28 @@ export type { DependencyListProps } from "./DependencyList";
 export { buildTaskLink, parseTaskNumber, taskPath } from "./taskLink";
 export { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
 export { useUsername } from "./useUsername";
+
+export { CONTROL, PRIORITIES } from "./taskChrome";
+export {
+  diffTaskInput,
+  hasChildren,
+  isEmptyUpdate,
+  parentCandidates,
+  taskEditValues,
+} from "./taskEdit";
+export type { TaskEditValues } from "./taskEdit";
+
+export { useTaskMutations } from "./useTaskMutations";
+export type { DependencyEdge, TaskMutations } from "./useTaskMutations";
+
+export { TaskActions } from "./TaskActions";
+export type { TaskActionsProps } from "./TaskActions";
+
+export { TaskEditForm } from "./TaskEditForm";
+export type { TaskEditFormProps } from "./TaskEditForm";
+
+export { MoveToState } from "./MoveToState";
+export type { MoveToStateProps } from "./MoveToState";
+
+export { DependencyEditor } from "./DependencyEditor";
+export type { DependencyEditorProps } from "./DependencyEditor";

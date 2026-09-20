@@ -1,16 +1,17 @@
 ---
 id: pzys9
 title: Build TaskStatesEditor with add, rename, reorder and delete and mount it on the project page states tab
-status: open
+status: done
 priority: P2
 created: "2026-09-16T20:41:06.670901964Z"
-updated: "2026-09-16T20:41:06.670901964Z"
+updated: "2026-09-20T10:20:20.010834040Z"
 tags:
   - frontend
   - tracker
 depends_on:
   - zazd5
 parent: gn4y2
+attempts: 1
 ---
 
 ## Summary

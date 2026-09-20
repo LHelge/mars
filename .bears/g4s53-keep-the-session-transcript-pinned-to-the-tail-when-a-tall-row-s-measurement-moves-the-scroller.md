@@ -1,10 +1,10 @@
 ---
 id: g4s53
 title: Keep the session transcript pinned to the tail when a tall row's measurement moves the scroller
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-20T18:38:08.440823647Z"
-updated: "2026-09-20T18:56:49.467122176Z"
+updated: "2026-09-20T20:10:16.720665603Z"
 tags:
   - frontend
   - sessions

@@ -1,10 +1,10 @@
 ---
 id: dthk8
 title: Relaunch a session when input arrives between its parked state change and the owner's exit, instead of accepting and dropping it
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-20T18:37:52.058689806Z"
-updated: "2026-09-20T18:56:49.442909781Z"
+updated: "2026-09-20T20:10:16.698739930Z"
 tags:
   - orchestrator
   - sessions

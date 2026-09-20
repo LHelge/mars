@@ -1,10 +1,10 @@
 ---
 id: "2yeth"
 title: "Write hand-off E2E specs: revision hand-off, review approval, changes requested, task merge and revision diff"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:47:33.563517604Z"
-updated: "2026-09-16T20:47:33.563517604Z"
+updated: "2026-09-20T20:10:16.791189890Z"
 tags:
   - frontend
   - tracker
@@ -14,6 +14,7 @@ depends_on:
   - sey9x
   - nvjt5
 parent: "6s8j7"
+attempts: 1
 ---
 
 ## Summary

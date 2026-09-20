@@ -1,15 +1,16 @@
 ---
 id: qhyhw
 title: Let a session that is still creating be ended, and never leave its container running after a refused or early end
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-20T18:38:00.594595523Z"
-updated: "2026-09-20T18:38:00.594595523Z"
+updated: "2026-09-20T20:10:16.741335606Z"
 tags:
   - orchestrator
   - sessions
   - frontend
 parent: "6s8j7"
+attempts: 1
 ---
 
 ## Summary

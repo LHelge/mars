@@ -22,6 +22,7 @@
 //! (ADR 0028; `ARCHITECTURE.md`, "Event delivery"). Payloads are bound
 //! parameters, never formatted into the statement.
 
+use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
@@ -133,6 +134,22 @@ pub struct ProcessStart {
     pub launch_seq: i64,
     /// The transcript byte offset this process's own output starts at.
     pub start_offset: u64,
+}
+
+/// One `running` session the idle reaper has decided is idle, with the timeout
+/// that decided it ([`SessionRepository::list_idle_running`]).
+///
+/// The timeout travels with the row because it is the *profile's* current
+/// value, read in the same join that applied it: a profile edited between two
+/// ticks applies at the next one, and the number the job logs is then the
+/// number it actually compared against (`docs/data-model.md`,
+/// `agent_profiles.idle_timeout_secs`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IdleSession {
+    /// The session row, exactly as any other read returns it.
+    pub session: Session,
+    /// The profile's `idle_timeout_secs` at the moment of the read.
+    pub idle_timeout_secs: i32,
 }
 
 /// The sequences one append occupied, inclusive at both ends.
@@ -333,6 +350,80 @@ impl<'a> SessionRepository<'a> {
     /// [`SessionRepository::list_all`], which is the same query.
     pub async fn list_by_state(&self, state: SessionState) -> Result<Vec<Session>> {
         self.list_all(Some(state)).await
+    }
+
+    /// Every `running` session whose last event is older than its own
+    /// profile's `idle_timeout_secs`, oldest first.
+    ///
+    /// The whole of the idle reaper's selection, in one statement
+    /// (`ARCHITECTURE.md`, "Background jobs", the idle reaper row):
+    ///
+    /// - only `running`, so `creating`, `parked`, `done` and `failed` sessions
+    ///   are never selected — a parked session is waiting for a person and is
+    ///   alive by definition (`ARCHITECTURE.md`, "Task tracker", "Liveness
+    ///   comes from the session");
+    /// - the timeout comes from the join, so each session is judged against
+    ///   *its* profile's value and a shorter timeout elsewhere means nothing to
+    ///   it;
+    /// - and `now` is bound rather than `NOW()`, which is what lets a test put
+    ///   one side of a timeout on either side of the clock without sleeping.
+    ///
+    /// `last_activity_at` advances on every appended event, a `user_message`
+    /// included, so a message to a running session resets its clock
+    /// (`docs/data-model.md`, `sessions.last_activity_at`).
+    pub async fn list_idle_running(&self, now: DateTime<Utc>) -> Result<Vec<IdleSession>> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT s.id, s.project_id, s.profile_id, s.kind AS "kind: ProfileKind",
+                   s.created_by, s.title, s.task_id, s.handoff_id,
+                   s.state AS "state: SessionState", s.base_ref, s.branch, s.container_id,
+                   s.cli_session_id, s.mcp_token_hash, s.last_seq, s.last_activity_at,
+                   s.cost_usd, s.input_tokens, s.output_tokens, s.error, s.created_at,
+                   s.parked_at, s.ended_at, p.idle_timeout_secs
+            FROM sessions s
+            JOIN agent_profiles p ON p.id = s.profile_id
+            WHERE s.state = 'running'
+              AND s.last_activity_at < $1::timestamptz - make_interval(secs => p.idle_timeout_secs)
+            ORDER BY s.last_activity_at
+            "#,
+            now,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        let idle = rows
+            .into_iter()
+            .map(|row| IdleSession {
+                session: Session {
+                    id: row.id,
+                    project_id: row.project_id,
+                    profile_id: row.profile_id,
+                    kind: row.kind,
+                    created_by: row.created_by,
+                    title: row.title,
+                    task_id: row.task_id,
+                    handoff_id: row.handoff_id,
+                    state: row.state,
+                    base_ref: row.base_ref,
+                    branch: row.branch,
+                    container_id: row.container_id,
+                    cli_session_id: row.cli_session_id,
+                    mcp_token_hash: row.mcp_token_hash,
+                    last_seq: row.last_seq,
+                    last_activity_at: row.last_activity_at,
+                    cost_usd: row.cost_usd,
+                    input_tokens: row.input_tokens,
+                    output_tokens: row.output_tokens,
+                    error: row.error,
+                    created_at: row.created_at,
+                    parked_at: row.parked_at,
+                    ended_at: row.ended_at,
+                },
+                idle_timeout_secs: row.idle_timeout_secs,
+            })
+            .collect();
+
+        Ok(idle)
     }
 
     /// How many sessions of this project are `running` or `creating`.

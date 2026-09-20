@@ -235,7 +235,11 @@ pub enum StopReason {
 impl StopReason {
     /// The reason recorded on the `state_change` the exit writes, and — for
     /// [`StopReason::Stalled`] — in `sessions.error`.
-    fn recorded(self) -> &'static str {
+    ///
+    /// Public because the idle reaper's owner-less fallback writes the same
+    /// transition the owner would have written, and the two must say the same
+    /// thing (`crate::session::idle_reaper`).
+    pub fn recorded(self) -> &'static str {
         match self {
             Self::User => "stopped by user",
             Self::Idle => "idle timeout",

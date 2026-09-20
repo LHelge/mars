@@ -1,0 +1,700 @@
+// The session lifecycle on real containers: launch, transcript replay, a
+// message mid-turn, stop, resume, end, a CLI that exits non-zero, retry and the
+// idle reaper (`SPEC.md`, "User-facing features" → "Sessions"; "Sessions" table;
+// `ARCHITECTURE.md`, "Session lifecycle", "Launch sequence", "Stop semantics",
+// "Cost accounting").
+//
+// Every scenario runs an actual session container over the stub image the
+// end-to-end stack builds, so the numbers asserted here are the recorded
+// fixture's own (`images/stub/fixtures/README.md`): three turns whose `result`
+// lines carry the *cumulative* `total_cost_usd` 0.0727456, 0.1447891 and
+// 0.1633155, which the increase-over-previous rule turns into exactly those
+// three session totals, rendered `$0.0727`, `$0.1448` and `$0.1633` by
+// `formatUsd(value, 4)`.
+//
+// The stub's knobs are passed the documented way: a project secret declared on
+// the default profile, which the launcher resolves into the container's
+// environment (`ARCHITECTURE.md`, "Launch sequence"; `images/stub/claude`).
+//
+// **Where the header's numbers come from.** The socket sends a `session` frame
+// on open and "on every state change" (`SPEC.md`, "WebSocket: session stream"),
+// and nothing else refreshes the row the header draws. So `cost`, `in`, `out`
+// and `cli` in the header are the values as of the last state change, and a
+// turn's own cost is asserted where it arrives live — on the transcript's
+// result row, which renders the `result` event's `cost_usd` — with the session's
+// accumulated counters asserted through the API beside it.
+
+import { expect, test } from "@playwright/test";
+import type {
+  APIRequestContext,
+  BrowserContext,
+  Locator,
+  Page,
+} from "@playwright/test";
+
+import type { Api, TestUser } from "./utils/test-helpers";
+import type { Project, Session } from "../src/types";
+import {
+  api,
+  createBareRepo,
+  createProject,
+  createTestUser,
+  defaultProfile,
+  endSession,
+  gitRevParse,
+  launchSession,
+  loginViaToken,
+  mirrorPath,
+  sendInput,
+  setProfileIdleTimeout,
+  setProfileSecrets,
+  setProjectSecret,
+  waitFor,
+  waitForContainerRemoved,
+  waitForSessionState,
+} from "./utils/test-helpers";
+
+// A container start, a git clone and three replayed turns; the idle scenario
+// additionally waits out a cron period.
+test.setTimeout(180_000);
+
+/** The fixture's three cumulative `total_cost_usd` values, in order. */
+const TURN_COST = [0.0727456, 0.1447891, 0.1633155] as const;
+
+/** The same three as `formatUsd(value, 4)` renders them. */
+const TURN_COST_TEXT = ["$0.0727", "$0.1448", "$0.1633"] as const;
+
+/** Every session a scenario launched, ended in `afterEach`. */
+let launched: { client: Api; id: string }[] = [];
+
+test.beforeEach(() => {
+  launched = [];
+});
+
+test.afterEach(async () => {
+  for (const session of launched) {
+    // Best effort: a scenario that already ended its session is fine, and one
+    // that failed must still not leave a container behind.
+    await endSession(session.client, session.id).catch(() => undefined);
+  }
+});
+
+interface Stage {
+  user: TestUser;
+  client: Api;
+  project: Project;
+}
+
+/**
+ * A fresh user, a local bare upstream and a project that finished cloning, with
+ * the browser context already signed in as that user.
+ */
+async function stage(
+  request: APIRequestContext,
+  context: BrowserContext,
+  prefix: string,
+): Promise<Stage> {
+  const user = await createTestUser(request, { prefix });
+  const client = api(request, user.access_token);
+  const repo = createBareRepo("sessions", {
+    files: { "src/app.py": 'def main():\n    print("hello")\n' },
+  });
+  const project = await createProject(client, { remote_url: repo.url });
+  await loginViaToken(context, user);
+  return { user, client, project };
+}
+
+/** Declares each knob on the default profile with its value as a project secret. */
+async function stubKnobs(
+  client: Api,
+  projectId: string,
+  knobs: Record<string, string>,
+): Promise<void> {
+  for (const [name, value] of Object.entries(knobs)) {
+    await setProjectSecret(client, projectId, name, value);
+  }
+  await setProfileSecrets(client, projectId, Object.keys(knobs));
+}
+
+/** Waits until the session's accumulated `cost_usd` is exactly `usd`. */
+function waitForCost(
+  client: Api,
+  sessionId: string,
+  usd: number,
+): Promise<Session> {
+  return waitFor(
+    async () => {
+      const session = await client.get<Session>(`/sessions/${sessionId}`);
+      return Math.abs(session.cost_usd - usd) < 1e-9 ? session : null;
+    },
+    {
+      timeoutMs: 120_000,
+      intervalMs: 250,
+      description: `session ${sessionId} to have cost ${String(usd)}`,
+    },
+  );
+}
+
+/** Waits until the session has committed an event past `seq`. */
+function waitForSeqPast(
+  client: Api,
+  sessionId: string,
+  seq: number,
+): Promise<Session> {
+  return waitFor(
+    async () => {
+      const session = await client.get<Session>(`/sessions/${sessionId}`);
+      return session.last_seq > seq ? session : null;
+    },
+    {
+      timeoutMs: 60_000,
+      intervalMs: 250,
+      description: `session ${sessionId} to commit an event past ${String(seq)}`,
+    },
+  );
+}
+
+/**
+ * Waits until the session's accumulated cost is the fixture's value after turn
+ * `index` — the orchestrator's own cost accounting, which the header shows as
+ * of the last state change.
+ */
+function waitForTurn(
+  client: Api,
+  sessionId: string,
+  index: number,
+): Promise<Session> {
+  return waitForCost(client, sessionId, TURN_COST[index]);
+}
+
+/**
+ * The session header band: the state badge, the metadata and the actions.
+ *
+ * Scoped inside `main`, because the application shell's own banner is a
+ * `<header>` too and comes first in the document.
+ */
+function header(page: Page): Locator {
+  return page.locator("main header").first();
+}
+
+/** One `dd` of the header's metadata list, by its `dt` label. */
+function headerField(page: Page, label: string): Locator {
+  return header(page)
+    .locator("dl > div")
+    .filter({ has: page.locator("dt", { hasText: new RegExp(`^${label}$`) }) })
+    .locator("dd");
+}
+
+/** The virtualised transcript; only the rows in view are in the DOM. */
+function transcript(page: Page): Locator {
+  return page.getByTestId("transcript-scroll");
+}
+
+/**
+ * Scrolls the transcript back until `target` is in the DOM and returns it.
+ *
+ * The transcript is virtualised and pins itself to the newest row, so a row
+ * from earlier in a turn is not merely off-screen, it is not rendered at all.
+ * Scrolling up unpins the list — exactly what a user reading back does — and
+ * the virtualizer mounts the rows that come into view.
+ */
+async function reveal(page: Page, target: Locator): Promise<Locator> {
+  const scroller = transcript(page);
+  // From the tail downwards, so a row below the current position is found too.
+  await pinToLatest(page);
+  for (let step = 0; step < 60; step += 1) {
+    if ((await target.count()) > 0) return target;
+    const atTop = await scroller.evaluate((element) => {
+      const next = Math.max(0, element.scrollTop - element.clientHeight * 0.7);
+      const was = element.scrollTop;
+      element.scrollTop = next;
+      return was === 0;
+    });
+    if (atTop) break;
+    await page.waitForTimeout(80);
+  }
+  await expect(target.first()).toBeVisible();
+  return target;
+}
+
+/**
+ * Pins the transcript back to the newest row after a read-back.
+ *
+ * Scrolling up unpins the list, and an unpinned list does not follow the rows
+ * that arrive next — which is the point of the "Jump to latest" control.
+ */
+async function pinToLatest(page: Page): Promise<void> {
+  const jump = page.getByRole("button", { name: /^Jump to latest/ });
+  if ((await jump.count()) > 0) {
+    await jump.first().click();
+  }
+  await transcript(page).evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+}
+
+/** The composer form, which carries no accessible name of its own. */
+function composer(page: Page): Locator {
+  return page.locator("form").filter({
+    has: page.getByLabel("Message", { exact: true }),
+  });
+}
+
+/** Asserts the header's state badge, which is the pill's own lowercase text. */
+async function expectState(page: Page, state: string): Promise<void> {
+  await expect(header(page).getByText(state, { exact: true })).toBeVisible({
+    timeout: 90_000,
+  });
+}
+
+/**
+ * Launches a session from the project's sessions tab, the way a user does, and
+ * returns the id the app navigated to.
+ */
+async function launchFromUi(
+  page: Page,
+  client: Api,
+  project: Project,
+  message: string,
+): Promise<string> {
+  const profile = await defaultProfile(client, project.id);
+
+  await page.goto(`/projects/${project.id}?tab=sessions`);
+  const form = page.getByRole("form", { name: "Launch a session" });
+  await expect(form).toBeVisible();
+
+  await form.getByLabel("Agent profile").selectOption(profile.id);
+  // The base ref is left at the project's own default, which names `main`.
+  await expect(
+    form.getByLabel("Base ref").locator("option").first(),
+  ).toHaveText(`Project default (${project.default_branch ?? "main"})`);
+  await form.getByLabel("First message (optional)").fill(message);
+  await form.getByRole("button", { name: "Launch session" }).click();
+
+  await page.waitForURL(/\/sessions\/[0-9a-f-]{8}-/);
+  const id = page.url().slice(page.url().lastIndexOf("/") + 1);
+  launched.push({ client, id });
+  return id;
+}
+
+/**
+ * Types `text` into the composer, sends it, and puts the transcript back on
+ * the tail.
+ *
+ * The transcript's auto-follow gives up when a very tall row (the fixture's
+ * 8 KiB tool result) is measured after the estimate it was rendered at, so the
+ * view is left showing "Jump to latest" although the reader never scrolled.
+ * Pressing that control is what a reader does, and what every assertion on the
+ * newest rows here needs.
+ */
+async function compose(page: Page, text: string): Promise<void> {
+  const form = composer(page);
+  await form.getByLabel("Message", { exact: true }).fill(text);
+  await form.getByRole("button", { name: /^(Send|Interject)$/ }).click();
+  await pinToLatest(page);
+}
+
+test("launch with a first message and watch the transcript", async ({
+  page,
+  context,
+  request,
+}) => {
+  const { client, project } = await stage(request, context, "launch");
+
+  const sessionId = await launchFromUi(page, client, project, "hello stub");
+
+  // `creating → running` happens on stdin attach, not on `init`
+  // (`ARCHITECTURE.md`, "Launch sequence"; ADR 0032).
+  await expectState(page, "running");
+  await expect(headerField(page, "branch")).toHaveText(`session/${sessionId}`);
+  await expect(headerField(page, "container")).not.toHaveText("—");
+  await expect(
+    header(page).getByRole("button", { name: "Edit title" }),
+  ).toHaveText("hello stub");
+
+  const rows = transcript(page);
+  // What the orchestrator accumulated, and the `cli_session_id` the first
+  // `init` recorded (null until then; `ARCHITECTURE.md`, "Launch sequence").
+  const session = await waitForTurn(client, sessionId, 0);
+  expect(session.cli_session_id).not.toBeNull();
+  expect(session.input_tokens).toBeGreaterThan(0);
+  expect(session.output_tokens).toBeGreaterThan(0);
+
+  await reveal(
+    page,
+    rows.getByText(/a tiny demo project used to verify the Mars claude/),
+  );
+  // The turn's own result row carries the turn's cost.
+  await reveal(page, rows.getByText(TURN_COST_TEXT[0]));
+  await expect(rows.getByText("success").first()).toBeVisible();
+
+  // Everything above it is reached by reading back, because the transcript is
+  // virtualised and pinned to the end.
+  const read = await reveal(
+    page,
+    rows.getByRole("button", { name: "Read /session/work/README.md" }),
+  );
+  // The `Read` card: a collapsed one-line summary that expands to its result.
+  await expect(read).toHaveAttribute("aria-expanded", "false");
+  await read.click();
+  // The result itself, in the `<pre>` the collapsible renders it in.
+  await expect(
+    rows.locator("pre").filter({ hasText: "# Greeter" }).first(),
+  ).toBeVisible();
+
+  // The second `Read` of the turn returns far more than 40 lines, so its result
+  // is collapsed with an expand control (`components/CollapsibleLines.tsx`).
+  // The task text expects this in the second turn; the recorded fixture puts
+  // the oversized result in the first one.
+  const changelog = await reveal(
+    page,
+    rows.getByRole("button", { name: "Read /session/work/docs/CHANGELOG.md" }),
+  );
+  await changelog.click();
+  const expand = rows.getByRole("button", {
+    name: /^Show all \d+ lines of result$/,
+  });
+  await expect(expand).toBeVisible();
+  await expand.click();
+  await expect(
+    rows.getByRole("button", { name: "Collapse result" }),
+  ).toBeVisible();
+
+  // The message the session was launched with, and the `init` the CLI writes
+  // once it has read its first stdin line.
+  await reveal(page, rows.getByText("Session started (stub)"));
+  await reveal(page, rows.getByText("hello stub", { exact: true }));
+});
+
+test("second and third turns render subagent, edit diff, shell, deltas and denial", async ({
+  page,
+  context,
+  request,
+}) => {
+  const { client, project } = await stage(request, context, "turns");
+  const sessionId = await launchFromUi(page, client, project, "hello stub");
+  await waitForTurn(client, sessionId, 0);
+
+  await compose(page, "next");
+  const rows = transcript(page);
+
+  await waitForTurn(client, sessionId, 1);
+  await reveal(page, rows.getByText(TURN_COST_TEXT[1]));
+
+  // The `Bash` commit renders monospace, prefixed by the shell renderer.
+  await reveal(page, rows.getByText(/git add -A && git commit/).first());
+
+  // The `Edit` card renders a diff carrying both halves of the edit.
+  await reveal(page, rows.getByText('print("hello, world")').first());
+  await expect(rows.getByText('print("hello")').first()).toBeVisible();
+  await expect(rows.getByText("/session/work/src/app.py").first()).toBeVisible();
+
+  // The subagent call is a collapsible nested transcript. It folds itself away
+  // once the subagent has ended, so it is opened here to reach the child.
+  const group = await reveal(
+    page,
+    rows.getByRole("button", { name: /general-purpose/ }),
+  );
+  if ((await group.getAttribute("aria-expanded")) === "false") {
+    await group.click();
+  }
+  const children = page.getByTestId("subagent-children").first();
+  await expect(children.getByRole("button", { name: "Bash" })).toBeVisible();
+  await expect(
+    children.getByText("grep -rn 'main' . --exclude-dir=.git"),
+  ).toBeVisible();
+
+  await compose(page, "more");
+
+  // The third turn's assistant text arrives as `text_delta`s folded into one
+  // message; the intermediate `streaming-cursor` render is too brief to catch
+  // reliably without the delay knob, so the folded text is what is asserted.
+  await waitForTurn(client, sessionId, 2);
+  await reveal(
+    page,
+    rows.getByText(/The command was denied by your permission settings/),
+  );
+  await reveal(page, rows.getByText(/^Permission denied: Bash — /));
+  await reveal(page, rows.getByText(TURN_COST_TEXT[2]));
+});
+
+test("after the fixture is exhausted the stub echoes", async ({
+  page,
+  context,
+  request,
+}) => {
+  const { client, project } = await stage(request, context, "echo");
+  const sessionId = await launchFromUi(page, client, project, "hello stub");
+
+  // Three turns of fixture, then every stdin line yields `Stub reply to: …`.
+  await waitForTurn(client, sessionId, 0);
+  await compose(page, "next");
+  await waitForTurn(client, sessionId, 1);
+  await compose(page, "more");
+  await waitForTurn(client, sessionId, 2);
+
+  const before = (await waitForTurn(client, sessionId, 2)).last_seq;
+  await compose(page, "echo me");
+  // The echo turn's own `result` reports a lower cumulative cost than the
+  // fixture's last one, so it adds nothing to the counters: the sequence is
+  // what says the turn landed (`ARCHITECTURE.md`, "Cost accounting").
+  await waitForSeqPast(client, sessionId, before + 1);
+  await reveal(page, transcript(page).getByText("Stub reply to: echo me"));
+});
+
+test("interject mid-turn", async ({ page, context, request }) => {
+  const { client, project } = await stage(request, context, "interject");
+  await stubKnobs(client, project.id, { MARS_STUB_LINE_DELAY_MS: "400" });
+
+  const sessionId = await launchFromUi(page, client, project, "hello stub");
+  await expectState(page, "running");
+
+  // While the turn streams the composer's button is `Interject`.
+  const form = composer(page);
+  const button = form.getByRole("button", { name: "Interject" });
+  await expect(button).toBeVisible({ timeout: 60_000 });
+
+  await form.getByLabel("Message", { exact: true }).fill("wait for me");
+  await button.click();
+
+  const rows = transcript(page);
+  // Optimistic first, then confirmed by the `user_message` event: the
+  // `client_id` reconciliation must leave exactly one row.
+  const interjection = rows.getByText("wait for me", { exact: true });
+  await expect(interjection).toBeVisible();
+  await expect(interjection).toHaveCount(1);
+
+  // The interjected message is queued by the CLI as the next turn, so the first
+  // turn finishes and the second one then plays.
+  await waitForTurn(client, sessionId, 0);
+  await waitForTurn(client, sessionId, 1);
+  await reveal(page, rows.getByRole("button", { name: "Agent" }));
+  await reveal(page, rows.getByText("wait for me", { exact: true }));
+  await expect(rows.getByText("wait for me", { exact: true })).toHaveCount(1);
+});
+
+test("stop parks the session and shows stopped", async ({
+  page,
+  context,
+  request,
+}) => {
+  const { client, project } = await stage(request, context, "stop");
+  await stubKnobs(client, project.id, { MARS_STUB_LINE_DELAY_MS: "400" });
+
+  const sessionId = await launchFromUi(page, client, project, "hello stub");
+  await expectState(page, "running");
+  // Wait for the CLI's `init`, so the stop lands mid-turn and the header has a
+  // `cli_session_id` to show once the state change refreshes its row.
+  await expect(
+    transcript(page).getByText("Session started (stub)"),
+  ).toBeVisible({ timeout: 60_000 });
+
+  // Mid-turn, so the `state_change` records `SIGINT` and the transcript says
+  // "stopped" rather than "killed" (`ARCHITECTURE.md`, "Stop semantics").
+  await composer(page).getByRole("button", { name: "Stop" }).click();
+
+  await expectState(page, "parked");
+  await expect(header(page).getByText("waiting")).toBeVisible();
+  await reveal(page, transcript(page).getByText("Stopped (SIGINT)"));
+  await expect(headerField(page, "cli")).not.toHaveText("—");
+
+  const parked = await waitForContainerRemoved(client, sessionId);
+  expect(parked.state).toBe("parked");
+  expect(parked.container_id).toBeNull();
+
+  // A parked session accepts input, which is what relaunches it.
+  const form = composer(page);
+  await expect(form.getByLabel("Message", { exact: true })).toBeEnabled();
+  await expect(
+    form.getByText("Sending will relaunch the session"),
+  ).toBeVisible();
+});
+
+test("sending a message to a parked session relaunches it", async ({
+  page,
+  context,
+  request,
+}) => {
+  const { client, project } = await stage(request, context, "resume");
+  const sessionId = await launchFromUi(page, client, project, "hello stub");
+  const running = await waitForTurn(client, sessionId, 0);
+  const cliSessionId = running.cli_session_id;
+  expect(cliSessionId).not.toBeNull();
+
+  await composer(page).getByRole("button", { name: "Stop" }).click();
+  await waitForSessionState(client, sessionId, "parked");
+  // The owner clears `container_id` after the state change and only then hands
+  // the session back to the registry. A message sent before it has done so is
+  // accepted with 202 and silently dropped — an orchestrator race reported with
+  // this task — so the scenario waits for the documented rest state of `parked`
+  // ("Container: removed") first.
+  await waitForContainerRemoved(client, sessionId);
+  await expectState(page, "parked");
+
+  await compose(page, "resumed hello");
+
+  await expectState(page, "running");
+  const resumed = await waitForSessionState(client, sessionId, "running");
+  // The resumed process is `claude --resume <cli_session_id>`, so the id the
+  // second `init` repeats is the first one's.
+  expect(resumed.cli_session_id).toBe(cliSessionId);
+  await reveal(page, transcript(page).getByText("Session resumed (stub)"));
+
+  // The resumed process replays the fixture from its first turn, so the reply
+  // is the same text again — `.last()` is the new one — and the cost counters
+  // gain that turn's value a second time, because `--resume` does not carry the
+  // earlier process's totals forward (`ARCHITECTURE.md`, "Cost accounting").
+  await waitForCost(client, sessionId, TURN_COST[0] * 2);
+  await reveal(
+    page,
+    transcript(page)
+      .getByText(/a tiny demo project used to verify the Mars/)
+      .last(),
+  );
+});
+
+test("end moves to done and disables the composer", async ({
+  page,
+  context,
+  request,
+}) => {
+  const { client, project } = await stage(request, context, "end");
+  const sessionId = await launchFromUi(page, client, project, "hello stub");
+  await waitForTurn(client, sessionId, 0);
+
+  const actions = header(page);
+  await actions.getByRole("button", { name: "End" }).click();
+  await actions.getByRole("button", { name: "Confirm end" }).click();
+
+  await expectState(page, "done");
+  const done = await waitForSessionState(client, sessionId, "done");
+  expect(done.ended_at).not.toBeNull();
+  // `done` is a state change, so the header's row is refreshed with it.
+  await expect(headerField(page, "cost")).toHaveText(TURN_COST_TEXT[0]);
+  await expect(headerField(page, "out")).toHaveText(/^[1-9][\d,]*$/);
+
+  const form = composer(page);
+  await expect(form.getByLabel("Message", { exact: true })).toBeDisabled();
+  await expect(form.getByText("Session has ended")).toBeVisible();
+
+  // `done` accepts no input at all (`ARCHITECTURE.md`, "Session lifecycle").
+  const rejected = await client.send(
+    "POST",
+    `/sessions/${sessionId}/input`,
+    { kind: "message", text: "after the end" },
+    { allow: [409] },
+  );
+  expect(rejected.status).toBe(409);
+
+  // Ending fetches the session branch into the mirror, where it is kept under
+  // its own ref (`ARCHITECTURE.md`, "Stop semantics"; "Git model").
+  expect(
+    gitRevParse(mirrorPath(project.id), `refs/sessions/${sessionId}`),
+  ).toMatch(/^[0-9a-f]{40}$/);
+});
+
+test("a CLI that exits non-zero fails the session and retry parks it", async ({
+  page,
+  context,
+  request,
+}) => {
+  const { client, project } = await stage(request, context, "retry");
+  await stubKnobs(client, project.id, {
+    MARS_STUB_EXIT_AFTER_TURNS: "1",
+    MARS_STUB_EXIT_CODE: "1",
+  });
+
+  const sessionId = await launchFromUi(page, client, project, "fail please");
+
+  // An unrecoverable CLI error is `failed`, not `parked` (`ARCHITECTURE.md`,
+  // "Session lifecycle").
+  await expectState(page, "failed");
+  const failed = await waitForSessionState(client, sessionId, "failed");
+  expect(failed.error).not.toBeNull();
+  // The error is in the header's alert and, once more, in the state pill's
+  // screen-reader suffix; the alert is the visible one.
+  await expect(
+    header(page).getByText(String(failed.error)).last(),
+  ).toBeVisible();
+
+  // Undeclaring the knobs is what keeps them out of the relaunched container:
+  // only a profile's declared secrets are resolved into its environment
+  // (`ARCHITECTURE.md`, "Launch sequence").
+  await setProfileSecrets(client, project.id, []);
+
+  await header(page).getByRole("button", { name: "Retry" }).click();
+  await header(page).getByLabel("Retry message").fill("try again");
+  await header(page).getByRole("button", { name: "Relaunch" }).click();
+
+  // `failed → parked` on retry, then `parked → running` on the relaunch.
+  await expect(transcript(page).getByText(/^failed → parked: /)).toBeVisible({
+    timeout: 60_000,
+  });
+  await expectState(page, "running");
+  // The relaunched process replays the fixture from its first turn, so the same
+  // reply arrives a second time and the cost gains that turn's value again.
+  await expect(
+    transcript(page)
+      .getByText(/a tiny demo project used to verify the Mars/)
+      .last(),
+  ).toBeVisible({ timeout: 90_000 });
+  await waitForCost(client, sessionId, TURN_COST[0] * 2);
+});
+
+test("title defaults to the message's first line, truncated to 80 characters", async ({
+  request,
+  context,
+}) => {
+  const { client, project } = await stage(request, context, "title");
+
+  const multiline = await launchSession(client, project.id, {
+    base_ref: "main",
+    message: "Line one\nLine two",
+  });
+  launched.push({ client, id: multiline.id });
+  // `POST /projects/{pid}/sessions` answers 201 with `state: creating`
+  // (`SPEC.md`, "Sessions").
+  expect(multiline.state).toBe("creating");
+  expect(multiline.title).toBe("Line one");
+
+  const long = await launchSession(client, project.id, {
+    base_ref: "main",
+    message: "x".repeat(200),
+  });
+  launched.push({ client, id: long.id });
+  expect(long.title).toHaveLength(80);
+
+  const untitled = await launchSession(client, project.id, {
+    base_ref: "main",
+  });
+  launched.push({ client, id: untitled.id });
+  expect(untitled.title).toBeNull();
+});
+
+test("an idle session is parked without user action", async ({
+  request,
+  context,
+}) => {
+  const { client, project } = await stage(request, context, "idle");
+  // One second is the model's floor; the reaper is a cron job on a 60 s period,
+  // so the park lands at the next tick (`ARCHITECTURE.md`, "Session owner
+  // task", point 4).
+  await setProfileIdleTimeout(client, project.id, 1);
+
+  const session = await launchSession(client, project.id, {
+    base_ref: "main",
+    message: "hello stub",
+  });
+  launched.push({ client, id: session.id });
+  await waitForSessionState(client, session.id, "running", 90_000);
+
+  const parked = await waitForSessionState(client, session.id, "parked", 90_000);
+  expect(parked.parked_at).not.toBeNull();
+  // Idleness parks a conversational session; it never fails it.
+  expect(parked.error).toBeNull();
+
+  // The park is the reaper's, not a user's, and a message still resumes it.
+  await waitForContainerRemoved(client, session.id);
+  await sendInput(client, session.id, "back to work");
+  await waitForSessionState(client, session.id, "running", 90_000);
+});

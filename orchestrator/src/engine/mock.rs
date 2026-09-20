@@ -284,6 +284,13 @@ struct MockState {
     exec_wake: Arc<Notify>,
     /// Whether [`ContainerEngine::ping`] fails.
     unhealthy: bool,
+    /// Whether [`ContainerEngine::remove`] parks instead of removing.
+    ///
+    /// The clean-up a session owner does after it has written its `parked`
+    /// state change is a container removal, and under Podman it takes a few
+    /// hundred milliseconds. A test that means to arrange what arrives in that
+    /// window holds the removal here rather than hoping to hit it.
+    removals_held: bool,
     /// How many pings the mock was asked for, healthy or not.
     pings: usize,
 }
@@ -548,6 +555,23 @@ impl MockEngine {
         self.lock().unhealthy = unhealthy;
     }
 
+    /// Hold every [`ContainerEngine::remove`] until
+    /// [`MockEngine::resume_removals`] lets it go.
+    ///
+    /// The window a session owner is in between committing the state change
+    /// that leaves `running` and finishing with the session: a removal takes a
+    /// few hundred milliseconds under Podman, and holding it here is what makes
+    /// a test of what arrives in that window deterministic rather than timed.
+    pub fn hold_removals(&self) {
+        self.lock().removals_held = true;
+    }
+
+    /// Let every held [`ContainerEngine::remove`] finish, and stop holding new
+    /// ones.
+    pub fn resume_removals(&self) {
+        self.lock().removals_held = false;
+    }
+
     // ---- internals ---------------------------------------------------------
 
     /// Test-only code: a poisoned lock means another test thread already
@@ -778,6 +802,13 @@ impl ContainerEngine for MockEngine {
     /// there is already removed; a running one is [`EngineError::Conflict`]
     /// without `force` and `Ok` with it.
     async fn remove(&self, id: &ContainerId, force: bool) -> Result<(), EngineError> {
+        // A poll rather than a `Notify`: the flag is read under the same lock
+        // everything else here is, and a five-millisecond tick costs a test
+        // nothing while a missed wake-up would hang it.
+        while self.lock().removals_held {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
         {
             let state = self.lock();
             let Some(container) = state.containers.get(&id.0) else {

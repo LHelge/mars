@@ -65,6 +65,8 @@ use crate::git::{GitService, refs};
 use crate::models::{GitSyncDetail, NewEvent, SessionKind, SessionState};
 use crate::prelude::*;
 use crate::repositories::{CostDelta, SessionRepository, Transition};
+use crate::session::launcher::LaunchMode;
+use crate::session::registry::LaunchGuard;
 use crate::session::{OwnerCommand, OwnerRx, QueuedInput, SessionDirs};
 
 /// How often the owner looks for new transcript bytes.
@@ -356,28 +358,28 @@ pub struct SessionOwner {
     /// The `cost_usd` of the previous `result` of this process, the baseline the
     /// cumulative rule subtracts.
     last_result_cost: Option<f64>,
+    /// Whether this owner has already left the registry entry as its committed
+    /// transition asks ([`SessionOwner::leave_registry`]), which is what tells
+    /// the end of the loop that its own closed channel is its own doing.
+    left_registry: bool,
+    /// The relaunch claim taken when the session was parked, held until the
+    /// container clean-up is done so that nothing starts a new container under
+    /// the one being removed.
+    park_guard: Option<LaunchGuard>,
 }
 
 impl SessionOwner {
-    /// Run a session's loop on its own task and leave the registry as the
-    /// session's new state asks for.
+    /// Run a session's loop on its own task.
     ///
-    /// A `parked` session keeps its entry — that is where inputs queue until a
-    /// resume drains them — and only its channel goes, which is exactly
-    /// [`SessionRegistry::mark_parked`](crate::session::SessionRegistry::mark_parked).
-    /// A `done` or `failed` session has nothing more to say to and is forgotten.
-    /// An owner that stood down touches neither, because the entry it would
-    /// reach for is a newer owner's.
+    /// The loop leaves the registry as the session's new state asks for, and it
+    /// does it where the state change is written rather than here, after the
+    /// task has also removed the container: that gap is what used to swallow a
+    /// message sent the instant a session read `parked`
+    /// ([`SessionOwner::leave_registry`]). An owner that stood down leaves the
+    /// registry alone, because the entry it would reach for is a newer owner's.
     pub fn spawn(ctx: OwnerContext) -> JoinHandle<()> {
-        let session_id = ctx.session_id;
-        let registry = ctx.state.session_registry.clone();
-
         tokio::spawn(async move {
-            match SessionOwner::new(ctx).run().await {
-                OwnerExit::StoodDown => {}
-                OwnerExit::Ended(SessionState::Parked) => registry.mark_parked(session_id),
-                OwnerExit::Ended(_) => registry.remove(session_id),
-            }
+            SessionOwner::new(ctx).run().await;
         })
     }
 
@@ -409,6 +411,8 @@ impl SessionOwner {
             below_committed: false,
             pending: None,
             last_result_cost: None,
+            left_registry: false,
+            park_guard: None,
         }
     }
 
@@ -483,10 +487,16 @@ impl SessionOwner {
             }
         };
 
-        // A closed channel means the registry entry this owner was registered
-        // under is gone or belongs to a newer owner, so the clean-up in `spawn`
-        // would park or forget somebody else's session.
-        let exit = if commands.is_closed() && exit != OwnerExit::StoodDown {
+        // Whatever was handed to this owner's channel while it was on its way
+        // out is still in the buffer, and the receiver is about to be dropped
+        // with it. Taken here, where the loop no longer borrows the channel,
+        // and given back to the registry below.
+        let stranded = drain_inputs(&mut commands);
+
+        // A closed channel this owner did not close itself means the registry
+        // entry it was registered under is gone or belongs to a newer owner, so
+        // acting on the exit would park or forget somebody else's session.
+        let exit = if !self.left_registry && commands.is_closed() && exit != OwnerExit::StoodDown {
             debug!(
                 session_id = %self.session_id,
                 "this owner's registry entry is gone; leaving the registry alone",
@@ -495,6 +505,8 @@ impl SessionOwner {
         } else {
             exit
         };
+
+        self.settle_inputs(&exit, stranded);
 
         debug!(
             session_id = %self.session_id,
@@ -1071,6 +1083,7 @@ impl SessionOwner {
             return OwnerExit::StoodDown;
         }
 
+        self.leave_registry(SessionState::Done);
         self.finish().await;
         self.state.session_ended(self.session_id).await;
 
@@ -1323,6 +1336,11 @@ impl SessionOwner {
             return OwnerExit::StoodDown;
         }
 
+        // Before the clean-up, not after the task returns: an input accepted
+        // for a session whose row already reads `parked` must queue for the
+        // resume rather than be handed to a channel this owner has stopped
+        // reading.
+        self.leave_registry(plan.to);
         self.finish().await;
         if plan.to != SessionState::Parked {
             self.state.session_ended(self.session_id).await;
@@ -1467,11 +1485,90 @@ impl SessionOwner {
         }
     }
 
+    /// Leave the registry entry as the transition just committed asks, before
+    /// the container clean-up rather than after it.
+    ///
+    /// This is where the "a message to a parked session relaunches it" promise
+    /// is kept (`ARCHITECTURE.md`, "Session lifecycle"; `SPEC.md`, "Sessions").
+    /// The owner stops reading its channel the moment its container exits, but
+    /// the entry used to stay [`Phase::Running`](crate::session::Phase) with an
+    /// open channel until the task returned — a few hundred milliseconds later,
+    /// because removing the container is in between — so an input that arrived
+    /// once the row already read `parked` was forwarded into a channel nobody
+    /// would ever read, answered 202 and lost. Parking the entry here closes
+    /// that window from the side that knows: the transition is committed, so
+    /// nothing else may have registered an owner (the launcher refuses a
+    /// session that is neither `creating` nor `parked`), and from here on an
+    /// input queues. The launch guard that comes with it keeps the relaunch to
+    /// this owner until its clean-up is done, which is what
+    /// [`SessionOwner::settle_inputs`] then does with it.
+    ///
+    /// A session that ended `done` or `failed` is forgotten here for the same
+    /// reason: a later input then finds no entry and is refused with a conflict
+    /// instead of being accepted into nothing.
+    fn leave_registry(&mut self, to: SessionState) {
+        self.left_registry = true;
+
+        if to == SessionState::Parked {
+            self.park_guard = self.state.session_registry.begin_parking(self.session_id);
+        } else {
+            self.state.session_registry.remove(self.session_id);
+        }
+    }
+
+    /// Hand back what the channel still held and relaunch a parked session that
+    /// has inputs waiting.
+    ///
+    /// Called once, after the loop, with the inputs [`drain_inputs`] took out
+    /// of the channel. For a parked session they go to the front of the
+    /// registry's queue, the relaunch claim taken in
+    /// [`SessionOwner::leave_registry`] is released, and anything waiting —
+    /// these, and everything accepted while the claim was held, which was
+    /// answered `Queued` precisely because this owner was going to do it — is
+    /// what the resume is for. For any other exit there is nothing to resume
+    /// into, so the count is logged and the inputs are dropped (rule 3: the
+    /// count, never the text).
+    fn settle_inputs(&mut self, exit: &OwnerExit, stranded: Vec<QueuedInput>) {
+        let session_id = self.session_id;
+        let guard = self.park_guard.take();
+
+        if *exit != OwnerExit::Ended(SessionState::Parked) {
+            drop(guard);
+            if !stranded.is_empty() {
+                warn!(
+                    session_id = %session_id,
+                    dropped = stranded.len(),
+                    "dropping inputs accepted for a session that is no longer resumable",
+                );
+            }
+            return;
+        }
+
+        let waiting = self
+            .state
+            .session_registry
+            .return_inputs(session_id, stranded);
+        // Released before the relaunch is asked for, because the relaunch takes
+        // this very claim.
+        drop(guard);
+
+        if waiting > 0 {
+            info!(
+                session_id = %session_id,
+                waiting,
+                "resuming a parked session for the inputs that arrived as it parked",
+            );
+            self.state.launcher().launch(session_id, LaunchMode::Resume);
+        }
+    }
+
     /// Everything a session that has left `running` needs: no container, no
     /// container id and no stdin (`docs/data-model.md`, `sessions`).
     ///
-    /// The registry is [`SessionOwner::spawn`]'s, so that the one place that
-    /// knows the loop returned is the one place that touches it.
+    /// The registry entry is already what the transition asks for
+    /// ([`SessionOwner::leave_registry`]), and the relaunch claim taken with it
+    /// is what keeps a resume from creating a container while this one is being
+    /// removed.
     async fn finish(&mut self) {
         if let Some(container_id) = self.container_id.take() {
             match self.state.engine.remove(&container_id, true).await {
@@ -1765,6 +1862,26 @@ async fn elapsed(deadline: Option<Instant>) {
         Some(deadline) => tokio::time::sleep_until(deadline).await,
         None => std::future::pending().await,
     }
+}
+
+/// Take every input still sitting in a departing owner's channel.
+///
+/// The owner stops reading its channel as soon as its container exits, and
+/// whatever the registry handed it between then and the moment the entry was
+/// parked is buffered in the receiver that is about to be dropped. Those inputs
+/// were accepted, so they are not the receiver's to throw away: they go back to
+/// the registry ([`SessionOwner::settle_inputs`]). A `Stop` or `Shutdown` still
+/// in the buffer is discarded, because the session has already left `running`.
+fn drain_inputs(commands: &mut OwnerRx) -> Vec<QueuedInput> {
+    let mut inputs = Vec::new();
+
+    while let Ok(command) = commands.try_recv() {
+        if let OwnerCommand::Input(input) = command {
+            inputs.push(input);
+        }
+    }
+
+    inputs
 }
 
 /// What a `result` reporting `total` charges under `rule`, and the baseline the

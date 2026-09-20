@@ -505,6 +505,28 @@ impl SessionRegistry {
         self.state().sessions.len()
     }
 
+    /// Age a pending stop by `by`, as if it had been taken that much earlier.
+    ///
+    /// The one thing about a stop that is not reachable from outside: `since`
+    /// is a monotonic [`Instant`], so a test of the idle reaper's `SIGKILL`
+    /// escalation would otherwise have to sleep through
+    /// [`sigkill_after`](crate::session::sigkill_after). `false` when the
+    /// session has no entry or no stop under way. Test use only, which is why
+    /// it exists only with `integration-tests`.
+    #[cfg(feature = "integration-tests")]
+    pub fn age_stop(&self, session_id: Uuid, by: std::time::Duration) -> bool {
+        let mut state = self.state();
+        let Some(entry) = state.sessions.get_mut(&session_id) else {
+            return false;
+        };
+        let Some(since) = entry.stopping_since else {
+            return false;
+        };
+
+        entry.stopping_since = Some(since - by);
+        true
+    }
+
     /// The state, recovering from a poisoned lock rather than propagating a
     /// panic. Nothing under this lock can panic — the critical sections are
     /// hash lookups, a `VecDeque` push and a non-blocking send — so a poisoned

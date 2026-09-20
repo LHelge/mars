@@ -689,7 +689,7 @@ One cron service with independent intervals, mirroring the reference layout of a
 | Job | Interval | Work |
 | --- | --- | --- |
 | mirror fetch | 10 min | `git fetch --prune` on every `ready` mirror. |
-| idle reaper | 1 min | Park `running` conversational sessions idle beyond their profile's timeout; stop and fail `running` ephemeral sessions idle beyond it (`stalled`). |
+| idle reaper | 1 min | Park `running` conversational sessions idle beyond their profile's timeout; stop and fail `running` ephemeral sessions idle beyond it (`stalled`); a CLI that survives both signals receives `SIGKILL` on a later tick. |
 | stuck-task reaper | 1 min | Release tasks held by `done` or `failed` sessions, escalating those at the attempt limit; write the system comment and emit `TaskEvent`s. |
 | token cleanup | 1 h | Delete expired refresh tokens, reset tokens, unaccepted invites, and secrets whose scope row no longer exists. |
 | secret rotation | 1 h | Re-wrap rows whose `key_version` is behind the newest key, if any. |

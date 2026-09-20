@@ -39,6 +39,7 @@
 //! gone and fails the ones the restart caught mid-creation
 //! (`ARCHITECTURE.md`, "Restart procedure").
 
+pub mod idle_reaper;
 pub mod launcher;
 pub mod owner;
 pub mod prepare;
@@ -48,6 +49,7 @@ pub mod service;
 pub mod task_message;
 pub mod token;
 
+pub use idle_reaper::{SIGKILL_GRACE, reap_idle, sigkill_after};
 pub use launcher::{
     BOTH_CREDENTIALS_ERROR, FRESH_FETCH_MAX_AGE, LAUNCH_FAILED_REASON, LAUNCHED_REASON, LaunchMode,
     Launcher,

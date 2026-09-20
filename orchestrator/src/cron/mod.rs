@@ -32,6 +32,7 @@ use tokio::task::JoinHandle;
 use crate::prelude::*;
 
 pub mod orphan_cleanup;
+pub mod idle_reaper;
 pub mod scheduler;
 mod stuck_tasks;
 
@@ -182,14 +183,6 @@ impl CronService {
     /// `git fetch --prune` on every `ready` mirror. Implemented by the mirror
     /// fetch task in this epic; the body lives in `cron/mirror_fetch.rs`.
     pub async fn mirror_fetch(&self, now: DateTime<Utc>) -> Result<JobReport> {
-        let _ = now;
-        Ok(JobReport::default())
-    }
-
-    /// Park idle conversational sessions and fail idle ephemeral ones.
-    /// Implemented by the idle reaper task in this epic; the body lives in
-    /// `cron/idle_reaper.rs` and delegates to `session/idle_reaper.rs`.
-    pub async fn idle_reaper(&self, now: DateTime<Utc>) -> Result<JobReport> {
         let _ = now;
         Ok(JobReport::default())
     }

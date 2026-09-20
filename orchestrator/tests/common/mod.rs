@@ -48,6 +48,12 @@ pub mod sse;
 #[cfg(feature = "integration-tests")]
 pub mod app;
 
+/// The in-process MCP client every MCP suite drives the server through
+/// (`CLAUDE.md`, "Testing expectations"). Built on `TestApp`, so it is gated
+/// the same way.
+#[cfg(feature = "integration-tests")]
+pub mod mcp;
+
 /// The code hand-off suites' shared arrangement: a ready project with a real
 /// repository, sessions with real work clones and the tracker rows a hand-off
 /// needs. Built on `TestApp`, so it is gated the same way.

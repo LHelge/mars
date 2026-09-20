@@ -100,13 +100,14 @@ async fn both_listeners_serve_and_stop_on_one_shutdown_signal() {
         serde_json::json!({ "orchestrator": true, "database": false, "engine": true })
     );
 
-    // The MCP listener is bound and answers, but has no routes yet.
-    let placeholder = client
+    // The MCP listener serves its own router: `/mcp` and nothing else, so any
+    // other path is the ordinary 404 (`ARCHITECTURE.md`, "MCP design").
+    let unknown = client
         .get(format!("http://{mcp_addr}/anything"))
         .send()
         .await
         .expect("the mcp listener answers");
-    assert_eq!(placeholder.status().as_u16(), 404);
+    assert_eq!(unknown.status().as_u16(), 404);
 
     tx.send(()).expect("the server is still running");
 

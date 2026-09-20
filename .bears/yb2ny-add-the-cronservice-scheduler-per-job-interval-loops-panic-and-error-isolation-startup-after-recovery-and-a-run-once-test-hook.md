@@ -1,10 +1,10 @@
 ---
 id: yb2ny
 title: "Add the CronService scheduler: per-job interval loops, panic and error isolation, startup after recovery and a run-once test hook"
-status: open
+status: done
 priority: P0
 created: "2026-09-16T20:42:23.411464510Z"
-updated: "2026-09-16T20:51:52.224352131Z"
+updated: "2026-09-20T05:02:28.946821522Z"
 tags:
   - orchestrator
   - cron
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - xjaah
 parent: cxmar
+attempts: 1
 ---
 
 ## Summary

@@ -60,7 +60,7 @@ These steps have been walked through end to end on both engines — rootless Pod
 - On Docker, the service user in the `docker` group, and that group's gid in `DOCKER_GID` — see the Docker paragraph at the end of "Podman setup".
 - `git` is **not** needed on the host: the orchestrator image ships it, and it is the only thing that runs `git`. The one exception is the host-run fallback under "Podman setup", where the orchestrator is a host process and uses the host's `git`.
 - For private repositories: a fine-grained GitHub personal access token scoped to the repository.
-- Model credentials: an `ANTHROPIC_API_KEY`, or a `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (requires a Pro or Max subscription). Never both for the same session.
+- Model credentials: an Anthropic API key, or a subscription token from `claude setup-token` (requires a Pro or Max subscription). They are entered in the UI after the first login, not in `.env` — see "Start".
 
 ### Podman setup (once, as the service user)
 
@@ -232,7 +232,7 @@ The fixed bootstrap credentials are intentional for v1: the operator controls in
 
 Changing or resetting a user's password invalidates their previous logins. Changing your own password keeps the current browser signed in with new credentials. Deleted users lose access and administrator-role changes apply on subsequent requests; open connections check for revoked logins at their heartbeat ticks (ADR 0025). Running agent sessions continue independently of user logins.
 
-Open `PUBLIC_URL`, log in as `admin`, and you are required to set a new password before anything else works. Then invite your team from the admin page (each invite is a 7-day link sent by email), create a project from a remote URL, and launch a session from its default profile. There is no self-registration.
+Open `PUBLIC_URL`, log in as `admin`, and you are required to set a new password before anything else works. Then add an agent credential on the Secrets page: pick the subscription token or the API key, paste it, and choose whether it applies to you, to one project or to everyone. Every session picks up the most specific one that applies to whoever launches it — yours before the project's before the shared one — so no profile needs editing, and the launch form says which credential it will use, or that there is none (ADR 0036). Then invite your team from the admin page (each invite is a 7-day link sent by email), create a project from a remote URL, and launch a session from its default profile. There is no self-registration.
 
 Work flows through the project's task board. Search across its columns by title or exact task number (`42` or `#42`). Use `Copy link` in a task or session header to reference it in comments or share its direct URL with teammates; opening it requires login. Create a task (it lands in `backlog`), open it in a planning session to break it down, and the resulting `ready` tasks are what an implementer session picks up with its `ready` and `claim` tools. In v1 every session is started by a person, optionally for one task, either as a conversation or as a one-shot run of an ephemeral profile; a task that agents keep failing on ends up in `needs_human` after `max_attempts` (project setting, default 3) with the agents' comments explaining why.
 

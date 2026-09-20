@@ -1,10 +1,10 @@
 ---
 id: k97mz
 title: "Build SessionPage/SessionView: metadata header with cost and tokens, stop/end/sync/retry/delete actions, title edit, Copy link, side-panel layout and task side panel"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:47:00.020802831Z"
-updated: "2026-09-20T08:17:07.033044089Z"
+updated: "2026-09-20T08:35:13.763405208Z"
 tags:
   - frontend
   - sessions

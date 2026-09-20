@@ -54,6 +54,8 @@ export { login, loginViaToken, newLoggedInPage } from "./browser";
 
 export { armSocketDrop, dropConnection } from "./browser";
 
+export { closeSockets } from "./browser";
+
 export {
   createProject,
   createTask,

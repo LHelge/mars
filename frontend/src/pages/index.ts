@@ -11,6 +11,9 @@ export { LoginPage } from "./LoginPage";
 
 export { NotFoundPage } from "./NotFoundPage";
 
+export { ProfileEditorPage } from "./ProfileEditorPage";
+export type { ProfileEditorPageProps } from "./ProfileEditorPage";
+
 export { ProjectPage } from "./ProjectPage";
 export { ProjectsPage } from "./ProjectsPage";
 

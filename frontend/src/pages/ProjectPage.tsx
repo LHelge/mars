@@ -23,6 +23,7 @@ import { NotFoundPage } from "./NotFoundPage";
 import {
   isNotFound,
   isUuid,
+  ProfilesTab,
   ProjectHeader,
   ProjectSettingsForm,
   ProjectTabs,
@@ -134,9 +135,8 @@ function ProjectView({
 }
 
 /** The tabs later tasks of this epic fill in. */
-const PENDING_LABELS: Record<"sessions" | "profiles", string> = {
+const PENDING_LABELS: Record<"sessions", string> = {
   sessions: "Sessions",
-  profiles: "Agent profiles",
 };
 
 function ProjectPanel({ project, tab }: { project: Project; tab: ProjectTab }) {
@@ -144,6 +144,10 @@ function ProjectPanel({ project, tab }: { project: Project; tab: ProjectTab }) {
   // settings form stay usable and the page polls until the clone settles.
   if (project.status === "cloning") {
     return <LoadingState label="Clone in progress" />;
+  }
+
+  if (tab === "profiles") {
+    return <ProfilesTab project={project} />;
   }
 
   if (tab === "secrets") {

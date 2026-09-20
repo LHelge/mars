@@ -33,6 +33,7 @@ export type {
   SharedDirInput,
 } from "./projects";
 export type { Profile, ProfileInput, ProfileKind } from "./profiles";
+export { PROFILE_GATED_TOOLS } from "./profiles";
 export type {
   EventsPage,
   Session,

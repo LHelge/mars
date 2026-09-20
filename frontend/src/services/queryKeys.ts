@@ -27,6 +27,10 @@ export const queryKeys = {
     sessions: (id: string) => ["projects", id, "sessions"] as const,
     /** The project's shared directories (`GET /projects/{id}/shared-dirs`). */
     sharedDirs: (id: string) => ["projects", id, "shared-dirs"] as const,
+    /** The project's agent profiles (`GET /projects/{id}/profiles`). */
+    profiles: (id: string) => ["projects", id, "profiles"] as const,
+    /** The project's board columns (`GET /projects/{id}/task-states`). */
+    taskStates: (id: string) => ["projects", id, "task-states"] as const,
   },
 
   secrets: {

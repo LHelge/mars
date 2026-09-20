@@ -1,10 +1,10 @@
 ---
 id: "88zm4"
 title: Implement the create_task tool with discovery provenance resolution under the project lock, default state, blocks dependencies and one-level parent validation
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:47:08.167675829Z"
-updated: "2026-09-20T08:01:45.980516758Z"
+updated: "2026-09-20T09:44:52.702891040Z"
 tags:
   - orchestrator
   - mcp

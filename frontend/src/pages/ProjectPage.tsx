@@ -27,6 +27,7 @@ import {
   ProjectHeader,
   ProjectSettingsForm,
   ProjectTabs,
+  SessionsTab,
   parseProjectTab,
   projectErrorMessage,
   SharedDirsTab,
@@ -134,16 +135,15 @@ function ProjectView({
   );
 }
 
-/** The tabs later tasks of this epic fill in. */
-const PENDING_LABELS: Record<"sessions", string> = {
-  sessions: "Sessions",
-};
-
 function ProjectPanel({ project, tab }: { project: Project; tab: ProjectTab }) {
   // Nothing under the tabs exists until the mirror does; the header and the
   // settings form stay usable and the page polls until the clone settles.
   if (project.status === "cloning") {
     return <LoadingState label="Clone in progress" />;
+  }
+
+  if (tab === "sessions") {
+    return <SessionsTab project={project} />;
   }
 
   if (tab === "profiles") {
@@ -164,25 +164,16 @@ function ProjectPanel({ project, tab }: { project: Project; tab: ProjectTab }) {
     return <SharedDirsTab project={project} />;
   }
 
-  if (tab === "board" || tab === "states") {
-    // Mount point for `TaskBoard` and `TaskStatesEditor` from `src/tasks/`,
-    // delivered by the task board epic.
-    return (
-      <EmptyState
-        title={
-          tab === "board"
-            ? "The task board is not here yet"
-            : "The task states editor is not here yet"
-        }
-        description="It arrives with the frontend task board epic."
-      />
-    );
-  }
-
+  // `board` and `states`: the mount point for `TaskBoard` and
+  // `TaskStatesEditor` from `src/tasks/`, delivered by the task board epic.
   return (
     <EmptyState
-      title={PENDING_LABELS[tab]}
-      description="Coming in this epic."
+      title={
+        tab === "board"
+          ? "The task board is not here yet"
+          : "The task states editor is not here yet"
+      }
+      description="It arrives with the frontend task board epic."
     />
   );
 }

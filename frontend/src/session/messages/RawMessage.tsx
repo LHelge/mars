@@ -1,8 +1,9 @@
 // Native output the translator did not recognise. Nothing is dropped, so it is
-// shown verbatim; the JSON tree of `SPEC.md`, "Transcript rendering", replaces
-// this pretty-print in the tool-renderer task.
+// shown whole, as the JSON tree of `SPEC.md`, "Transcript rendering" — folded
+// behind a `raw` disclosure, because an unrecognised line is rarely the thing
+// the reader came for.
 
-import { formatValue } from "../json";
+import { JsonTree } from "../../components/JsonTree";
 import type { RawMessage as RawMessageData } from "../sessionStore";
 
 export interface RawMessageProps {
@@ -15,9 +16,9 @@ export function RawMessage({ message }: RawMessageProps) {
       <summary className="text-console-muted cursor-pointer font-mono text-xs select-none">
         raw
       </summary>
-      <pre className="border-console-border bg-console-bg mt-1 overflow-x-auto rounded border px-3 py-2 font-mono text-xs">
-        {formatValue(message.native)}
-      </pre>
+      <div className="mt-1">
+        <JsonTree value={message.native} />
+      </div>
     </details>
   );
 }

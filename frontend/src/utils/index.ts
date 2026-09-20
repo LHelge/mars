@@ -23,3 +23,8 @@ export {
   PASSWORD_MIN_LENGTH,
   validatePassword,
 } from "./password";
+
+export { stripAnsi } from "./ansi";
+
+export { DIFF_LINE_CAP, lineDiff, lineDiffCapped, parseUnifiedPatch } from "./diff";
+export type { DiffLine, PatchFile, PatchHunk } from "./diff";

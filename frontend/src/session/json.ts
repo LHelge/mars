@@ -1,9 +1,9 @@
-// How the transcript prints a value it has no dedicated renderer for.
+// How the transcript flattens a value into text.
 //
-// `SPEC.md`, "Transcript rendering", asks for a JSON tree for anything that is
-// not a known tool family and for `raw`. The tree itself is the next task; until
-// it lands every such value is pretty-printed JSON in the mono face, which is
-// the same content in the same place, just flat.
+// Tool input, tool results and `raw` go through `components/JsonTree.tsx`,
+// which `SPEC.md`, "Transcript rendering", asks for. What is left here is the
+// flat form, for the places that need one line of text rather than a tree: a
+// system message's detail, and any caller counting lines for the 40-line rule.
 
 /**
  * A value as the transcript shows it: a string stays the string the agent

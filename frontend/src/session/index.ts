@@ -55,10 +55,20 @@ export { MessageRow } from "./messages/MessageRow";
 export type { MessageRowProps } from "./messages/MessageRow";
 export { ToolFrame } from "./tools/ToolFrame";
 export type { ToolFrameProps } from "./tools/ToolFrame";
-export { DefaultToolRenderer } from "./tools/DefaultToolRenderer";
 export {
+  byName,
   clearToolRenderers,
   registerToolRenderer,
   toolRendererFor,
 } from "./tools/registry";
 export type { ToolRenderer } from "./tools/registry";
+
+// The tool families and the helpers they narrow tool payloads with
+// (`SPEC.md`, "Transcript rendering").
+export { registerBuiltinToolRenderers } from "./tools/renderers";
+export { EditToolRenderer } from "./tools/EditToolRenderer";
+export { JsonToolRenderer } from "./tools/JsonToolRenderer";
+export { ShellToolRenderer } from "./tools/ShellToolRenderer";
+export { SummaryToolRenderer } from "./tools/SummaryToolRenderer";
+export { ToolResult } from "./tools/ToolResult";
+export { resultText, summaryLine } from "./tools/toolInput";

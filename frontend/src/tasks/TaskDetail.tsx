@@ -36,6 +36,7 @@ import { formatDateTime, formatRelative, shortId } from "../utils/format";
 import { CommentForm } from "./CommentForm";
 import { CommentList } from "./CommentList";
 import { DependencyEditor } from "./DependencyEditor";
+import { HandoffPanel } from "./HandoffPanel";
 import { taskKeys } from "./queryKeys";
 import { TaskActions } from "./TaskActions";
 import { TaskEditForm } from "./TaskEditForm";
@@ -236,6 +237,10 @@ function TaskBody({
             ))}
           </ul>
         )}
+      </Section>
+
+      <Section title="Code hand-off">
+        <HandoffPanel projectId={projectId} task={task} />
       </Section>
 
       <Section title="Sessions">

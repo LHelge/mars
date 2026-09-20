@@ -243,9 +243,8 @@ async fn serve(bootstrap: Bootstrap) {
     // and session containers reach MCP over `mars-sessions`, which has no
     // gateway of its own (`ARCHITECTURE.md`, "Networks"). Bound before
     // serving so a port clash fails now rather than half-started.
-    let api = bind(api_port).await;
-    let mcp = bind(mcp_port).await;
-    info!(api_port, mcp_port, "listening");
+    let api = bind("api", api_port).await;
+    let mcp = bind("mcp", mcp_port).await;
 
     // The v1 provider (ADR 0002): the project's `GIT_CREDENTIAL` secret,
     // decrypted and audited on every read, as an `Authorization: Basic`
@@ -403,13 +402,27 @@ fn select_email_client(config: &Config) -> Arc<dyn EmailClient> {
     Arc::new(ResendClient::new(api_key, from))
 }
 
-/// Bind one listener on all interfaces, or exit.
-async fn bind(port: u16) -> TcpListener {
+/// Bind one listener on all interfaces and say which address it got, or exit.
+///
+/// The address rather than the port alone, because `0` is a legitimate
+/// configured port and an operator reading the startup log wants the one the
+/// kernel actually handed out. A bind that fails names the port, which is the
+/// thing to free or change.
+async fn bind(name: &'static str, port: u16) -> TcpListener {
     match TcpListener::bind(("0.0.0.0", port)).await {
-        Ok(listener) => listener,
+        Ok(listener) => {
+            // `local_addr` on a listener that has just bound does not fail in
+            // practice; the fallback keeps the startup line rather than
+            // turning a logging detail into an exit.
+            let address = listener
+                .local_addr()
+                .map_or_else(|_| format!("0.0.0.0:{port}"), |addr| addr.to_string());
+            info!(listener = name, %address, "{name} listener bound");
+            listener
+        }
         Err(err) => {
-            error!(port, error = %err, "could not bind listener");
-            std::process::exit(1);
+            error!(listener = name, port, error = %err, "could not bind the {name} listener on port {port}");
+            std::process::exit(EXIT_FAILURE);
         }
     }
 }

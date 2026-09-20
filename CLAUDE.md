@@ -57,8 +57,10 @@ cd orchestrator && cargo fmt && cargo clippy --all-targets -- -D warnings && car
 After every frontend change:
 
 ```bash
-cd frontend && npm run lint && npx tsc -b && npm run build && npm run test:unit && npm run test:e2e
+cd frontend && npm run lint && npx tsc -b && npm run build && npm run test:unit && npm run test:e2e:up && npm run test:e2e; npm run test:e2e:down
 ```
+
+`test:e2e` runs against the stack `test:e2e:up` brings up (`README.md`, "Development", "End-to-end tests"): Postgres, the stub image and an orchestrator built with `--features integration-tests`, so it needs a container engine and one orchestrator build. The `E2E_*` port knobs keep it off a developer's own orchestrator on the same machine.
 
 The two clippy invocations are what the Orchestrator CI workflow runs, so a lint in a test file or behind the `integration-tests` feature is caught locally. `tests/health.rs` still needs a container engine, as CI has: every test binary that touches the database starts one testcontainers Postgres of its own and removes it again when the process exits.
 

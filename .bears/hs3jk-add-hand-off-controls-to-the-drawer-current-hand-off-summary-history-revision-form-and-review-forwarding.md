@@ -1,10 +1,10 @@
 ---
 id: hs3jk
 title: "Add hand-off controls to the drawer: current hand-off summary, history, revision form and review forwarding"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:44:42.412522137Z"
-updated: "2026-09-16T20:44:42.412522137Z"
+updated: "2026-09-20T11:26:31.733084851Z"
 tags:
   - frontend
   - tracker
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - dpm8a
 parent: gn4y2
+attempts: 1
 ---
 
 ## Summary

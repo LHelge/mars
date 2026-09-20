@@ -30,7 +30,7 @@ use uuid::Uuid;
 use crate::events::TaskActor;
 use crate::mcp::tools::{TaskArg, TaskOutput};
 use crate::mcp::{McpError, McpResult, SessionContext};
-use crate::models::Task;
+use crate::models::{Task, TaskRef};
 use crate::prelude::*;
 use crate::repositories::TaskRepository;
 use crate::tracker::leases::NOT_HELD_BY_SESSION;
@@ -84,7 +84,20 @@ pub async fn resolve_task_for_mutation(
     ctx: &SessionContext,
     arg: &TaskArg,
 ) -> McpResult<Task> {
-    let reference = arg.parse()?;
+    resolve_ref_for_mutation(m, ctx, arg.parse()?).await
+}
+
+/// The same, for a reference that was parsed earlier.
+///
+/// `update` parses every task argument it was given *before* it opens a
+/// mutation — a malformed reference needs no lock to refuse — and then has a
+/// [`TaskRef`] rather than the argument it came from. The resolution is
+/// unchanged: project-scoped and `FOR UPDATE`, inside the caller's lock.
+pub async fn resolve_ref_for_mutation(
+    m: &mut TrackerMutation<'_>,
+    ctx: &SessionContext,
+    reference: TaskRef,
+) -> McpResult<Task> {
     let project_id = ctx.project_id;
 
     TaskRepository::new(m.pool())

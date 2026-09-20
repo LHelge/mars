@@ -360,11 +360,17 @@ async fn update(
         description: body.description,
         priority: body.priority,
         labels: body.labels,
-        parent: body.parent_id,
+        // A `PUT` names the parent by its UUID alone; the tracker takes the
+        // same [`TaskRef`] the MCP tool's `parent` parses to.
+        parent: body.parent_id.map(|parent| parent.map(TaskRef::Id)),
         assignee_user_id: body.assignee_user_id,
         state: body.state,
         // Only an escalation writes it, and a user's edit is not one.
         needs_human_reason: None,
+        // No REST field edits dependencies: `POST` and `DELETE` on
+        // `.../dependencies` do, one edge and one kind at a time.
+        add_depends_on: Vec::new(),
+        remove_depends_on: Vec::new(),
     };
 
     // The hand-off path: the service owns the ordering, the git lock and every

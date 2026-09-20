@@ -30,7 +30,7 @@ use axum_test::{TestWebSocket, WsMessage};
 use common::{AuthenticatedUser, TEST_TIMINGS, TestApp};
 use mars_orchestrator::models::{NewEvent, NewSession, ProfileKind, SessionState};
 use mars_orchestrator::repositories::SessionRepository;
-use mars_orchestrator::session::{OwnerCommand, OwnerRx, Phase};
+use mars_orchestrator::session::{OwnerCommand, OwnerRx, Phase, StopReason};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -440,7 +440,12 @@ async fn a_stop_reaches_the_owner_and_is_answered_with_no_frame() {
         .expect("the owner is told within the window")
         .expect("the registry forwarded the stop");
     assert!(
-        matches!(command, OwnerCommand::Stop),
+        matches!(
+            command,
+            OwnerCommand::Stop {
+                reason: StopReason::User
+            }
+        ),
         "expected the stop, got {command:?}",
     );
 

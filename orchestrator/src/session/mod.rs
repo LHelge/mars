@@ -54,12 +54,13 @@ pub use launcher::{
 };
 pub use owner::{
     COST_ACCOUNTING, CostAccounting, MARS_MCP_SERVER, OwnerContext, ResultSummary, SessionOwner,
-    TAIL_POLL_INTERVAL,
+    StopReason, TAIL_POLL_INTERVAL,
 };
 pub use prepare::{SessionDirs, initial_token, rotate_token, write_mcp_json};
 pub use recovery::{CREATING_REASON, MISSING_CONTAINER_REASON, RecoveryReport, recover};
 pub use registry::{
-    LaunchGuard, OwnerCommand, OwnerRx, Phase, QueuedInput, SessionRegistry, SubmitResult,
+    LaunchGuard, OwnerCommand, OwnerRx, Phase, QueuedInput, SessionRegistry, StopOutcome,
+    SubmitResult,
 };
 pub use service::SessionService;
 pub use task_message::{HandoffContext, generated_task_message};

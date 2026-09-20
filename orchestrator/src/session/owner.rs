@@ -34,6 +34,10 @@
 //! sent even when the write fails and is not retried (ADR 0020). A stop is
 //! `SIGINT`, then `SIGTERM` after `STOP_GRACE_SECS`, with the last signal sent
 //! recorded on the `state_change` so the UI can say stopped rather than killed.
+//! The signals are the same for every [`StopReason`] and only the reason the
+//! exit records differs, which is how the idle reaper parks a conversational
+//! session and fails an ephemeral one as `stalled` through the owner rather
+//! than behind its back.
 //! A container exit is drained to end of file first — the CLI's last `result`
 //! is written just before it goes — and then read as `parked` or `failed` by
 //! the rules in `ARCHITECTURE.md`, "Session lifecycle" and "Stop semantics".
@@ -206,6 +210,66 @@ pub struct ResultSummary {
     pub is_error: bool,
 }
 
+/// Why a session was asked to stop, which is what the `state_change` the exit
+/// writes says (`ARCHITECTURE.md`, "Stop semantics").
+///
+/// The signal sequence is the same for all three — `SIGINT`, then `SIGTERM`
+/// after `STOP_GRACE_SECS` — and only the transition the exit leads to differs:
+/// a user's stop and an idle conversational session are `parked`, an idle
+/// ephemeral one is `failed` with `sessions.error = "stalled"`, because an
+/// ephemeral session is never parked, resumed or retried (ADR 0003;
+/// `ARCHITECTURE.md`, "Session lifecycle").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// Somebody asked for it: `POST /sessions/{id}/stop`, `end`, the WebSocket.
+    User,
+    /// The idle reaper gave up on a conversational session that went quiet for
+    /// longer than its profile's `idle_timeout_secs`.
+    Idle,
+    /// The idle reaper gave up on an *ephemeral* session that went quiet: the
+    /// same silence, but a run that produced nothing (`ARCHITECTURE.md`, "Task
+    /// tracker", "Liveness comes from the session").
+    Stalled,
+}
+
+impl StopReason {
+    /// The reason recorded on the `state_change` the exit writes, and — for
+    /// [`StopReason::Stalled`] — in `sessions.error`.
+    fn recorded(self) -> &'static str {
+        match self {
+            Self::User => "stopped by user",
+            Self::Idle => "idle timeout",
+            Self::Stalled => "stalled",
+        }
+    }
+
+    /// The reason as it applies to a session of this kind.
+    ///
+    /// An ephemeral session can never end `parked`, so an idle one is stalled;
+    /// a conversational session is never failed by idleness, so a stalled one
+    /// is merely idle. Both mismatches are a caller's mistake — the idle reaper
+    /// reads the kind before it sends — and are corrected rather than obeyed.
+    fn for_kind(self, kind: SessionKind, session_id: Uuid) -> Self {
+        match (self, kind) {
+            (Self::Idle, SessionKind::Ephemeral) => {
+                warn!(
+                    session_id = %session_id,
+                    "an idle stop reached an ephemeral session; treating it as stalled",
+                );
+                Self::Stalled
+            }
+            (Self::Stalled, SessionKind::Conversational) => {
+                warn!(
+                    session_id = %session_id,
+                    "a stalled stop reached a conversational session; treating it as idle",
+                );
+                Self::Idle
+            }
+            (reason, _) => reason,
+        }
+    }
+}
+
 /// Why an owner's loop returned, and what that means for the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OwnerExit {
@@ -249,10 +313,11 @@ pub struct SessionOwner {
     state: AppState,
     stdin: Option<Box<dyn AsyncWrite + Send + Unpin>>,
     container_id: Option<ContainerId>,
-    /// True once a `Stop` was taken, whether or not the signal reached the
+    /// Set once a `Stop` was taken, whether or not the signal reached the
     /// container: it is what makes the exit that follows a stop rather than a
-    /// failure (`ARCHITECTURE.md`, "Stop semantics").
-    stop_requested: bool,
+    /// failure, and which transition it leads to (`ARCHITECTURE.md`, "Stop
+    /// semantics"). Already corrected for the session's kind.
+    stop_reason: Option<StopReason>,
     /// The last signal actually delivered, which the `state_change` carries.
     stop_signal: Option<StopSignal>,
     /// When the grace period after `SIGINT` runs out and `SIGTERM` follows.
@@ -326,7 +391,7 @@ impl SessionOwner {
             stdin: ctx.stdin,
             container_id: ctx.container_id,
             commands: Some(ctx.commands),
-            stop_requested: false,
+            stop_reason: None,
             stop_signal: None,
             stop_deadline: None,
             result_seen: false,
@@ -397,7 +462,7 @@ impl SessionOwner {
                 command = commands.recv() => {
                     match command {
                         Some(OwnerCommand::Input(input)) => self.deliver_input(input).await,
-                        Some(OwnerCommand::Stop) => self.request_stop().await,
+                        Some(OwnerCommand::Stop { reason }) => self.request_stop(reason).await,
                         Some(OwnerCommand::Shutdown) => {
                             debug!(session_id = %self.session_id, "session owner asked to stand down");
                             break OwnerExit::StoodDown;
@@ -1123,13 +1188,16 @@ impl SessionOwner {
     /// Take a stop request: `SIGINT` now, `SIGTERM` when the grace period runs
     /// out (`ARCHITECTURE.md`, "Stop semantics").
     ///
-    /// A second request while one is pending is ignored: the grace period is
-    /// already running and a second `SIGINT` would only restart it.
-    async fn request_stop(&mut self) {
-        if self.stop_requested {
+    /// A second request while one is pending is ignored whatever its reason:
+    /// the grace period is already running, a second `SIGINT` would only
+    /// restart it, and the first stop's reason is the one the exit records.
+    async fn request_stop(&mut self, reason: StopReason) {
+        if self.stop_reason.is_some() {
             debug!(session_id = %self.session_id, "a stop is already pending");
             return;
         }
+
+        let reason = reason.for_kind(self.kind, self.session_id);
 
         let Some(container_id) = self.container_id.clone() else {
             // The route answers 409 for a session that is not running; an owner
@@ -1141,7 +1209,7 @@ impl SessionOwner {
             return;
         };
 
-        self.stop_requested = true;
+        self.stop_reason = Some(reason);
         self.send_signal(&container_id, Signal::Sigint).await;
         // Armed whatever the signal did: a container that is already gone
         // resolves the exit watch long before this fires, and a transport
@@ -1267,8 +1335,10 @@ impl SessionOwner {
     ///
     /// - a session still `creating` never saw its CLI start, so whatever the
     ///   exit code says, the launch failed;
-    /// - a stop was requested, so the exit is the stop completing, `parked`
-    ///   either way, with the last signal sent recorded;
+    /// - a stop was requested, so the exit is the stop completing whatever the
+    ///   code says, `parked` with the stop's own reason — `stopped by user`,
+    ///   `idle timeout` or `stalled` ([`StopReason`]) — and the last signal
+    ///   sent recorded;
     /// - the container is not there at all, so there is nothing to fail on:
     ///   `parked`, which is the state a session with no container is in;
     /// - an ephemeral session that exited before its `result` produced nothing
@@ -1323,8 +1393,8 @@ impl SessionOwner {
                 ContainerExit::Gone => failed("container disappeared before init".to_string()),
             }),
             SessionState::Running => {
-                if self.stop_requested {
-                    return Some(parked("stopped by user", self.stop_signal));
+                if let Some(reason) = self.stop_reason {
+                    return Some(parked(reason.recorded(), self.stop_signal));
                 }
                 let status = match observed {
                     ContainerExit::Exited(status) => status,

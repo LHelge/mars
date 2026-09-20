@@ -33,11 +33,13 @@ use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::events::SessionInput;
 use crate::models::SessionKind;
 use crate::prelude::*;
+use crate::session::owner::StopReason;
 
 /// How many commands the owner's channel buffers.
 ///
@@ -86,8 +88,12 @@ pub enum OwnerCommand {
     /// first (`ARCHITECTURE.md`, "Session owner task").
     Input(QueuedInput),
     /// Stop the session: SIGINT now, SIGTERM after the grace period
-    /// (`ARCHITECTURE.md`, "Session lifecycle").
-    Stop,
+    /// (`ARCHITECTURE.md`, "Session lifecycle"). The reason is what the
+    /// `state_change` the exit writes records.
+    Stop {
+        /// Who asked and what the exit should be recorded as.
+        reason: StopReason,
+    },
     /// Leave the loop without touching the container.
     ///
     /// Orchestrator shutdown and the tests use it: the container keeps
@@ -128,6 +134,24 @@ pub enum SubmitResult {
     Rejected(String),
 }
 
+/// What became of a stop request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// The owner took it and the signal sequence has begun.
+    Sent,
+    /// A stop was already accepted for this session and is still running its
+    /// course; `since` is when the first one was taken, which is what lets the
+    /// idle reaper decide a `SIGKILL` escalation is due. The first stop's
+    /// reason stands.
+    AlreadyStopping {
+        /// When the first accepted stop was taken.
+        since: Instant,
+    },
+    /// No live owner to ask: the session is not running, which is the 409 the
+    /// REST stop endpoint answers.
+    NoOwner,
+}
+
 /// One registered session.
 #[derive(Debug)]
 struct Entry {
@@ -141,6 +165,10 @@ struct Entry {
     tx: Option<mpsc::Sender<OwnerCommand>>,
     /// Inputs accepted while no owner was attached, oldest first.
     queue: VecDeque<QueuedInput>,
+    /// When a stop was accepted for this session, cleared as soon as the owner
+    /// leaves `running`. `Some` is what makes a second stop
+    /// [`StopOutcome::AlreadyStopping`].
+    stopping_since: Option<Instant>,
 }
 
 /// Everything behind the one mutex.
@@ -193,6 +221,9 @@ impl SessionRegistry {
                 entry.kind = kind;
                 entry.phase = phase;
                 entry.tx = Some(tx);
+                // A resumed session is a new run: whatever stop the previous
+                // one was under is finished with it.
+                entry.stopping_since = None;
             }
             None => {
                 state.sessions.insert(
@@ -202,6 +233,7 @@ impl SessionRegistry {
                         phase,
                         tx: Some(tx),
                         queue: VecDeque::new(),
+                        stopping_since: None,
                     },
                 );
             }
@@ -251,6 +283,7 @@ impl SessionRegistry {
         if let Some(entry) = state.sessions.get_mut(&session_id) {
             entry.phase = Phase::Parked;
             entry.tx = None;
+            entry.stopping_since = None;
             debug!(session_id = %session_id, "session owner detached; session parked");
         }
     }
@@ -334,6 +367,7 @@ impl SessionRegistry {
                 phase: Phase::Parked,
                 tx: None,
                 queue: VecDeque::new(),
+                stopping_since: None,
             }
         });
 
@@ -341,32 +375,44 @@ impl SessionRegistry {
     }
 
     /// Ask a session's owner to stop: SIGINT now, SIGTERM after the grace
-    /// period.
+    /// period, and the reason recorded on the `state_change` the exit writes
+    /// (`ARCHITECTURE.md`, "Stop semantics").
     ///
-    /// `Error::Conflict` when there is no live owner to ask, which is what the
-    /// REST stop endpoint answers for a session that is not running.
-    pub fn stop(&self, session_id: Uuid) -> Result<()> {
+    /// The user's stop, the session service's `end` and the idle reaper all
+    /// come through here, so the signals are sent by the one task that owns the
+    /// container and no caller transitions a session behind its owner's back.
+    /// See [`StopOutcome`] for the three answers; a second stop while one is
+    /// still running its course is not forwarded, and the first stop's reason
+    /// stands.
+    pub fn stop(&self, session_id: Uuid, reason: StopReason) -> StopOutcome {
         let mut state = self.state();
-        let sent = state
-            .sessions
-            .get(&session_id)
-            .and_then(|entry| entry.tx.as_ref())
-            .is_some_and(|tx| tx.try_send(OwnerCommand::Stop).is_ok());
+        let Some(entry) = state.sessions.get_mut(&session_id) else {
+            return StopOutcome::NoOwner;
+        };
+
+        if let Some(since) = entry.stopping_since {
+            debug!(session_id = %session_id, "a stop of this session is already under way");
+            return StopOutcome::AlreadyStopping { since };
+        }
+
+        let sent = entry
+            .tx
+            .as_ref()
+            .is_some_and(|tx| tx.try_send(OwnerCommand::Stop { reason }).is_ok());
 
         if !sent {
             // A closed channel means the owner is already gone; park the entry
             // so nothing else tries to forward to it.
-            if let Some(entry) = state.sessions.get_mut(&session_id)
-                && entry.tx.as_ref().is_some_and(mpsc::Sender::is_closed)
-            {
+            if entry.tx.as_ref().is_some_and(mpsc::Sender::is_closed) {
                 entry.phase = Phase::Parked;
                 entry.tx = None;
             }
-            return Err(Error::Conflict("session is not running".to_string()));
+            return StopOutcome::NoOwner;
         }
 
-        debug!(session_id = %session_id, "asked the session owner to stop");
-        Ok(())
+        entry.stopping_since = Some(Instant::now());
+        debug!(session_id = %session_id, ?reason, "asked the session owner to stop");
+        StopOutcome::Sent
     }
 
     /// Whether a live owner is reachable for this session right now.
@@ -517,6 +563,7 @@ fn park_and_queue(
     );
     entry.phase = Phase::Parked;
     entry.tx = None;
+    entry.stopping_since = None;
 
     push(session_id, entry, input, queued_answer(relaunching))
 }
@@ -825,39 +872,88 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_reaches_a_live_owner_and_conflicts_without_one() {
+    async fn stop_reaches_a_live_owner_and_reports_no_owner_without_one() {
         let registry = SessionRegistry::new();
         let session = Uuid::new_v4();
         let mut rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
         registry.mark_running(session);
 
-        registry.stop(session).expect("a live owner can be stopped");
-        assert!(matches!(rx.recv().await, Some(OwnerCommand::Stop)));
+        assert_eq!(
+            registry.stop(session, StopReason::User),
+            StopOutcome::Sent,
+            "a live owner could not be stopped",
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(OwnerCommand::Stop {
+                reason: StopReason::User
+            })
+        ));
 
         registry.mark_parked(session);
-        let error = registry
-            .stop(session)
-            .expect_err("a parked session has no owner to stop");
-        assert!(matches!(error, Error::Conflict(message) if message == "session is not running"));
+        assert_eq!(
+            registry.stop(session, StopReason::User),
+            StopOutcome::NoOwner,
+            "a parked session has no owner to stop",
+        );
 
-        let error = registry
-            .stop(Uuid::new_v4())
-            .expect_err("an unknown session has no owner either");
-        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(
+            registry.stop(Uuid::new_v4(), StopReason::User),
+            StopOutcome::NoOwner,
+            "an unknown session has no owner either",
+        );
+    }
+
+    /// The second stop is not forwarded: the first one's grace period is
+    /// already running and its reason is the one the exit records. `since` is
+    /// what the idle reaper measures a `SIGKILL` escalation against.
+    #[tokio::test]
+    async fn a_second_stop_reports_when_the_first_was_taken() {
+        let registry = SessionRegistry::new();
+        let session = Uuid::new_v4();
+        let mut rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
+        registry.mark_running(session);
+
+        let before = Instant::now();
+        assert_eq!(registry.stop(session, StopReason::Idle), StopOutcome::Sent);
+        let after = Instant::now();
+
+        let StopOutcome::AlreadyStopping { since } = registry.stop(session, StopReason::User)
+        else {
+            panic!("a second stop was forwarded to the owner");
+        };
+        assert!((before..=after).contains(&since));
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(OwnerCommand::Stop {
+                reason: StopReason::Idle
+            })
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "the second stop reached the owner too",
+        );
+
+        // Leaving `running` clears it, so the next run's stop is a first one.
+        registry.mark_parked(session);
+        let _rx = registry.register(session, SessionKind::Conversational, Phase::Running);
+        assert_eq!(registry.stop(session, StopReason::User), StopOutcome::Sent);
     }
 
     #[tokio::test]
-    async fn stop_on_a_closed_channel_conflicts_and_parks_the_entry() {
+    async fn stop_on_a_closed_channel_reports_no_owner_and_parks_the_entry() {
         let registry = SessionRegistry::new();
         let session = Uuid::new_v4();
         let rx = registry.register(session, SessionKind::Conversational, Phase::Creating);
         registry.mark_running(session);
         drop(rx);
 
-        let error = registry
-            .stop(session)
-            .expect_err("an exited owner cannot be stopped");
-        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(
+            registry.stop(session, StopReason::User),
+            StopOutcome::NoOwner,
+            "an exited owner was stopped",
+        );
         assert_eq!(registry.phase(session), Some(Phase::Parked));
     }
 

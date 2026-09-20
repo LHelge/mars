@@ -46,7 +46,8 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::launcher::LaunchMode;
-use super::registry::{QueuedInput, SubmitResult};
+use super::owner::StopReason;
+use super::registry::{QueuedInput, StopOutcome, SubmitResult};
 use crate::engine::{ContainerId, EngineError, Signal};
 use crate::events::SessionInput;
 use crate::git::{GitActor, GitService};
@@ -161,7 +162,16 @@ impl SessionService {
             .await?;
         require_state(&session, &[SessionState::Running])?;
 
-        self.state.session_registry.stop(session_id)
+        match self
+            .state
+            .session_registry
+            .stop(session_id, StopReason::User)
+        {
+            // A stop already under way is the stop this caller asked for: the
+            // session is going down either way, which is what 202 promises.
+            StopOutcome::Sent | StopOutcome::AlreadyStopping { .. } => Ok(()),
+            StopOutcome::NoOwner => Err(Error::Conflict("session is not running".to_string())),
+        }
     }
 
     /// End a session: stop it, fetch its branch back, remove its container and
@@ -329,10 +339,14 @@ impl SessionService {
     async fn stop_and_wait(&self, session: &Session) {
         let session_id = session.id;
 
-        if let Err(err) = self.state.session_registry.stop(session_id) {
+        if self
+            .state
+            .session_registry
+            .stop(session_id, StopReason::User)
+            == StopOutcome::NoOwner
+        {
             debug!(
                 session_id = %session_id,
-                error = %err,
                 "no live owner to stop; ending the session without one",
             );
             return;

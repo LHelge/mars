@@ -13,3 +13,17 @@ export interface TaskState {
   position: number;
   created_at: string;
 }
+
+/** `POST /projects/{pid}/task-states`. */
+export interface CreateTaskStateInput {
+  name: string;
+  kind: TaskStateKind;
+  /** Omitted appends; an explicit one shifts the states at and after it. */
+  position?: number;
+}
+
+/** `PUT /projects/{pid}/task-states/{name}`; `kind` is immutable. */
+export interface UpdateTaskStateInput {
+  name?: string;
+  position?: number;
+}

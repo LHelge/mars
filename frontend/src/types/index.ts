@@ -69,14 +69,29 @@ export type {
   RebaseInput,
   SessionBranch,
 } from "./git";
-export type { TaskState, TaskStateKind } from "./taskStates";
+export type {
+  CreateTaskStateInput,
+  TaskState,
+  TaskStateKind,
+  UpdateTaskStateInput,
+} from "./taskStates";
 export type {
   Comment,
+  CreateTaskInput,
+  ForwardHandoffInput,
   Handoff,
+  HandoffInput,
   ReviewStatus,
+  RevisionHandoffInput,
   Task,
+  TaskActor,
   TaskDependency,
   TaskDependencyKind,
   TaskDetail,
+  TaskEvent,
+  TaskEventKind,
+  TaskPriority,
+  TaskSessionLink,
   TaskSessionTouch,
+  UpdateTaskInput,
 } from "./tasks";

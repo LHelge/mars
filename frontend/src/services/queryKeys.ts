@@ -20,6 +20,12 @@ export const queryKeys = {
     all: ["tasks"] as const,
     /** Tasks waiting in a human state, across all projects. */
     human: () => ["tasks", "human"] as const,
+    /**
+     * Everything the board holds for one project: the task list and, as its
+     * children, each open task's detail. Invalidating this key on a task event
+     * therefore refreshes the board and any open drawer together.
+     */
+    project: (projectId: string) => ["tasks", projectId] as const,
     /** One task with its comments and hand-offs, by UUID or per-project number. */
     detail: (projectId: string, idOrNumber: string | number) =>
       ["tasks", projectId, String(idOrNumber)] as const,

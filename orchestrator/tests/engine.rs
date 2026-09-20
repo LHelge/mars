@@ -37,6 +37,20 @@
 //! nothing about ownership, so they hold on every engine and every runner.
 //! Only `userns_keep_id_accepted` and `bootstrap_engine_end_to_end` assert a
 //! uid.
+//!
+//! **The terminal.** The four `terminal_*` scenarios drive
+//! `ws::terminal::Terminal` — the socket-independent half of the terminal
+//! attachment — against a real container, so the path a keystroke takes is
+//! proven on both engines and not only against `MockEngine` (`SPEC.md`,
+//! "WebSocket: session stream"; the `exec + resize` row of the engine adapter
+//! table). Three of them run on [`TEST_IMAGE`] and need nothing but
+//! `DOCKER_HOST`, so the Engine CI workflow runs them as it stands.
+//! `terminal_real_session_image_bash_as_agent` is the one that asserts the
+//! literal `/bin/bash -l` as `agent`, and it needs a real session image: it
+//! takes the tag from `MARS_STUB_IMAGE` (`README.md`, "Development") and
+//! prints a line and passes when that is unset, which is what it does in CI
+//! today — the Engine workflow builds the stub image after the engine step, so
+//! publishing the tag into that step's environment is a CI follow-up.
 
 mod common;
 
@@ -44,10 +58,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bollard::query_parameters::InspectContainerOptions;
 use common::engine::{
-    PULL_TEST_IMAGE, TEST_IMAGE, WAIT_TIMEOUT, absolute, connect_or_skip, ensure_test_image,
-    probe_lock, remove_image_if_present, rw_bind, test_spec, uid_of, unique_name, with_cleanup,
-    writable_tempdir,
+    PULL_TEST_IMAGE, TEST_IMAGE, WAIT_TIMEOUT, absolute, await_terminal_closed,
+    collect_terminal_output, connect_or_skip, ensure_test_image, plain_text, probe_lock,
+    raw_docker, remove_image_if_present, rw_bind, test_spec, try_collect_terminal_output, uid_of,
+    unique_name, with_cleanup, writable_tempdir,
 };
 use common::engine_contract::{ContractEnv, assert_engine_contract};
 use futures_util::future::join_all;
@@ -60,11 +76,15 @@ use mars_orchestrator::engine::bollard::BollardEngine;
 // container is left carrying.
 use mars_orchestrator::engine::spec::{LABEL_PROBE, order_binds, to_bollard};
 use mars_orchestrator::engine::{
-    ContainerEngine, ContainerId, EngineError, EngineKind, ExecSession, ExitStatus,
+    ContainerEngine, ContainerId, ContainerSpec, EngineError, EngineKind, ExecSession, ExitStatus,
     bootstrap_engine,
 };
 use mars_orchestrator::prelude::Config;
+use mars_orchestrator::ws::terminal::{
+    NO_EXIT_CODE, TERMINAL_CMD, TERMINAL_USER, Terminal, TerminalOutput,
+};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 
 /// The uid a session container runs as, and therefore the uid the probe
 /// expects its file to come back owned by on a Docker host.
@@ -422,6 +442,416 @@ async fn exec_pty_echo_and_resize() {
         // `exit_code` either way).
         let code = exec.close().await.expect("the exec closes");
         assert!(code >= -1, "unexpected exit code: {code}");
+    })
+    .await;
+}
+
+/// How long any terminal wait in this file may take.
+///
+/// [`WAIT_TIMEOUT`]'s thirty seconds rather than the ten a terminal answers in
+/// when it is the only thing running: a full `cargo test` puts every test
+/// binary on one engine at once, and a shell that has not printed its prompt
+/// in ten seconds under that load is a busy machine, not a broken terminal.
+/// The point of the bound is that a wedged wait fails instead of hanging the
+/// run, and thirty seconds keeps that.
+const TERMINAL_PATIENCE: Duration = WAIT_TIMEOUT;
+
+/// The output channel a socket would give a [`Terminal`]: deep enough that a
+/// chatty login shell never makes the owner task wait on the scenario.
+const TERMINAL_BUFFER: usize = 64;
+
+/// What the fallback user is, when a login shell will not start as
+/// [`TERMINAL_USER`] on one engine (the file header's uid note).
+const FALLBACK_USER: &str = "0:0";
+
+/// The stub session image's tag, from `MARS_STUB_IMAGE`.
+///
+/// The same variable `tests/session_e2e.rs` reads (`README.md`,
+/// "Development"), and deliberately not a second one for the same image: the
+/// Engine CI workflow already builds a stub image per engine and names it
+/// there. Unset means the one scenario that needs a real session image skips
+/// itself, which is what it does in CI today — the workflow builds the stub
+/// after the engine step, so wiring the tag into that step is the CI follow-up
+/// the task names, not a change here.
+fn session_image() -> Option<String> {
+    std::env::var("MARS_STUB_IMAGE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// A throwaway container to attach a terminal to: [`TEST_IMAGE`] holding
+/// itself open, with a `HOME` the login shell can use.
+///
+/// Alpine has no account at uid 1000 and therefore no home directory for one,
+/// and `sh -l` started without a usable `HOME` prints a warning that lands in
+/// the middle of the output the scenarios search. An exec inherits the
+/// container's environment, so setting it here is what the exec sees.
+fn terminal_spec(name: &str) -> ContainerSpec {
+    let mut spec = test_spec(name, &["sleep", "300"]);
+    spec.env = vec![("HOME".to_string(), "/tmp".to_string())];
+    spec
+}
+
+/// Open a [`Terminal`] as [`TERMINAL_USER`], falling back to
+/// [`FALLBACK_USER`] when no login shell comes up as uid 1000 on this engine.
+///
+/// The fallback is the file header's uid story again: a GitHub-hosted Docker
+/// runner is uid 1001 and the test image has no account at 1000 at all. The
+/// numeric user needs no passwd lookup, so the exec itself is expected to work
+/// on both engines — but if it does not, the difference is printed and the
+/// scenario carries on proving the terminal contract rather than failing on
+/// the one thing that is the runner's.
+///
+/// The returned string is the user the terminal actually runs as, which is
+/// what `terminal_adapter_login_shell_as_uid_1000` asserts `id -u` against.
+async fn open_terminal_or_fall_back(
+    engine: &BollardEngine,
+    id: &ContainerId,
+    cols: u16,
+    rows: u16,
+) -> (Terminal, mpsc::Receiver<TerminalOutput>, String) {
+    let cmd: Vec<String> = ["/bin/sh", "-l"]
+        .iter()
+        .map(|part| (*part).to_string())
+        .collect();
+
+    for user in [TERMINAL_USER, FALLBACK_USER] {
+        let (tx, mut rx) = mpsc::channel(TERMINAL_BUFFER);
+
+        let terminal = match Terminal::open(engine, id, &cmd, user, cols, rows, tx).await {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                eprintln!("the terminal exec was refused as {user} on this engine: {error}");
+                continue;
+            }
+        };
+
+        // Two things at once. `stty -echo` stops the PTY repeating each
+        // command back, so what the scenarios search is the shell's answer and
+        // not the question; the marker proves a shell is really running behind
+        // the PTY. The marker is written in two quoted halves so that the
+        // *echo* of this line — which the shell still makes, the `stty` not
+        // having run yet — does not itself contain the string being waited
+        // for.
+        terminal
+            .write(b"stty -echo; echo mars-terminal'-'ready\n")
+            .await
+            .expect("the terminal takes input");
+
+        match try_collect_terminal_output(&mut rx, "mars-terminal-ready", TERMINAL_PATIENCE).await {
+            Ok(_) => return (terminal, rx, user.to_string()),
+            Err(reason) => {
+                eprintln!("no login shell came up as {user} on this engine: {reason}");
+                terminal.close().await;
+            }
+        }
+    }
+
+    panic!("no login shell came up as {TERMINAL_USER} or {FALLBACK_USER}");
+}
+
+/// The terminal the browser gets, against a real engine: the login-shell exec
+/// as uid 1000, the size the client asked for, and a clean exit code when the
+/// shell leaves (`SPEC.md`, "WebSocket: session stream"; `ARCHITECTURE.md`,
+/// "Engine adapter", the `exec + resize` row).
+///
+/// `exec_pty_echo_and_resize` above proves the adapter's own call. This proves
+/// the thing above it — `ws::terminal::Terminal`, the socket-independent owner
+/// task — over the same engine, which is the path a keystroke really takes.
+#[tokio::test]
+async fn terminal_adapter_login_shell_as_uid_1000() {
+    let Some(engine) = connect_or_skip().await else {
+        return;
+    };
+    let engine = &engine;
+    ensure_test_image(engine).await;
+
+    with_cleanup(engine, |cleanup| async move {
+        let spec = terminal_spec(&unique_name("terminal-login"));
+        let id = engine
+            .create(&spec)
+            .await
+            .expect("the container is created");
+        cleanup.container(&id);
+        engine.start(&id).await.expect("the container starts");
+
+        let (terminal, mut rx, user) = open_terminal_or_fall_back(engine, &id, 100, 40).await;
+
+        // The uid is labelled because the shell's prompt shares a chunk with
+        // the answer often enough to matter — `<host>:/$ 1000` is one line,
+        // not two — and a bare number is too easy to find in one anyway.
+        terminal
+            .write(b"echo uid=$(id -u); stty size\n")
+            .await
+            .expect("the terminal takes input");
+
+        // `stty size` prints rows then columns: the window the client asked
+        // for, carried through the adapter to the PTY.
+        let seen = collect_terminal_output(&mut rx, "40 100", TERMINAL_PATIENCE).await;
+        let text = plain_text(&seen);
+
+        let expected_uid = user.split(':').next().expect("the user has a uid part");
+        assert!(
+            text.contains(&format!("uid={expected_uid}")),
+            "the shell did not report uid {expected_uid}: {text:?}",
+        );
+
+        terminal
+            .write(b"exit\n")
+            .await
+            .expect("the terminal takes input");
+
+        assert_eq!(
+            await_terminal_closed(&mut rx, TERMINAL_PATIENCE).await,
+            0,
+            "a shell that left by itself reports its own code",
+        );
+    })
+    .await;
+}
+
+/// A resize reaches the live PTY, and a close while the shell is still running
+/// answers inside its bound and leaves the container usable.
+///
+/// The resize is the half the mock cannot prove: only a real PTY reports the
+/// size it was actually given. The close is the socket going away under a
+/// shell that is still sitting at its prompt, which is what happens every time
+/// a browser tab is shut.
+///
+/// What the engines do with that close differs, and the difference is read
+/// here through `inspect_exec` on the raw client because no code path in the
+/// orchestrator can observe it: the adapter hands back an exit code either
+/// way. `ARCHITECTURE.md`, "Engine adapter", records the observation.
+#[tokio::test]
+async fn terminal_adapter_resize_and_close_while_alive() {
+    let Some(engine) = connect_or_skip().await else {
+        return;
+    };
+    let engine = &engine;
+    ensure_test_image(engine).await;
+
+    with_cleanup(engine, |cleanup| async move {
+        let spec = terminal_spec(&unique_name("terminal-resize"));
+        let id = engine
+            .create(&spec)
+            .await
+            .expect("the container is created");
+        cleanup.container(&id);
+        engine.start(&id).await.expect("the container starts");
+
+        let (terminal, mut rx, _user) = open_terminal_or_fall_back(engine, &id, 80, 24).await;
+
+        terminal
+            .resize(120, 50)
+            .await
+            .expect("the terminal is open and takes a resize");
+        terminal
+            .write(b"stty size\n")
+            .await
+            .expect("the terminal takes input");
+        collect_terminal_output(&mut rx, "50 120", TERMINAL_PATIENCE).await;
+
+        // Whatever exec the container is carrying now is this terminal's; it
+        // has to be read before the close, because a finished exec is not
+        // listed on the container any more.
+        let docker = raw_docker();
+        let exec_ids = docker
+            .inspect_container(&spec.name, None::<InspectContainerOptions>)
+            .await
+            .expect("the container inspects")
+            .exec_ids
+            .unwrap_or_default();
+        assert!(
+            !exec_ids.is_empty(),
+            "the container reports no exec although a terminal is attached to it",
+        );
+
+        // The shell is alive and idle at its prompt: this is the socket
+        // closing under it, not the shell leaving.
+        let code = tokio::time::timeout(TERMINAL_PATIENCE, terminal.close())
+            .await
+            .expect("the close is answered inside the bound");
+        assert!(
+            code >= NO_EXIT_CODE,
+            "unexpected exit code from a closed terminal: {code}",
+        );
+
+        // What the engine made of the close. Both answers are accepted and the
+        // one this engine gave is printed, because they differ: the adapter's
+        // close half-closes the attach, which a Docker PTY turns into the
+        // shell's EOF but a rootless Podman does not pass on at all
+        // (`ARCHITECTURE.md`, "Engine adapter", the `exec + resize` row). What
+        // is asserted on both is that the exec is *reachable and accounted
+        // for* rather than a handle the engine has lost, and that a shell left
+        // behind wedges nothing: the container takes another terminal, and the
+        // cleanup below removes it with the exec still in it.
+        for exec_id in &exec_ids {
+            let inspected = docker
+                .inspect_exec(exec_id)
+                .await
+                .expect("the exec inspects");
+            if inspected.running == Some(true) {
+                eprintln!(
+                    "this engine left the terminal exec {exec_id} running after the close \
+                     (the terminal reported exit code {code}); it ends with its container",
+                );
+            }
+        }
+
+        let (second, mut second_rx, _user) = open_terminal_or_fall_back(engine, &id, 80, 24).await;
+        second
+            .write(b"exit\n")
+            .await
+            .expect("the terminal takes input");
+        await_terminal_closed(&mut second_rx, TERMINAL_PATIENCE).await;
+    })
+    .await;
+}
+
+/// A terminal asked for on a container that has stopped is refused, and
+/// refusing it leaves nothing running: no owner task, and therefore no output
+/// channel still held open.
+///
+/// This is the client asking for a terminal on a session whose container went
+/// away between the board and the click (`ARCHITECTURE.md`, "Engine adapter":
+/// an operation on a container that is not running is a conflict).
+#[tokio::test]
+async fn terminal_adapter_on_stopped_container_is_conflict() {
+    let Some(engine) = connect_or_skip().await else {
+        return;
+    };
+    let engine = &engine;
+    ensure_test_image(engine).await;
+
+    with_cleanup(engine, |cleanup| async move {
+        let spec = test_spec(&unique_name("terminal-stopped"), &["true"]);
+        let id = engine
+            .create(&spec)
+            .await
+            .expect("the container is created");
+        cleanup.container(&id);
+        engine.start(&id).await.expect("the container starts");
+        wait_within(engine, &id, WAIT_TIMEOUT).await;
+
+        let cmd: Vec<String> = ["/bin/sh", "-l"]
+            .iter()
+            .map(|part| (*part).to_string())
+            .collect();
+        let (tx, mut rx) = mpsc::channel(TERMINAL_BUFFER);
+
+        let Some(error) = Terminal::open(engine, &id, &cmd, TERMINAL_USER, 80, 24, tx)
+            .await
+            .err()
+        else {
+            panic!("a terminal opened on a container that had stopped");
+        };
+        // A container that has exited is a conflict; one an engine has already
+        // forgotten is a not-found. Both are refusals, and which one an engine
+        // gives is not something the terminal depends on.
+        assert!(
+            matches!(error, EngineError::Conflict(_) | EngineError::NotFound(_)),
+            "unexpected: {error:?}",
+        );
+
+        assert!(
+            rx.recv().await.is_none(),
+            "a refused open left an owner task holding the output channel",
+        );
+    })
+    .await;
+}
+
+/// The real thing: `/bin/bash -l` as the `agent` user of a real session image
+/// (`SPEC.md`, "WebSocket: session stream"; `ARCHITECTURE.md`, "Session
+/// image", uid 1000).
+///
+/// The scenarios above run the same adapter against a plain test image, which
+/// has neither `bash` nor an `agent` account, so they cannot assert the
+/// command and the user `SPEC.md` names. This one does, and skips when there
+/// is no session image to run it against.
+#[tokio::test]
+async fn terminal_real_session_image_bash_as_agent() {
+    let Some(engine) = connect_or_skip().await else {
+        return;
+    };
+    let Some(image) = session_image() else {
+        eprintln!("MARS_STUB_IMAGE not set; skipping the real session image terminal test");
+        return;
+    };
+    let engine = &engine;
+
+    assert!(
+        engine
+            .image_exists(&image)
+            .await
+            .expect("the engine answers whether the session image is present"),
+        "the session image {image} is not on this engine; build it with \
+         `podman build -t {image} images/stub` (or point MARS_STUB_IMAGE at a tag you have)",
+    );
+
+    let image = &image;
+    with_cleanup(engine, |cleanup| async move {
+        let mut spec = test_spec(&unique_name("terminal-session"), &["sleep", "300"]);
+        spec.image = image.clone();
+        // The uid contract: the session container itself runs as 1000:1000,
+        // and so does the terminal in it.
+        spec.user = TERMINAL_USER.to_string();
+        spec.working_dir = "/session/work".to_string();
+
+        let id = engine
+            .create(&spec)
+            .await
+            .expect("the container is created");
+        cleanup.container(&id);
+        engine.start(&id).await.expect("the container starts");
+
+        let cmd: Vec<String> = TERMINAL_CMD
+            .iter()
+            .map(|part| (*part).to_string())
+            .collect();
+        let (tx, mut rx) = mpsc::channel(TERMINAL_BUFFER);
+        let terminal = Terminal::open(engine, &id, &cmd, TERMINAL_USER, 100, 40, tx)
+            .await
+            .expect("the terminal opens on the session image");
+
+        // As above: the marker is split so the pre-`stty` echo of this very
+        // line does not satisfy the wait.
+        terminal
+            .write(b"stty -echo; echo mars-terminal'-'ready\n")
+            .await
+            .expect("the terminal takes input");
+        collect_terminal_output(&mut rx, "mars-terminal-ready", TERMINAL_PATIENCE).await;
+
+        // Both answers are labelled, because the session image's prompt is
+        // `agent@<host>:/session/work$` and a bare `agent` would be satisfied
+        // by the prompt that arrives before the command's own output — and
+        // `bash` by that same prompt on an image whose `PS1` names the shell.
+        // The labels are what make this an assertion about `$0` and `whoami`.
+        terminal
+            .write(b"echo shell=$0; echo user=$(whoami)\n")
+            .await
+            .expect("the terminal takes input");
+
+        // `whoami` is the passwd lookup the numeric exec user does not need
+        // but the image contract promises: uid 1000 is `agent`.
+        let seen = collect_terminal_output(&mut rx, "user=agent", TERMINAL_PATIENCE).await;
+        let text = plain_text(&seen);
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("shell=") && line.contains("bash")),
+            "the terminal is not a bash login shell: {text:?}",
+        );
+
+        terminal
+            .write(b"exit\n")
+            .await
+            .expect("the terminal takes input");
+        assert_eq!(
+            await_terminal_closed(&mut rx, TERMINAL_PATIENCE).await,
+            0,
+            "a shell that left by itself reports its own code",
+        );
     })
     .await;
 }

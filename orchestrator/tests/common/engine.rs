@@ -25,8 +25,9 @@ use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::FutureExt;
 use mars_orchestrator::engine::bollard::BollardEngine;
 use mars_orchestrator::engine::{Bind, ContainerEngine, ContainerId, ContainerSpec};
+use mars_orchestrator::ws::terminal::TerminalOutput;
 use tempfile::TempDir;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{Mutex, OnceCell, mpsc};
 
 /// The image every scenario but `pull_absent_image` runs.
 ///
@@ -349,6 +350,153 @@ where
             std::panic::resume_unwind(panic)
         }
         Ok(()) => assert!(failures.is_empty(), "the scenario leaked: {failures:?}"),
+    }
+}
+
+/// A PTY's bytes with the parts that are not text taken out: ANSI escape
+/// sequences and carriage returns.
+///
+/// A login shell writes more than the answer to the question it was asked —
+/// `\r\n` line endings always, and on a shell that thinks it is interactive a
+/// cursor movement or a colour — and an assertion on the raw bytes would be an
+/// assertion on which shell the image happens to ship. Searching this instead
+/// keeps the scenarios about the terminal contract.
+pub fn plain_text(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {}
+            '\u{1b}' => match chars.peek() {
+                // CSI: parameters, then one final byte in `@`..=`~`.
+                Some('[') => {
+                    chars.next();
+                    for parameter in chars.by_ref() {
+                        if ('@'..='~').contains(&parameter) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: a string ended by BEL or ST.
+                Some(']') => {
+                    chars.next();
+                    while let Some(byte) = chars.next() {
+                        if byte == '\u{7}' {
+                            break;
+                        }
+                        if byte == '\u{1b}' {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Anything else two bytes long, or a stray escape at the end.
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            },
+            _ => out.push(ch),
+        }
+    }
+
+    out
+}
+
+/// Read [`TerminalOutput::Data`] chunks until [`plain_text`] of everything
+/// seen so far contains `needle`, and hand back the raw bytes.
+///
+/// The failure is a message rather than a panic so a scenario can use this to
+/// *probe* — `terminal_adapter_login_shell_as_uid_1000` falls back to another
+/// user when the login shell does not come up under `1000:1000` on one engine
+/// — and [`collect_terminal_output`] is the panicking form every other wait
+/// uses.
+///
+/// A terminal that closes, or detaches, before the needle arrives is an error
+/// and not a wait that runs out: that is the more useful message.
+pub async fn try_collect_terminal_output(
+    rx: &mut mpsc::Receiver<TerminalOutput>,
+    needle: &str,
+    timeout: std::time::Duration,
+) -> std::result::Result<Vec<u8>, String> {
+    let mut seen: Vec<u8> = Vec::new();
+
+    let outcome = tokio::time::timeout(timeout, async {
+        loop {
+            match rx.recv().await {
+                Some(TerminalOutput::Data(chunk)) => {
+                    seen.extend_from_slice(&chunk);
+                    if plain_text(&seen).contains(needle) {
+                        return Ok(());
+                    }
+                }
+                Some(TerminalOutput::Closed { exit_code }) => {
+                    return Err(format!(
+                        "the terminal closed with exit code {exit_code} before {needle:?} arrived"
+                    ));
+                }
+                None => {
+                    return Err(format!("the terminal detached before {needle:?} arrived"));
+                }
+            }
+        }
+    })
+    .await;
+
+    match outcome {
+        Ok(Ok(())) => Ok(seen),
+        Ok(Err(reason)) => Err(format!("{reason}; saw: {:?}", plain_text(&seen))),
+        Err(_) => Err(format!(
+            "{needle:?} did not arrive within {timeout:?}; saw: {:?}",
+            plain_text(&seen)
+        )),
+    }
+}
+
+/// [`try_collect_terminal_output`], as an assertion.
+pub async fn collect_terminal_output(
+    rx: &mut mpsc::Receiver<TerminalOutput>,
+    needle: &str,
+    timeout: std::time::Duration,
+) -> Vec<u8> {
+    match try_collect_terminal_output(rx, needle, timeout).await {
+        Ok(seen) => seen,
+        Err(reason) => panic!("{reason}"),
+    }
+}
+
+/// Discard output until the terminal ends by itself, and hand back the exit
+/// code it reported (`SPEC.md`, "WebSocket: session stream":
+/// `terminal_closed { exit_code }`).
+pub async fn await_terminal_closed(
+    rx: &mut mpsc::Receiver<TerminalOutput>,
+    timeout: std::time::Duration,
+) -> i64 {
+    let mut seen: Vec<u8> = Vec::new();
+
+    let outcome = tokio::time::timeout(timeout, async {
+        loop {
+            match rx.recv().await {
+                Some(TerminalOutput::Data(chunk)) => seen.extend_from_slice(&chunk),
+                Some(TerminalOutput::Closed { exit_code }) => return Some(exit_code),
+                None => return None,
+            }
+        }
+    })
+    .await;
+
+    match outcome {
+        Ok(Some(exit_code)) => exit_code,
+        Ok(None) => panic!(
+            "the terminal detached without reporting a close; saw: {:?}",
+            plain_text(&seen)
+        ),
+        Err(_) => panic!(
+            "the terminal did not close within {timeout:?}; saw: {:?}",
+            plain_text(&seen)
+        ),
     }
 }
 

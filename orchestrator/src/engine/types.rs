@@ -348,7 +348,13 @@ pub trait ExecSession: Send {
     /// Resize the PTY, in character cells.
     async fn resize(&mut self, cols: u16, rows: u16) -> Result<(), EngineError>;
 
-    /// Drop the input half, let the shell exit, and answer with its exit code.
+    /// End the exec's process and answer with its exit code.
+    ///
+    /// Normalised: a terminal closed while its shell is still alive leaves no
+    /// process behind on any engine, and the code answered is the shell's own
+    /// (`ARCHITECTURE.md`, "Engine adapter"). Only a process that takes
+    /// neither an end of input nor an interrupt survives it, and `-1` is then
+    /// what `terminal_closed` carries.
     ///
     /// Takes `Box<Self>` because that is what the caller holds and because
     /// consuming the session is the point: closing twice is not a thing that

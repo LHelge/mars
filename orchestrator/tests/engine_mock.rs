@@ -163,6 +163,15 @@ async fn exec_pty_on_a_container_that_is_not_running_is_a_conflict() {
         .await;
 }
 
+/// `ARCHITECTURE.md`: closing a terminal exec ends its process and answers with
+/// the shell's own code. The mock runs no shell, so what it is held to here is
+/// the answer — a real code, never the unknown `-1` — which is what every test
+/// built on the mock's terminal reads.
+#[tokio::test]
+async fn closing_a_live_terminal_exec_ends_it() {
+    contract().closing_a_live_terminal_exec_ends_it().await;
+}
+
 /// The whole suite in one call, which is how `tests/engine.rs` runs it: the
 /// entry point any future adapter is held to.
 #[tokio::test]

@@ -456,6 +456,12 @@ async fn exec_pty_echo_and_resize() {
 /// run, and thirty seconds keeps that.
 const TERMINAL_PATIENCE: Duration = WAIT_TIMEOUT;
 
+/// How long closing a terminal whose shell is idle at its prompt may take: the
+/// shell exits on the end of input the adapter writes, which is milliseconds,
+/// and anything beyond this is one of the adapter's fallbacks having been
+/// needed (`orchestrator/src/engine/streams.rs`).
+const TERMINAL_CLOSE_PATIENCE: Duration = Duration::from_secs(3);
+
 /// The output channel a socket would give a [`Terminal`]: deep enough that a
 /// chatty login shell never makes the owner task wait on the scenario.
 const TERMINAL_BUFFER: usize = 64;
@@ -612,17 +618,19 @@ async fn terminal_adapter_login_shell_as_uid_1000() {
 }
 
 /// A resize reaches the live PTY, and a close while the shell is still running
-/// answers inside its bound and leaves the container usable.
+/// answers inside its bound, ends the shell and leaves the container usable.
 ///
 /// The resize is the half the mock cannot prove: only a real PTY reports the
 /// size it was actually given. The close is the socket going away under a
 /// shell that is still sitting at its prompt, which is what happens every time
 /// a browser tab is shut.
 ///
-/// What the engines do with that close differs, and the difference is read
-/// here through `inspect_exec` on the raw client because no code path in the
-/// orchestrator can observe it: the adapter hands back an exit code either
-/// way. `ARCHITECTURE.md`, "Engine adapter", records the observation.
+/// That the shell is really gone is read here through `inspect_exec` on the
+/// raw client, because no code path in the orchestrator can observe it: the
+/// adapter hands back an exit code either way. It is the assertion that keeps
+/// the two engines together, since the connection's half-close alone ends the
+/// shell on Docker and not on rootless Podman (`ARCHITECTURE.md`, "Engine
+/// adapter", the `exec + resize` row).
 #[tokio::test]
 async fn terminal_adapter_resize_and_close_while_alive() {
     let Some(engine) = connect_or_skip().await else {
@@ -669,34 +677,38 @@ async fn terminal_adapter_resize_and_close_while_alive() {
 
         // The shell is alive and idle at its prompt: this is the socket
         // closing under it, not the shell leaving.
+        let started = std::time::Instant::now();
         let code = tokio::time::timeout(TERMINAL_PATIENCE, terminal.close())
             .await
             .expect("the close is answered inside the bound");
+        let took = started.elapsed();
         assert!(
-            code >= NO_EXIT_CODE,
-            "unexpected exit code from a closed terminal: {code}",
+            code > NO_EXIT_CODE,
+            "the close reported no exit code at all: {code}",
+        );
+        // The shell takes the end of input the adapter writes: this is the
+        // first drain, not the interrupt behind it and not the timeout behind
+        // that (`orchestrator/src/engine/streams.rs`).
+        assert!(
+            took < TERMINAL_CLOSE_PATIENCE,
+            "closing a shell at its prompt took {took:?}, which is the adapter's fallbacks \
+             rather than the shell exiting on its end of input",
         );
 
-        // What the engine made of the close. Both answers are accepted and the
-        // one this engine gave is printed, because they differ: the adapter's
-        // close half-closes the attach, which a Docker PTY turns into the
-        // shell's EOF but a rootless Podman does not pass on at all
-        // (`ARCHITECTURE.md`, "Engine adapter", the `exec + resize` row). What
-        // is asserted on both is that the exec is *reachable and accounted
-        // for* rather than a handle the engine has lost, and that a shell left
-        // behind wedges nothing: the container takes another terminal, and the
-        // cleanup below removes it with the exec still in it.
+        // Nothing of this terminal is left running in the container: the
+        // adapter ends the shell through the PTY itself, so the engine that
+        // does not pass the half-close on as an EOF ends it too.
         for exec_id in &exec_ids {
             let inspected = docker
                 .inspect_exec(exec_id)
                 .await
                 .expect("the exec inspects");
-            if inspected.running == Some(true) {
-                eprintln!(
-                    "this engine left the terminal exec {exec_id} running after the close \
-                     (the terminal reported exit code {code}); it ends with its container",
-                );
-            }
+            assert_ne!(
+                inspected.running,
+                Some(true),
+                "the terminal exec {exec_id} is still running after the close \
+                 (the terminal reported exit code {code})",
+            );
         }
 
         let (second, mut second_rx, _user) = open_terminal_or_fall_back(engine, &id, 80, 24).await;

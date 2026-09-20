@@ -409,7 +409,13 @@ async fn stream(
         let step = match woke {
             Woke::Notice(notice) => on_notice(context, out, notice).await,
             Woke::Safety => drain(context, out).await,
-            Woke::Ping => on_ping(context, out, incoming).await,
+            Woke::Ping => {
+                let step = on_ping(context, out, incoming).await;
+                // From the ping that was just sent, not from the tick that
+                // asked for it: see [`on_ping`].
+                ping.reset();
+                step
+            }
             Woke::Frame(frame) => on_frame(context, out, frame).await,
             Woke::Terminal(output) => on_terminal_output(context, out, output).await,
         };
@@ -457,38 +463,37 @@ async fn on_notice(
     }
 }
 
-/// One ping tick: take what the client already sent, re-authorize, ping, and
-/// count the pong that has not come.
+/// One ping tick: take what the client already sent, re-authorize, judge the
+/// pongs that have not come, and ping again.
 ///
-/// The count is raised *after* the ping is sent, so it names the pings still
-/// outstanding: reaching [`MAX_MISSED_PONGS`] means two ticks passed with no
-/// pong in between, which is the documented close.
+/// [`SocketContext::missed_pongs`] names the pings still outstanding, and it is
+/// judged *before* the next ping goes out: reaching [`MAX_MISSED_PONGS`] means
+/// two pings each had a whole period to be answered and neither was, which is
+/// the documented close (`SPEC.md`, "WebSocket: session stream"). Judged after
+/// the send, the second ping would be counted as missed in the instant it was
+/// written. The caller restarts the ping period once this returns, so that
+/// period runs from the moment the ping was really sent: the re-authorization
+/// below waits on the database, and a tick that was overdue by the time it
+/// finished would otherwise fire again at once, before any client could have
+/// answered.
 ///
-/// The frames that are already there are read first, and that is not a
-/// nicety. This loop's other arms wait on the database — the safety read, the
-/// re-authorization below — and while one of them is waiting no frame is
-/// taken from the socket, so a pong the client sent promptly can still be
-/// unread when this tick comes round. Counting it as missed would close a
-/// socket whose client answered every ping, for no reason but that the
-/// *server* was slow, which is the opposite of what `SPEC.md`, "WebSocket:
-/// session stream" describes. `next()` on this stream is cancel-safe, so
-/// taking only the frames that are ready loses nothing.
+/// The frames that are already there are read first, and again after the
+/// re-authorization, and that is not a nicety. This loop's other arms wait on
+/// the database too — the safety read, the cursor reads — and while one of
+/// them is waiting no frame is taken from the socket, so a pong the client
+/// sent promptly can still be unread when this tick comes round. Counting it
+/// as missed would close a socket whose client answered every ping, for no
+/// reason but that the *server* was slow. `next()` on this stream is
+/// cancel-safe, so taking only the frames that are ready loses nothing.
 async fn on_ping(
     context: &mut SocketContext,
     out: &mpsc::Sender<Message>,
     incoming: &mut SplitStream<WebSocket>,
 ) -> std::result::Result<(), End> {
-    while let Some(frame) = incoming.next().now_or_never() {
-        on_frame(context, out, frame).await?;
-    }
-
+    take_ready_frames(context, out, incoming).await?;
     ensure_authorized(context).await?;
+    take_ready_frames(context, out, incoming).await?;
 
-    out.send(Message::Ping(PING_PAYLOAD.into()))
-        .await
-        .map_err(|_| End::Gone)?;
-
-    context.missed_pongs = context.missed_pongs.saturating_add(1);
     if context.missed_pongs >= MAX_MISSED_PONGS {
         debug!(session_id = %context.session_id, "session websocket closed after two missed pongs");
         return Err(End::Close {
@@ -496,6 +501,24 @@ async fn on_ping(
             message: None,
             reason: "",
         });
+    }
+
+    out.send(Message::Ping(PING_PAYLOAD.into()))
+        .await
+        .map_err(|_| End::Gone)?;
+    context.missed_pongs = context.missed_pongs.saturating_add(1);
+
+    Ok(())
+}
+
+/// Handle the frames the socket already holds, without waiting for another.
+async fn take_ready_frames(
+    context: &mut SocketContext,
+    out: &mpsc::Sender<Message>,
+    incoming: &mut SplitStream<WebSocket>,
+) -> std::result::Result<(), End> {
+    while let Some(frame) = incoming.next().now_or_never() {
+        on_frame(context, out, frame).await?;
     }
 
     Ok(())

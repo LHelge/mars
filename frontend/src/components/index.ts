@@ -29,9 +29,6 @@ export type { FormFieldProps } from "./FormField";
 export { JsonTree } from "./JsonTree";
 export type { JsonTreeProps } from "./JsonTree";
 
-export { MarkdownBody } from "./Markdown";
-export type { MarkdownBodyProps } from "./Markdown";
-
 export { LoadingState } from "./LoadingState";
 export type { LoadingStateProps } from "./LoadingState";
 

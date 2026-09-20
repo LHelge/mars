@@ -3,6 +3,19 @@
 
 export type ProfileKind = "conversational" | "ephemeral";
 
+/**
+ * The MCP tools a profile can be granted (`SPEC.md`, "MCP tool contracts":
+ * the four git tools are profile-gated). The task tools are always allowed and
+ * are therefore not listed here — `mcp_tools` is the git allow-list and
+ * nothing else. A tool name outside this set is a 400 from the API.
+ */
+export const PROFILE_GATED_TOOLS = [
+  "list_session_branches",
+  "merge",
+  "rebase",
+  "push",
+] as const;
+
 export interface Profile {
   id: string;
   project_id: string;

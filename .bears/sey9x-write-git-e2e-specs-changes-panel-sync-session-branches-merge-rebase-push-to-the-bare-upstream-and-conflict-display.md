@@ -1,10 +1,10 @@
 ---
 id: sey9x
 title: "Write git E2E specs: Changes panel, sync, session branches, merge, rebase, push to the bare upstream and conflict display"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:46:22.448655931Z"
-updated: "2026-09-20T18:56:49.355315666Z"
+updated: "2026-09-20T20:10:16.623763828Z"
 tags:
   - frontend
   - git

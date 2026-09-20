@@ -1,10 +1,10 @@
 ---
 id: hez8r
 title: "Write session view E2E specs: history on reload and in a second tab, reconnect, terminal, copy link, ephemeral run-once"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-16T20:45:46.180711422Z"
-updated: "2026-09-20T18:56:49.384888753Z"
+updated: "2026-09-20T20:10:16.647172030Z"
 tags:
   - frontend
   - sessions

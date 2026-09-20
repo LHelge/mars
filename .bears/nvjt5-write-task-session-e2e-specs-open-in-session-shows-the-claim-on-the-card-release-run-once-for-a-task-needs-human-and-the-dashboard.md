@@ -1,10 +1,10 @@
 ---
 id: nvjt5
 title: "Write task-session E2E specs: open in session shows the claim on the card, release, run once for a task, needs_human and the dashboard"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-16T20:46:53.071282204Z"
-updated: "2026-09-20T18:56:49.411369960Z"
+updated: "2026-09-20T20:10:16.673792685Z"
 tags:
   - frontend
   - tracker

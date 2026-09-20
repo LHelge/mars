@@ -1,10 +1,10 @@
 ---
 id: "77ue3"
 title: Verify against a real orchestrator that a token refresh on socket reconnect does not remount SessionPage
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-20T08:49:57.461269981Z"
-updated: "2026-09-20T18:50:44.361190492Z"
+updated: "2026-09-20T20:10:16.767933458Z"
 tags:
   - frontend
   - sessions
@@ -14,6 +14,7 @@ depends_on:
   - "2acdq"
   - hez8r
 parent: "6s8j7"
+attempts: 1
 ---
 
 ## Summary

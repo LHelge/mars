@@ -1,16 +1,17 @@
 ---
 id: pqtsh
 title: "Build ProjectsPage: project list with clone progress, create-project form and retry clone"
-status: open
+status: done
 priority: P1
 created: "2026-09-16T20:42:03.886072555Z"
-updated: "2026-09-16T20:42:03.886072555Z"
+updated: "2026-09-20T07:46:34.460091305Z"
 tags:
   - frontend
   - projects
 depends_on:
   - "2txez"
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

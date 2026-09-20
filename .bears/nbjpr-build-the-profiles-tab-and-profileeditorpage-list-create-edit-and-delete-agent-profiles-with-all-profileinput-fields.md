@@ -1,10 +1,10 @@
 ---
 id: nbjpr
 title: "Build the profiles tab and ProfileEditorPage: list, create, edit and delete agent profiles with all ProfileInput fields"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:44:51.816509270Z"
-updated: "2026-09-16T20:44:51.816509270Z"
+updated: "2026-09-20T07:46:38.467390291Z"
 tags:
   - frontend
   - projects
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - dxunp
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

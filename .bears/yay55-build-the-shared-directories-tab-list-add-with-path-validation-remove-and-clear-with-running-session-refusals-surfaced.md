@@ -1,16 +1,17 @@
 ---
 id: yay55
 title: "Build the shared-directories tab: list, add with path validation, remove and clear with running-session refusals surfaced"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-16T20:45:14.419557499Z"
-updated: "2026-09-16T20:45:14.419557499Z"
+updated: "2026-09-20T07:46:39.621891529Z"
 tags:
   - frontend
   - projects
 depends_on:
   - dxunp
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: zv5br
 title: "Build the ProjectPage sessions tab: session list, launch form with profile, base ref, first message and optional task, and ephemeral run-with-a-message"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-16T20:44:23.157112957Z"
-updated: "2026-09-16T20:44:23.157112957Z"
+updated: "2026-09-20T07:46:40.538529185Z"
 tags:
   - frontend
   - sessions
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - dxunp
 parent: cgdc2
+attempts: 1
 ---
 
 ## Summary

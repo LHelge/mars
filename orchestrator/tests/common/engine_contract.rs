@@ -488,6 +488,10 @@ impl EngineContract {
             .insert(LABEL_SESSION_ID.to_string(), session_id.clone());
         let unlabelled = self.spec("contract-listed-unlabelled");
 
+        // Both engines report `created` at one-second resolution and may round
+        // down, so the window this scenario's containers have to fall in
+        // starts a second before the first create.
+        let before = chrono::Utc::now() - chrono::TimeDelta::seconds(1);
         let running_id = self.create(&running).await;
         let exited_id = self.create(&exited).await;
         let unlabelled_id = self.create(&unlabelled).await;
@@ -539,6 +543,19 @@ impl EngineContract {
             !listed.iter().any(|row| row.name == unlabelled.name),
             "a container without the label was listed"
         );
+
+        // `created` is the normalised creation time orphan cleanup's
+        // five-minute guard is measured against (`ARCHITECTURE.md`,
+        // "Background jobs"), so every adapter has to report a real one and
+        // not a placeholder.
+        let after = chrono::Utc::now() + chrono::TimeDelta::seconds(1);
+        for name in [&running.name, &exited.name] {
+            let created = row(name).created;
+            assert!(
+                created >= before && created <= after,
+                "{name} was created just now but is listed as created at {created}",
+            );
+        }
 
         // A key nothing carries: an empty list, not a failure.
         let unknown = unique_name("contract-label");

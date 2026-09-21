@@ -1,10 +1,10 @@
 ---
 id: nsvc5
 title: "Frontend: auto-launch and concurrency on the profile editor, session cap and automation pause on the project page, dispatcher-launched sessions labelled"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:24:30.914974391Z"
-updated: "2026-09-21T20:24:30.914974391Z"
+updated: "2026-09-21T21:56:48.175487893Z"
 tags:
   - frontend
   - dispatcher
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - vx7sq
 parent: qabvt
+attempts: 1
 ---
 
 ## Summary

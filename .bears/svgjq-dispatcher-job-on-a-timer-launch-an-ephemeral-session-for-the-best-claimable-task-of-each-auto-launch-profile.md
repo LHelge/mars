@@ -1,10 +1,10 @@
 ---
 id: svgjq
 title: "Dispatcher job: on a timer, launch an ephemeral session for the best claimable task of each auto-launch profile"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:24:08.300481180Z"
-updated: "2026-09-21T20:24:08.300481180Z"
+updated: "2026-09-21T22:24:12.207971796Z"
 tags:
   - orchestrator
   - dispatcher
@@ -15,6 +15,7 @@ depends_on:
   - rgrvp
   - duzjs
 parent: qabvt
+attempts: 1
 ---
 
 ## Summary

@@ -1,11 +1,9 @@
 // What a reconnect does to the session *page*, as opposed to the transcript —
 // whose "no gaps, no duplicates" sentence belongs to `session-view.spec.ts`.
 //
-// The question this file settles (77ue3): `SessionSocket.refreshThenReconnect`
-// rotates the access token on every socket close (`SPEC.md`, "Authentication":
-// refresh, then reopen with a fresh token and the last cursor), and
-// `services/auth.ts#installSession` publishes a whole new auth state to every
-// `useAuth()` subscriber as it does. If that state ever passed through
+// The question this file settles (77ue3): a reconnect installs auth state, and
+// `services/auth.ts#installSession` publishes a whole new state to every
+// `useAuth()` subscriber when it does. If that state ever passed through
 // `user: null`, or if any route element changed identity with the token, then
 // `ProtectedRoute` would fall back to `LoadingState` and `SessionPage` would
 // unmount and mount again — discarding the composer's unsent text, resetting
@@ -25,12 +23,23 @@
 //
 // Two closes, because the two halves of a reconnect cannot be had at once:
 //
-//   1. An outage (`dropConnection`). The refresh cannot succeed while the
-//      network is down, so this half is about the page surviving a real
-//      disconnect, reconnect and replay.
-//   2. A close with the network up (`closeSockets`). This is the half the task
-//      is named after: the refresh is answered 200, the stored token really
-//      rotates, and the page has to survive that too.
+//   1. An outage (`dropConnection`), a real disconnect, reconnect and replay
+//      with every request in between failing.
+//   2. A close with the network up (`closeSockets`), which comes straight back
+//      and so exercises the same page through a reconnect that never leaves
+//      the transcript behind.
+//
+// Both halves also assert what ntepg made of the close path: an ordinary close
+// is no evidence about the access token — an open stream is not closed because
+// its token expired (`SPEC.md`, "Authentication") — so neither half rotates
+// anything, and the single-use refresh cookie is spent only on the
+// authentication close (1008) that says the credentials are the problem. That
+// close cannot be staged from here: `WebSocket.close` refuses every reserved
+// code, 1008 among them, and the server sends it only for a revocation, which
+// ends in sign-out rather than in a rotation. What an installed pair does to
+// this mounted page is therefore asserted where a rotation really happens —
+// `src/session/socketTokenRotation.test.ts` for the socket, and the
+// self-service password change of `auth.spec.ts` for the whole page.
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -179,7 +188,7 @@ async function openTerminal(page: Page): Promise<void> {
   });
 }
 
-test("a reconnect keeps the session page mounted, refresh and all", async ({
+test("a reconnect keeps the session page mounted, terminal and all", async ({
   page,
   context,
   user,
@@ -247,24 +256,16 @@ test("a reconnect keeps the session page mounted, refresh and all", async ({
 
   expect(await closeSockets(page)).toBe(1);
 
-  // This is the close whose refresh can be answered, and it is: a new pair is
-  // installed and the socket reopens with it.
-  await expect
-    .poll(
-      () =>
-        calls.filter(
-          (call) =>
-            call.method === "POST" &&
-            call.path === "/api/auth/refresh" &&
-            call.status === 200,
-        ).length,
-      { timeout: 30_000 },
-    )
-    .toBeGreaterThan(0);
+  // It comes straight back — and with the credentials it already had. A close
+  // carries no authentication refusal, so nothing is rotated for it (ntepg;
+  // `SPEC.md`, "Authentication"): spending the single-use refresh cookie on
+  // every close is what turned a stream that could not reopen into a rotation
+  // storm that told the reader nothing.
   await expect(connection(page, "live")).toBeVisible({ timeout: 60_000 });
-  expect(await token(page)).not.toBe(tokenBefore);
+  expect(countOf(calls, "POST", "/api/auth/refresh")).toBe(0);
+  expect(await token(page)).toBe(tokenBefore);
 
-  // The rotation changed nothing about the page: same nodes, same draft, same
+  // The reconnect changed nothing about the page: same nodes, same draft, same
   // panel, same `Terminal disconnected`, and still no startup.
   expect(await readMarks(page)).toEqual(MOUNTED);
   await expect(messageBox(page)).toHaveValue(DRAFT);
@@ -276,7 +277,7 @@ test("a reconnect keeps the session page mounted, refresh and all", async ({
   expect(countOf(calls, "GET", `/api/sessions/${session.id}`)).toBe(0);
 
   // And the reopened socket is a working one: the composer can still send.
-  await messageBox(page).fill("after the refresh");
+  await messageBox(page).fill("after the reconnect");
   await page.getByRole("button", { name: /^(Send|Interject)$/ }).click();
   await expect(messageBox(page)).toHaveValue("");
 });

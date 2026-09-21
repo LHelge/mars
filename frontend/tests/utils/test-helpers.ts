@@ -68,6 +68,7 @@ export { closeSockets } from "./browser";
 
 export {
   createProject,
+  commentOnTask,
   createTask,
   defaultProfile,
   FAKE_AGENT_CREDENTIAL,

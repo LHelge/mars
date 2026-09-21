@@ -6,6 +6,7 @@
 
 import type {
   Branch,
+  Comment,
   CreateTaskInput,
   Profile,
   ProfileInput,
@@ -332,6 +333,22 @@ export function getTask(
   idOrNumber: string | number,
 ): Promise<TaskDetail> {
   return client.get<TaskDetail>(`/projects/${projectId}/tasks/${idOrNumber}`);
+}
+
+/**
+ * `POST /projects/{pid}/tasks/{id}/comments` — a change to the task made from
+ * outside the browser, which reaches an open drawer as a `commented` event.
+ */
+export function commentOnTask(
+  client: Api,
+  projectId: string,
+  idOrNumber: string | number,
+  body: string,
+): Promise<Comment> {
+  return client.post<Comment>(
+    `/projects/${projectId}/tasks/${idOrNumber}/comments`,
+    { body },
+  );
 }
 
 /** Moves a task to another state, the board's one mutation. */

@@ -38,8 +38,8 @@ pub use projects::ProjectRepository;
 pub use refresh_tokens::RefreshTokenRepository;
 pub use secrets::{SecretListFilter, SecretRepository, UserFilter};
 pub use sessions::{
-    AppendedRange, CostDelta, IdleSession, MAX_EVENT_PAGE, McpSessionRow, ProcessStart,
-    SessionRepository, Transition,
+    AppendedRange, CostDelta, IdleSession, LiveSessionCounts, MAX_EVENT_PAGE, McpSessionRow,
+    ProcessStart, SessionRepository, Transition,
 };
 pub use tasks::{TaskFilter, TaskRepository};
 pub use user_invites::UserInviteRepository;

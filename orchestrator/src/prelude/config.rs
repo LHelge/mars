@@ -29,6 +29,26 @@ const REDACTED: &str = "<redacted>";
 /// "Session image").
 const SESSION_IMAGE_DEFAULT: &str = "mars-session-claude-dev:latest";
 
+/// The default value of `AUTOMATION_MAX_SESSIONS` (`README.md`,
+/// "Configuration").
+///
+/// Four, because the instance cap is a ceiling for one host and a session is a
+/// container with a checkout and an agent process in it: four of them is a
+/// load a single developer-sized machine carries while a person still has room
+/// to launch a fifth by hand — the caps hold automation back, never a person
+/// (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042). An
+/// operator with a bigger host raises it; one who wants no automated launches
+/// at all pauses the project, which is the reversible switch for that.
+pub const AUTOMATION_MAX_SESSIONS_DEFAULT: i64 = 4;
+
+/// Fewest live sessions the instance may allow automation.
+///
+/// One, for the reason `agent_profiles.max_concurrent` and
+/// `projects.max_concurrent_sessions` have the same bound: zero would mean
+/// "never launch anything unattended", which `projects.automation_paused`
+/// already says per project and reversibly (ADR 0042).
+pub const MIN_AUTOMATION_MAX_SESSIONS: i64 = 1;
+
 /// The default value of `API_PORT` (`README.md`, "Configuration").
 ///
 /// Public because the `healthcheck` subcommand resolves the same variable with
@@ -132,6 +152,15 @@ pub struct Config {
     /// Image used by the default profile of new projects and by the startup
     /// probe; defaults to [`SESSION_IMAGE_DEFAULT`].
     pub session_image_default: String,
+    /// The instance-wide ceiling on live sessions an unattended launch is
+    /// allowed under, defaulting to [`AUTOMATION_MAX_SESSIONS_DEFAULT`].
+    ///
+    /// The third of the three caps of `ARCHITECTURE.md`, "Task tracker" →
+    /// "Unattended launches" → "Capacity"; the other two are per profile and
+    /// per project and live in the database. It counts every live session on
+    /// the instance, whoever launched it, and it never refuses a launch a
+    /// person made.
+    pub automation_max_sessions: i64,
     /// Resend API key; `None` selects the logging email fallback (ADR 0026).
     pub resend_api_key: Option<String>,
     /// Sender address; required when `resend_api_key` is set.
@@ -314,6 +343,24 @@ impl Config {
         let session_image_default = value(&vars, "SESSION_IMAGE_DEFAULT")
             .unwrap_or_else(|| SESSION_IMAGE_DEFAULT.to_string());
 
+        // Optional, with a documented default, and bounded below at 1: a zero
+        // or negative ceiling would silently turn every unattended launch on
+        // the instance off, which is a thing an operator may well want but not
+        // a thing they should discover by nothing ever launching. The pause is
+        // the switch for that, so a value below the bound fails fast naming the
+        // variable (ADR 0042).
+        let automation_max_sessions: i64 = optional_parsed(
+            &vars,
+            "AUTOMATION_MAX_SESSIONS",
+            AUTOMATION_MAX_SESSIONS_DEFAULT,
+        )?;
+        if automation_max_sessions < MIN_AUTOMATION_MAX_SESSIONS {
+            return Err(ConfigError::invalid(
+                "AUTOMATION_MAX_SESSIONS",
+                format!("must be at least {MIN_AUTOMATION_MAX_SESSIONS}"),
+            ));
+        }
+
         let rust_log = value(&vars, "RUST_LOG").unwrap_or_else(|| "info".to_string());
 
         Ok(Self {
@@ -335,6 +382,7 @@ impl Config {
             stop_grace_secs,
             mirror_fetch_interval_secs,
             session_image_default,
+            automation_max_sessions,
             resend_api_key,
             mail_from,
             rust_log,
@@ -383,6 +431,7 @@ impl fmt::Debug for Config {
                 &self.mirror_fetch_interval_secs,
             )
             .field("session_image_default", &self.session_image_default)
+            .field("automation_max_sessions", &self.automation_max_sessions)
             .field(
                 "resend_api_key",
                 &self.resend_api_key.as_ref().map(|_| REDACTED),
@@ -551,6 +600,7 @@ mod tests {
         "STOP_GRACE_SECS",
         "MIRROR_FETCH_INTERVAL_SECS",
         "SESSION_IMAGE_DEFAULT",
+        "AUTOMATION_MAX_SESSIONS",
         "RESEND_API_KEY",
         "MAIL_FROM",
         "RUST_LOG",
@@ -657,9 +707,41 @@ mod tests {
             config.session_image_default,
             "mars-session-claude-dev:latest"
         );
+        assert_eq!(
+            config.automation_max_sessions,
+            AUTOMATION_MAX_SESSIONS_DEFAULT
+        );
         assert_eq!(config.resend_api_key, None);
         assert_eq!(config.mail_from, None);
         assert_eq!(config.rust_log, "info");
+    }
+
+    /// The instance cap is optional, overridable and bounded below by 1: zero
+    /// and below would switch automation off instance-wide, which the project
+    /// pause is for (ADR 0042).
+    #[test]
+    fn automation_max_sessions_is_optional_and_at_least_one() {
+        let mut vars = required_only();
+        vars.insert("AUTOMATION_MAX_SESSIONS".to_string(), "12".to_string());
+        assert_eq!(load(&vars).expect("loads").automation_max_sessions, 12);
+
+        vars.insert("AUTOMATION_MAX_SESSIONS".to_string(), "1".to_string());
+        assert_eq!(load(&vars).expect("loads").automation_max_sessions, 1);
+
+        for refused in ["0", "-3"] {
+            vars.insert("AUTOMATION_MAX_SESSIONS".to_string(), refused.to_string());
+            let error = load(&vars).expect_err("a cap below one fails");
+            assert!(
+                matches!(error, ConfigError::Invalid { ref name, .. } if name == "AUTOMATION_MAX_SESSIONS"),
+                "{refused} should be refused by name, got {error}",
+            );
+        }
+
+        vars.insert("AUTOMATION_MAX_SESSIONS".to_string(), "lots".to_string());
+        assert!(matches!(
+            load(&vars).expect_err("a non-numeric cap fails"),
+            ConfigError::Invalid { ref name, .. } if name == "AUTOMATION_MAX_SESSIONS"
+        ));
     }
 
     #[test]

@@ -45,3 +45,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0037](0037-nextest-runs-the-backend-suite.md) | `cargo nextest` runs the backend suite; the live engine suites keep `cargo test` | accepted |
 | [0038](0038-seed-role-profiles-at-project-creation.md) | Seed the four role profiles at project creation, copied not referenced | accepted |
 | [0039](0039-layered-dev-session-image.md) | A layered dev session image on top of the contract base | accepted |
+| [0040](0040-render-markdown-in-the-browser.md) | Markdown is rendered in the browser from text; no server-side HTML | accepted |

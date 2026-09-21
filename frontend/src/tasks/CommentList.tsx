@@ -57,7 +57,7 @@ function CommentEntry({ comment }: { comment: Comment }) {
         </time>
       </div>
       <div
-        className={`mt-0.5 max-w-prose text-sm ${comment.system ? "" : "text-console-text"}`}
+        className={`mt-0.5 text-sm ${comment.system ? "" : "text-console-text"}`}
       >
         <MarkdownBody>{comment.body}</MarkdownBody>
       </div>

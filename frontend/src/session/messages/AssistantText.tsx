@@ -2,7 +2,8 @@
 //
 // The rendering itself is `MarkdownBody`, shared with the task description and
 // task comments so every piece of written text in the application is set the
-// same way.
+// same way. The measure cap lives on the text blocks inside it, not on this
+// container, so a table or a code fence may use the whole row.
 
 import { MarkdownBody } from "../../components/Markdown";
 import { STREAMING_CURSOR } from "../../utils/testIds";
@@ -14,7 +15,7 @@ export interface AssistantTextProps {
 
 export function AssistantText({ message }: AssistantTextProps) {
   return (
-    <div className="text-console-text max-w-prose">
+    <div className="text-console-text">
       <MarkdownBody>{message.text}</MarkdownBody>
       {message.streaming && (
         <span

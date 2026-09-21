@@ -223,7 +223,7 @@ function CurrentHandoff({
       {comment === null ? (
         <p className="text-console-muted text-sm">comment unavailable</p>
       ) : (
-        <div className="text-console-text max-w-prose text-sm">
+        <div className="text-console-text text-sm">
           <MarkdownBody>{comment.body}</MarkdownBody>
         </div>
       )}

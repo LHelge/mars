@@ -215,7 +215,7 @@ function TaskBody({
             {task.description === null || task.description.trim() === "" ? (
               <p className="text-console-muted text-sm">No description</p>
             ) : (
-              <div className="text-console-text max-w-prose text-sm">
+              <div className="text-console-text text-sm">
                 <MarkdownBody>{task.description}</MarkdownBody>
               </div>
             )}

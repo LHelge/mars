@@ -1,10 +1,10 @@
 ---
 id: duzjs
 title: "Unattended-launch capacity check: one answer to \"may this profile launch now?\" over the three caps and the project pause"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:23:53.227431319Z"
-updated: "2026-09-21T20:23:53.227431319Z"
+updated: "2026-09-21T21:56:48.146826591Z"
 tags:
   - orchestrator
   - dispatcher
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - vx7sq
 parent: qabvt
+attempts: 1
 ---
 
 ## Summary

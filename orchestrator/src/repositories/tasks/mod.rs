@@ -40,12 +40,14 @@
 //! payload assembly itself — actor, `task`, `from`/`to`, `states` — belongs to
 //! `events/` and the tracker epic, not here.
 //!
-//! The module is split by table: `rows` holds `tasks`, `dependencies` holds
-//! `task_dependencies`, `comments` holds `task_comments`, `handoffs` holds
-//! `task_handoffs`, `links` holds `task_sessions`, `states` holds
-//! `task_states` and `profile_states`, and `events` holds `task_events`. They
-//! are one `impl TaskRepository` between them, so a caller sees one repository
-//! and the files stay the size of the table they are about.
+//! The module is split by aggregate: `rows` holds a task and what hangs off
+//! it — the `tasks` row, its `task_comments` and the `task_sessions` links
+//! that say who worked on it — `dependencies` holds `task_dependencies`,
+//! `handoffs` holds `task_handoffs`, `states` holds `task_states` and
+//! `profile_states`, and `events` holds `task_events` together with the
+//! `task_sessions` upsert that commits with them (ADR 0030). They are one
+//! `impl TaskRepository` between them, so a caller sees one repository and no
+//! file is so thin that its name is the only thing in it.
 //!
 //! Two files are not about a table. `graph` holds the SQL the dependency graph
 //! is made of — what `blocked` evaluates to, the write that stores it, the
@@ -58,13 +60,11 @@
 //! assemble `SPEC.md`'s `Task` and `TaskDetail` out of several of them at
 //! once, without an N+1 per task.
 
-mod comments;
 mod dependencies;
 mod dto;
 mod events;
 mod graph;
 mod handoffs;
-mod links;
 mod rows;
 mod states;
 pub mod test_support;

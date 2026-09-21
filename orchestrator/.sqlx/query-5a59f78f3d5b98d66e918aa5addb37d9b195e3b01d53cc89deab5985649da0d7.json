@@ -1,21 +1,10 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT task_id, session_id, first_touched_at, last_touched_at\n            FROM task_sessions\n            WHERE task_id = $1\n            ORDER BY first_touched_at, session_id\n            ",
+  "query": "\n            INSERT INTO task_sessions (task_id, session_id)\n            VALUES ($1, $2)\n            ON CONFLICT (task_id, session_id) DO UPDATE SET last_touched_at = NOW()\n            RETURNING session_id, first_touched_at, last_touched_at\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "task_id",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "task_sessions",
-            "name": "task_id"
-          }
-        }
-      },
-      {
-        "ordinal": 1,
         "name": "session_id",
         "type_info": "Uuid",
         "origin": {
@@ -26,7 +15,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 1,
         "name": "first_touched_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -37,7 +26,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 2,
         "name": "last_touched_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -50,15 +39,15 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "e9742e87f1760a4914fb74c483fcde728823f929c20fa52532052d4e3aa009bf"
+  "hash": "5a59f78f3d5b98d66e918aa5addb37d9b195e3b01d53cc89deab5985649da0d7"
 }

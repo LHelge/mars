@@ -15,6 +15,11 @@
 //! right, and a primary-key collision is therefore not a race to retry but an
 //! invariant failure: it means a writer bypassed the lock.
 //!
+//! The `task_sessions` upsert sits beside it, because it is the other write
+//! `TrackerMutation::commit` makes and it commits with those same events (ADR
+//! 0030): the two together are what a committed tracker change leaves behind
+//! besides the rows it changed.
+//!
 //! The notification is issued with `pg_notify` on the caller's transaction,
 //! with bound parameters. PostgreSQL delivers it only after that transaction
 //! commits and discards it on rollback, so there is never a separate
@@ -27,7 +32,7 @@ use crate::models::{NewTaskEvent, TaskEventRow, task_event_kind};
 use crate::prelude::*;
 use crate::repositories::tasks::{TaskRepository, task_in_project};
 use crate::repositories::unique_violation;
-use crate::tracker::Locked;
+use crate::tracker::{Locked, TaskSessionLinkDto};
 
 /// The largest replay page `GET /projects/{pid}/tasks/stream?after=` will read
 /// in one query.
@@ -123,6 +128,60 @@ impl TaskRepository<'_> {
         );
 
         Ok(sequences)
+    }
+
+    /// Record that this session just changed this task.
+    ///
+    /// Called from
+    /// [`TrackerMutation::commit`](crate::tracker::TrackerMutation::commit)
+    /// alone, in the same transaction as the change and as the events above:
+    /// "the link for the directly changed task commits in the same
+    /// transaction as the change and its events" (`docs/data-model.md`,
+    /// `task_sessions`; ADR 0030). The link is history, not configuration — it
+    /// records that a session *changed* something, so reads, rejected
+    /// operations and updates with no effective change create no link and
+    /// advance no timestamp, which is why the caller decides when to call this
+    /// and why [`TaskRepository::update_task`] answers `Ok(None)` for a no-op
+    /// instead of quietly writing a link anyway.
+    ///
+    /// The first touch inserts; every later one updates `last_touched_at` and
+    /// leaves `first_touched_at` exactly as it was. `ON CONFLICT` rather than
+    /// a read-then-write because the two are one statement and cannot
+    /// interleave; the project lock already keeps this project's writers
+    /// apart, and the upsert keeps the statement honest for the session-scoped
+    /// writes that do not hold it.
+    ///
+    /// Both timestamps come from `NOW()`, which is the transaction's start
+    /// time, so calling this twice in one transaction is idempotent down to
+    /// the timestamp — a hand-off that comments, moves and links in one go
+    /// records one touch, not three.
+    ///
+    /// The link comes back as the DTO the detail sends
+    /// ([`TaskSessionLinkDto`]); the `task_id` the caller passed in is the one
+    /// column it leaves out.
+    pub(crate) async fn touch_task_session(
+        &self,
+        mut tx: Locked<'_>,
+        task_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<TaskSessionLinkDto> {
+        let link = sqlx::query_as!(
+            TaskSessionLinkDto,
+            r#"
+            INSERT INTO task_sessions (task_id, session_id)
+            VALUES ($1, $2)
+            ON CONFLICT (task_id, session_id) DO UPDATE SET last_touched_at = NOW()
+            RETURNING session_id, first_touched_at, last_touched_at
+            "#,
+            task_id,
+            session_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        debug!(task_id = %task_id, session_id = %session_id, "task session link touched");
+
+        Ok(link)
     }
 
     /// Every event after `after`, oldest first, at most `limit` of them.

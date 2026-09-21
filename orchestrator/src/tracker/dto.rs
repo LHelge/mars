@@ -30,9 +30,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::models::{
-    ReviewStatus, Task, TaskComment, TaskDependencyKind, TaskHandoff, TaskSession,
-};
+use crate::models::{ReviewStatus, Task, TaskComment, TaskDependencyKind, TaskHandoff};
 // The crate convention (`CLAUDE.md`, "Backend conventions").
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -127,21 +125,17 @@ impl From<TaskHandoff> for HandoffDto {
 ///
 /// The `task_sessions` row without its `task_id`: the detail it hangs off
 /// already names the task.
+///
+/// This is also the row type the repository reads `task_sessions` into
+/// (`TaskRepository::list_task_sessions`, `touch_task_session`): the table has
+/// no behaviour beyond its `ON CONFLICT` rules, which live in the repository,
+/// so there is no domain model between the row and this shape. `task_id` is
+/// the one column left out, and every caller passes it in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskSessionLinkDto {
     pub session_id: Uuid,
     pub first_touched_at: DateTime<Utc>,
     pub last_touched_at: DateTime<Utc>,
-}
-
-impl From<TaskSession> for TaskSessionLinkDto {
-    fn from(row: TaskSession) -> Self {
-        Self {
-            session_id: row.session_id,
-            first_touched_at: row.first_touched_at,
-            last_touched_at: row.last_touched_at,
-        }
-    }
 }
 
 /// A task as the API sends it (`SPEC.md`, "Tasks").
@@ -524,13 +518,12 @@ mod tests {
 
     #[test]
     fn a_session_link_drops_the_task_id_the_detail_already_names() {
-        let link = TaskSession {
-            task_id: Uuid::new_v4(),
+        let link = TaskSessionLinkDto {
             session_id: Uuid::new_v4(),
             first_touched_at: at(1_700_000_000),
             last_touched_at: at(1_700_000_100),
         };
-        let encoded = serde_json::to_value(TaskSessionLinkDto::from(link)).unwrap();
+        let encoded = serde_json::to_value(link).unwrap();
 
         assert_eq!(encoded["session_id"], json!(link.session_id));
         assert!(encoded.as_object().unwrap().get("task_id").is_none());

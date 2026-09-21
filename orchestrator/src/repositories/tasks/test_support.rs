@@ -25,10 +25,10 @@
 
 use uuid::Uuid;
 
-use crate::models::{NewTaskEvent, Task, TaskSession};
+use crate::models::{NewTaskEvent, Task};
 use crate::prelude::*;
 use crate::repositories::TaskRepository;
-use crate::tracker::Locked;
+use crate::tracker::{Locked, TaskSessionLinkDto};
 
 pub use super::rows::StateFields;
 
@@ -50,7 +50,7 @@ pub trait TaskRepositoryTestExt {
         locked: Locked<'_>,
         task_id: Uuid,
         session_id: Uuid,
-    ) -> Result<TaskSession>;
+    ) -> Result<TaskSessionLinkDto>;
 
     /// `TaskRepository::append_task_events`, under the caller's token.
     ///
@@ -82,7 +82,7 @@ impl TaskRepositoryTestExt for TaskRepository<'_> {
         locked: Locked<'_>,
         task_id: Uuid,
         session_id: Uuid,
-    ) -> Result<TaskSession> {
+    ) -> Result<TaskSessionLinkDto> {
         TaskRepository::touch_task_session(self, locked, task_id, session_id).await
     }
 

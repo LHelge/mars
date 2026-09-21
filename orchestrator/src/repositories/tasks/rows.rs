@@ -1,6 +1,9 @@
 //! The `tasks` row itself: insertion with its number and default state,
 //! lookup by either of the two references a caller may use, the field update,
-//! the generic state write and the board reads.
+//! the generic state write and the board reads — and, at the end, everything
+//! else a reader of *a task* asks for: its comments (`task_comments`) and the
+//! sessions that worked on it (`task_sessions`), which are reads of the same
+//! shape against tables that exist only to hang off a task.
 //!
 //! `docs/data-model.md`, `tasks` and `SPEC.md`, "Tasks". Three of its rules
 //! have no constraint behind them and therefore live here, under the project
@@ -38,11 +41,14 @@ use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::models::{NewTask, SessionState, Task, TaskError, TaskRef, TaskStateKind, TaskUpdate};
+use crate::models::{
+    NewTask, NewTaskComment, SessionState, Task, TaskComment, TaskError, TaskRef, TaskStateKind,
+    TaskUpdate,
+};
 use crate::prelude::*;
 use crate::repositories::ProjectRepository;
-use crate::repositories::tasks::TaskRepository;
-use crate::tracker::Locked;
+use crate::repositories::tasks::{TaskRepository, task_in_project};
+use crate::tracker::{Locked, TaskSessionLinkDto};
 
 /// The parent named by the caller is not a task of this project, or is not
 /// there at all.
@@ -993,6 +999,180 @@ impl TaskRepository<'_> {
         }
 
         Ok(deleted)
+    }
+
+    /// Insert a comment on a task of this project.
+    ///
+    /// Written under the token, together with the `commented` event it owes
+    /// the board and, where a session wrote it, the session link the mutation
+    /// records.
+    ///
+    /// [`NewTaskComment::validate`] decides the body and the authorship, so a
+    /// comment with two authors, no author, or an author while `system` is
+    /// [`TaskError::InvalidCommentAuthor`] (400) before any row is written. A
+    /// task outside this project is [`Error::NotFound`], the answer every
+    /// out-of-scope id gets.
+    ///
+    /// The author rule — exactly one author column when `system` is false,
+    /// none when it is true — is enforced here rather than by a table check,
+    /// because either author may later become NULL through
+    /// `ON DELETE SET NULL` and a constraint would then refuse the deletion
+    /// (`docs/data-model.md`, `task_comments`).
+    ///
+    /// Comment bodies are content, never a log line: nothing here logs a body
+    /// at any level (`CLAUDE.md`, rule 3, and "Backend conventions").
+    ///
+    /// [`TaskError::InvalidCommentAuthor`]: crate::models::TaskError::InvalidCommentAuthor
+    pub async fn insert_comment(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        comment: &NewTaskComment,
+    ) -> Result<TaskComment> {
+        comment.validate()?;
+
+        if !task_in_project(tx.reborrow(), project_id, comment.task_id).await? {
+            return Err(Error::NotFound);
+        }
+
+        let inserted = sqlx::query_as!(
+            TaskComment,
+            r#"
+            INSERT INTO task_comments (id, task_id, author_user_id, author_session_id, system, body)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, task_id, author_user_id, author_session_id, system, body, created_at
+            "#,
+            comment.id,
+            comment.task_id,
+            comment.author_user_id,
+            comment.author_session_id,
+            comment.system,
+            comment.body,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // The ids and nothing else: the body is user or agent content.
+        debug!(
+            project_id = %project_id,
+            task_id = %comment.task_id,
+            comment_id = %inserted.id,
+            "task comment inserted",
+        );
+
+        Ok(inserted)
+    }
+
+    /// One comment of this project, read on the mutation's connection.
+    ///
+    /// What a launch for a task needs and nothing more: the body of the
+    /// comment a hand-off was published with, read under the same lock the
+    /// hand-off was selected under, so the generated task message quotes the
+    /// text the session is actually starting from (`SPEC.md`, "Sessions").
+    /// The project scope is the join, as everywhere else here.
+    ///
+    /// Nothing about the body is logged (rule 3).
+    pub async fn find_comment_in(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<TaskComment>> {
+        let comment = sqlx::query_as!(
+            TaskComment,
+            r#"
+            SELECT c.id, c.task_id, c.author_user_id, c.author_session_id, c.system, c.body,
+                   c.created_at
+            FROM task_comments AS c
+            JOIN tasks AS t ON t.id = c.task_id
+            WHERE c.id = $1 AND t.project_id = $2
+            "#,
+            id,
+            project_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        Ok(comment)
+    }
+
+    /// A task's comments, oldest first.
+    ///
+    /// `TaskDetail.comments` (`SPEC.md`, "Tasks"), in the order
+    /// `task_comments_task_idx (task_id, created_at)` carries. `id` breaks
+    /// ties, so two comments written in the same transaction — and therefore
+    /// sharing `NOW()` — still come back in a stable order.
+    pub async fn list_comments(&self, project_id: Uuid, task_id: Uuid) -> Result<Vec<TaskComment>> {
+        let comments = sqlx::query_as!(
+            TaskComment,
+            r#"
+            SELECT c.id, c.task_id, c.author_user_id, c.author_session_id, c.system, c.body,
+                   c.created_at
+            FROM task_comments AS c
+            JOIN tasks AS t ON t.id = c.task_id
+            WHERE c.task_id = $1 AND t.project_id = $2
+            ORDER BY c.created_at, c.id
+            "#,
+            task_id,
+            project_id,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(comments)
+    }
+
+    /// The sessions that worked on this task, in the order they first did.
+    ///
+    /// `TaskDetail.sessions` (`SPEC.md`, "Tasks"). `session_id` breaks ties,
+    /// so two links created in the same transaction still come back in a
+    /// stable order. The link is history, not configuration — the write that
+    /// records it is
+    /// [`TaskRepository::touch_task_session`](super::TaskRepository::touch_task_session),
+    /// beside the events it commits with (ADR 0030).
+    pub async fn list_task_sessions(&self, task_id: Uuid) -> Result<Vec<TaskSessionLinkDto>> {
+        let links = sqlx::query_as!(
+            TaskSessionLinkDto,
+            r#"
+            SELECT session_id, first_touched_at, last_touched_at
+            FROM task_sessions
+            WHERE task_id = $1
+            ORDER BY first_touched_at, session_id
+            "#,
+            task_id,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(links)
+    }
+
+    /// The tasks this session touched, most recently touched first.
+    ///
+    /// `GET /sessions/{id}/tasks` → "`Task[]` touched by this session"
+    /// (`SPEC.md`, "Sessions"), served by `task_sessions_session_idx`. Not
+    /// project-scoped: a session belongs to one project, and every task it can
+    /// have touched belongs to the same one.
+    pub async fn list_tasks_for_session(&self, session_id: Uuid) -> Result<Vec<Task>> {
+        let tasks = sqlx::query_as!(
+            Task,
+            r#"
+            SELECT t.id, t.project_id, t.number, t.title, t.description, t.state_id, t.priority,
+                   t.blocked, t.labels, t.parent_id, t.assignee_user_id,
+                   t.lease_holder_session_id, t.lease_since, t.attempts, t.needs_human_reason,
+                   t.current_handoff_id, t.created_by_user_id, t.created_by_session_id,
+                   t.created_at, t.updated_at, t.closed_at
+            FROM task_sessions AS l
+            JOIN tasks AS t ON t.id = l.task_id
+            WHERE l.session_id = $1
+            ORDER BY l.last_touched_at DESC, t.number
+            "#,
+            session_id,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(tasks)
     }
 }
 

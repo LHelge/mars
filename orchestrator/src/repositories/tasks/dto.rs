@@ -29,9 +29,7 @@ use crate::models::{ReviewStatus, Task, TaskDependencyKind, TaskHandoff, TaskRef
 use crate::prelude::*;
 use crate::repositories::TaskRepository;
 use crate::tracker::Locked;
-use crate::tracker::{
-    CommentDto, DependencyRef, HandoffDto, TaskDetailDto, TaskDto, TaskSessionLinkDto,
-};
+use crate::tracker::{CommentDto, DependencyRef, HandoffDto, TaskDetailDto, TaskDto};
 
 impl TaskRepository<'_> {
     /// One task as the API sends it, or `None` when this project has no such
@@ -136,7 +134,7 @@ impl TaskRepository<'_> {
             comments: comments.into_iter().map(CommentDto::from).collect(),
             handoffs: handoffs.into_iter().map(HandoffDto::from).collect(),
             children: self.load_task_dtos(project_id, &children).await?,
-            sessions: sessions.into_iter().map(TaskSessionLinkDto::from).collect(),
+            sessions,
         }))
     }
 }

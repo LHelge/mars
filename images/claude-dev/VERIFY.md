@@ -159,5 +159,6 @@ foreground Bash call pushed into the background by the CLI's own timeout, and
 about a dozen turns spent polling a log before the agent gave up and reached for
 `binstall`, which then finished in under two seconds. The image is right and the
 behaviour is right; the wording costs money on every session that needs a cargo
-tool. This is recorded as a follow-up task against `SPEC.md`, "Role profile
-templates", and reaches new projects only, as every template change does.
+tool. The paragraph now reaches for `cargo binstall` first and names `cargo
+install` as the fallback (`vbtbj`, `SPEC.md`, "Role profile templates"), which
+reaches new projects only, as every template change does.

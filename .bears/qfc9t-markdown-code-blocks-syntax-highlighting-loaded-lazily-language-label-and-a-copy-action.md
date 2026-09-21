@@ -1,16 +1,17 @@
 ---
 id: qfc9t
 title: "Markdown code blocks: syntax highlighting loaded lazily, language label and a copy action"
-status: open
+status: done
 priority: P2
 created: "2026-09-20T23:42:59.889684284Z"
-updated: "2026-09-20T23:42:59.889684284Z"
+updated: "2026-09-21T14:25:15.117027915Z"
 tags:
   - frontend
   - markdown
 depends_on:
   - tvcf5
 parent: qprj6
+attempts: 1
 ---
 
 ## Summary

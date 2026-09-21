@@ -1,10 +1,10 @@
 ---
 id: "2v47s"
 title: Render thinking text and subagent reports as markdown; keep user messages literal
-status: open
+status: done
 priority: P2
 created: "2026-09-20T23:43:14.045455211Z"
-updated: "2026-09-20T23:43:14.045455211Z"
+updated: "2026-09-21T14:25:16.358283993Z"
 tags:
   - frontend
   - session
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - tvcf5
 parent: qprj6
+attempts: 1
 ---
 
 ## Summary

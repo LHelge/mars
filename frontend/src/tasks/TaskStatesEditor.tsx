@@ -31,6 +31,7 @@ import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
 import { ApiError } from "../services/apiClient";
+import { errorMessage, logUnexpected } from "../services/errorMessage";
 import { listTasks } from "../services/tasks";
 import {
   createTaskState,
@@ -351,18 +352,21 @@ function StateRow({
       setEditing(false);
       await afterMutation();
     },
+    onError: logUnexpected,
   });
 
   const move = useMutation({
     mutationFn: (to: number) =>
       updateTaskState(projectId, state.name, { position: to }),
     onSuccess: () => afterMutation(),
+    onError: logUnexpected,
   });
 
   const remove = useMutation({
     mutationFn: () => deleteTaskState(projectId, state.name),
     onSuccess: () => afterMutation(),
     onError: (caught: unknown) => {
+      logUnexpected(caught);
       // The refusal this page thought it had ruled out: someone moved a task
       // or changed the state list while it was open. Show what the server
       // said and read both lists again, so the row tells the truth next.
@@ -556,17 +560,4 @@ function StateRow({
       )}
     </>
   );
-}
-
-/**
- * The server's own `error` text whenever there is one: `SPEC.md` phrases the
- * refusals — the taken name, the second human state, the four deletion
- * conflicts — better than the client could guess.
- */
-function errorMessage(caught: unknown): string {
-  if (caught instanceof ApiError) {
-    return caught.error;
-  }
-  console.error(caught);
-  return "Something went wrong";
 }

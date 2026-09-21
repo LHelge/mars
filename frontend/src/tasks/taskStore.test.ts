@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import { ApiError } from "../services/apiClient";
 import type { Task, TaskEvent, TaskState } from "../types";
 import {
   createTaskStore,
@@ -177,7 +178,7 @@ describe("taskStore refresh ordering", () => {
     expect(store.getState().tasks).toHaveLength(1);
 
     store.getState().invalidate();
-    await deps.failBoth(1, new Error("network down"));
+    await deps.failBoth(1, new ApiError(503, "network down"));
 
     expect(store.getState().tasks).toHaveLength(1);
     expect(store.getState().states).toHaveLength(1);

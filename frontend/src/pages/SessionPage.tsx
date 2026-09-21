@@ -23,6 +23,7 @@ import {
   QueryErrorAlert,
 } from "../components";
 import { ApiError } from "../services/apiClient";
+import { errorMessage, isNotFound } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import { getSession } from "../services/sessions";
 import {
@@ -32,8 +33,8 @@ import {
   useSessionStore,
 } from "../session";
 import type { Session } from "../types";
+import { isUuid } from "../utils/uuid";
 import { NotFoundPage } from "./NotFoundPage";
-import { isNotFound, isUuid } from "./project";
 
 export function SessionPage() {
   const params = useParams();
@@ -86,11 +87,7 @@ function SessionRoute({ id }: { id: string }) {
       ) : (
         <QueryErrorAlert
           query={session}
-          message={
-            session.error instanceof ApiError
-              ? session.error.error
-              : "Could not load the session."
-          }
+          message={errorMessage(session.error, "Could not load the session.")}
         />
       )}
     </PageLayout>

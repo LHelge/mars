@@ -24,6 +24,7 @@ import {
 } from "../components";
 import { useAuth } from "../hooks/useAuth";
 import { listProjects } from "../services/projects";
+import { errorMessage } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import { listSessions } from "../services/sessions";
 import { listHumanTasks } from "../services/tasks";
@@ -88,7 +89,7 @@ function Section({
       {query.isError && (
         <QueryErrorAlert
           query={query}
-          message={`Could not load ${title.toLowerCase()}. ${query.error instanceof Error ? query.error.message : ""}`.trim()}
+          message={`Could not load ${title.toLowerCase()}. ${errorMessage(query.error)}`}
         />
       )}
 

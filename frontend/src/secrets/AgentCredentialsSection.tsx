@@ -27,6 +27,7 @@ import { LoadingState } from "../components/LoadingState";
 import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
 import { secretErrorMessage } from "../components/secrets/messages";
+import { logUnexpected } from "../services/errorMessage";
 import { useAuth } from "../hooks/useAuth";
 import { listProjects } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
@@ -194,6 +195,7 @@ function AgentCredentialRow({ secret, appliesTo }: AgentCredentialRowProps) {
       setReplacing(false);
     },
     onError: (caught: unknown) => {
+      logUnexpected(caught);
       setError(secretErrorMessage(caught));
     },
     // The mutation cache keeps `variables` — the plaintext — for as long as the
@@ -211,6 +213,7 @@ function AgentCredentialRow({ secret, appliesTo }: AgentCredentialRowProps) {
       invalidateSecretQueries(queryClient);
     },
     onError: (caught: unknown) => {
+      logUnexpected(caught);
       setError(secretErrorMessage(caught));
     },
   });

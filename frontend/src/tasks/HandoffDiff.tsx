@@ -17,6 +17,7 @@ import { Alert } from "../components/Alert";
 import { DiffBody } from "../components/git/DiffBody";
 import { LoadingState } from "../components/LoadingState";
 import { getDiff } from "../services/git";
+import { errorMessage } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import type { Handoff } from "../types";
 import { shortSha } from "../utils/format";
@@ -63,7 +64,11 @@ export function HandoffDiff({ projectId, handoff, onClose }: HandoffDiffProps) {
         </button>
       </header>
 
-      {diff.isError && <Alert kind="error">{diff.error.message}</Alert>}
+      {diff.isError && (
+        <Alert kind="error">
+          {errorMessage(diff.error, "Could not load the diff.")}
+        </Alert>
+      )}
 
       {diff.data === undefined ? (
         diff.isError ? null : (

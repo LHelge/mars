@@ -37,7 +37,7 @@ import { CONTROL } from "../components/fieldStyles";
 import { FormField } from "../components/FormField";
 import { SubmitButton } from "../components/SubmitButton";
 import { useAuth } from "../hooks/useAuth";
-import { projectErrorMessage } from "../pages/project/messages";
+import { errorMessage } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import { listUsers } from "../services/users";
 import type { TaskDetail, TaskPriority } from "../types";
@@ -313,7 +313,7 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
       )}
 
       {update.isError && (
-        <Alert kind="error">{projectErrorMessage(update.error)}</Alert>
+        <Alert kind="error">{errorMessage(update.error)}</Alert>
       )}
 
       <div className="flex justify-end gap-2">

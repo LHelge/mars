@@ -134,13 +134,16 @@ describe("apiClient requests", () => {
     expect(apiError.message).toBe("the last admin cannot be removed");
   });
 
-  it("carries conflicts through and falls back to the status text for a non-JSON body", async () => {
+  it("carries conflicts through and names a non-JSON body by its status", async () => {
     installSession(authResponse("token-a"));
     fetchMock
       .mockResolvedValueOnce(
         errorResponse(422, "merge conflict", ["src/main.rs"]),
       )
-      .mockResolvedValueOnce(fakeResponse(502, "<html>bad gateway", "Bad Gateway"));
+      // nginx answers a stopped orchestrator with HTML, and `statusText` is
+      // always empty under HTTP/2 and HTTP/3.
+      .mockResolvedValueOnce(fakeResponse(502, "<html>bad gateway", ""))
+      .mockResolvedValueOnce(fakeResponse(418, "", ""));
 
     const conflict = (await apiPost("/sessions/s1/merge").catch(
       (e: unknown) => e,
@@ -149,7 +152,10 @@ describe("apiClient requests", () => {
 
     const gateway = (await apiGet("/projects").catch((e: unknown) => e)) as ApiError;
     expect(gateway.status).toBe(502);
-    expect(gateway.error).toBe("Bad Gateway");
+    expect(gateway.error).toBe("Orchestrator unreachable");
+
+    const odd = (await apiGet("/projects").catch((e: unknown) => e)) as ApiError;
+    expect(odd.error).toBe("HTTP 418");
   });
 
   it("surfaces a login 429 as an ApiError so the page can show the throttle message", async () => {

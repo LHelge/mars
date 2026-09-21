@@ -4,6 +4,7 @@
 // answer the same four cases.
 
 import { ApiError } from "../../services/apiClient";
+import { errorMessage } from "../../services/errorMessage";
 
 /** `ARCHITECTURE.md`, "Secrets": the resolution order, in one line. */
 export const PRECEDENCE_HELP =
@@ -20,13 +21,10 @@ export const DUPLICATE_SECRET_MESSAGE =
 export const FORBIDDEN_SECRET_MESSAGE =
   "You can only manage your own secrets.";
 
-/** A failure that is neither the server's fault to explain nor ours to guess. */
-const FALLBACK_MESSAGE = "Something went wrong";
-
 /**
- * A validation 400 is shown as the server wrote it — it names the field. A
- * 500, including the one a rename's re-encryption could raise, stays generic
- * and is never retried automatically.
+ * The two statuses this manager words itself; everything else — including the
+ * validation 400, which is shown as the server wrote it because it names the
+ * field — is `errorMessage`'s single rule (`services/errorMessage.ts`).
  */
 export function secretErrorMessage(caught: unknown): string {
   if (caught instanceof ApiError) {
@@ -36,12 +34,8 @@ export function secretErrorMessage(caught: unknown): string {
     if (caught.status === 403) {
       return FORBIDDEN_SECRET_MESSAGE;
     }
-    if (caught.status < 500) {
-      return caught.error;
-    }
   }
-  console.error(caught);
-  return FALLBACK_MESSAGE;
+  return errorMessage(caught);
 }
 
 /** True when a list failed because the caller may not see that user's scope. */

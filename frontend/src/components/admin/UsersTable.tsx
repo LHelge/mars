@@ -19,7 +19,7 @@ import { LoadingState } from "../LoadingState";
 import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SectionHeader } from "../SectionHeader";
 import { SubmitButton } from "../SubmitButton";
-import { errorMessage } from "./errorMessage";
+import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import { CELL, HEAD, ROW, SCROLLER, TABLE, THEAD } from "./tableStyles";
 
 const SELF_DELETE_HINT = "You cannot delete your own account";
@@ -49,6 +49,9 @@ export function UsersTable() {
   // Both outcomes refetch: when two administrators demote each other, the one
   // that got the 409 needs the truth back, not its own optimistic reading.
   function settle(caught?: unknown) {
+    if (caught !== undefined) {
+      logUnexpected(caught);
+    }
     setError(caught === undefined ? null : errorMessage(caught));
     void queryClient.invalidateQueries({ queryKey: queryKeys.users.all });
   }

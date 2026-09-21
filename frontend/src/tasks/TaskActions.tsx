@@ -18,7 +18,7 @@ import { useNavigate, useSearchParams } from "react-router";
 
 import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
-import { projectErrorMessage } from "../pages/project/messages";
+import { errorMessage } from "../services/errorMessage";
 import type { TaskDetail } from "../types";
 import { LaunchForTask } from "./LaunchForTask";
 import { MoveToState } from "./MoveToState";
@@ -108,7 +108,7 @@ export function TaskActions({
       <LaunchForTask projectId={projectId} task={task} />
 
       {release.isError && (
-        <Alert kind="error">{projectErrorMessage(release.error)}</Alert>
+        <Alert kind="error">{errorMessage(release.error)}</Alert>
       )}
 
       {confirmingDelete && (
@@ -118,7 +118,7 @@ export function TaskActions({
             unblocked and its hand-off refs removed.
           </p>
           {remove.isError && (
-            <Alert kind="error">{projectErrorMessage(remove.error)}</Alert>
+            <Alert kind="error">{errorMessage(remove.error)}</Alert>
           )}
           <div className="flex justify-end gap-2">
             <SubmitButton

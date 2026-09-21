@@ -19,7 +19,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 
 import { Alert, SubmitButton } from "../components";
-import { ApiError } from "../services/apiClient";
+import { errorMessage, logUnexpected } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import { deleteSession, endSession, retrySession } from "../services/sessions";
 import type { Session } from "../types";
@@ -35,11 +35,8 @@ export interface SessionActionsProps {
 }
 
 function message(caught: unknown, fallback: string): string {
-  if (caught instanceof ApiError) {
-    return caught.error;
-  }
-  console.error(caught);
-  return fallback;
+  logUnexpected(caught);
+  return errorMessage(caught, fallback);
 }
 
 export function SessionActions({ session, onStop }: SessionActionsProps) {

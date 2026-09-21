@@ -16,20 +16,19 @@ import {
   QueryErrorAlert,
   SecretsManager,
 } from "../components";
+import { errorMessage, isNotFound } from "../services/errorMessage";
 import { TaskStatesEditor } from "../tasks";
 import type { Project } from "../types";
+import { isUuid } from "../utils/uuid";
 import { NotFoundPage } from "./NotFoundPage";
 import {
   BoardTab,
-  isNotFound,
-  isUuid,
   ProfilesTab,
   ProjectHeader,
   ProjectSettingsForm,
   ProjectTabs,
   SessionsTab,
   parseProjectTab,
-  projectErrorMessage,
   SharedDirsTab,
   useProject,
 } from "./project";
@@ -113,7 +112,7 @@ function ProjectView({
         ) : (
           <QueryErrorAlert
             query={project}
-            message={projectErrorMessage(project.error)}
+            message={errorMessage(project.error)}
           />
         )}
       </PageLayout>
@@ -130,7 +129,7 @@ function ProjectView({
         {project.isError && (
           <QueryErrorAlert
             query={project}
-            message={projectErrorMessage(project.error)}
+            message={errorMessage(project.error)}
           />
         )}
 

@@ -29,7 +29,7 @@ import {
   QueryErrorAlert,
   SessionStatePill,
 } from "../../components";
-import { ApiError } from "../../services/apiClient";
+import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import { listProfiles } from "../../services/profiles";
 import { queryKeys } from "../../services/queryKeys";
 import { deleteSession, listProjectSessions } from "../../services/sessions";
@@ -117,12 +117,10 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
     },
     onError: (caught: unknown, id: string) => {
       setConfirming(null);
+      logUnexpected(caught);
       setRowError({
         id,
-        message:
-          caught instanceof ApiError
-            ? caught.error
-            : "Could not delete the session",
+        message: errorMessage(caught, "Could not delete the session"),
       });
     },
   });

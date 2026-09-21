@@ -20,7 +20,7 @@ import { deleteProfile, listProfiles } from "../../services/profiles";
 import { queryKeys } from "../../services/queryKeys";
 import type { Profile } from "../../types";
 import { ProfileEditorPage } from "../ProfileEditorPage";
-import { projectErrorMessage } from "./messages";
+import { errorMessage } from "../../services/errorMessage";
 import type { ProjectTabPanelProps } from "./tabs";
 
 const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
@@ -61,7 +61,7 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
     ) : (
       <QueryErrorAlert
         query={profiles}
-        message={projectErrorMessage(profiles.error)}
+        message={errorMessage(profiles.error)}
       />
     );
   }
@@ -72,7 +72,7 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
   const staleWarning = profiles.isError ? (
     <QueryErrorAlert
       query={profiles}
-      message={projectErrorMessage(profiles.error)}
+      message={errorMessage(profiles.error)}
     />
   ) : null;
 
@@ -295,7 +295,7 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
       {remove.isError && (
         <tr className="border-console-border/60 border-b last:border-b-0">
           <td colSpan={7} className="px-0 py-2">
-            <Alert kind="error">{projectErrorMessage(remove.error)}</Alert>
+            <Alert kind="error">{errorMessage(remove.error)}</Alert>
           </td>
         </tr>
       )}

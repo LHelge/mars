@@ -22,7 +22,7 @@ import {
 import { listBranches, updateProject } from "../../services/projects";
 import { queryKeys } from "../../services/queryKeys";
 import type { Project } from "../../types";
-import { projectErrorMessage } from "./messages";
+import { errorMessage, logUnexpected } from "../../services/errorMessage";
 
 export interface ProjectSettingsFormProps {
   project: Project;
@@ -67,7 +67,8 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
     },
     onError: (caught: unknown) => {
       setSaved(false);
-      setError(projectErrorMessage(caught));
+      logUnexpected(caught);
+      setError(errorMessage(caught));
     },
   });
 

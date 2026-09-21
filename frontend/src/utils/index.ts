@@ -13,6 +13,8 @@ export type { Debounced } from "./debounce";
 export { parseTaskRef } from "./taskRef";
 export type { TaskRef } from "./taskRef";
 
+export { isUuid } from "./uuid";
+
 export { safeReturnTo, useReturnTo } from "./returnTo";
 
 export {

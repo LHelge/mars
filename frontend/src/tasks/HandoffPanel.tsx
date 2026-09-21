@@ -31,7 +31,7 @@ import { Link } from "react-router";
 
 import { MarkdownBody } from "../components/Markdown";
 import { SubmitButton } from "../components/SubmitButton";
-import type { Comment, Handoff, TaskDetail } from "../types";
+import type { TaskComment, Handoff, TaskDetail } from "../types";
 import {
   formatDateTime,
   formatRelative,
@@ -307,7 +307,7 @@ function HistoryRow({
   onViewDiff,
 }: {
   handoff: Handoff;
-  comment: Comment | null;
+  comment: TaskComment | null;
   current: boolean;
   onViewDiff: (handoff: Handoff) => void;
 }) {

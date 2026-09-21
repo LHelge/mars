@@ -9,9 +9,9 @@
 // row in the viewport. Nothing in this build memoises for us (there is no
 // React Compiler; `ARCHITECTURE.md`, "Frontend architecture"), so the row is
 // `memo()`-wrapped by hand. Its props are stable across those re-renders: the
-// id comes from `order`, `depth` is a number, and `onResend` is the `setResend`
-// state setter of `SessionView`. A prop that is a fresh object or closure per
-// render would silently undo this.
+// id comes from `order` and `onResend` is the `setResend` state setter of
+// `SessionView`. A prop that is a fresh object or closure per render would
+// silently undo this.
 
 import { memo } from "react";
 
@@ -44,15 +44,12 @@ const GLYPH: Record<Message["kind"], string> = {
 export interface MessageRowProps {
   sessionId: string;
   id: string;
-  /** Nesting depth; subagent rows are drawn plain, only indented. */
-  depth?: number;
   onResend?: (text: string) => void;
 }
 
 export const MessageRow = memo(function MessageRow({
   sessionId,
   id,
-  depth = 0,
   onResend,
 }: MessageRowProps) {
   const message = useSessionStore(sessionId, (state) => state.messages[id]);
@@ -97,7 +94,6 @@ export const MessageRow = memo(function MessageRow({
                   key={childId}
                   sessionId={sessionId}
                   id={childId}
-                  depth={depth + 1}
                   onResend={onResend}
                 />
               ))}

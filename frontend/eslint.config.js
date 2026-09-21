@@ -4,6 +4,57 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+// The directory barrels this codebase no longer has (`ARCHITECTURE.md`,
+// "Frontend architecture", Barrels and the first-paint path). A barrel over a
+// whole feature directory is a static edge to every module in it, so one name
+// imported through it drags the rest into the importer's chunk; these five
+// served a handful of imports each against many times as many deep ones, and
+// were deleted. The rule keeps them deleted — the spellings a file under `src/`
+// could reach them by, which are unambiguous because no directory here holds a
+// sibling file of the same name.
+const GONE = ["components", "utils", "services", "pages"];
+const goneBarrels = [
+  ...GONE.flatMap((dir) => [`./${dir}`, `../${dir}`, `../../${dir}`]),
+  "../tasks",
+  "../../tasks",
+].map((name) => ({
+  name,
+  message:
+    "This directory barrel was deleted: import the module itself " +
+    "(ARCHITECTURE.md, \"Frontend architecture\").",
+}));
+
+// The files a first paint evaluates: the entry, the shell, the guards and the
+// eagerly routed pages of `App.tsx`. The barrels that survive — `session/`,
+// `launch/`, `pages/project/` — are reached only from lazy route chunks, and
+// stay that way because nothing here may import one.
+const ENTRY_PATH = [
+  "src/main.tsx",
+  "src/App.tsx",
+  "src/AuthBootstrap.tsx",
+  "src/queryClient.ts",
+  "src/components/AdminRoute.tsx",
+  "src/components/AuthLayout.tsx",
+  "src/components/PageLayout.tsx",
+  "src/components/ProtectedRoute.tsx",
+  "src/pages/AcceptInvitePage.tsx",
+  "src/pages/ChangePasswordPage.tsx",
+  "src/pages/DashboardPage.tsx",
+  "src/pages/ForgotPasswordPage.tsx",
+  "src/pages/LoginPage.tsx",
+  "src/pages/NotFoundPage.tsx",
+  "src/pages/ResetPasswordPage.tsx",
+];
+const lazyBarrels = ["session", "launch", "project", "secrets", "tasks"]
+  .flatMap((dir) => [`./${dir}`, `../${dir}`, `../../${dir}`])
+  .map((name) => ({
+    name,
+    message:
+      "A first paint evaluates this file, and this barrel reaches feature UI: " +
+      "import the module itself, or lazily (ARCHITECTURE.md, \"Frontend " +
+      "architecture\"; scripts/check-entry-chunk.mjs enforces the result).",
+  }));
+
 export default tseslint.config(
   { ignores: ["dist", "node_modules", "coverage"] },
   {
@@ -36,6 +87,19 @@ export default tseslint.config(
       "@typescript-eslint/switch-exhaustiveness-check": [
         "error",
         { considerDefaultExhaustiveForUnions: true },
+      ],
+    },
+  },
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    rules: { "no-restricted-imports": ["error", { paths: goneBarrels }] },
+  },
+  {
+    files: ENTRY_PATH,
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        { paths: [...goneBarrels, ...lazyBarrels] },
       ],
     },
   },

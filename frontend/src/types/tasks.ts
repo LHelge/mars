@@ -27,7 +27,7 @@ export interface Handoff {
   created_at: string;
 }
 
-export interface Comment {
+export interface TaskComment {
   id: string;
   task_id: string;
   author_user_id: string | null;
@@ -76,12 +76,9 @@ export interface TaskSessionTouch {
   last_touched_at: string;
 }
 
-/** The name `SPEC.md` uses for the same row; one shape, two spellings. */
-export type TaskSessionLink = TaskSessionTouch;
-
 /** `GET /projects/{pid}/tasks/{id}`; hand-offs are ordered oldest first. */
 export interface TaskDetail extends Task {
-  comments: Comment[];
+  comments: TaskComment[];
   handoffs: Handoff[];
   children: Task[];
   sessions: TaskSessionTouch[];
@@ -177,7 +174,7 @@ export interface TaskEvent {
   /** The full task after the change; absent on `deleted` and `states_changed`. */
   task?: Task;
   /** On `commented`. */
-  comment?: Comment;
+  comment?: TaskComment;
   /** State names, on `state_changed` and `escalated`. */
   from?: string;
   to?: string;

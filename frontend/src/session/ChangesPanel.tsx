@@ -15,7 +15,8 @@ import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-quer
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { useEffect, useRef, useState } from "react";
 
-import { Alert, LoadingState } from "../components";
+import { Alert } from "../components/Alert";
+import { LoadingState } from "../components/LoadingState";
 import { DiffBody } from "../components/git/DiffBody";
 import { getDiff } from "../services/git";
 import { queryKeys } from "../services/queryKeys";

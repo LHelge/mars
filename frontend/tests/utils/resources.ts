@@ -6,7 +6,7 @@
 
 import type {
   Branch,
-  Comment,
+  TaskComment,
   CreateTaskInput,
   Profile,
   ProfileInput,
@@ -373,8 +373,8 @@ export function commentOnTask(
   projectId: string,
   idOrNumber: string | number,
   body: string,
-): Promise<Comment> {
-  return client.post<Comment>(
+): Promise<TaskComment> {
+  return client.post<TaskComment>(
     `/projects/${projectId}/tasks/${idOrNumber}/comments`,
     { body },
   );

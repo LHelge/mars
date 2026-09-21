@@ -189,7 +189,7 @@ export interface SessionState {
   lastRejection: { client_id: string; reason: string } | null;
 }
 
-export interface SessionActions {
+export interface SessionStoreActions {
   /**
    * Back to an empty transcript, connection status included. The registry's
    * `clearSessionStores` is the production caller — a login that has ended
@@ -228,7 +228,7 @@ export interface SessionActions {
   inputRejected: (clientId: string, reason: string) => void;
 }
 
-export type SessionStore = SessionState & SessionActions;
+export type SessionStore = SessionState & SessionStoreActions;
 
 export function optimisticId(clientId: string): string {
   return `client:${clientId}`;

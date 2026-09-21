@@ -21,6 +21,7 @@ vi.mock("../services/taskStates", async (original) => ({
 }));
 
 import { ApiError } from "../services/apiClient";
+import { signOut } from "../services/auth";
 import type { Task, TaskEvent, TaskState } from "../types";
 import { taskKeys } from "./queryKeys";
 import {
@@ -28,9 +29,9 @@ import {
   createTaskStore,
   selectColumns,
   selectTaskById,
-  selectTaskByNumber,
   selectVisibleColumns,
   UNKNOWN_COLUMN,
+  useTaskStore,
   type TaskStoreDeps,
 } from "./taskStore";
 
@@ -343,8 +344,8 @@ describe("taskStore refresh ordering", () => {
   });
 });
 
-describe("the snapshot's indexes", () => {
-  it("resolve a task by id and by number without scanning the board", async () => {
+describe("the snapshot's index", () => {
+  it("resolves a task by id without scanning the board", async () => {
     const deps = harness();
     const store = createTaskStore(deps);
     store.getState().bindProject(PROJECT);
@@ -353,9 +354,7 @@ describe("the snapshot's indexes", () => {
     await deps.settle(0, [READY], [task(1, "ready"), task(2, "ready")]);
 
     expect(selectTaskById("task-2")(store.getState())?.number).toBe(2);
-    expect(selectTaskByNumber(1)(store.getState())?.id).toBe("task-1");
     expect(selectTaskById("task-9")(store.getState())).toBeUndefined();
-    expect(selectTaskByNumber(9)(store.getState())).toBeUndefined();
   });
 
   it("describe the snapshot that is installed, never the one before it", async () => {
@@ -603,5 +602,30 @@ describe("the board's query", () => {
 
     store.getState().bindProject(OTHER_PROJECT);
     expect(store.getState().query).toBe("");
+  });
+});
+
+// The rule of `SPEC.md`, "Frontend", Rules — a sign-out "clears authenticated
+// query and stream stores" — reaches the board through a handler this module
+// registers at import, not through `AuthBootstrap`, so the entry chunk carries
+// no edge to the board's fold (`ARCHITECTURE.md`, "Frontend architecture",
+// Barrels and the first-paint path). The registration is therefore asserted
+// through the shared `useTaskStore`, which is the store it was made for.
+describe("the shared board store on sign-out", () => {
+  it("drops the snapshot the signed-out user was looking at", async () => {
+    listTaskStates.mockResolvedValue([READY]);
+    listTasks.mockResolvedValue([task(1, "ready")]);
+
+    useTaskStore.getState().bindProject(PROJECT);
+    await useTaskStore.getState().refresh();
+    useTaskStore.getState().setQuery("login");
+    expect(useTaskStore.getState().tasks).toHaveLength(1);
+
+    signOut("user");
+
+    expect(useTaskStore.getState().projectId).toBeNull();
+    expect(useTaskStore.getState().tasks).toHaveLength(0);
+    expect(useTaskStore.getState().loaded).toBe(false);
+    expect(useTaskStore.getState().query).toBe("");
   });
 });

@@ -20,14 +20,12 @@ export type {
   AgentCredentialStatus,
   CreateSecretRequest,
   PatchSecretRequest,
-  ReplaceSecretRequest,
   SecretMeta,
   SecretScope,
   SecretUse,
 } from "./secrets";
 export type {
   Branch,
-  BranchKind,
   Project,
   ProjectCreateInput,
   ProjectStatus,
@@ -52,26 +50,12 @@ export type {
   SessionState,
   SyncResult,
 } from "./sessions";
-export type {
-  AgentEvent,
-  AgentEventBase,
-  AgentEventKind,
-  GitDetail,
-  GitOp,
-  McpServerStatus,
-} from "./agentEvent";
-export type {
-  ClientMessage,
-  ClientMessageType,
-  ServerMessage,
-  ServerMessageType,
-} from "./sessionSocket";
+export type { AgentEvent, AgentEventKind, GitDetail } from "./agentEvent";
+export type { ClientMessage, ServerMessage } from "./sessionSocket";
 export type {
   CommitResult,
   Diff,
-  DiffFile,
   DiffTarget,
-  GitConflictError,
   MergeInput,
   PushInput,
   PushResult,
@@ -85,7 +69,6 @@ export type {
   UpdateTaskStateInput,
 } from "./taskStates";
 export type {
-  Comment,
   CreateTaskInput,
   ForwardHandoffInput,
   Handoff,
@@ -93,14 +76,13 @@ export type {
   ReviewStatus,
   RevisionHandoffInput,
   Task,
-  TaskActor,
   TaskDependency,
   TaskDependencyKind,
+  TaskComment,
   TaskDetail,
   TaskEvent,
   TaskEventKind,
   TaskPriority,
-  TaskSessionLink,
   TaskSessionTouch,
   UpdateTaskInput,
 } from "./tasks";

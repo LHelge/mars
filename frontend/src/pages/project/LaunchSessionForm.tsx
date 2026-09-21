@@ -22,14 +22,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router";
-import {
-  Alert,
-  FieldShell,
-  FIELD,
-  FormField,
-  SectionHeader,
-  SubmitButton,
-} from "../../components";
+import { Alert } from "../../components/Alert";
+import { FieldShell } from "../../components/FieldShell";
+import { FormField } from "../../components/FormField";
+import { SectionHeader } from "../../components/SectionHeader";
+import { SubmitButton } from "../../components/SubmitButton";
+import { FIELD } from "../../components/fieldStyles";
 import { useFormSubmit } from "../../hooks/useFormSubmit";
 import {
   BaseRefSelect,

@@ -3,29 +3,17 @@
 // is the per-project `number` in UI calls; the UUID is accepted too.
 
 import type {
-  Comment,
   CreateTaskInput,
   Task,
+  TaskComment,
   TaskDependencyKind,
   TaskDetail,
-  TaskPriority,
   UpdateTaskInput,
 } from "../types";
 import { apiDelete, apiGet, apiPost, apiPut } from "./apiClient";
 
 /** A task's UUID or its per-project number, as `{id}` in the paths below. */
-export type TaskRef = string | number;
-
-/** `?state=&label=&priority=&parent=&held=`; an omitted filter is not sent. */
-export interface TaskFilters {
-  state?: string;
-  label?: string;
-  priority?: TaskPriority;
-  /** A parent task's UUID or number. */
-  parent?: string;
-  /** `true`: only leased tasks; `false`: only unleased ones. */
-  held?: boolean;
-}
+export type TaskPathRef = string | number;
 
 function withQuery(path: string, params: URLSearchParams): string {
   const query = params.toString();
@@ -41,25 +29,16 @@ export function listHumanTasks(): Promise<Task[]> {
   return apiGet<Task[]>("/tasks?state_kind=human");
 }
 
-/** `GET /projects/{pid}/tasks` — ordered by priority, then number. */
-export function listTasks(pid: string, filters?: TaskFilters): Promise<Task[]> {
-  const params = new URLSearchParams();
-  if (filters?.state !== undefined) {
-    params.set("state", filters.state);
-  }
-  if (filters?.label !== undefined) {
-    params.set("label", filters.label);
-  }
-  if (filters?.priority !== undefined) {
-    params.set("priority", String(filters.priority));
-  }
-  if (filters?.parent !== undefined) {
-    params.set("parent", filters.parent);
-  }
-  if (filters?.held !== undefined) {
-    params.set("held", String(filters.held));
-  }
-  return apiGet<Task[]>(withQuery(`/projects/${pid}/tasks`, params));
+/**
+ * `GET /projects/{pid}/tasks` — ordered by priority, then number.
+ *
+ * The endpoint's `?state=&label=&priority=&parent=&held=` filters are not
+ * spelled here: the board reads the whole project once and filters the
+ * snapshot in the browser (`SPEC.md`, "Frontend", "Task board"), so a filter
+ * argument would be a parameter no caller ever passes.
+ */
+export function listTasks(pid: string): Promise<Task[]> {
+  return apiGet<Task[]>(`/projects/${pid}/tasks`);
 }
 
 /** `POST /projects/{pid}/tasks` → 201. */
@@ -72,21 +51,21 @@ export function createTask(pid: string, input: CreateTaskInput): Promise<Task> {
  * children and touching sessions. `idOrNumber` is the task's UUID or its
  * per-project number.
  */
-export function getTask(pid: string, idOrNumber: TaskRef): Promise<TaskDetail> {
+export function getTask(pid: string, idOrNumber: TaskPathRef): Promise<TaskDetail> {
   return apiGet<TaskDetail>(`/projects/${pid}/tasks/${idOrNumber}`);
 }
 
 /** `PUT /projects/{pid}/tasks/{id}` — the state move and hand-off path too. */
 export function updateTask(
   pid: string,
-  ref: TaskRef,
+  ref: TaskPathRef,
   input: UpdateTaskInput,
 ): Promise<Task> {
   return apiPut<Task>(`/projects/${pid}/tasks/${ref}`, input);
 }
 
 /** `DELETE /projects/{pid}/tasks/{id}` → 204; children survive as top-level. */
-export function deleteTask(pid: string, ref: TaskRef): Promise<void> {
+export function deleteTask(pid: string, ref: TaskPathRef): Promise<void> {
   return apiDelete(`/projects/${pid}/tasks/${ref}`);
 }
 
@@ -96,7 +75,7 @@ export function deleteTask(pid: string, ref: TaskRef): Promise<void> {
  */
 export function addDependency(
   pid: string,
-  ref: TaskRef,
+  ref: TaskPathRef,
   input: { depends_on: string; kind?: TaskDependencyKind },
 ): Promise<Task> {
   return apiPost<Task>(`/projects/${pid}/tasks/${ref}/dependencies`, input);
@@ -109,8 +88,8 @@ export function addDependency(
  */
 export function removeDependency(
   pid: string,
-  ref: TaskRef,
-  dep: TaskRef,
+  ref: TaskPathRef,
+  dep: TaskPathRef,
   kind: TaskDependencyKind,
 ): Promise<Task> {
   const params = new URLSearchParams({ kind });
@@ -122,17 +101,17 @@ export function removeDependency(
 /** `POST /projects/{pid}/tasks/{id}/comments` → 201. */
 export function addComment(
   pid: string,
-  ref: TaskRef,
+  ref: TaskPathRef,
   body: string,
-): Promise<Comment> {
-  return apiPost<Comment>(`/projects/${pid}/tasks/${ref}/comments`, { body });
+): Promise<TaskComment> {
+  return apiPost<TaskComment>(`/projects/${pid}/tasks/${ref}/comments`, { body });
 }
 
 /**
  * `POST /projects/{pid}/tasks/{id}/release` — clears the lease and keeps the
  * state; a user release never escalates. 409 when nobody holds it.
  */
-export function releaseTask(pid: string, ref: TaskRef): Promise<Task> {
+export function releaseTask(pid: string, ref: TaskPathRef): Promise<Task> {
   return apiPost<Task>(`/projects/${pid}/tasks/${ref}/release`);
 }
 

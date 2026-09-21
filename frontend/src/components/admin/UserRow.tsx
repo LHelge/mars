@@ -15,7 +15,8 @@
 // (`CLAUDE.md`, "Frontend conventions", Submitting a form).
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { deleteUser, queryKeys, updateUser } from "../../services";
+import { queryKeys } from "../../services/queryKeys";
+import { deleteUser, updateUser } from "../../services/users";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import type { User } from "../../types";
 import { formatRelative } from "../../utils/format";

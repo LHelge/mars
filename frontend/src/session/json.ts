@@ -26,8 +26,3 @@ export function formatValue(value: unknown): string {
     return "[unserialisable]";
   }
 }
-
-/** The number of lines `formatValue` would print, used by the 40-line rule. */
-export function lineCount(text: string): number {
-  return text === "" ? 0 : text.split("\n").length;
-}

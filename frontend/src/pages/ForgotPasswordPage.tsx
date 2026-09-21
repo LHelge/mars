@@ -7,9 +7,13 @@
 
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
-import { Alert, AuthLayout, FormField, SubmitButton } from "../components";
+import { Alert } from "../components/Alert";
+import { AuthLayout } from "../components/AuthLayout";
+import { FormField } from "../components/FormField";
+import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks";
-import { ApiError, requestPasswordReset } from "../services";
+import { ApiError } from "../services/apiClient";
+import { requestPasswordReset } from "../services/auth";
 
 export function ForgotPasswordPage() {
   const [identifier, setIdentifier] = useState("");

@@ -24,13 +24,11 @@
 
 import { useState, type FormEvent } from "react";
 import { useAuth, useFormSubmit } from "../hooks";
-import {
-  ApiError,
-  changePassword,
-  installSession,
-  MessageError,
-} from "../services";
-import { validatePassword } from "../utils";
+import { ApiError } from "../services/apiClient";
+import { installSession } from "../services/auth";
+import { MessageError } from "../services/errorMessage";
+import { changePassword } from "../services/users";
+import { validatePassword } from "../utils/password";
 import { Alert } from "./Alert";
 import { FormField } from "./FormField";
 import { SubmitButton } from "./SubmitButton";

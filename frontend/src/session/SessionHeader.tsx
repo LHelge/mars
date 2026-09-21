@@ -15,12 +15,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router";
 
-import {
-  Alert,
-  CopyLinkButton,
-  GitActionsPanel,
-  SessionStatePill,
-} from "../components";
+import { Alert } from "../components/Alert";
+import { CopyLinkButton } from "../components/CopyLinkButton";
+import { SessionStatePill } from "../components/SessionStatePill";
+import { GitActionsPanel } from "../components/git/GitActionsPanel";
 import { errorMessage, logUnexpected } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import { projectQueries } from "../services/queryOptions";

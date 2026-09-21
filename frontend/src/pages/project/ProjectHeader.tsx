@@ -10,7 +10,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { Alert, SubmitButton } from "../../components";
+import { Alert } from "../../components/Alert";
+import { SubmitButton } from "../../components/SubmitButton";
 import {
   deleteProject,
   fetchProject,

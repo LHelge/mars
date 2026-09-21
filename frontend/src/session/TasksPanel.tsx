@@ -26,7 +26,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Link } from "react-router";
 
-import { Alert, EmptyState, LoadingState } from "../components";
+import { Alert } from "../components/Alert";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
 import { queryKeys } from "../services/queryKeys";
 import { listSessionTasks } from "../services/sessions";
 import { getTask } from "../services/tasks";

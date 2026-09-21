@@ -11,19 +11,6 @@ export function taskPath(projectId: string, number: number): string {
 }
 
 /**
- * The shareable link: an origin and the canonical path, and nothing else — no
- * search parameters, no fragment, no token. A trailing slash on the origin is
- * dropped so the result never carries a doubled separator.
- */
-export function buildTaskLink(
-  origin: string,
-  projectId: string,
-  number: number,
-): string {
-  return `${origin.replace(/\/+$/, "")}${taskPath(projectId, number)}`;
-}
-
-/**
  * The `:number` of the route as a task number. Task numbers start at 1 and are
  * plain integers, so anything else — a name, `#12`, `0`, a decimal — names no
  * task and is answered without asking the server.

@@ -3,7 +3,8 @@
 // reaches here — the guard sends them to `/login` first.
 
 import { Link } from "react-router";
-import { EmptyState, PageLayout } from "../components";
+import { EmptyState } from "../components/EmptyState";
+import { PageLayout } from "../components/PageLayout";
 
 export function NotFoundPage() {
   return (

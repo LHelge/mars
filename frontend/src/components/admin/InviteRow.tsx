@@ -9,7 +9,8 @@
 // before it starts (`CLAUDE.md`, "Frontend conventions", Submitting a form).
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { queryKeys, resendInvite, revokeInvite } from "../../services";
+import { queryKeys } from "../../services/queryKeys";
+import { resendInvite, revokeInvite } from "../../services/users";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import type { Invite } from "../../types";
 import { formatRelative, PLACEHOLDER } from "../../utils/format";

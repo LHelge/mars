@@ -15,39 +15,42 @@
 // shell owns — clearing the TanStack Query cache and navigating to `/login`,
 // with the current location as the return destination when the sign-out was a
 // failed refresh rather than a user's decision.
-// The board's snapshot is reset here because this component already holds the
-// query client it belongs beside. The session transcripts are not: their
-// registry registers its own `onSignOut` — resetting every store, dropping the
-// unused ones and invalidating the requests still in flight (`SPEC.md`,
-// "Frontend", "Session store lifecycle") — which keeps that module, and the
-// fold with it, in the session route's chunk rather than in the one every page
-// loads. A registration made where the stores live is also ahead of each
-// socket's own, so the transcripts are gone before any of them reacts. Nothing
-// further is needed here for the "clears stores, closes streams" part of the
-// rule. Navigation is the last
-// thing this handler does, and React applies the resulting render only after
-// the whole handler chain has run, so every reset lands before the login page
-// mounts.
+// The stores are not reset here. Each registers its own `onSignOut` beside
+// itself: the session transcripts in `session/sessionStore.ts` — resetting
+// every store, dropping the unused ones and invalidating the requests still in
+// flight (`SPEC.md`, "Frontend", "Session store lifecycle") — and the board
+// snapshot in `tasks/taskStore.ts`. That keeps those modules, and the folds
+// with them, in the route chunks that use them rather than in the one every
+// page loads (`ARCHITECTURE.md`, "Frontend architecture", Barrels and the
+// first-paint path), and a registration made where the stores live is ahead of
+// each socket's own, so the transcripts are gone before any of them reacts.
+// What is left here is the query cache and the navigation. Navigation is the
+// last thing this handler does, and React applies the resulting render only
+// after the whole handler chain has run, so every reset lands before the login
+// page mounts.
 
 import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { Alert, LoadingState, SubmitButton } from "./components";
+import { Alert } from "./components/Alert";
+import { LoadingState } from "./components/LoadingState";
+import { SubmitButton } from "./components/SubmitButton";
 import {
   ApiError,
-  getAccessToken,
-  getCurrentUser,
   onForbidden,
   onPasswordChangeRequired,
+} from "./services/apiClient";
+import {
+  getAccessToken,
+  getCurrentUser,
   onSignOut,
   setCurrentUser,
   signOut,
   subscribe,
-} from "./services";
+} from "./services/auth";
 import { refreshCurrentUser } from "./services/currentUser";
 import { getMe } from "./services/users";
-import { useTaskStore } from "./tasks/taskStore";
 import { safeReturnTo } from "./utils/returnTo";
 
 export interface AuthBootstrapProps {
@@ -95,9 +98,6 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
     });
     const offSignOut = onSignOut((reason) => {
       queryClient.clear();
-      // The board snapshot is one user's view of a project; in-flight reads
-      // are discarded with it.
-      useTaskStore.getState().reset();
       // A session that expired underneath the user did not ask to leave the
       // page they were on: carry it to `/login` the way `ProtectedRoute`
       // would, so signing in again returns to that task or session

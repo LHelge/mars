@@ -12,25 +12,20 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import {
-  Alert,
-  AuthLayout,
-  CONTROL,
-  FieldShell,
-  FormField,
-  LoadingState,
-  QueryErrorAlert,
-  SubmitButton,
-} from "../components";
+import { Alert } from "../components/Alert";
+import { AuthLayout } from "../components/AuthLayout";
+import { FieldShell } from "../components/FieldShell";
+import { FormField } from "../components/FormField";
+import { LoadingState } from "../components/LoadingState";
+import { QueryErrorAlert } from "../components/QueryErrorAlert";
+import { SubmitButton } from "../components/SubmitButton";
+import { CONTROL } from "../components/fieldStyles";
 import { useAuth, useFormSubmit } from "../hooks";
-import {
-  acceptInvite,
-  ApiError,
-  errorMessage,
-  lookupInvite,
-  UNREACHABLE,
-} from "../services";
-import { formatDateTime, validatePassword } from "../utils";
+import { ApiError } from "../services/apiClient";
+import { acceptInvite, lookupInvite } from "../services/auth";
+import { UNREACHABLE, errorMessage } from "../services/errorMessage";
+import { formatDateTime } from "../utils/format";
+import { validatePassword } from "../utils/password";
 
 /** Every rejection of an invite token reads the same: unknown, used or expired. */
 const INVALID_INVITE =

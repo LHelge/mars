@@ -16,9 +16,10 @@
 
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { AuthLayout, PasswordChangeForm } from "../components";
+import { AuthLayout } from "../components/AuthLayout";
+import { PasswordChangeForm } from "../components/PasswordChangeForm";
 import { useAuth } from "../hooks";
-import { useReturnTo } from "../utils";
+import { useReturnTo } from "../utils/returnTo";
 
 export function ChangePasswordPage() {
   const navigate = useNavigate();

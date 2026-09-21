@@ -18,10 +18,6 @@ export function listProfiles(pid: string): Promise<Profile[]> {
   return apiGet<Profile[]>(`/projects/${pid}/profiles`);
 }
 
-export function getProfile(pid: string, id: string): Promise<Profile> {
-  return apiGet<Profile>(`/projects/${pid}/profiles/${id}`);
-}
-
 export function createProfile(
   pid: string,
   input: ProfileInput,

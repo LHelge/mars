@@ -5,7 +5,7 @@
 // module uses these helpers; no module writes an inline key array.
 
 import { queryKeys } from "../services/queryKeys";
-import type { TaskRef } from "../services/tasks";
+import type { TaskPathRef } from "../services/tasks";
 
 export const taskKeys = {
   /**
@@ -14,7 +14,7 @@ export const taskKeys = {
    */
   all: (projectId: string) => queryKeys.tasks.project(projectId),
   /** One task, by its per-project number (the URL route) or its UUID. */
-  detail: (projectId: string, ref: TaskRef) =>
+  detail: (projectId: string, ref: TaskPathRef) =>
     queryKeys.tasks.detail(projectId, ref),
 };
 

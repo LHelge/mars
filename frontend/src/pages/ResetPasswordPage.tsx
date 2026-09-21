@@ -8,10 +8,14 @@
 
 import { useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router";
-import { Alert, AuthLayout, FormField, SubmitButton } from "../components";
+import { Alert } from "../components/Alert";
+import { AuthLayout } from "../components/AuthLayout";
+import { FormField } from "../components/FormField";
+import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks";
-import { ApiError, resetPassword } from "../services";
-import { validatePassword } from "../utils";
+import { ApiError } from "../services/apiClient";
+import { resetPassword } from "../services/auth";
+import { validatePassword } from "../utils/password";
 
 /**
  * The 400 body every reset-token rejection shares (unknown, used or expired).

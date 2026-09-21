@@ -10,13 +10,13 @@
 import { Link } from "react-router";
 
 import { MarkdownBody } from "../components/Markdown";
-import type { Comment } from "../types";
+import type { TaskComment } from "../types";
 import { formatDateTime, formatRelative, shortId } from "../utils/format";
 import { CHIP } from "./taskChrome";
 import { useUsername } from "./useUsername";
 
 export interface CommentListProps {
-  comments: Comment[];
+  comments: TaskComment[];
 }
 
 export function CommentList({ comments }: CommentListProps) {
@@ -43,7 +43,7 @@ export function CommentList({ comments }: CommentListProps) {
   );
 }
 
-function CommentEntry({ comment }: { comment: Comment }) {
+function CommentEntry({ comment }: { comment: TaskComment }) {
   return (
     <li className={comment.system ? "text-console-muted italic" : undefined}>
       <div className="flex flex-wrap items-baseline gap-2">
@@ -71,7 +71,7 @@ function CommentEntry({ comment }: { comment: Comment }) {
  * (`docs/data-model.md`, `task_comments`), so it is labelled rather than
  * attributed.
  */
-function Author({ comment }: { comment: Comment }) {
+function Author({ comment }: { comment: TaskComment }) {
   const username = useUsername(comment.system ? null : comment.author_user_id);
 
   if (comment.system) {

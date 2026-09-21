@@ -13,7 +13,10 @@
 // asking the server. Having no `:number` at all is the other thing, and means
 // no drawer.
 
-import { TaskBoard, TaskDetail, parseTaskNumber, useTaskStream } from "../../tasks";
+import { TaskBoard } from "../../tasks/TaskBoard";
+import { TaskDetail } from "../../tasks/TaskDetail";
+import { parseTaskNumber } from "../../tasks/taskLink";
+import { useTaskStream } from "../../tasks/useTaskStream";
 import type { ProjectTabPanelProps } from "./tabs";
 
 export interface BoardTabProps extends ProjectTabPanelProps {

@@ -16,7 +16,7 @@
 //    choice the user makes. Sessions that already touched the task are offered
 //    first because they are the likely answer, never as a silent default.
 
-import type { Comment, Handoff, ReviewStatus, Session } from "../types";
+import type { TaskComment, Handoff, ReviewStatus, Session } from "../types";
 import { ApiError } from "../services/apiClient";
 import { errorMessage } from "../services/errorMessage";
 import { shortSha } from "../utils/format";
@@ -51,7 +51,6 @@ export interface ReviewLabel {
   text: string;
   /** A Tailwind colour class; `unreviewed` is deliberately not a colour. */
   tone: string;
-  status: ReviewStatus;
 }
 
 const TONE: Record<ReviewStatus, string> = {
@@ -74,19 +73,16 @@ export function reviewLabel(
       return {
         text: `Approved · ${short}`,
         tone: TONE.approved,
-        status: "approved",
       };
     case "changes_requested":
       return {
         text: `Changes requested · ${short}`,
         tone: TONE.changes_requested,
-        status: "changes_requested",
       };
     case "unreviewed":
       return {
         text: "Unreviewed",
         tone: TONE.unreviewed,
-        status: "unreviewed",
       };
     default: {
       // A `ReviewStatus` this build does not know must not be labelled
@@ -96,7 +92,6 @@ export function reviewLabel(
       return {
         text: String(unhandled),
         tone: TONE.unreviewed,
-        status: "unreviewed",
       };
     }
   }
@@ -208,9 +203,9 @@ const EXCERPT = 90;
 
 /** The comment a hand-off wrote, or `null` while the refresh is partial. */
 export function handoffComment(
-  comments: readonly Comment[],
+  comments: readonly TaskComment[],
   handoff: Pick<Handoff, "comment_id">,
-): Comment | null {
+): TaskComment | null {
   if (handoff.comment_id === null) {
     return null;
   }

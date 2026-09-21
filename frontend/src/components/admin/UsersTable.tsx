@@ -10,7 +10,8 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { useAuth } from "../../hooks";
-import { listUsers, queryKeys } from "../../services";
+import { queryKeys } from "../../services/queryKeys";
+import { listUsers } from "../../services/users";
 import { errorMessage } from "../../services/errorMessage";
 import { EmptyState } from "../EmptyState";
 import { LoadingState } from "../LoadingState";

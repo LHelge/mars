@@ -72,7 +72,7 @@ export function ProjectCreateForm({ onCancel }: ProjectCreateFormProps) {
   const [credential, setCredential] = useState("");
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
 
-  const { submit, loading, error, clearError } = useFormSubmit(async () => {
+  const { submit, loading, error, reset } = useFormSubmit(async () => {
     const branch = defaultBranch.trim();
     const token = credential;
     let created: Project;
@@ -114,7 +114,7 @@ export function ProjectCreateForm({ onCancel }: ProjectCreateFormProps) {
     if (invalid.name !== undefined || invalid.remoteUrl !== undefined) {
       return;
     }
-    clearError();
+    reset();
     void submit();
   }
 
@@ -178,7 +178,7 @@ export function ProjectCreateForm({ onCancel }: ProjectCreateFormProps) {
 
       {error !== null && (
         <div className="sm:col-span-2">
-          <Alert kind="error" onDismiss={clearError}>
+          <Alert kind="error" onDismiss={reset}>
             {error}
           </Alert>
         </div>

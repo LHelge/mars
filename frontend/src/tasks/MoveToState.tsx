@@ -24,6 +24,7 @@
 // only by that pick.
 
 import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 
 import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
@@ -32,7 +33,7 @@ import type { Task } from "../types";
 import { shortId } from "../utils/format";
 import { CONTROL } from "../components/fieldStyles";
 import { useTaskStore } from "./taskStore";
-import { useTaskMutations } from "./useTaskMutations";
+import { useUpdateTask } from "./taskWrites";
 
 export interface MoveToStateProps {
   projectId: string;
@@ -41,7 +42,11 @@ export interface MoveToStateProps {
 
 export function MoveToState({ projectId, task }: MoveToStateProps) {
   const states = useTaskStore((state) => state.states);
-  const { update } = useTaskMutations(projectId, task.number);
+  // Not a form: the one owner of this write's pending and refusal is the
+  // mutation itself (`CLAUDE.md`, "Frontend conventions", "Submitting a form"),
+  // and the next attempt clears both.
+  const updateTask = useUpdateTask(projectId, task.number);
+  const update = useMutation({ mutationFn: updateTask });
   // The user's explicit choice, or `null` while they have made none.
   const [choice, setChoice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);

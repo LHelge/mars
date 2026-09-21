@@ -18,7 +18,7 @@
 // is its index in the list. Moving a row is therefore "insert me at the
 // neighbour's index" and needs no arithmetic of its own.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Alert } from "../components/Alert";
@@ -31,7 +31,7 @@ import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
 import { ApiError } from "../services/apiClient";
-import { errorMessage, logUnexpected } from "../services/errorMessage";
+import { errorMessage } from "../services/errorMessage";
 import { listTasks } from "../services/tasks";
 import {
   createTaskState,
@@ -345,38 +345,43 @@ function StateRow({
   const [draft, setDraft] = useState(state.name);
   const [draftError, setDraftError] = useState<string | null>(null);
 
-  const rename = useMutation({
-    mutationFn: (next: string) =>
-      updateTaskState(projectId, state.name, { name: next }),
-    onSuccess: async () => {
-      setEditing(false);
+  const rename = useFormSubmit(async (next: string) => {
+    await updateTaskState(projectId, state.name, { name: next });
+    setEditing(false);
+    await afterMutation();
+  });
+
+  // Moving and removing are the row's two bare actions, and the row has one
+  // line to answer in. One owner for both, then (`CLAUDE.md`, "Frontend
+  // conventions", "Submitting a form"): a refusal from the last one cannot
+  // outlive a later action that worked.
+  const [acting, setActing] = useState<RowAction["kind"] | null>(null);
+  const act = useFormSubmit(async (action: RowAction) => {
+    if (action.kind === "move") {
+      await updateTaskState(projectId, state.name, { position: action.to });
       await afterMutation();
-    },
-    onError: logUnexpected,
-  });
-
-  const move = useMutation({
-    mutationFn: (to: number) =>
-      updateTaskState(projectId, state.name, { position: to }),
-    onSuccess: () => afterMutation(),
-    onError: logUnexpected,
-  });
-
-  const remove = useMutation({
-    mutationFn: () => deleteTaskState(projectId, state.name),
-    onSuccess: () => afterMutation(),
-    onError: (caught: unknown) => {
-      logUnexpected(caught);
+      return;
+    }
+    try {
+      await deleteTaskState(projectId, state.name);
+    } catch (caught) {
       // The refusal this page thought it had ruled out: someone moved a task
       // or changed the state list while it was open. Show what the server
       // said and read both lists again, so the row tells the truth next.
       if (caught instanceof ApiError && caught.status === 409) {
-        void afterMutation();
+        await afterMutation();
       }
-    },
+      throw caught;
+    }
+    await afterMutation();
   });
 
-  const busy = rename.isPending || move.isPending || remove.isPending;
+  function run(action: RowAction) {
+    setActing(action.kind);
+    void act.submit(action);
+  }
+
+  const busy = rename.loading || act.loading;
   const count = counts?.[state.name] ?? 0;
 
   // No counts, no removal: the structural reasons are knowable without them,
@@ -393,11 +398,18 @@ function StateRow({
     setEditing(true);
   }
 
+  function cancelRename() {
+    setEditing(false);
+    // Nothing is being edited any more, so neither answer describes anything.
+    setDraftError(null);
+    rename.reset();
+  }
+
   function submitRename(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const next = draft.trim();
     if (next === state.name) {
-      setEditing(false);
+      cancelRename();
       return;
     }
     const invalid = stateNameError(next);
@@ -405,7 +417,7 @@ function StateRow({
     if (invalid !== null) {
       return;
     }
-    rename.mutate(next);
+    void rename.submit(next);
   }
 
   function onRemove() {
@@ -416,10 +428,8 @@ function StateRow({
     ) {
       return;
     }
-    remove.mutate();
+    run({ kind: "remove" });
   }
-
-  const failure = remove.error ?? move.error;
 
   return (
     <>
@@ -449,14 +459,12 @@ function StateRow({
                 autoFocus
                 className="border-console-border bg-console-bg text-console-text aria-invalid:border-state-failed w-40 rounded border px-2 py-1 font-mono text-xs"
               />
-              <SubmitButton loading={rename.isPending}>Save</SubmitButton>
+              <SubmitButton loading={rename.loading}>Save</SubmitButton>
               <SubmitButton
                 type="button"
                 variant="ghost"
-                disabled={rename.isPending}
-                onClick={() => {
-                  setEditing(false);
-                }}
+                disabled={rename.loading}
+                onClick={cancelRename}
               >
                 Cancel
               </SubmitButton>
@@ -491,7 +499,7 @@ function StateRow({
               variant="ghost"
               disabled={busy || index === 0}
               onClick={() => {
-                move.mutate(index - 1);
+                run({ kind: "move", to: index - 1 });
               }}
             >
               <span aria-hidden="true">↑</span>
@@ -503,7 +511,7 @@ function StateRow({
               variant="ghost"
               disabled={busy || index === states.length - 1}
               onClick={() => {
-                move.mutate(index + 1);
+                run({ kind: "move", to: index + 1 });
               }}
             >
               <span aria-hidden="true">↓</span>
@@ -530,7 +538,7 @@ function StateRow({
               <SubmitButton
                 type="button"
                 variant="danger"
-                loading={remove.isPending}
+                loading={act.loading && acting === "remove"}
                 disabled={busy || refusal !== null}
                 onClick={onRemove}
               >
@@ -541,23 +549,27 @@ function StateRow({
         </td>
       </tr>
 
-      {(draftError !== null || rename.error !== null) && (
+      {/* The rename's answers belong to the rename: leaving edit mode takes
+          them with it, rather than leaving a refusal under a row nobody is
+          editing. */}
+      {editing && (draftError !== null || rename.error !== null) && (
         <tr className="border-console-border/60 border-b last:border-b-0">
           <td colSpan={5} className="bg-console-surface/60 px-3 py-2">
-            <Alert kind="error">
-              {draftError ?? errorMessage(rename.error)}
-            </Alert>
+            <Alert kind="error">{draftError ?? rename.error}</Alert>
           </td>
         </tr>
       )}
 
-      {failure !== null && (
+      {act.error !== null && (
         <tr className="border-console-border/60 border-b last:border-b-0">
           <td colSpan={5} className="bg-console-surface/60 px-3 py-2">
-            <Alert kind="error">{errorMessage(failure)}</Alert>
+            <Alert kind="error">{act.error}</Alert>
           </td>
         </tr>
       )}
     </>
   );
 }
+
+/** One of the two writes a row makes outside its rename form. */
+type RowAction = { kind: "move"; to: number } | { kind: "remove" };

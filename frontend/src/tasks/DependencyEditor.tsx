@@ -16,16 +16,18 @@
 
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import { useMutation } from "@tanstack/react-query";
 
 import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
+import { useFormSubmit } from "../hooks/useFormSubmit";
 import { errorMessage } from "../services/errorMessage";
 import type { TaskDependencyKind, TaskDetail } from "../types";
 import { DependencyList } from "./DependencyList";
 import { filterTasks } from "./search";
 import { CONTROL } from "../components/fieldStyles";
 import { useTaskStore } from "./taskStore";
-import { useTaskMutations } from "./useTaskMutations";
+import { useAddDependency, useRemoveDependency } from "./taskWrites";
 
 /** What each kind means from this task's side, as the select words it. */
 const KIND_LABEL: Record<TaskDependencyKind, string> = {
@@ -46,10 +48,12 @@ export interface DependencyEditorProps {
 
 export function DependencyEditor({ projectId, task }: DependencyEditorProps) {
   const snapshot = useTaskStore((state) => state.tasks);
-  const { addDependency, removeDependency } = useTaskMutations(
-    projectId,
-    task.number,
-  );
+  const addEdge = useAddDependency(projectId, task.number);
+  // The row buttons of the list are not a form, so their write's mutation is
+  // its own owner (`CLAUDE.md`, "Frontend conventions", "Submitting a form").
+  const removeDependency = useMutation({
+    mutationFn: useRemoveDependency(projectId, task.number),
+  });
 
   const [query, setQuery] = useState("");
   const [target, setTarget] = useState("");
@@ -70,18 +74,16 @@ export function DependencyEditor({ projectId, task }: DependencyEditorProps) {
   // — must not leave a stale id in the select.
   const chosen = matches.some((match) => match.id === target) ? target : "";
 
+  const add = useFormSubmit(async () => {
+    await addEdge({ depends_on: chosen, kind });
+    setQuery("");
+    setTarget("");
+  });
+
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (chosen === "") return;
-    addDependency.mutate(
-      { depends_on: chosen, kind },
-      {
-        onSuccess: () => {
-          setQuery("");
-          setTarget("");
-        },
-      },
-    );
+    void add.submit();
   }
 
   return (
@@ -173,15 +175,10 @@ export function DependencyEditor({ projectId, task }: DependencyEditorProps) {
           </select>
         </div>
 
-        {addDependency.isError && (
-          <Alert kind="error">{errorMessage(addDependency.error)}</Alert>
-        )}
+        {add.error !== null && <Alert kind="error">{add.error}</Alert>}
 
         <div className="flex justify-end">
-          <SubmitButton
-            loading={addDependency.isPending}
-            disabled={chosen === ""}
-          >
+          <SubmitButton loading={add.loading} disabled={chosen === ""}>
             Add dependency
           </SubmitButton>
         </div>

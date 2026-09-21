@@ -13,6 +13,7 @@
 // button that caused it, in the API's own words.
 
 import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
+import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
@@ -22,7 +23,7 @@ import { errorMessage } from "../services/errorMessage";
 import type { TaskDetail } from "../types";
 import { LaunchForTask } from "./LaunchForTask";
 import { MoveToState } from "./MoveToState";
-import { useTaskMutations } from "./useTaskMutations";
+import { useDeleteTask, useReleaseTask } from "./taskWrites";
 
 export interface TaskActionsProps {
   projectId: string;
@@ -40,7 +41,16 @@ export function TaskActions({
 }: TaskActionsProps) {
   const navigate = useNavigate();
   const [search] = useSearchParams();
-  const { release, remove } = useTaskMutations(projectId, task.number);
+  // Neither button is a form, so each write's mutation is its own single
+  // owner of pending and refusal (`CLAUDE.md`, "Frontend conventions",
+  // "Submitting a form"): a release in flight disables Release and nothing
+  // else, and a retry clears what the last attempt said.
+  const release = useMutation({
+    mutationFn: useReleaseTask(projectId, task.number),
+  });
+  const remove = useMutation({
+    mutationFn: useDeleteTask(projectId, task.number),
+  });
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const held = task.lease_holder_session_id !== null;

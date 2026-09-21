@@ -278,7 +278,15 @@ export function ProfileEditorPage({
         title={profile === null ? "New profile" : `Edit ${profile.name}`}
         description="The served states and the system prompt together define what this agent does."
         actions={
-          <SubmitButton type="button" variant="ghost" onClick={onClose}>
+          <SubmitButton
+            type="button"
+            variant="ghost"
+            // Disabled while the save is out, like the footer's Cancel: a
+            // click here would unmount the form mid-request and run `onClose`
+            // a second time when the save landed.
+            disabled={save.loading}
+            onClick={onClose}
+          >
             Cancel
           </SubmitButton>
         }
@@ -287,7 +295,7 @@ export function ProfileEditorPage({
       {/* The API phrases its own refusals — an unknown tool, a state that is
           not a queue state, a duplicate name — better than the client could. */}
       {save.error !== null && (
-        <Alert kind="error" onDismiss={save.clearError}>
+        <Alert kind="error" onDismiss={save.reset}>
           {save.error}
         </Alert>
       )}

@@ -70,8 +70,15 @@ export {
 } from "./taskEdit";
 export type { TaskEditValues } from "./taskEdit";
 
-export { useTaskMutations } from "./useTaskMutations";
-export type { DependencyEdge, TaskMutations } from "./useTaskMutations";
+export {
+  useAddDependency,
+  useDeleteTask,
+  useReleaseTask,
+  useRemoveDependency,
+  useSettleTask,
+  useUpdateTask,
+} from "./taskWrites";
+export type { DependencyEdge } from "./taskWrites";
 
 export { TaskActions } from "./TaskActions";
 export type { TaskActionsProps } from "./TaskActions";

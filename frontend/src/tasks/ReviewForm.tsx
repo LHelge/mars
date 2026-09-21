@@ -34,6 +34,7 @@ import { Alert } from "../components/Alert";
 import { FieldShell } from "../components/FieldShell";
 import { FIELD } from "../components/fieldStyles";
 import { SubmitButton } from "../components/SubmitButton";
+import { useFormSubmit } from "../hooks/useFormSubmit";
 import type { Handoff, TaskDetail } from "../types";
 import {
   REVIEW_ACTION,
@@ -43,7 +44,7 @@ import {
 } from "./handoffRules";
 import type { ReviewDecision } from "./handoffRules";
 import { useTaskStore } from "./taskStore";
-import { useTaskMutations } from "./useTaskMutations";
+import { useUpdateTask } from "./taskWrites";
 
 export interface ReviewFormProps {
   projectId: string;
@@ -65,7 +66,7 @@ export function ReviewForm({
   onDone,
 }: ReviewFormProps) {
   const states = useTaskStore((store) => store.states);
-  const { update } = useTaskMutations(projectId, task.number);
+  const updateTask = useUpdateTask(projectId, task.number);
 
   // The hand-off under review, captured once. `handoff` goes on naming the
   // task's current one, which is how the form knows a revision arrived.
@@ -77,13 +78,12 @@ export function ReviewForm({
 
   const filled = state !== "" && comment.trim() !== "";
 
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!filled) {
-      return;
-    }
-    update.mutate(
-      {
+  // One owner for the decision (`CLAUDE.md`, "Frontend conventions",
+  // "Submitting a form"). `mapError` is how this form says its own sentence
+  // about the stale-hand-off 409; every other refusal stays the server's.
+  const send = useFormSubmit(
+    async () => {
+      await updateTask({
         state,
         handoff: {
           kind: "forward",
@@ -91,9 +91,18 @@ export function ReviewForm({
           comment: comment.trim(),
           ...(decision === "none" ? {} : { review: decision }),
         },
-      },
-      { onSuccess: onDone },
-    );
+      });
+      onDone();
+    },
+    { mapError: reviewErrorMessage },
+  );
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!filled) {
+      return;
+    }
+    void send.submit();
   }
 
   return (
@@ -122,7 +131,7 @@ export function ReviewForm({
           <select
             {...control}
             value={state}
-            disabled={update.isPending}
+            disabled={send.loading}
             onChange={(event) => {
               setState(event.target.value);
             }}
@@ -146,7 +155,7 @@ export function ReviewForm({
             {...control}
             rows={4}
             value={comment}
-            disabled={update.isPending}
+            disabled={send.loading}
             placeholder={
               decision === "changes_requested"
                 ? "What has to change, and where?"
@@ -160,18 +169,16 @@ export function ReviewForm({
         )}
       </FieldShell>
 
-      {update.isError && (
-        <Alert kind="error">{reviewErrorMessage(update.error)}</Alert>
-      )}
+      {send.error !== null && <Alert kind="error">{send.error}</Alert>}
 
       <div className="flex items-center gap-2">
-        <SubmitButton loading={update.isPending} disabled={!filled}>
+        <SubmitButton loading={send.loading} disabled={!filled}>
           {REVIEW_ACTION[decision]}
         </SubmitButton>
         <SubmitButton
           type="button"
           variant="ghost"
-          disabled={update.isPending}
+          disabled={send.loading}
           onClick={onDone}
         >
           Cancel

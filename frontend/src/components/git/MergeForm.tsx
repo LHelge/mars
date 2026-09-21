@@ -187,7 +187,7 @@ export function MergeForm({
         <ConflictList paths={conflicts} message={conflictMessage} />
       )}
       {form.error !== null && (
-        <Alert kind="error" onDismiss={form.clearError}>
+        <Alert kind="error" onDismiss={form.reset}>
           {form.error}
         </Alert>
       )}

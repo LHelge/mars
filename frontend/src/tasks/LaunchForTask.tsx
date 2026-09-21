@@ -18,7 +18,7 @@
 // with it: it refetches the task after the answer, whether that answer was the
 // new session or the 409 that says somebody else got there first.
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
@@ -36,13 +36,13 @@ import { getProject } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
 import { createSession } from "../services/sessions";
 import type { ProfileKind, SessionCreateInput, TaskDetail } from "../types";
-import { taskKeys } from "./queryKeys";
 import {
   defaultProfile,
   launchDisabledReason,
   shortCommit,
 } from "./launchRules";
 import { useTaskStore } from "./taskStore";
+import { useRefetchTask, useSettleTask } from "./taskWrites";
 
 export interface LaunchForTaskProps {
   projectId: string;
@@ -123,7 +123,8 @@ function LaunchFormPanel({
   onClose,
 }: LaunchFormPanelProps) {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
+  const settle = useSettleTask(projectId, task.number);
+  const refetchTask = useRefetchTask(projectId, task.number);
 
   const project = useQuery({
     queryKey: queryKeys.projects.detail(projectId),
@@ -168,18 +169,13 @@ function LaunchFormPanel({
 
     try {
       const session = await createSession(projectId, input);
-      useTaskStore.getState().invalidate();
-      await queryClient.invalidateQueries({
-        queryKey: taskKeys.detail(projectId, task.number),
-      });
+      await settle();
       void navigate(`/sessions/${session.id}`);
     } catch (caught) {
       // 409 is somebody else holding the task now, or a hand-off that moved.
       // Whatever the drawer is showing about it is already out of date.
       if (caught instanceof ApiError && caught.status === 409) {
-        void queryClient.invalidateQueries({
-          queryKey: taskKeys.detail(projectId, task.number),
-        });
+        await refetchTask();
       }
       throw caught;
     }

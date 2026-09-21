@@ -23,7 +23,7 @@ import { Alert } from "../components/Alert";
 import { FieldShell } from "../components/FieldShell";
 import { FIELD } from "../components/fieldStyles";
 import { SubmitButton } from "../components/SubmitButton";
-import { errorMessage } from "../services/errorMessage";
+import { useFormSubmit } from "../hooks/useFormSubmit";
 import { queryKeys } from "../services/queryKeys";
 import { listProjectSessions } from "../services/sessions";
 import type { TaskDetail } from "../types";
@@ -36,7 +36,7 @@ import {
   orderSessionsForPicker,
 } from "./handoffRules";
 import { useTaskStore } from "./taskStore";
-import { useTaskMutations } from "./useTaskMutations";
+import { useUpdateTask } from "./taskWrites";
 
 export interface RevisionFormProps {
   projectId: string;
@@ -47,7 +47,7 @@ export interface RevisionFormProps {
 
 export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
   const states = useTaskStore((store) => store.states);
-  const { update } = useTaskMutations(projectId, task.number);
+  const updateTask = useUpdateTask(projectId, task.number);
 
   const sessions = useQuery({
     queryKey: queryKeys.projects.sessions(projectId),
@@ -63,7 +63,8 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
   const [commit, setCommit] = useState("");
   const [comment, setComment] = useState("");
   const [state, setState] = useState("");
-  const [shownError, setShownError] = useState<string | null>(null);
+  /** The commit's shape, checked here; the server's refusals are `publish`'s. */
+  const [commitError, setCommitError] = useState<string | null>(null);
 
   // Derived until the user touches it, so the single-candidate default is
   // right the moment the session list lands and no effect writes state.
@@ -79,28 +80,32 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
     comment.trim() !== "" &&
     state !== "";
 
+  // One owner for the publish (`CLAUDE.md`, "Frontend conventions",
+  // "Submitting a form"); the commit check above stays the form's own.
+  const publish = useFormSubmit(async () => {
+    await updateTask({
+      state,
+      handoff: {
+        kind: "revision",
+        source_session_id: chosen,
+        commit: commit.trim(),
+        comment: comment.trim(),
+      },
+    });
+    onDone();
+  });
+
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!filled) {
       return;
     }
     if (commitProblem !== null) {
-      setShownError(commitProblem);
+      setCommitError(commitProblem);
       return;
     }
-    setShownError(null);
-    update.mutate(
-      {
-        state,
-        handoff: {
-          kind: "revision",
-          source_session_id: chosen,
-          commit: commit.trim(),
-          comment: comment.trim(),
-        },
-      },
-      { onSuccess: onDone },
-    );
+    setCommitError(null);
+    void publish.submit();
   }
 
   return (
@@ -118,7 +123,7 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
           <select
             {...control}
             value={chosen}
-            disabled={update.isPending}
+            disabled={publish.loading}
             onChange={(event) => {
               setSource(event.target.value);
             }}
@@ -140,24 +145,26 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
         )}
       </FieldShell>
 
-      <FieldShell label="Commit" name="handoff-commit" hint={COMMIT_HINT}>
+      <FieldShell
+        label="Commit"
+        name="handoff-commit"
+        hint={COMMIT_HINT}
+        error={commitError ?? undefined}
+      >
         {(control) => (
-          <>
-            <input
-              {...control}
-              value={commit}
-              spellCheck={false}
-              autoComplete="off"
-              disabled={update.isPending}
-              placeholder="0000000000000000000000000000000000000000"
-              onChange={(event) => {
-                setCommit(event.target.value);
-                setShownError(null);
-              }}
-              className={FIELD}
-            />
-            {shownError !== null && <Alert kind="error">{shownError}</Alert>}
-          </>
+          <input
+            {...control}
+            value={commit}
+            spellCheck={false}
+            autoComplete="off"
+            disabled={publish.loading}
+            placeholder="0000000000000000000000000000000000000000"
+            onChange={(event) => {
+              setCommit(event.target.value);
+              setCommitError(null);
+            }}
+            className={FIELD}
+          />
         )}
       </FieldShell>
 
@@ -167,7 +174,7 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
             {...control}
             rows={4}
             value={comment}
-            disabled={update.isPending}
+            disabled={publish.loading}
             placeholder="What is in this commit, and what should the next agent do with it?"
             onChange={(event) => {
               setComment(event.target.value);
@@ -182,7 +189,7 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
           <select
             {...control}
             value={state}
-            disabled={update.isPending}
+            disabled={publish.loading}
             onChange={(event) => {
               setState(event.target.value);
             }}
@@ -200,18 +207,16 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
         )}
       </FieldShell>
 
-      {update.isError && (
-        <Alert kind="error">{errorMessage(update.error)}</Alert>
-      )}
+      {publish.error !== null && <Alert kind="error">{publish.error}</Alert>}
 
       <div className="flex items-center gap-2">
-        <SubmitButton loading={update.isPending} disabled={!filled}>
+        <SubmitButton loading={publish.loading} disabled={!filled}>
           Publish revision
         </SubmitButton>
         <SubmitButton
           type="button"
           variant="ghost"
-          disabled={update.isPending}
+          disabled={publish.loading}
           onClick={onDone}
         >
           Cancel

@@ -1,10 +1,10 @@
 ---
 id: unh3n
 title: Coalesce task-stream invalidations, stop replaying the whole event history on first connect, and invalidate details on states_changed
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:52:54.939856108Z"
-updated: "2026-09-21T10:52:54.939856108Z"
+updated: "2026-09-21T19:25:51.527498418Z"
 tags:
   - frontend
   - technical-review
@@ -12,6 +12,7 @@ tags:
   - tracker
   - performance
 parent: "579dz"
+attempts: 1
 ---
 
 Problem, in the task stream and board refresh path (the ordering logic itself was traced through event-during-flight, project switch, reconnect, unmount and reset and holds; these are the exceptions):

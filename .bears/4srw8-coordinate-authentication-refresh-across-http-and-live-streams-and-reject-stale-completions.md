@@ -1,16 +1,17 @@
 ---
 id: "4srw8"
 title: Coordinate authentication refresh across HTTP and live streams and reject stale completions
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:44:27.194573479Z"
-updated: "2026-09-21T10:49:39.154041843Z"
+updated: "2026-09-21T17:00:58.726131965Z"
 tags:
   - frontend
   - technical-review
   - bug
   - auth
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: apiClient.ts has a private shared refresh promise, but SessionSocket and TaskStream call refreshAccessToken directly. Concurrent refreshes can submit the same rotating cookie; one succeeds and another receives 401 and signs the user out. A refresh completion can also install authentication after logout or a newer login.

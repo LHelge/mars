@@ -1,10 +1,10 @@
 ---
 id: c9tju
 title: Reset task drafts and editor state when the displayed resource changes
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:44:29.449408078Z"
-updated: "2026-09-21T10:49:50.108933306Z"
+updated: "2026-09-21T17:01:00.731454199Z"
 tags:
   - frontend
   - technical-review
@@ -12,6 +12,7 @@ tags:
   - tracker
   - react
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: TaskDetail renders TaskBody without a resource-specific key. Navigating from task A in edit mode to already-cached task B can preserve A's draft while mutation callbacks now target B. Cached results avoid the loading-state unmount that can otherwise hide this bug.

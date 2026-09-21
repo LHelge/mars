@@ -2,10 +2,10 @@
 id: rdkmk
 title: "Agent credentials: resolved implicitly per backend, set up through a guided form, visible before launch"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-20T22:21:26.309604049Z"
-updated: "2026-09-20T22:21:26.309604049Z"
+updated: "2026-09-21T07:36:38.694760200Z"
 tags:
   - secrets
   - agent

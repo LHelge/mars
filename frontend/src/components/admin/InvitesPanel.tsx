@@ -19,13 +19,9 @@ import {
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { useFormSubmit } from "../../hooks";
-import {
-  ApiError,
-  createInvite,
-  listInvites,
-  listUsers,
-  queryKeys,
-} from "../../services";
+import { ApiError } from "../../services/apiClient";
+import { queryKeys } from "../../services/queryKeys";
+import { createInvite, listInvites, listUsers } from "../../services/users";
 import type { Invite } from "../../types";
 import { Alert } from "../Alert";
 import { EmptyState } from "../EmptyState";

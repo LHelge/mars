@@ -28,7 +28,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import "@xterm/xterm/css/xterm.css";
 
-import { SubmitButton } from "../components";
+import { SubmitButton } from "../components/SubmitButton";
 import { debounce } from "../utils/debounce";
 import { useSessionSocketApi } from "./SessionSocketContext";
 import type { SessionPanelProps } from "./sidePanels";

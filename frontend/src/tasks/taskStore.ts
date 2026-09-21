@@ -16,6 +16,7 @@ import { create, type UseBoundStore, type StoreApi } from "zustand";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
 import { queryClient } from "../queryClient";
+import { onSignOut } from "../services/auth";
 import { listTasks } from "../services/tasks";
 import { errorMessage } from "../services/errorMessage";
 import { listTaskStates } from "../services/taskStates";
@@ -49,14 +50,13 @@ export interface TaskBoardState {
   /** The project's tasks in the API's order (priority, then number). */
   tasks: Task[];
   /**
-   * The same tasks by UUID and by per-project `number`, built once per
-   * snapshot. A card resolving its parent, and a dependency row resolving the
-   * task it points at, are one lookup each: over a board of a few hundred
-   * tasks, a `find` per row per store write — including every keystroke in the
-   * search field — is the board's own work, not the API's.
+   * The same tasks by UUID, built once per snapshot. A card resolving its
+   * parent, and a dependency row resolving the task it points at, are one
+   * lookup each: over a board of a few hundred tasks, a `find` per row per
+   * store write — including every keystroke in the search field — is the
+   * board's own work, not the API's.
    */
   byId: ReadonlyMap<string, Task>;
-  byNumber: ReadonlyMap<number, Task>;
   /** Highest `seq` seen on the task stream; the stream's `?after=`. */
   lastSeq: number;
   /** A first successful load has installed a snapshot. */
@@ -117,7 +117,6 @@ export function emptyTaskBoardState(): TaskBoardState {
     states: [],
     tasks: [],
     byId: new Map(),
-    byNumber: new Map(),
     lastSeq: 0,
     loaded: false,
     loading: false,
@@ -137,22 +136,20 @@ function byPosition(states: TaskState[]): TaskState[] {
 }
 
 /**
- * The snapshot fields one settled pair of reads replaces, indexes included.
+ * The snapshot fields one settled pair of reads replaces, the index included.
  *
  * Exported so nothing — a refresh, a bind, a test arranging a loaded board —
- * can install `tasks` and leave the two indexes describing the previous ones.
+ * can install `tasks` and leave the index describing the previous ones.
  */
 export function taskSnapshot(
   states: TaskState[],
   tasks: Task[],
-): Pick<TaskBoardState, "states" | "tasks" | "byId" | "byNumber"> {
+): Pick<TaskBoardState, "states" | "tasks" | "byId"> {
   const byId = new Map<string, Task>();
-  const byNumber = new Map<number, Task>();
   for (const task of tasks) {
     byId.set(task.id, task);
-    byNumber.set(task.number, task);
   }
-  return { states: byPosition(states), tasks, byId, byNumber };
+  return { states: byPosition(states), tasks, byId };
 }
 
 function messageOf(error: unknown): string {
@@ -353,6 +350,20 @@ export function createQueryDeps(client: QueryClient): TaskStoreDeps {
 
 export const useTaskStore = createTaskStore(createQueryDeps(queryClient));
 
+// Signing out drops the snapshot, which is one user's view of one project
+// (`SPEC.md`, "Frontend", Rules: "clears authenticated query and stream
+// stores"); in-flight reads are discarded with it.
+//
+// Registered here at import rather than from `AuthBootstrap`, for the reason
+// `session/sessionStore.ts` registers its own: the store is what the rule acts
+// on, and a registration beside it keeps this module — the board fold, its two
+// reads and the search filter — out of the chunk every page loads. Nothing is
+// lost by registering only when the module is loaded: a sign-out with no board
+// module loaded has no snapshot to clear.
+onSignOut(() => {
+  useTaskStore.getState().reset();
+});
+
 /** The heading of the trailing bucket, and its React key. */
 export const UNKNOWN_COLUMN = "unknown";
 
@@ -436,20 +447,13 @@ export function selectVisibleColumns(
 }
 
 /**
- * The task carrying a per-project `number` (the drawer's route parameter).
+ * The task with this UUID: parent badges and dependency links resolve by id.
  *
  * The lookup is the index the snapshot was installed with, so it costs the
  * same on a board of five tasks and one of five hundred, and returns the very
  * object the last snapshot held: a subscriber to this selector re-renders when
  * *this* task changed, not whenever any of them did.
  */
-export function selectTaskByNumber(
-  number: number,
-): (state: TaskBoardState) => Task | undefined {
-  return (state) => state.byNumber.get(number);
-}
-
-/** The task with this UUID: parent badges and dependency links resolve by id. */
 export function selectTaskById(
   id: string,
 ): (state: TaskBoardState) => Task | undefined {

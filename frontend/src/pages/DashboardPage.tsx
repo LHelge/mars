@@ -14,14 +14,12 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import {
-  EmptyState,
-  LoadingState,
-  PageLayout,
-  QueryErrorAlert,
-  SectionHeader,
-  StatusBadge,
-} from "../components";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
+import { PageLayout } from "../components/PageLayout";
+import { QueryErrorAlert } from "../components/QueryErrorAlert";
+import { SectionHeader } from "../components/SectionHeader";
+import { StatusBadge } from "../components/StatusBadge";
 import { useAuth } from "../hooks/useAuth";
 import { listProjects } from "../services/projects";
 import { errorMessage } from "../services/errorMessage";

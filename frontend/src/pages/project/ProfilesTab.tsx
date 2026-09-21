@@ -8,14 +8,12 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import {
-  Alert,
-  EmptyState,
-  LoadingState,
-  QueryErrorAlert,
-  SectionHeader,
-  SubmitButton,
-} from "../../components";
+import { Alert } from "../../components/Alert";
+import { EmptyState } from "../../components/EmptyState";
+import { LoadingState } from "../../components/LoadingState";
+import { QueryErrorAlert } from "../../components/QueryErrorAlert";
+import { SectionHeader } from "../../components/SectionHeader";
+import { SubmitButton } from "../../components/SubmitButton";
 import { deleteProfile } from "../../services/profiles";
 import { queryKeys } from "../../services/queryKeys";
 import { projectQueries } from "../../services/queryOptions";

@@ -21,7 +21,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
-import { Alert, SubmitButton } from "../components";
+import { Alert } from "../components/Alert";
+import { SubmitButton } from "../components/SubmitButton";
 import { errorMessage, logUnexpected } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import { deleteSession, endSession, retrySession } from "../services/sessions";

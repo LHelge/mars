@@ -8,7 +8,8 @@
 
 import { useCallback, useState } from "react";
 
-import { Alert, SubmitButton } from "../components";
+import { Alert } from "../components/Alert";
+import { SubmitButton } from "../components/SubmitButton";
 import type { Session } from "../types";
 import { Composer } from "./Composer";
 import { SessionHeader } from "./SessionHeader";

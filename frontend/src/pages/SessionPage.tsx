@@ -16,12 +16,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useParams } from "react-router";
 
-import {
-  Alert,
-  LoadingState,
-  PageLayout,
-  QueryErrorAlert,
-} from "../components";
+import { Alert } from "../components/Alert";
+import { LoadingState } from "../components/LoadingState";
+import { PageLayout } from "../components/PageLayout";
+import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { ApiError } from "../services/apiClient";
 import { errorMessage, isNotFound } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";

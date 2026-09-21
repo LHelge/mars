@@ -20,13 +20,11 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import {
-  Alert,
-  LoadingState,
-  PageLayout,
-  PasswordChangeForm,
-  SectionHeader,
-} from "../components";
+import { Alert } from "../components/Alert";
+import { LoadingState } from "../components/LoadingState";
+import { PageLayout } from "../components/PageLayout";
+import { PasswordChangeForm } from "../components/PasswordChangeForm";
+import { SectionHeader } from "../components/SectionHeader";
 import { useAuth } from "../hooks";
 import { getCurrentUser, setCurrentUser } from "../services/auth";
 import { refreshCurrentUser } from "../services/currentUser";
@@ -37,7 +35,7 @@ import type { User } from "../types";
 import { formatDateTime } from "../utils/format";
 
 /** How long a "saved" banner stays on screen before it fades out again. */
-export const CONFIRMATION_MS = 4_000;
+const CONFIRMATION_MS = 4_000;
 
 /** The user `onMutate` captured, so `onError` can put it back. */
 interface Rollback {

@@ -22,13 +22,11 @@ import {
 } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
-import {
-  EmptyState,
-  GitActionsPanel,
-  LoadingState,
-  QueryErrorAlert,
-  SessionStatePill,
-} from "../../components";
+import { EmptyState } from "../../components/EmptyState";
+import { LoadingState } from "../../components/LoadingState";
+import { QueryErrorAlert } from "../../components/QueryErrorAlert";
+import { SessionStatePill } from "../../components/SessionStatePill";
+import { GitActionsPanel } from "../../components/git/GitActionsPanel";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import { LaunchSourceTag } from "../../session/LaunchSourceTag";
 import { queryKeys } from "../../services/queryKeys";

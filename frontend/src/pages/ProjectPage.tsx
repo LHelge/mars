@@ -10,14 +10,12 @@
 
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
-import {
-  LoadingState,
-  PageLayout,
-  QueryErrorAlert,
-  SecretsManager,
-} from "../components";
+import { LoadingState } from "../components/LoadingState";
+import { PageLayout } from "../components/PageLayout";
+import { QueryErrorAlert } from "../components/QueryErrorAlert";
+import { SecretsManager } from "../components/secrets/SecretsManager";
 import { errorMessage, isNotFound } from "../services/errorMessage";
-import { TaskStatesEditor } from "../tasks";
+import { TaskStatesEditor } from "../tasks/TaskStatesEditor";
 import type { Project } from "../types";
 import { isUuid } from "../utils/uuid";
 import { NotFoundPage } from "./NotFoundPage";

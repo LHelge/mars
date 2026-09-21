@@ -14,13 +14,11 @@
 
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import {
-  EmptyState,
-  LoadingState,
-  PageLayout,
-  QueryErrorAlert,
-  SubmitButton,
-} from "../components";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
+import { PageLayout } from "../components/PageLayout";
+import { QueryErrorAlert } from "../components/QueryErrorAlert";
+import { SubmitButton } from "../components/SubmitButton";
 import { errorMessage } from "../services/errorMessage";
 import { listProjects } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
@@ -29,7 +27,7 @@ import { ProjectCreateForm } from "./projects/ProjectCreateForm";
 import { ProjectRow } from "./projects/ProjectRow";
 
 /** How often a project that is still cloning is asked about. */
-export const PROJECTS_REFETCH_MS = 3_000;
+const PROJECTS_REFETCH_MS = 3_000;
 
 const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
 

@@ -7,8 +7,10 @@ export { SessionView } from "./SessionView";
 export type { SessionViewProps } from "./SessionView";
 export { SessionHeader } from "./SessionHeader";
 export type { SessionHeaderProps } from "./SessionHeader";
-// `SessionActions` itself is not re-exported: the store's action interface
-// already owns that name here, and only the header ever renders the buttons.
+// `SessionActions` itself is not re-exported: only the header ever renders the
+// buttons. The store's action interface used to carry the same name; it is
+// `SessionStoreActions` below, so a forgotten import can no longer resolve to
+// the wrong one.
 // The file list is shared with the task drawer's hand-off diff, so it lives in
 // the UI kit now; re-exported here because the panel it was built for is here.
 export { ChangesFileList } from "../components/git/ChangesFileList";
@@ -53,8 +55,8 @@ export type {
   Message,
   RawMessage,
   ResultMessage,
-  SessionActions,
   SessionState,
+  SessionStoreActions,
   SessionStore,
   SubagentInfo,
   SystemMessage,

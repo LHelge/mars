@@ -12,7 +12,7 @@
 import { LockClosedIcon } from "@heroicons/react/24/outline";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { SubmitButton } from "../../components";
+import { SubmitButton } from "../../components/SubmitButton";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import { retryClone } from "../../services/projects";
 import { queryKeys } from "../../services/queryKeys";

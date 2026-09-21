@@ -11,7 +11,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useSearchParams } from "react-router";
-import { Alert, PageLayout } from "../components";
+import { Alert } from "../components/Alert";
+import { PageLayout } from "../components/PageLayout";
 import { SecretsManager } from "../components/secrets/SecretsManager";
 import { useAuth } from "../hooks/useAuth";
 // By path, not through a barrel: the section is only ever on this lazily

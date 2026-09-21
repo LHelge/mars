@@ -8,10 +8,15 @@
 
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router";
-import { Alert, AuthLayout, FormField, SubmitButton } from "../components";
+import { Alert } from "../components/Alert";
+import { AuthLayout } from "../components/AuthLayout";
+import { FormField } from "../components/FormField";
+import { SubmitButton } from "../components/SubmitButton";
 import { useAuth, useFormSubmit } from "../hooks";
-import { ApiError, errorMessage, login } from "../services";
-import { useReturnTo } from "../utils";
+import { ApiError } from "../services/apiClient";
+import { login } from "../services/auth";
+import { errorMessage } from "../services/errorMessage";
+import { useReturnTo } from "../utils/returnTo";
 
 const CHANGE_PASSWORD_PATH = "/change-password";
 

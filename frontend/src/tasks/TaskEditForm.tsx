@@ -6,6 +6,15 @@
 // of the same task do not overwrite each other — and a save that changed
 // nothing makes no request at all.
 //
+// That promise rests on the baseline standing still: the draft fields are
+// captured when the form opens, so the values they are compared against are
+// captured then too and never again. A refresh while the form is open — an
+// SSE event, a board reread (`SPEC.md`, "Frontend", "Board refresh ordering")
+// — would otherwise move the baseline under the untouched fields and turn a
+// title edit into a write of whatever the server changed meanwhile. The form
+// keeps editing the task it opened on and says so when the server's copy has
+// moved away from it.
+//
 // What the selects can offer comes from what is already on screen: the parent
 // candidates from the board snapshot, the assignee from the user list an
 // administrator may read. A non-administrator cannot list users (`GET /users`
@@ -29,14 +38,14 @@ import { useAuth } from "../hooks/useAuth";
 import { projectErrorMessage } from "../pages/project/messages";
 import { queryKeys } from "../services/queryKeys";
 import { listUsers } from "../services/users";
-import type { Task, TaskPriority } from "../types";
+import type { TaskDetail, TaskPriority } from "../types";
 import { CONTROL, PRIORITIES, PRIORITY_MEANING } from "./taskChrome";
 import {
   diffTaskInput,
-  hasChildren,
   isEmptyUpdate,
   parentCandidates,
   taskEditValues,
+  taskEditValuesDiffer,
 } from "./taskEdit";
 import { labelsError, parseLabels } from "./taskLabels";
 import { useTaskStore } from "./taskStore";
@@ -50,7 +59,8 @@ const NONE = "";
 
 export interface TaskEditFormProps {
   projectId: string;
-  task: Task;
+  /** The drawer's own read of the task: `children` says whether it nests. */
+  task: TaskDetail;
   /** Leave edit mode: the save landed, or the user cancelled. */
   onDone: () => void;
 }
@@ -60,7 +70,10 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
   const snapshot = useTaskStore((state) => state.tasks);
   const { update } = useTaskMutations(projectId, task.number);
 
-  const original = useMemo(() => taskEditValues(task), [task]);
+  // Captured once, with the drafts below: the baseline of a diff has to be the
+  // reading the drafts were taken from, not whatever the prop holds by the
+  // time the user presses save.
+  const [original] = useState(() => taskEditValues(task));
 
   const [title, setTitle] = useState(original.title);
   const [description, setDescription] = useState(original.description);
@@ -80,6 +93,10 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
     retry: false,
   });
   const currentAssignee = useUsername(task.assignee_user_id);
+  // The draft's own holder, which a reassignment on the server can take out of
+  // the list below: a select whose value is not among its options shows the
+  // wrong name for what a save would leave alone.
+  const draftAssignee = useUsername(assignee === NONE ? null : assignee);
 
   const assignees = useMemo(() => {
     const options: { value: string; label: string }[] = [
@@ -92,25 +109,39 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
     } else if (user !== null) {
       options.push({ value: user.id, label: `@${user.username} (you)` });
     }
-    if (
-      task.assignee_user_id !== null &&
-      !options.some((option) => option.value === task.assignee_user_id)
-    ) {
-      options.push({
-        value: task.assignee_user_id,
-        label: `@${currentAssignee ?? task.assignee_user_id}`,
-      });
+    for (const [id, name] of [
+      [task.assignee_user_id, currentAssignee],
+      [assignee === NONE ? null : assignee, draftAssignee],
+    ] as const) {
+      if (id !== null && !options.some((option) => option.value === id)) {
+        options.push({ value: id, label: `@${name ?? id}` });
+      }
     }
     return options;
-  }, [isAdmin, users.data, user, task.assignee_user_id, currentAssignee]);
+  }, [
+    isAdmin,
+    users.data,
+    user,
+    task.assignee_user_id,
+    currentAssignee,
+    assignee,
+    draftAssignee,
+  ]);
 
   // A task with children cannot be given a parent at all (`SPEC.md`, "Tasks":
   // nesting is one level), so the select is disabled rather than offering a
   // list of options that would each answer 400.
-  const nested = hasChildren(snapshot, task);
+  const nested = task.children.length > 0;
   const parents = useMemo(
     () => parentCandidates(snapshot, task),
     [snapshot, task],
+  );
+
+  // The save is still safe — it carries only the fields this form changed —
+  // but the values on screen are no longer the ones the task has.
+  const moved = useMemo(
+    () => taskEditValuesDiffer(original, taskEditValues(task)),
+    [original, task],
   );
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -285,6 +316,13 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
         </select>
       </FormField>
 
+      {moved && (
+        <Alert kind="warning">
+          This task changed while you were editing. Saving sends only the fields
+          you changed here; the rest keep their new values.
+        </Alert>
+      )}
+
       {update.isError && (
         <Alert kind="error">{projectErrorMessage(update.error)}</Alert>
       )}
@@ -310,6 +348,6 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
  * unmounting, and two forms sharing one `id` would point a label at the wrong
  * control.
  */
-function taskFieldId(task: Task): string {
+function taskFieldId(task: TaskDetail): string {
   return `task-${String(task.number)}`;
 }

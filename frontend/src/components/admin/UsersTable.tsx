@@ -209,22 +209,20 @@ export function UsersTable() {
                       {formatRelative(user.created_at)}
                     </td>
                     <td className={`${CELL} pr-0 text-right`}>
-                      <span title={isSelf ? SELF_DELETE_HINT : undefined}>
-                        <SubmitButton
-                          type="button"
-                          variant="danger"
-                          loading={
-                            remove.isPending &&
-                            remove.variables?.id === user.id
-                          }
-                          disabled={isSelf || busy}
-                          onClick={() => {
-                            onDelete(user);
-                          }}
-                        >
-                          Delete
-                        </SubmitButton>
-                      </span>
+                      <SubmitButton
+                        type="button"
+                        variant="danger"
+                        loading={
+                          remove.isPending && remove.variables?.id === user.id
+                        }
+                        disabled={isSelf || busy}
+                        title={isSelf ? SELF_DELETE_HINT : undefined}
+                        onClick={() => {
+                          onDelete(user);
+                        }}
+                      >
+                        Delete
+                      </SubmitButton>
                     </td>
                   </tr>
                 );

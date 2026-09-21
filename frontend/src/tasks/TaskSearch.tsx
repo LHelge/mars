@@ -9,6 +9,7 @@
 
 import type { RefObject } from "react";
 
+import { CONTROL } from "../components/fieldStyles";
 import { SubmitButton } from "../components/SubmitButton";
 import { useTaskStore } from "./taskStore";
 
@@ -47,16 +48,11 @@ export function TaskSearch({ inputRef, onClear }: TaskSearchProps) {
         onChange={(event) => {
           setQuery(event.target.value);
         }}
-        className="border-console-border bg-console-bg text-console-text placeholder:text-console-muted w-full min-w-0 max-w-72 rounded border px-2.5 py-1.5 font-mono text-sm"
+        className={`${CONTROL} w-full min-w-0 max-w-72`}
       />
 
       {query !== "" && (
-        <SubmitButton
-          type="button"
-          variant="ghost"
-          loading={false}
-          onClick={onClear}
-        >
+        <SubmitButton type="button" variant="ghost" onClick={onClear}>
           Clear search
         </SubmitButton>
       )}

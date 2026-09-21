@@ -15,6 +15,8 @@ import { Link, useNavigate, useParams } from "react-router";
 import {
   Alert,
   AuthLayout,
+  CONTROL,
+  FieldShell,
   FormField,
   LoadingState,
   QueryErrorAlert,
@@ -196,23 +198,21 @@ export function AcceptInvitePage() {
 
         {error && <Alert kind="error">{error}</Alert>}
 
-        <FormField
+        <FieldShell
           label="Invited email"
           name="email"
-          value={invite.email}
-          onChange={() => undefined}
           hint={`Expires ${formatDateTime(invite.expires_at)}`}
         >
-          <input
-            id="email"
-            name="email"
-            type="email"
-            value={invite.email}
-            readOnly
-            aria-describedby="email-hint"
-            className="border-console-border bg-console-bg text-console-muted rounded border px-2.5 py-1.5 font-mono text-sm"
-          />
-        </FormField>
+          {(control) => (
+            <input
+              {...control}
+              type="email"
+              value={invite.email}
+              readOnly
+              className={`${CONTROL} text-console-muted`}
+            />
+          )}
+        </FieldShell>
 
         {invite.admin && (
           <p className="text-console-accent text-xs">

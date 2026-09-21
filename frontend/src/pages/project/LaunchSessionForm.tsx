@@ -20,6 +20,8 @@ import type { FormEvent } from "react";
 import { useNavigate } from "react-router";
 import {
   Alert,
+  FieldShell,
+  FIELD,
   FormField,
   SectionHeader,
   SubmitButton,
@@ -35,6 +37,7 @@ import type { Profile, Project, SessionCreateInput } from "../../types";
 import { shortSha } from "../../utils/format";
 import { BaseRefSelect } from "./BaseRefSelect";
 import { useTaskLookup } from "./useTaskLookup";
+import type { TaskLookup } from "./useTaskLookup";
 
 export interface LaunchSessionFormProps {
   project: Project;
@@ -43,8 +46,19 @@ export interface LaunchSessionFormProps {
 /** The length the server truncates a generated title to; over it is allowed. */
 const TITLE_SOFT_LIMIT = 80;
 
-const TEXTAREA =
-  "border-console-border bg-console-bg text-console-text placeholder:text-console-muted w-full rounded border px-2.5 py-1.5 font-mono text-sm disabled:opacity-50";
+/** What the Task field says when the reference does not resolve. */
+function taskFieldError(lookup: TaskLookup): string | undefined {
+  switch (lookup.status) {
+    case "missing":
+      return "Task not found";
+    case "unreadable":
+      return "Enter a task number such as #12, or a task id.";
+    case "error":
+      return lookup.message;
+    default:
+      return undefined;
+  }
+}
 
 function profileLabel(profile: Profile): string {
   const states =
@@ -177,31 +191,26 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
       )}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <FormField
-          label="Agent profile"
-          name="session-profile"
-          value={selected?.id ?? ""}
-          onChange={setProfileId}
-          disabled={disabled}
-        >
-          <select
-            id="session-profile"
-            name="session-profile"
-            value={selected?.id ?? ""}
-            disabled={disabled || rows.length === 0}
-            onChange={(event) => {
-              setProfileId(event.target.value);
-            }}
-            className="border-console-border bg-console-bg text-console-text w-full rounded border px-2.5 py-1.5 font-mono text-sm disabled:opacity-50"
-          >
-            {rows.length === 0 && <option value="">No profiles</option>}
-            {rows.map((profile) => (
-              <option key={profile.id} value={profile.id}>
-                {profileLabel(profile)}
-              </option>
-            ))}
-          </select>
-        </FormField>
+        <FieldShell label="Agent profile" name="session-profile">
+          {(control) => (
+            <select
+              {...control}
+              value={selected?.id ?? ""}
+              disabled={disabled || rows.length === 0}
+              onChange={(event) => {
+                setProfileId(event.target.value);
+              }}
+              className={FIELD}
+            >
+              {rows.length === 0 && <option value="">No profiles</option>}
+              {rows.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profileLabel(profile)}
+                </option>
+              ))}
+            </select>
+          )}
+        </FieldShell>
 
         <BaseRefSelect
           branches={branches.data ?? []}
@@ -242,13 +251,7 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
           onChange={setTaskRef}
           disabled={disabled}
           hint="Optional. A task number such as #12, or a task id."
-          {...(lookup.status === "missing"
-            ? { error: "Task not found" }
-            : lookup.status === "unreadable"
-              ? { error: "Enter a task number such as #12, or a task id." }
-              : lookup.status === "error"
-                ? { error: lookup.message }
-                : {})}
+          error={taskFieldError(lookup)}
         />
       </div>
 
@@ -282,36 +285,34 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
         </p>
       )}
 
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="session-message" className="text-console-muted text-xs">
-          {ephemeral ? "Message" : "First message (optional)"}
-          {ephemeral && task === null && (
-            <span className="text-console-muted"> *</span>
-          )}
-        </label>
-        <textarea
-          id="session-message"
-          name="session-message"
-          rows={4}
-          value={message}
-          disabled={disabled}
-          placeholder={
-            ephemeral
-              ? "What should this run do?"
-              : "What should the agent start with?"
-          }
-          onChange={(event) => {
-            setMessage(event.target.value);
-          }}
-          className={TEXTAREA}
-        />
-        {ephemeral && (
-          <p className="text-console-muted text-xs">
-            An ephemeral session ends after one result, so this is the only
-            thing it will be told. A task can stand in for the message.
-          </p>
+      <FieldShell
+        label={ephemeral ? "Message" : "First message (optional)"}
+        name="session-message"
+        required={ephemeral && task === null}
+        hint={
+          ephemeral
+            ? "An ephemeral session ends after one result, so this is the only thing it will be told. A task can stand in for the message."
+            : undefined
+        }
+      >
+        {(control) => (
+          <textarea
+            {...control}
+            rows={4}
+            value={message}
+            disabled={disabled}
+            placeholder={
+              ephemeral
+                ? "What should this run do?"
+                : "What should the agent start with?"
+            }
+            onChange={(event) => {
+              setMessage(event.target.value);
+            }}
+            className={FIELD}
+          />
         )}
-      </div>
+      </FieldShell>
 
       {selected !== undefined && (
         <AgentCredentialNotice
@@ -324,7 +325,6 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
         {noCredential && (
           <SubmitButton
             type="button"
-            loading={false}
             onClick={() => {
               void navigate("/secrets");
             }}

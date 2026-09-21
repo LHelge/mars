@@ -117,7 +117,6 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
   const newProfile = (
     <SubmitButton
       type="button"
-      loading={false}
       onClick={() => {
         openEditor("new");
       }}
@@ -272,7 +271,6 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
             <SubmitButton
               type="button"
               variant="ghost"
-              loading={false}
               disabled={remove.isPending}
               onClick={onEdit}
             >
@@ -280,17 +278,16 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
             </SubmitButton>
             {/* A project always keeps one default profile, so the API refuses
                 to delete it; the button says so before the request. */}
-            <span title={profile.is_default ? "default profile" : undefined}>
-              <SubmitButton
-                type="button"
-                variant="danger"
-                loading={remove.isPending}
-                disabled={profile.is_default}
-                onClick={onDelete}
-              >
-                Delete
-              </SubmitButton>
-            </span>
+            <SubmitButton
+              type="button"
+              variant="danger"
+              loading={remove.isPending}
+              disabled={profile.is_default}
+              title={profile.is_default ? "default profile" : undefined}
+              onClick={onDelete}
+            >
+              Delete
+            </SubmitButton>
           </div>
         </td>
       </tr>

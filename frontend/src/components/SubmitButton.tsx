@@ -1,18 +1,25 @@
-// The action button of every form. While `loading` it is disabled and shows a
+// The app's button: the action button of every form, and every other button
+// that should look like one. While `loading` it is disabled and shows a
 // spinner in place of its label, keeping its width so the form does not jump.
+//
+// Everything a native button takes is passed through, so a disclosure toggle
+// can say `aria-expanded`, an icon-only button `aria-label` or `title`, and a
+// test reach it by `data-testid` — none of which used to be possible, which is
+// why such buttons were hand-rolled or wrapped in a `<span title>` that the
+// keyboard cannot reach. `className` is not among them: the variants below are
+// the button's looks.
 
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { Spinner } from "./Spinner";
 
 export type SubmitButtonVariant = "primary" | "danger" | "ghost";
 
-export interface SubmitButtonProps {
-  loading: boolean;
+export interface SubmitButtonProps
+  extends Omit<ComponentProps<"button">, "className"> {
+  /** Disables the button and replaces its label with a spinner. */
+  loading?: boolean;
   children: ReactNode;
-  disabled?: boolean;
   variant?: SubmitButtonVariant;
-  type?: "submit" | "button";
-  onClick?: () => void;
 }
 
 const VARIANTS: Record<SubmitButtonVariant, string> = {
@@ -25,17 +32,17 @@ const VARIANTS: Record<SubmitButtonVariant, string> = {
 };
 
 export function SubmitButton({
-  loading,
+  loading = false,
   children,
   disabled,
   variant = "primary",
   type = "submit",
-  onClick,
+  ...rest
 }: SubmitButtonProps) {
   return (
     <button
+      {...rest}
       type={type}
-      onClick={onClick}
       disabled={loading || disabled}
       aria-busy={loading || undefined}
       className={`relative inline-flex items-center justify-center rounded border px-3 py-1.5 text-sm transition-opacity disabled:opacity-60 ${VARIANTS[variant]}`}

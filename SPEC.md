@@ -594,7 +594,7 @@ Structure:
 
 ```
 frontend/src/
-├── components/     reusable UI: FormField, SubmitButton, Alert, QueryErrorAlert, LoadingState, EmptyState, PageLayout, AuthLayout, ProtectedRoute, AdminRoute, ...
+├── components/     reusable UI: FieldShell, FormField, SubmitButton, Alert, QueryErrorAlert, LoadingState, EmptyState, PageLayout, AuthLayout, ProtectedRoute, AdminRoute, ...
 ├── pages/          route-level: LoginPage, AcceptInvitePage, ChangePasswordPage, ForgotPasswordPage, ResetPasswordPage, DashboardPage, ProjectsPage, ProjectPage, SessionPage, SecretsPage, SettingsPage, ProfileEditorPage, AdminPage (users + invites)
 ├── session/        SessionView, Transcript, Composer, TerminalView, tool renderers, sessionStore (Zustand), useSessionSocket
 ├── tasks/          TaskBoard, TaskCard, TaskDetail, TaskStatesEditor, taskStore (Zustand), useTaskStream

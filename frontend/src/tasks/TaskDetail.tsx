@@ -120,7 +120,6 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
             <SubmitButton
               type="button"
               variant="ghost"
-              loading={false}
               onClick={close}
             >
               Close
@@ -180,7 +179,7 @@ function NotFound({ onClose }: { onClose: () => void }) {
         It was deleted, or this link names a task that never existed in this
         project.
       </p>
-      <SubmitButton type="button" variant="ghost" loading={false} onClick={onClose}>
+      <SubmitButton type="button" variant="ghost" onClick={onClose}>
         Back to board
       </SubmitButton>
     </div>

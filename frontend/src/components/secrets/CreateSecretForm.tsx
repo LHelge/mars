@@ -14,6 +14,8 @@ import { queryKeys } from "../../services/queryKeys";
 import type { CreateSecretRequest, SecretMeta, SecretScope } from "../../types";
 import { validateSecretName } from "../../utils/secretName";
 import { Alert } from "../Alert";
+import { FieldShell } from "../FieldShell";
+import { CONTROL } from "../fieldStyles";
 import { FormField } from "../FormField";
 import { SubmitButton } from "../SubmitButton";
 import { secretErrorMessage } from "./messages";
@@ -113,28 +115,27 @@ export function CreateSecretForm({ scope, scopeId }: CreateSecretFormProps) {
       </div>
 
       <div className="flex flex-col gap-3">
-        <FormField
+        <FieldShell
           label="Value"
           name="secret-value"
-          value={value}
-          onChange={setValue}
           hint="Stored encrypted and never shown again."
           required
         >
-          <textarea
-            id="secret-value"
-            name="secret-value"
-            rows={3}
-            value={value}
-            onChange={(event) => {
-              setValue(event.target.value);
-            }}
-            autoComplete="off"
-            spellCheck={false}
-            required
-            className="border-console-border bg-console-bg text-console-text rounded border px-2.5 py-1.5 font-mono text-sm"
-          />
-        </FormField>
+          {(control) => (
+            <textarea
+              {...control}
+              rows={3}
+              value={value}
+              onChange={(event) => {
+                setValue(event.target.value);
+              }}
+              autoComplete="off"
+              spellCheck={false}
+              required
+              className={CONTROL}
+            />
+          )}
+        </FieldShell>
 
         {error !== null && <Alert kind="error">{error}</Alert>}
 

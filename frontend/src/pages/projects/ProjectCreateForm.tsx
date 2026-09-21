@@ -188,7 +188,6 @@ export function ProjectCreateForm({ onCancel }: ProjectCreateFormProps) {
         <SubmitButton
           type="button"
           variant="ghost"
-          loading={false}
           disabled={loading}
           onClick={onCancel}
         >

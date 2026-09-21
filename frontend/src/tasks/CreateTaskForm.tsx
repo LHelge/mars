@@ -16,12 +16,13 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 
 import { Alert } from "../components/Alert";
+import { FieldShell } from "../components/FieldShell";
 import { FormField } from "../components/FormField";
 import { SubmitButton } from "../components/SubmitButton";
 import { createTask } from "../services/tasks";
 import type { Task, TaskPriority, TaskState } from "../types";
 import { useFormSubmit } from "../hooks/useFormSubmit";
-import { CONTROL } from "./taskChrome";
+import { CONTROL } from "../components/fieldStyles";
 import { labelsError, parseLabels } from "./taskLabels";
 import { useTaskStore } from "./taskStore";
 
@@ -121,74 +122,62 @@ export function CreateTaskForm({
         required
       />
 
-      <FormField
+      <FieldShell
         label="Description"
         name="task-description"
-        value={description}
-        onChange={setDescription}
         hint="Markdown. What done looks like, and anything an agent cannot read off the repository."
       >
-        <textarea
-          id="task-description"
-          name="task-description"
-          rows={4}
-          value={description}
-          onChange={(event) => {
-            setDescription(event.target.value);
-          }}
-          aria-describedby="task-description-hint"
-          className={CONTROL}
-        />
-      </FormField>
+        {(control) => (
+          <textarea
+            {...control}
+            rows={4}
+            value={description}
+            onChange={(event) => {
+              setDescription(event.target.value);
+            }}
+            className={CONTROL}
+          />
+        )}
+      </FieldShell>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <FormField
-          label="State"
-          name="task-state"
-          value={state}
-          onChange={setState}
-        >
-          <select
-            id="task-state"
-            name="task-state"
-            value={state}
-            onChange={(event) => {
-              setState(event.target.value);
-            }}
-            className={CONTROL}
-          >
-            {states.map((option) => (
-              <option key={option.id} value={option.name}>
-                {option.name}
-              </option>
-            ))}
-          </select>
-        </FormField>
+        <FieldShell label="State" name="task-state">
+          {(control) => (
+            <select
+              {...control}
+              value={state}
+              onChange={(event) => {
+                setState(event.target.value);
+              }}
+              className={CONTROL}
+            >
+              {states.map((option) => (
+                <option key={option.id} value={option.name}>
+                  {option.name}
+                </option>
+              ))}
+            </select>
+          )}
+        </FieldShell>
 
-        <FormField
-          label="Priority"
-          name="task-priority"
-          value={String(priority)}
-          onChange={(next) => {
-            setPriority(Number(next) as TaskPriority);
-          }}
-        >
-          <select
-            id="task-priority"
-            name="task-priority"
-            value={String(priority)}
-            onChange={(event) => {
-              setPriority(Number(event.target.value) as TaskPriority);
-            }}
-            className={CONTROL}
-          >
-            {PRIORITIES.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </FormField>
+        <FieldShell label="Priority" name="task-priority">
+          {(control) => (
+            <select
+              {...control}
+              value={String(priority)}
+              onChange={(event) => {
+                setPriority(Number(event.target.value) as TaskPriority);
+              }}
+              className={CONTROL}
+            >
+              {PRIORITIES.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </FieldShell>
       </div>
 
       <FormField
@@ -205,62 +194,59 @@ export function CreateTaskForm({
       />
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <FormField
+        <FieldShell
           label="Parent task"
           name="task-parent"
-          value={parentId}
-          onChange={setParentId}
           hint="The task this one is part of; it stays open until this one closes."
         >
-          <select
-            id="task-parent"
-            name="task-parent"
-            value={parentId}
-            onChange={(event) => {
-              setParentId(event.target.value);
-            }}
-            aria-describedby="task-parent-hint"
-            className={CONTROL}
-          >
-            <option value="">None</option>
-            {parents.map((task) => (
-              <option key={task.id} value={task.id}>
-                #{task.number} {task.title}
-              </option>
-            ))}
-          </select>
-        </FormField>
+          {(control) => (
+            <select
+              {...control}
+              value={parentId}
+              onChange={(event) => {
+                setParentId(event.target.value);
+              }}
+              className={CONTROL}
+            >
+              <option value="">None</option>
+              {parents.map((task) => (
+                <option key={task.id} value={task.id}>
+                  #{task.number} {task.title}
+                </option>
+              ))}
+            </select>
+          )}
+        </FieldShell>
 
-        <FormField
+        <FieldShell
           label="Blocked by"
           name="task-depends-on"
-          value={dependsOn.join(",")}
-          onChange={() => {
-            // The multi-select below owns this value.
-          }}
           hint="Tasks that must close first. Hold Ctrl or Cmd to pick several."
         >
-          <select
-            id="task-depends-on"
-            name="task-depends-on"
-            multiple
-            size={4}
-            value={dependsOn}
-            onChange={(event) => {
-              setDependsOn(
-                Array.from(event.target.selectedOptions, (option) => option.value),
-              );
-            }}
-            aria-describedby="task-depends-on-hint"
-            className={CONTROL}
-          >
-            {tasks.map((task) => (
-              <option key={task.id} value={task.id}>
-                #{task.number} {task.title}
-              </option>
-            ))}
-          </select>
-        </FormField>
+          {(control) => (
+            <select
+              {...control}
+              multiple
+              size={4}
+              value={dependsOn}
+              onChange={(event) => {
+                setDependsOn(
+                  Array.from(
+                    event.target.selectedOptions,
+                    (option) => option.value,
+                  ),
+                );
+              }}
+              className={CONTROL}
+            >
+              {tasks.map((task) => (
+                <option key={task.id} value={task.id}>
+                  #{task.number} {task.title}
+                </option>
+              ))}
+            </select>
+          )}
+        </FieldShell>
       </div>
 
       {create.error !== null && <Alert kind="error">{create.error}</Alert>}
@@ -269,7 +255,6 @@ export function CreateTaskForm({
         <SubmitButton
           type="button"
           variant="ghost"
-          loading={false}
           disabled={create.loading}
           onClick={onClose}
         >

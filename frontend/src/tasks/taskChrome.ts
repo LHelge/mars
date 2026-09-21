@@ -29,7 +29,3 @@ export const PRIORITIES: TaskPriority[] = [0, 1, 2, 3];
 /** One piece of task metadata: a bordered, monospace micro-tag. */
 export const CHIP =
   "border-console-border inline-flex items-center rounded border px-1 py-px font-mono text-[0.6875rem] leading-4";
-
-/** Every input, select and textarea a task form shows, set like the console. */
-export const CONTROL =
-  "border-console-border bg-console-bg text-console-text rounded border px-2.5 py-1.5 font-mono text-sm disabled:opacity-50";

@@ -24,6 +24,8 @@ import type { FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { Alert } from "../components/Alert";
+import { FieldShell } from "../components/FieldShell";
+import { FIELD } from "../components/fieldStyles";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { AgentCredentialNotice } from "../secrets/AgentCredentialNotice";
@@ -52,9 +54,6 @@ const ACTION: Record<ProfileKind, string> = {
   conversational: "Open in session",
   ephemeral: "Run once",
 };
-
-const CONTROL =
-  "border-console-border bg-console-bg text-console-text placeholder:text-console-muted w-full rounded border px-2.5 py-1.5 font-mono text-sm disabled:opacity-50";
 
 export function LaunchForTask({ projectId, task }: LaunchForTaskProps) {
   // Which form is open, if either. Switching from one button to the other
@@ -217,32 +216,27 @@ function LaunchFormPanel({
           </Link>
         </p>
       ) : (
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="launch-profile"
-            className="text-console-muted text-xs"
-          >
-            Agent profile
-          </label>
-          <select
-            id="launch-profile"
-            name="launch-profile"
-            value={selected?.id ?? ""}
-            disabled={launch.loading || rows.length === 0}
-            onChange={(event) => {
-              setProfileId(event.target.value);
-            }}
-            className={CONTROL}
-          >
-            {rows.map((profile) => (
-              <option key={profile.id} value={profile.id}>
-                {profile.serves_states.includes(task.state)
-                  ? `${profile.name} — serves ${task.state}`
-                  : profile.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        <FieldShell label="Agent profile" name="launch-profile">
+          {(control) => (
+            <select
+              {...control}
+              value={selected?.id ?? ""}
+              disabled={launch.loading || rows.length === 0}
+              onChange={(event) => {
+                setProfileId(event.target.value);
+              }}
+              className={FIELD}
+            >
+              {rows.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.serves_states.includes(task.state)
+                    ? `${profile.name} — serves ${task.state}`
+                    : profile.name}
+                </option>
+              ))}
+            </select>
+          )}
+        </FieldShell>
       )}
 
       <div className="flex flex-col gap-1.5">
@@ -274,7 +268,7 @@ function LaunchFormPanel({
             onChange={(event) => {
               setBaseRef(event.target.value);
             }}
-            className={`${CONTROL} mt-1.5`}
+            className={`${FIELD} mt-1.5`}
           />
         </details>
 
@@ -286,23 +280,21 @@ function LaunchFormPanel({
         )}
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="launch-message" className="text-console-muted text-xs">
-          First message (optional)
-        </label>
-        <textarea
-          id="launch-message"
-          name="launch-message"
-          rows={3}
-          value={message}
-          disabled={launch.loading}
-          placeholder="What should the agent start with?"
-          onChange={(event) => {
-            setMessage(event.target.value);
-          }}
-          className={CONTROL}
-        />
-      </div>
+      <FieldShell label="First message (optional)" name="launch-message">
+        {(control) => (
+          <textarea
+            {...control}
+            rows={3}
+            value={message}
+            disabled={launch.loading}
+            placeholder="What should the agent start with?"
+            onChange={(event) => {
+              setMessage(event.target.value);
+            }}
+            className={FIELD}
+          />
+        )}
+      </FieldShell>
 
       {selected !== undefined && (
         <AgentCredentialNotice
@@ -315,7 +307,6 @@ function LaunchFormPanel({
         {noCredential && (
           <SubmitButton
             type="button"
-            loading={false}
             onClick={() => {
               void navigate("/secrets");
             }}
@@ -330,12 +321,7 @@ function LaunchFormPanel({
         >
           {noCredential ? "Launch anyway" : ACTION[kind]}
         </SubmitButton>
-        <SubmitButton
-          type="button"
-          variant="ghost"
-          loading={false}
-          onClick={onClose}
-        >
+        <SubmitButton type="button" variant="ghost" onClick={onClose}>
           Cancel
         </SubmitButton>
       </div>

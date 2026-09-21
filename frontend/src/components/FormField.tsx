@@ -1,13 +1,19 @@
-// Labelled field with its hint and error, wired for screen readers
-// (`CLAUDE.md`, "Frontend conventions": shared UI).
+// A labelled text input: `FieldShell` plus the one control almost every form
+// field actually is (`CLAUDE.md`, "Frontend conventions": shared UI).
+//
+// `value` and `onChange` are the input's, and no longer optional-in-practice:
+// a field whose control is a select, a textarea or an output renders
+// `FieldShell` directly and is not made to invent a setter it never calls.
 
-import type { ReactNode } from "react";
+import type { HTMLInputTypeAttribute } from "react";
+import { FieldShell } from "./FieldShell";
+import { CONTROL } from "./fieldStyles";
 
 export interface FormFieldProps {
   label: string;
-  /** Also the control's `id`, so the label points at it. */
+  /** The control's `name`; `FieldShell` derives a unique `id` from it. */
   name: string;
-  type?: string;
+  type?: HTMLInputTypeAttribute;
   value: string;
   onChange: (value: string) => void;
   error?: string;
@@ -17,14 +23,10 @@ export interface FormFieldProps {
    * — `current-password` or `new-password` — and never falls back to `on`.
    */
   autoComplete?: string;
+  placeholder?: string;
   required?: boolean;
   autoFocus?: boolean;
   disabled?: boolean;
-  /**
-   * A custom control (select, textarea, ...) rendered in place of the input.
-   * It carries `id={name}` itself and applies `value`/`onChange`.
-   */
-  children?: ReactNode;
 }
 
 export function FormField({
@@ -36,54 +38,36 @@ export function FormField({
   error,
   hint,
   autoComplete,
+  placeholder,
   required,
   autoFocus,
   disabled,
-  children,
 }: FormFieldProps) {
-  const errorId = `${name}-error`;
-  const hintId = `${name}-hint`;
-  const describedBy =
-    [error ? errorId : null, hint ? hintId : null].filter(Boolean).join(" ") ||
-    undefined;
-
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={name} className="text-console-muted text-xs">
-        {label}
-        {required && <span className="text-console-muted"> *</span>}
-      </label>
-
-      {children ?? (
+    <FieldShell
+      label={label}
+      name={name}
+      error={error}
+      hint={hint}
+      required={required}
+    >
+      {(control) => (
         <input
-          id={name}
-          name={name}
+          {...control}
           type={type}
           value={value}
           onChange={(event) => {
             onChange(event.target.value);
           }}
           autoComplete={autoComplete}
+          placeholder={placeholder}
           required={required}
           // Login and invite pages put the cursor in the first field.
           autoFocus={autoFocus}
           disabled={disabled}
-          aria-invalid={error ? true : undefined}
-          aria-describedby={describedBy}
-          className="border-console-border bg-console-bg text-console-text placeholder:text-console-muted aria-invalid:border-state-failed rounded border px-2.5 py-1.5 font-mono text-sm disabled:opacity-50"
+          className={CONTROL}
         />
       )}
-
-      {hint && (
-        <p id={hintId} className="text-console-muted text-xs">
-          {hint}
-        </p>
-      )}
-      {error && (
-        <p id={errorId} className="text-state-failed text-xs">
-          {error}
-        </p>
-      )}
-    </div>
+    </FieldShell>
   );
 }

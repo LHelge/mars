@@ -11,15 +11,17 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 
 import { Alert } from "../components/Alert";
-import { FormField } from "../components/FormField";
+import { FieldShell } from "../components/FieldShell";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { addComment } from "../services/tasks";
 import { taskKeys } from "./queryKeys";
 import { useTaskStore } from "./taskStore";
 
-const CONTROL =
-  "border-console-border bg-console-bg text-console-text rounded border px-2.5 py-1.5 text-sm";
+// A comment is prose, not code, so this one control is deliberately not the
+// monospace `CONTROL` of `components/fieldStyles`.
+const COMMENT_CONTROL =
+  "border-console-border bg-console-bg text-console-text rounded border px-2.5 py-1.5 text-sm disabled:opacity-50";
 
 export interface CommentFormProps {
   projectId: string;
@@ -50,26 +52,24 @@ export function CommentForm({ projectId, number }: CommentFormProps) {
         void submit();
       }}
     >
-      <FormField
+      <FieldShell
         label="Add a comment"
         name="task-comment"
-        value={body}
-        onChange={setBody}
         hint="Markdown. Agents working this task read it with the task."
       >
-        <textarea
-          id="task-comment"
-          name="task-comment"
-          rows={3}
-          value={body}
-          disabled={loading}
-          onChange={(event) => {
-            setBody(event.target.value);
-          }}
-          aria-describedby="task-comment-hint"
-          className={`${CONTROL} disabled:opacity-50`}
-        />
-      </FormField>
+        {(control) => (
+          <textarea
+            {...control}
+            rows={3}
+            value={body}
+            disabled={loading}
+            onChange={(event) => {
+              setBody(event.target.value);
+            }}
+            className={COMMENT_CONTROL}
+          />
+        )}
+      </FieldShell>
 
       {error !== null && <Alert kind="error">{error}</Alert>}
 

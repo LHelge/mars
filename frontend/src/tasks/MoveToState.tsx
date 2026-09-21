@@ -21,7 +21,7 @@ import { SubmitButton } from "../components/SubmitButton";
 import { projectErrorMessage } from "../pages/project/messages";
 import type { Task } from "../types";
 import { shortId } from "../utils/format";
-import { CONTROL } from "./taskChrome";
+import { CONTROL } from "../components/fieldStyles";
 import { useTaskStore } from "./taskStore";
 import { useTaskMutations } from "./useTaskMutations";
 
@@ -77,7 +77,6 @@ export function MoveToState({ projectId, task }: MoveToStateProps) {
         <SubmitButton
           type="button"
           variant="ghost"
-          loading={false}
           disabled={unchanged || confirming || update.isPending}
           onClick={() => {
             setConfirming(true);
@@ -98,7 +97,6 @@ export function MoveToState({ projectId, task }: MoveToStateProps) {
             <SubmitButton
               type="button"
               variant="ghost"
-              loading={false}
               disabled={update.isPending}
               onClick={() => {
                 setConfirming(false);

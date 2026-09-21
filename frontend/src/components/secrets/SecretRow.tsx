@@ -25,6 +25,8 @@ import type { PatchSecretRequest, SecretMeta, SecretScope } from "../../types";
 import { formatDateTime, formatRelative, PLACEHOLDER } from "../../utils/format";
 import { validateSecretName } from "../../utils/secretName";
 import { Alert } from "../Alert";
+import { FieldShell } from "../FieldShell";
+import { CONTROL } from "../fieldStyles";
 import { SubmitButton } from "../SubmitButton";
 import { SecretUsesList } from "./SecretUsesList";
 import { secretErrorMessage } from "./messages";
@@ -233,8 +235,8 @@ export function SecretRow({
             <SubmitButton
               type="button"
               variant="ghost"
-              loading={false}
               disabled={busy}
+              aria-expanded={panel === "replace"}
               onClick={() => {
                 togglePanel("replace");
               }}
@@ -244,8 +246,8 @@ export function SecretRow({
             <SubmitButton
               type="button"
               variant="ghost"
-              loading={false}
               disabled={busy}
+              aria-expanded={panel === "rename"}
               onClick={() => {
                 setName(secret.name);
                 setNameError(null);
@@ -257,8 +259,8 @@ export function SecretRow({
             <SubmitButton
               type="button"
               variant="ghost"
-              loading={false}
               disabled={busy}
+              aria-expanded={panel === "uses"}
               onClick={() => {
                 togglePanel("uses");
               }}
@@ -297,24 +299,25 @@ export function SecretRow({
                   aria-label={`Replace the value of ${secret.name}`}
                   className="flex flex-col gap-2"
                 >
-                  <label
-                    htmlFor={`replace-${secret.id}`}
-                    className="text-console-muted text-xs"
+                  <FieldShell
+                    label={`New value for ${secret.name}`}
+                    name={`replace-${secret.id}`}
                   >
-                    New value for {secret.name}
-                  </label>
-                  <textarea
-                    id={`replace-${secret.id}`}
-                    rows={3}
-                    value={value}
-                    onChange={(event) => {
-                      setValue(event.target.value);
-                    }}
-                    autoComplete="off"
-                    spellCheck={false}
-                    required
-                    className="border-console-border bg-console-bg text-console-text rounded border px-2.5 py-1.5 font-mono text-sm"
-                  />
+                    {(control) => (
+                      <textarea
+                        {...control}
+                        rows={3}
+                        value={value}
+                        onChange={(event) => {
+                          setValue(event.target.value);
+                        }}
+                        autoComplete="off"
+                        spellCheck={false}
+                        required
+                        className={CONTROL}
+                      />
+                    )}
+                  </FieldShell>
                   <div className="flex gap-2">
                     <SubmitButton loading={replace.isPending}>
                       Save value
@@ -322,7 +325,6 @@ export function SecretRow({
                     <SubmitButton
                       type="button"
                       variant="ghost"
-                      loading={false}
                       onClick={() => {
                         setValue("");
                         setPanel(null);
@@ -340,29 +342,27 @@ export function SecretRow({
                   aria-label={`Rename ${secret.name}`}
                   className="flex flex-col gap-2"
                 >
-                  <label
-                    htmlFor={`rename-${secret.id}`}
-                    className="text-console-muted text-xs"
+                  <FieldShell
+                    label={`New name for ${secret.name}`}
+                    name={`rename-${secret.id}`}
+                    error={nameError ?? undefined}
                   >
-                    New name for {secret.name}
-                  </label>
-                  <input
-                    id={`rename-${secret.id}`}
-                    type="text"
-                    value={name}
-                    onChange={(event) => {
-                      setName(event.target.value.toUpperCase());
-                      setNameError(null);
-                    }}
-                    autoComplete="off"
-                    spellCheck={false}
-                    required
-                    aria-invalid={nameError !== null ? true : undefined}
-                    className="border-console-border bg-console-bg text-console-text aria-invalid:border-state-failed max-w-sm rounded border px-2.5 py-1.5 font-mono text-sm"
-                  />
-                  {nameError !== null && (
-                    <p className="text-state-failed text-xs">{nameError}</p>
-                  )}
+                    {(control) => (
+                      <input
+                        {...control}
+                        type="text"
+                        value={name}
+                        onChange={(event) => {
+                          setName(event.target.value.toUpperCase());
+                          setNameError(null);
+                        }}
+                        autoComplete="off"
+                        spellCheck={false}
+                        required
+                        className={`${CONTROL} max-w-sm`}
+                      />
+                    )}
+                  </FieldShell>
                   <div className="flex gap-2">
                     <SubmitButton loading={patch.isPending}>
                       Save name
@@ -370,7 +370,6 @@ export function SecretRow({
                     <SubmitButton
                       type="button"
                       variant="ghost"
-                      loading={false}
                       onClick={() => {
                         setPanel(null);
                       }}

@@ -146,7 +146,6 @@ export function ProjectHeader({
           <SubmitButton
             type="button"
             variant="ghost"
-            loading={false}
             disabled={busy}
             onClick={onToggleSettings}
           >
@@ -156,7 +155,6 @@ export function ProjectHeader({
           <SubmitButton
             type="button"
             variant="danger"
-            loading={false}
             disabled={busy}
             onClick={() => {
               setError(null);
@@ -205,7 +203,6 @@ export function ProjectHeader({
               <SubmitButton
                 type="button"
                 variant="ghost"
-                loading={false}
                 disabled={remove.isPending}
                 onClick={() => {
                   setConfirmingDelete(false);

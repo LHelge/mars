@@ -141,7 +141,7 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
       <main className="mx-auto flex max-w-sm flex-col gap-3 p-8">
         <Alert kind="error">orchestrator unreachable</Alert>
         <div>
-          <SubmitButton loading={false} type="button" onClick={retry}>
+          <SubmitButton type="button" onClick={retry}>
             Retry
           </SubmitButton>
         </div>

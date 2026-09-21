@@ -147,7 +147,6 @@ function TaskRefLink({
       <SubmitButton
         type="button"
         variant="ghost"
-        loading={false}
         disabled={removing}
         onClick={onRemove}
       >

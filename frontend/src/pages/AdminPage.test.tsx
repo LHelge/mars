@@ -156,7 +156,9 @@ describe("AdminPage", () => {
     });
 
     expect(deleteButton.disabled).toBe(true);
-    expect(deleteButton.parentElement?.getAttribute("title")).toBe(
+    // The reason is on the button itself, not on a wrapper the keyboard
+    // cannot reach (`CLAUDE.md`, "Frontend conventions": shared UI).
+    expect(deleteButton.getAttribute("title")).toBe(
       "You cannot delete your own account",
     );
   });

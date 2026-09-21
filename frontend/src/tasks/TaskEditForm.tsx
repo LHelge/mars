@@ -32,6 +32,8 @@ import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 
 import { Alert } from "../components/Alert";
+import { FieldShell } from "../components/FieldShell";
+import { CONTROL } from "../components/fieldStyles";
 import { FormField } from "../components/FormField";
 import { SubmitButton } from "../components/SubmitButton";
 import { useAuth } from "../hooks/useAuth";
@@ -39,7 +41,7 @@ import { projectErrorMessage } from "../pages/project/messages";
 import { queryKeys } from "../services/queryKeys";
 import { listUsers } from "../services/users";
 import type { TaskDetail, TaskPriority } from "../types";
-import { CONTROL, PRIORITIES, PRIORITY_MEANING } from "./taskChrome";
+import { PRIORITIES, PRIORITY_MEANING } from "./taskChrome";
 import {
   diffTaskInput,
   isEmptyUpdate,
@@ -195,80 +197,70 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
         required
       />
 
-      <FormField
+      <FieldShell
         label="Description"
         name={`${taskFieldId(task)}-description`}
-        value={description}
-        onChange={setDescription}
         hint="Markdown. What done looks like, and anything an agent cannot read off the repository."
       >
-        <textarea
-          id={`${taskFieldId(task)}-description`}
-          name={`${taskFieldId(task)}-description`}
-          rows={8}
-          value={description}
-          onChange={(event) => {
-            setDescription(event.target.value);
-          }}
-          aria-describedby={`${taskFieldId(task)}-description-hint`}
-          className={CONTROL}
-        />
-      </FormField>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <FormField
-          label="Priority"
-          name={`${taskFieldId(task)}-priority`}
-          value={String(priority)}
-          onChange={(next) => {
-            setPriority(Number(next) as TaskPriority);
-          }}
-        >
-          <select
-            id={`${taskFieldId(task)}-priority`}
-            name={`${taskFieldId(task)}-priority`}
-            value={String(priority)}
+        {(control) => (
+          <textarea
+            {...control}
+            rows={8}
+            value={description}
             onChange={(event) => {
-              setPriority(Number(event.target.value) as TaskPriority);
+              setDescription(event.target.value);
             }}
             className={CONTROL}
-          >
-            {PRIORITIES.map((value) => (
-              <option key={value} value={value}>
-                {PRIORITY_MEANING[value]}
-              </option>
-            ))}
-          </select>
-        </FormField>
+          />
+        )}
+      </FieldShell>
 
-        <FormField
+      <div className="grid gap-3 sm:grid-cols-2">
+        <FieldShell label="Priority" name={`${taskFieldId(task)}-priority`}>
+          {(control) => (
+            <select
+              {...control}
+              value={String(priority)}
+              onChange={(event) => {
+                setPriority(Number(event.target.value) as TaskPriority);
+              }}
+              className={CONTROL}
+            >
+              {PRIORITIES.map((value) => (
+                <option key={value} value={value}>
+                  {PRIORITY_MEANING[value]}
+                </option>
+              ))}
+            </select>
+          )}
+        </FieldShell>
+
+        <FieldShell
           label="Assignee"
           name={`${taskFieldId(task)}-assignee`}
-          value={assignee}
-          onChange={setAssignee}
           hint={
             isAdmin
               ? "Who is accountable for the task; it does not affect which agent picks it up."
               : "You can take the task or leave it unassigned."
           }
         >
-          <select
-            id={`${taskFieldId(task)}-assignee`}
-            name={`${taskFieldId(task)}-assignee`}
-            value={assignee}
-            onChange={(event) => {
-              setAssignee(event.target.value);
-            }}
-            aria-describedby={`${taskFieldId(task)}-assignee-hint`}
-            className={CONTROL}
-          >
-            {assignees.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </FormField>
+          {(control) => (
+            <select
+              {...control}
+              value={assignee}
+              onChange={(event) => {
+                setAssignee(event.target.value);
+              }}
+              className={CONTROL}
+            >
+              {assignees.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </FieldShell>
       </div>
 
       <FormField
@@ -284,36 +276,34 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
         autoComplete="off"
       />
 
-      <FormField
+      <FieldShell
         label="Parent task"
         name={`${taskFieldId(task)}-parent`}
-        value={parent}
-        onChange={setParent}
         hint={
           nested
             ? "This task has children of its own, and nesting is one level deep."
             : "The task this one is part of; it stays open until this one closes."
         }
       >
-        <select
-          id={`${taskFieldId(task)}-parent`}
-          name={`${taskFieldId(task)}-parent`}
-          value={parent}
-          disabled={nested}
-          onChange={(event) => {
-            setParent(event.target.value);
-          }}
-          aria-describedby={`${taskFieldId(task)}-parent-hint`}
-          className={CONTROL}
-        >
-          <option value={NONE}>Top-level task</option>
-          {parents.map((candidate) => (
-            <option key={candidate.id} value={candidate.id}>
-              #{candidate.number} {candidate.title}
-            </option>
-          ))}
-        </select>
-      </FormField>
+        {(control) => (
+          <select
+            {...control}
+            value={parent}
+            disabled={nested}
+            onChange={(event) => {
+              setParent(event.target.value);
+            }}
+            className={CONTROL}
+          >
+            <option value={NONE}>Top-level task</option>
+            {parents.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                #{candidate.number} {candidate.title}
+              </option>
+            ))}
+          </select>
+        )}
+      </FieldShell>
 
       {moved && (
         <Alert kind="warning">
@@ -330,7 +320,6 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
         <SubmitButton
           type="button"
           variant="ghost"
-          loading={false}
           disabled={update.isPending}
           onClick={onDone}
         >

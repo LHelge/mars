@@ -13,6 +13,8 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import {
   Alert,
+  FieldShell,
+  FIELD,
   FormField,
   SectionHeader,
   SubmitButton,
@@ -28,9 +30,6 @@ export interface ProjectSettingsFormProps {
 
 const MIN_ATTEMPTS = 1;
 const MAX_ATTEMPTS = 20;
-
-const INPUT_CLASS =
-  "border-console-border bg-console-bg text-console-text rounded border px-2.5 py-1.5 font-mono text-sm";
 
 export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
   const queryClient = useQueryClient();
@@ -122,69 +121,64 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
           disabled={save.isPending}
         />
 
-        <FormField
+        <FieldShell
           label="Default branch"
           name="project-default-branch"
-          value={branch}
-          onChange={setBranch}
           hint={
             project.default_branch === null
               ? "Still being discovered from the remote."
               : "An integration head, or any branch name."
           }
-          disabled={save.isPending}
         >
-          <>
+          {(control) => (
+            <>
+              <input
+                {...control}
+                list="project-default-branch-options"
+                value={branch}
+                onChange={(event) => {
+                  setBranch(event.target.value);
+                  setSaved(false);
+                }}
+                disabled={save.isPending}
+                className={FIELD}
+              />
+              <datalist id="project-default-branch-options">
+                {heads.map((ref) => (
+                  <option key={ref.name} value={ref.name} />
+                ))}
+              </datalist>
+            </>
+          )}
+        </FieldShell>
+
+        <FieldShell
+          label="Max attempts"
+          name="project-max-attempts"
+          hint={`${String(MIN_ATTEMPTS)}–${String(MAX_ATTEMPTS)}`}
+          error={
+            attemptsInvalid
+              ? `Between ${String(MIN_ATTEMPTS)} and ${String(MAX_ATTEMPTS)}.`
+              : undefined
+          }
+        >
+          {(control) => (
             <input
-              id="project-default-branch"
-              name="project-default-branch"
-              list="project-default-branch-options"
-              value={branch}
+              {...control}
+              type="number"
+              min={MIN_ATTEMPTS}
+              max={MAX_ATTEMPTS}
+              step={1}
+              value={attempts}
               onChange={(event) => {
-                setBranch(event.target.value);
+                setAttempts(event.target.value);
                 setSaved(false);
               }}
               disabled={save.isPending}
-              className={`${INPUT_CLASS} w-full disabled:opacity-50`}
+              className={FIELD}
             />
-            <datalist id="project-default-branch-options">
-              {heads.map((ref) => (
-                <option key={ref.name} value={ref.name} />
-              ))}
-            </datalist>
-          </>
-        </FormField>
-
-        <FormField
-          label="Max attempts"
-          name="project-max-attempts"
-          value={attempts}
-          onChange={setAttempts}
-          hint={`${String(MIN_ATTEMPTS)}–${String(MAX_ATTEMPTS)}`}
-          {...(attemptsInvalid
-            ? {
-                error: `Between ${String(MIN_ATTEMPTS)} and ${String(MAX_ATTEMPTS)}.`,
-              }
-            : {})}
-          disabled={save.isPending}
-        >
-          <input
-            id="project-max-attempts"
-            name="project-max-attempts"
-            type="number"
-            min={MIN_ATTEMPTS}
-            max={MAX_ATTEMPTS}
-            step={1}
-            value={attempts}
-            onChange={(event) => {
-              setAttempts(event.target.value);
-              setSaved(false);
-            }}
-            disabled={save.isPending}
-            aria-invalid={attemptsInvalid || undefined}
-            className={`${INPUT_CLASS} aria-invalid:border-state-failed w-full disabled:opacity-50`}
-          />
-        </FormField>
+          )}
+        </FieldShell>
       </div>
 
       <div className="flex items-center gap-2">

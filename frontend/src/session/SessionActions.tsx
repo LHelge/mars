@@ -127,7 +127,6 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
           <SubmitButton
             type="button"
             variant="danger"
-            loading={false}
             onClick={() => {
               begin();
               onStop();
@@ -173,7 +172,6 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
           <SubmitButton
             type="button"
             variant="ghost"
-            loading={false}
             onClick={() => {
               begin();
               setRetryOpen((open) => !open);

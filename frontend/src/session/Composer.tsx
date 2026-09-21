@@ -197,7 +197,6 @@ export function Composer({
           <SubmitButton
             type="button"
             variant="danger"
-            loading={false}
             disabled={stopping}
             onClick={() => {
               setStopping(true);
@@ -211,7 +210,7 @@ export function Composer({
             {stopping ? "Stopping…" : "Stop"}
           </SubmitButton>
         )}
-        <SubmitButton loading={false} disabled={ended || text.trim() === ""}>
+        <SubmitButton disabled={ended || text.trim() === ""}>
           {turnActive && running ? "Interject" : "Send"}
         </SubmitButton>
       </div>

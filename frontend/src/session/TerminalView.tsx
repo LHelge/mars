@@ -204,7 +204,7 @@ interface ReconnectProps {
 
 function Reconnect({ onClick }: ReconnectProps) {
   return (
-    <SubmitButton type="button" variant="ghost" loading={false} onClick={onClick}>
+    <SubmitButton type="button" variant="ghost" onClick={onClick}>
       Reconnect
     </SubmitButton>
   );

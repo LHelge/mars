@@ -10,10 +10,6 @@ import { useEffect } from "react";
 import type { Branch } from "../../types";
 import { githubCompareUrl } from "../../utils/github";
 
-/** Inputs and selects in a git form, matching `BaseRefSelect`'s control. */
-export const CONTROL =
-  "border-console-border bg-console-bg text-console-text w-full rounded border px-2.5 py-1.5 font-mono text-sm disabled:opacity-50";
-
 /** `(form id, in flight)`, as `GitActionsPanel` tracks it. */
 export type ReportBusy = (id: string, busy: boolean) => void;
 

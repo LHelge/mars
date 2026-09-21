@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE projects\n            SET status = $2,\n                status_message = $3,\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $4\n                      ) AS \"has_credential!\"\n            ",
+  "query": "\n            INSERT INTO projects (id, name, remote_url, default_branch, created_by, max_attempts)\n            VALUES ($1, $2, $3, $4, $5, $6)\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, max_concurrent_sessions, automation_paused,\n                      created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $7\n                      ) AS \"has_credential!\"\n            ",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,28 @@
       },
       {
         "ordinal": 10,
+        "name": "max_concurrent_sessions",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "max_concurrent_sessions"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "automation_paused",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "automation_paused"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +158,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +169,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "has_credential!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -156,19 +178,11 @@
     "parameters": {
       "Left": [
         "Uuid",
-        {
-          "Custom": {
-            "name": "project_status",
-            "kind": {
-              "Enum": [
-                "cloning",
-                "ready",
-                "error"
-              ]
-            }
-          }
-        },
         "Text",
+        "Text",
+        "Text",
+        "Uuid",
+        "Int2",
         "Text"
       ]
     },
@@ -183,10 +197,12 @@
       true,
       false,
       false,
+      true,
+      false,
       false,
       false,
       null
     ]
   },
-  "hash": "caf10ebac72aa13664325aafb3324d778a4d036b4f6f5b9f104ef4ffb9a8259a"
+  "hash": "52c593bcf710a9936c0b13e09bb6534f6ee2953ee6691a9f52513ec02f48c433"
 }

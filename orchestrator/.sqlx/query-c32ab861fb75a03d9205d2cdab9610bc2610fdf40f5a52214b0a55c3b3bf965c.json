@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT s.id, s.project_id, s.profile_id, s.kind AS \"kind: ProfileKind\",\n                   s.created_by, s.title, s.task_id, s.handoff_id,\n                   s.state AS \"state: SessionState\", s.base_ref, s.branch, s.container_id,\n                   s.cli_session_id, s.mcp_token_hash, s.last_seq, s.last_activity_at,\n                   s.cost_usd, s.input_tokens, s.output_tokens, s.error, s.created_at,\n                   s.parked_at, s.ended_at, p.idle_timeout_secs\n            FROM sessions s\n            JOIN agent_profiles p ON p.id = s.profile_id\n            WHERE s.state = 'running'\n              AND s.last_activity_at < $1::timestamptz - make_interval(secs => p.idle_timeout_secs)\n            ORDER BY s.last_activity_at\n            ",
+  "query": "\n            SELECT id, project_id, profile_id, kind AS \"kind: ProfileKind\", created_by,\n                   launch_source AS \"launch_source: SessionLaunchSource\", title, task_id, handoff_id, state AS \"state: SessionState\", base_ref,\n                   branch, container_id, cli_session_id, mcp_token_hash, last_seq,\n                   last_activity_at, cost_usd, input_tokens, output_tokens, error,\n                   created_at, parked_at, ended_at\n            FROM sessions\n            WHERE project_id = $1\n              AND ($2::session_state IS NULL OR state = $2)\n            ORDER BY created_at DESC, id\n            ",
   "describe": {
     "columns": [
       {
@@ -70,6 +70,28 @@
       },
       {
         "ordinal": 5,
+        "name": "launch_source: SessionLaunchSource",
+        "type_info": {
+          "Custom": {
+            "name": "session_launch_source",
+            "kind": {
+              "Enum": [
+                "user",
+                "dispatcher",
+                "schedule"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "launch_source"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "title",
         "type_info": "Text",
         "origin": {
@@ -80,7 +102,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "task_id",
         "type_info": "Uuid",
         "origin": {
@@ -91,7 +113,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "handoff_id",
         "type_info": "Uuid",
         "origin": {
@@ -102,7 +124,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "state: SessionState",
         "type_info": {
           "Custom": {
@@ -126,7 +148,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "base_ref",
         "type_info": "Text",
         "origin": {
@@ -137,7 +159,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "branch",
         "type_info": "Text",
         "origin": {
@@ -148,7 +170,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "container_id",
         "type_info": "Text",
         "origin": {
@@ -159,7 +181,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "cli_session_id",
         "type_info": "Text",
         "origin": {
@@ -170,7 +192,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "mcp_token_hash",
         "type_info": "Text",
         "origin": {
@@ -181,7 +203,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "last_seq",
         "type_info": "Int8",
         "origin": {
@@ -192,7 +214,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "last_activity_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -203,7 +225,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "cost_usd",
         "type_info": "Float8",
         "origin": {
@@ -214,7 +236,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "input_tokens",
         "type_info": "Int8",
         "origin": {
@@ -225,7 +247,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "output_tokens",
         "type_info": "Int8",
         "origin": {
@@ -236,7 +258,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
         "name": "error",
         "type_info": "Text",
         "origin": {
@@ -247,7 +269,7 @@
         }
       },
       {
-        "ordinal": 20,
+        "ordinal": 21,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -258,7 +280,7 @@
         }
       },
       {
-        "ordinal": 21,
+        "ordinal": 22,
         "name": "parked_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -269,7 +291,7 @@
         }
       },
       {
-        "ordinal": 22,
+        "ordinal": 23,
         "name": "ended_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -278,22 +300,25 @@
             "name": "ended_at"
           }
         }
-      },
-      {
-        "ordinal": 23,
-        "name": "idle_timeout_secs",
-        "type_info": "Int4",
-        "origin": {
-          "Table": {
-            "table": "agent_profiles",
-            "name": "idle_timeout_secs"
-          }
-        }
       }
     ],
     "parameters": {
       "Left": [
-        "Timestamptz"
+        "Uuid",
+        {
+          "Custom": {
+            "name": "session_state",
+            "kind": {
+              "Enum": [
+                "creating",
+                "running",
+                "parked",
+                "done",
+                "failed"
+              ]
+            }
+          }
+        }
       ]
     },
     "nullable": [
@@ -302,26 +327,26 @@
       false,
       false,
       true,
-      true,
-      true,
-      true,
       false,
-      false,
-      false,
+      true,
       true,
       true,
       false,
       false,
       false,
+      true,
+      true,
+      false,
+      false,
+      false,
       false,
       false,
       false,
       true,
       false,
       true,
-      true,
-      false
+      true
     ]
   },
-  "hash": "524659912145d1c55fc3aa5cc95c63289606e55a6323650cf81b79545cdfeacb"
+  "hash": "c32ab861fb75a03d9205d2cdab9610bc2610fdf40f5a52214b0a55c3b3bf965c"
 }

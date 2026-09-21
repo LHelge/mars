@@ -300,10 +300,14 @@ async fn creating_a_project_answers_the_documented_shape_in_cloning() {
     assert_eq!(project["default_branch"], Value::Null);
     assert_eq!(project["last_fetched_at"], Value::Null);
     assert_eq!(project["max_attempts"], json!(3));
+    // Automation is off and uncapped until somebody says otherwise (ADR 0042).
+    assert_eq!(project["max_concurrent_sessions"], Value::Null);
+    assert_eq!(project["automation_paused"], json!(false));
     assert_eq!(project["has_credential"], json!(false));
     assert!(project["created_at"].is_string());
 
-    // Exactly the ten documented fields, and none of the three the row adds.
+    // Exactly the twelve documented fields, and none of the three the row
+    // adds.
     let mut keys: Vec<&str> = project
         .as_object()
         .expect("a project is an object")
@@ -314,12 +318,14 @@ async fn creating_a_project_answers_the_documented_shape_in_cloning() {
     assert_eq!(
         keys,
         [
+            "automation_paused",
             "created_at",
             "default_branch",
             "has_credential",
             "id",
             "last_fetched_at",
             "max_attempts",
+            "max_concurrent_sessions",
             "name",
             "remote_url",
             "status",
@@ -1631,4 +1637,89 @@ async fn deleting_a_project_needs_a_token_and_an_ungated_user() {
     let refused = app.delete_as(&gated, &project_path(id)).await;
     refused.assert_status(StatusCode::FORBIDDEN);
     refused.assert_json(&password_change_required());
+}
+
+// ---- the unattended-launch settings (`ARCHITECTURE.md`, "Unattended
+// launches"; ADR 0042) ----
+
+#[tokio::test]
+async fn the_project_cap_and_the_pause_switch_are_set_and_cleared_by_put() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let id = id_of(&created(&app, &user, &new_project("mars", UNREACHABLE_REMOTE)).await);
+
+    let set = app
+        .put_as(&user, &project_path(id))
+        .json(&json!({ "max_concurrent_sessions": 3, "automation_paused": true }))
+        .await;
+    set.assert_status_ok();
+    let updated = set.json::<Value>();
+    assert_eq!(updated["max_concurrent_sessions"], json!(3));
+    assert_eq!(updated["automation_paused"], json!(true));
+
+    // Committed, not just answered.
+    let read = app.get_as(&user, &project_path(id)).await;
+    read.assert_status_ok();
+    assert_eq!(read.json::<Value>()["max_concurrent_sessions"], json!(3));
+
+    // An update that names neither leaves both alone, like every other field.
+    let elsewhere = app
+        .put_as(&user, &project_path(id))
+        .json(&json!({ "name": "mars-2" }))
+        .await;
+    elsewhere.assert_status_ok();
+    let kept = elsewhere.json::<Value>();
+    assert_eq!(kept["max_concurrent_sessions"], json!(3));
+    assert_eq!(kept["automation_paused"], json!(true));
+
+    // An explicit null removes the cap, which no other nullable field of this
+    // body can express (`SPEC.md`, "Projects").
+    let cleared = app
+        .put_as(&user, &project_path(id))
+        .json(&json!({ "max_concurrent_sessions": null, "automation_paused": false }))
+        .await;
+    cleared.assert_status_ok();
+    let uncapped = cleared.json::<Value>();
+    assert_eq!(uncapped["max_concurrent_sessions"], Value::Null);
+    assert_eq!(uncapped["automation_paused"], json!(false));
+}
+
+#[tokio::test]
+async fn a_project_cap_below_one_is_a_bad_request() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let id = id_of(&created(&app, &user, &new_project("mars", UNREACHABLE_REMOTE)).await);
+
+    for cap in [0, -1] {
+        let response = app
+            .put_as(&user, &project_path(id))
+            .json(&json!({ "max_concurrent_sessions": cap }))
+            .await;
+
+        response.assert_status(StatusCode::BAD_REQUEST);
+        response.assert_json(&json!({
+            "status": 400,
+            "error": "max_concurrent_sessions must be at least 1 when set",
+        }));
+    }
+
+    // And nothing was written by either attempt.
+    let read = app.get_as(&user, &project_path(id)).await;
+    read.assert_status_ok();
+    assert_eq!(read.json::<Value>()["max_concurrent_sessions"], Value::Null);
+}
+
+#[tokio::test]
+async fn neither_setting_can_be_sent_to_the_create_endpoint() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+
+    // `deny_unknown_fields`: they are `PUT`'s, like `max_attempts`.
+    for extra in ["max_concurrent_sessions", "automation_paused"] {
+        let mut body = new_project("mars", UNREACHABLE_REMOTE);
+        body[extra] = json!(1);
+
+        let response = create(&app, &user, &body).await;
+        response.assert_status(StatusCode::BAD_REQUEST);
+    }
 }

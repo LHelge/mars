@@ -48,7 +48,7 @@ use mars_orchestrator::git::DataPaths;
 use mars_orchestrator::git::testutil::{TestUpstream, run_git};
 use mars_orchestrator::models::{
     HandoffCaller, NewEvent, NewSession, NewTask, ProfileKind, ProjectStatus, Session,
-    SessionState, StateChange, Task, TaskRef,
+    SessionLaunchSource, SessionState, StateChange, Task, TaskRef,
 };
 use mars_orchestrator::projects::clone_job;
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
@@ -483,6 +483,9 @@ async fn a_create_stores_the_documented_row_and_starts_the_launch() {
     assert_eq!(body["profile_id"], json!(fixture.profile_id));
     assert_eq!(body["kind"], json!("conversational"));
     assert_eq!(body["created_by"], json!(fixture.user.user.id));
+    // A person pressed the button, which is what `launch_source` records
+    // (`SPEC.md`, "Sessions"; ADR 0042).
+    assert_eq!(body["launch_source"], json!("user"));
     assert_eq!(body["state"], json!("creating"));
     assert_eq!(body["base_ref"], json!("main"));
     assert_eq!(body["branch"], json!(format!("session/{id}")));
@@ -499,6 +502,7 @@ async fn a_create_stores_the_documented_row_and_starts_the_launch() {
     assert_eq!(row.branch, format!("session/{id}"));
     assert_eq!(row.kind, ProfileKind::Conversational);
     assert_eq!(row.created_by, Some(fixture.user.user.id));
+    assert_eq!(row.launch_source, SessionLaunchSource::User);
     assert_eq!(row.base_ref, "main");
     assert!(!row.mcp_token_hash.is_empty(), "no token hash was stored");
 

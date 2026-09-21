@@ -42,6 +42,47 @@ pub const MAX_SESSION_TITLE_CHARS: usize = 200;
 /// "Sessions").
 pub const MAX_DERIVED_TITLE_CHARS: usize = 80;
 
+/// Who launched a session (`docs/data-model.md`, "Enums",
+/// `session_launch_source`).
+///
+/// The record of the launch actor, kept because `created_by` cannot be it:
+/// deleting a user nulls that column on every session that user launched, so
+/// the same NULL would mean both "the machine started this" and "a person who
+/// no longer has an account started this" (`ARCHITECTURE.md`, "Task tracker" →
+/// "Unattended launches"; ADR 0042).
+///
+/// Written once, at insert, from the launch actor
+/// ([`crate::session::LaunchActor`]) and never updated: a retry or a resume is
+/// the same session, launched by whoever launched it first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "session_launch_source", rename_all = "snake_case")]
+pub enum SessionLaunchSource {
+    /// A person, through `POST /projects/{pid}/sessions`.
+    User,
+    /// The dispatcher, putting a profile on a claimable task by itself.
+    Dispatcher,
+    /// A scheduled agent, at a tick of its own cron expression.
+    Schedule,
+}
+
+impl SessionLaunchSource {
+    /// The value as it is spelled in the database and in the API.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SessionLaunchSource::User => "user",
+            SessionLaunchSource::Dispatcher => "dispatcher",
+            SessionLaunchSource::Schedule => "schedule",
+        }
+    }
+}
+
+impl std::fmt::Display for SessionLaunchSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Where a session is in its lifecycle (`ARCHITECTURE.md`, "Session
 /// lifecycle").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
@@ -291,6 +332,7 @@ pub struct Session {
     pub profile_id: Uuid,
     pub kind: ProfileKind,
     pub created_by: Option<Uuid>,
+    pub launch_source: SessionLaunchSource,
     pub title: Option<String>,
     pub task_id: Option<Uuid>,
     pub handoff_id: Option<Uuid>,
@@ -387,6 +429,9 @@ pub struct NewSession {
     pub profile_id: Uuid,
     pub kind: ProfileKind,
     pub created_by: Option<Uuid>,
+    /// Who launched this session, from the launch actor. Set once, here, and
+    /// never updated (see [`SessionLaunchSource`]).
+    pub launch_source: SessionLaunchSource,
     pub title: Option<SessionTitle>,
     pub base_ref: String,
     pub branch: String,
@@ -397,7 +442,12 @@ pub struct NewSession {
 
 impl NewSession {
     /// A session with a fresh id, its derived branch and no task, hand-off or
-    /// title.
+    /// title, launched by a user.
+    ///
+    /// `launch_source` starts at [`SessionLaunchSource::User`] because that is
+    /// what the column's default is and what every launch a person makes is;
+    /// an unattended launch sets it from its own actor
+    /// ([`crate::session::LaunchActor::launch_source`]).
     ///
     /// The remaining fields are public: callers set what they were given, and
     /// [`NewSession::validate`] — which the repository runs before the insert
@@ -417,6 +467,7 @@ impl NewSession {
             profile_id,
             kind,
             created_by: None,
+            launch_source: SessionLaunchSource::User,
             title: None,
             base_ref: base_ref.into(),
             branch: session_branch(id),
@@ -553,6 +604,7 @@ mod tests {
             profile_id: Uuid::nil(),
             kind,
             created_by: None,
+            launch_source: SessionLaunchSource::User,
             title: None,
             task_id: None,
             handoff_id: None,
@@ -991,6 +1043,7 @@ mod tests {
             profile_id: Uuid::nil(),
             kind: ProfileKind::Conversational,
             created_by: None,
+            launch_source: SessionLaunchSource::User,
             title: Some("fix the parser".into()),
             task_id: None,
             handoff_id: None,

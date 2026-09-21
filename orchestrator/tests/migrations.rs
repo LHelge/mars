@@ -326,6 +326,124 @@ async fn projects_and_sessions_schema_holds_the_documented_guarantees() {
     );
 }
 
+/// The load-bearing details of the `dispatcher_columns` migration
+/// (`docs/data-model.md`, `agent_profiles`, `projects`, `sessions`; ADR 0042).
+///
+/// Nothing launches by itself yet, so no code path would notice any of these
+/// going missing: the default that makes every pre-existing session a user
+/// launch, the two lower bounds the models also check, and the partial index
+/// the dispatcher's selection will read.
+#[tokio::test]
+async fn the_dispatcher_columns_carry_their_defaults_and_bounds() {
+    let (_postgres, pool) = common::db::test_pool().await;
+
+    // Every row written before this column existed is a user launch, and the
+    // insert path that forgets it still stores one.
+    let (column_default, is_nullable, data_type): (Option<String>, String, String) =
+        sqlx::query_as(
+            "SELECT column_default, is_nullable::text, udt_name::text \
+             FROM information_schema.columns \
+             WHERE table_schema = 'public' \
+               AND table_name = 'sessions' \
+               AND column_name = 'launch_source'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("sessions.launch_source exists");
+    assert_eq!(is_nullable, "NO");
+    assert_eq!(data_type, "session_launch_source");
+    assert_eq!(
+        column_default.as_deref(),
+        Some("'user'::session_launch_source"),
+        "sessions.launch_source must default to 'user'"
+    );
+
+    // The three values of the enum, in order.
+    let values: Vec<String> = sqlx::query_scalar(
+        "SELECT e.enumlabel::text FROM pg_enum e \
+         JOIN pg_type t ON t.oid = e.enumtypid \
+         WHERE t.typname = 'session_launch_source' \
+         ORDER BY e.enumsortorder",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the enum catalog is readable");
+    assert_eq!(values, ["user", "dispatcher", "schedule"]);
+
+    // The caps the models refuse are refused by the database too, so a value
+    // written any other way cannot become an unbounded launch budget.
+    let profile_checks: Vec<String> = sqlx::query_scalar(
+        "SELECT pg_get_constraintdef(c.oid) \
+         FROM pg_constraint c \
+         JOIN pg_class t ON t.oid = c.conrelid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
+         WHERE n.nspname = 'public' AND t.relname = 'agent_profiles' AND c.contype = 'c'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the constraint catalog is readable");
+    assert!(
+        profile_checks
+            .iter()
+            .any(|def| def.contains("max_concurrent") && def.contains(">= 1")),
+        "agent_profiles is missing the >= 1 CHECK on max_concurrent: {profile_checks:?}"
+    );
+
+    let project_checks: Vec<String> = sqlx::query_scalar(
+        "SELECT pg_get_constraintdef(c.oid) \
+         FROM pg_constraint c \
+         JOIN pg_class t ON t.oid = c.conrelid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
+         WHERE n.nspname = 'public' AND t.relname = 'projects' AND c.contype = 'c'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the constraint catalog is readable");
+    assert!(
+        project_checks
+            .iter()
+            .any(|def| def.contains("max_concurrent_sessions") && def.contains(">= 1")),
+        "projects is missing the >= 1 CHECK on max_concurrent_sessions: {project_checks:?}"
+    );
+
+    // Nullable on purpose: NULL is "no project cap", not a missing value.
+    let cap_nullable: String = sqlx::query_scalar(
+        "SELECT is_nullable::text FROM information_schema.columns \
+         WHERE table_schema = 'public' \
+           AND table_name = 'projects' \
+           AND column_name = 'max_concurrent_sessions'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("projects.max_concurrent_sessions exists");
+    assert_eq!(cap_nullable, "YES");
+
+    // The dispatcher's selection, partial and in its tie-break order.
+    let (is_unique, predicate, definition): (bool, Option<String>, String) = sqlx::query_as(
+        "SELECT i.indisunique, pg_get_expr(i.indpred, i.indrelid), pg_get_indexdef(i.indexrelid) \
+         FROM pg_index i \
+         JOIN pg_class c ON c.oid = i.indexrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = 'public' AND c.relname = 'agent_profiles_auto_launch_idx'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("agent_profiles_auto_launch_idx exists");
+    assert!(
+        !is_unique,
+        "a project may have several auto_launch profiles"
+    );
+    let predicate = predicate.expect("agent_profiles_auto_launch_idx must be partial");
+    assert!(
+        predicate.contains("auto_launch"),
+        "the index must be predicated on auto_launch, not {predicate:?}"
+    );
+    assert!(
+        definition.contains("project_id") && definition.contains("created_at"),
+        "the index must order a project's profiles oldest first: {definition}"
+    );
+}
+
 /// The load-bearing details of the `tasks` migration (`docs/data-model.md`,
 /// "Tasks").
 ///

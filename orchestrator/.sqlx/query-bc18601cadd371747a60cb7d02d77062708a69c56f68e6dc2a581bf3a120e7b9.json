@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE projects\n            SET status = 'cloning'::project_status,\n                status_message = NULL,\n                updated_at = NOW()\n            WHERE id = $1 AND status = 'error'::project_status\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $2\n                      ) AS \"has_credential!\"\n            ",
+  "query": "\n            UPDATE projects\n            SET status = 'cloning'::project_status,\n                status_message = NULL,\n                updated_at = NOW()\n            WHERE id = $1 AND status = 'error'::project_status\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, max_concurrent_sessions, automation_paused,\n                      created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $2\n                      ) AS \"has_credential!\"\n            ",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,28 @@
       },
       {
         "ordinal": 10,
+        "name": "max_concurrent_sessions",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "max_concurrent_sessions"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "automation_paused",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "automation_paused"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +158,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +169,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "has_credential!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -170,10 +192,12 @@
       true,
       false,
       false,
+      true,
+      false,
       false,
       false,
       null
     ]
   },
-  "hash": "a4f9329a4c7b19a115a7b395c4a9d6e91efad7231bd9b242810aee87823a70c2"
+  "hash": "bc18601cadd371747a60cb7d02d77062708a69c56f68e6dc2a581bf3a120e7b9"
 }

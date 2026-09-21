@@ -49,6 +49,7 @@ erDiagram
 | `project_status` | `cloning`, `ready`, `error` | `cloning` is set at creation; the clone job moves it to `ready` or `error`. |
 | `profile_kind` | `conversational`, `ephemeral` | `conversational` sessions take input over stdin and are parked and resumed; `ephemeral` sessions run one prompt and end. Users launch both in v1; automatic launching of ephemeral sessions is post-v1. |
 | `agent_backend` | `claude` | Which CLI adapter drives sessions of this profile. A second backend is added as a new value by migration. |
+| `session_launch_source` | `user`, `dispatcher`, `schedule` | Who launched a session. `user` is every launch a person makes and is the column default, so every row written before the column existed is one. Never updated after insert: a retry or a resume keeps it (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042). |
 | `session_state` | `creating`, `running`, `parked`, `done`, `failed` | State machine in `ARCHITECTURE.md`, "Session lifecycle". Only conversational sessions use `parked`; an ephemeral session goes to `done` when its result arrives. |
 | `task_state_kind` | `queue`, `human`, `terminal` | What a project-defined task state means to the orchestrator; see `task_states`. The states themselves are rows, not enum values. |
 | `task_dependency_kind` | `blocks`, `discovered_from`, `related` | Only `blocks` affects whether a task is claimable; see `task_dependencies`. |
@@ -151,6 +152,8 @@ A project is one git repository, stored as a bare project repository under `/dat
 | `last_fetched_at` | `TIMESTAMPTZ` | NULL | Updated by the periodic mirror fetch, by the clone that finished it and by `POST /projects/{id}/fetch`; unchanged when the fetch failed. |
 | `max_attempts` | `SMALLINT` | NOT NULL DEFAULT 3, CHECK 1–20 | How many claims a task may go through in one state before a release sends it to the project's human state instead. See `tasks`. |
 | `next_task_number` | `INTEGER` | NOT NULL DEFAULT 1 | Counter for `tasks.number`, taken with `UPDATE ... RETURNING` inside the task insert transaction, which serialises concurrent inserts on the project row. |
+| `max_concurrent_sessions` | `INTEGER` | NULL, CHECK >= 1 | How many live sessions (`creating` or `running`) the project may have before an unattended launch is held back. NULL means no project cap. Counts every session, whoever launched it, and never refuses a launch by a person (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042). |
+| `automation_paused` | `BOOLEAN` | NOT NULL DEFAULT FALSE | While true, no unattended launch happens in this project. Sessions already running are unaffected and people can still launch by hand. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
@@ -193,6 +196,8 @@ Per-project configuration of one kind of agent. Every project gets four conversa
 | `partial_messages` | `BOOLEAN` | NOT NULL | Whether to request partial (streaming) messages from the CLI. No column default: the model sets `true` for `conversational` and `false` for `ephemeral` when the caller does not specify it. |
 | `idle_timeout_secs` | `INTEGER` | NOT NULL DEFAULT 1800 | Time without any event after which a running conversational session is parked, or a running ephemeral session is treated as stalled and failed (`ARCHITECTURE.md`, "Task tracker"). |
 | `is_default` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Exactly one per project. |
+| `auto_launch` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Whether the dispatcher may start a session of this profile by itself. Refused on a `conversational` profile, and refused at save unless the backend's agent credential resolves at `global` or `project` scope (ADR 0036, ADR 0042). |
+| `max_concurrent` | `INTEGER` | NOT NULL DEFAULT 1, CHECK >= 1 | How many live sessions of this profile an unattended launch may leave behind. Valid on any ephemeral profile whether or not `auto_launch` is set: the scheduler reads it too. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | Project creation supplies it instead of taking the default: `NOW()` is the transaction's start, so the four seeded profiles would share it and `ORDER BY created_at` could not put them in role order. |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
@@ -200,9 +205,10 @@ Constraints and indexes:
 
 - `UNIQUE (project_id, name)`.
 - Partial unique index `agent_profiles_one_default_idx ON agent_profiles (project_id) WHERE is_default`.
+- Partial index `agent_profiles_auto_launch_idx ON agent_profiles (project_id, created_at) WHERE auto_launch`, which is the dispatcher's selection and its oldest-profile-wins tie-break.
 - Deleting a profile that has sessions is refused (`sessions.profile_id` is `ON DELETE RESTRICT`).
 
-Which task states a profile serves is the `profile_states` link table under "Tasks". Automatic launching (a dispatcher that starts an ephemeral session when a served state has claimable work, or a schedule that runs a profile periodically) is not in v1; when it comes it is columns on this table, a cap and a pause switch on `projects`, a `launch_source` column on `sessions` recording who launched a session, and one background job per feature, with no change to the task tables (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042).
+Which task states a profile serves is the `profile_states` link table under "Tasks". Automatic launching (a dispatcher that starts an ephemeral session when a served state has claimable work, or a schedule that runs a profile periodically) is configured by `auto_launch` and `max_concurrent` here, by `max_concurrent_sessions` and `automation_paused` on `projects`, and recorded by `sessions.launch_source`; the jobs that read them are one per feature and change no task table (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042).
 
 ## Sessions and events
 
@@ -217,6 +223,7 @@ One agent instance. The row outlives the container: a session may be relaunched 
 | `profile_id` | `UUID` | NOT NULL, FK `agent_profiles(id)` ON DELETE RESTRICT | |
 | `kind` | `profile_kind` | NOT NULL | Copied from the profile at launch. Ephemeral sessions are never parked, resumed or retried. |
 | `created_by` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | The launching user; determines the `user` secret scope. |
+| `launch_source` | `session_launch_source` | NOT NULL DEFAULT `'user'` | Who launched this session. Written at insert from the launch actor and never updated, so it survives the launching user being deleted, which nulls `created_by` (ADR 0042). |
 | `title` | `TEXT` | NULL | Optional label; defaults to the task's title or the first line of the first message (`SPEC.md`, "Sessions"). |
 | `task_id` | `UUID` | NULL, FK `tasks(id)` ON DELETE SET NULL | The task the session was launched for, if any; the launch claims it in the same transaction. Added by the `tasks` migration because `tasks` references `sessions`. |
 | `handoff_id` | `UUID` | NULL, FK `task_handoffs(id)` ON DELETE SET NULL | Hand-off used to choose the initial checkout when launched for a task without an explicit base override. Its commit is stored in `base_ref`. Added by the `tasks` migration. |
@@ -536,5 +543,6 @@ Migrations are created with `sqlx migrate add -r <name>` and applied automatical
 6. `secrets` — `secrets`, `secret_uses`.
 7. `secrets_claude_credential_idx` — the partial unique index above, preceded by a `DO` block that raises a readable exception naming any scope that already holds both Claude credentials (ADR 0036).
 8. `strip_agent_credentials_from_profiles` — removes `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` from every `agent_profiles.secrets` array (ADR 0036).
+9. `dispatcher_columns` — the `session_launch_source` type and `sessions.launch_source`, `agent_profiles.auto_launch` and `max_concurrent`, `projects.max_concurrent_sessions` and `automation_paused`, and `agent_profiles_auto_launch_idx` (ADR 0042).
 
 Each `.down.sql` drops exactly what its `.up.sql` created, in reverse order. A migration that changes rows rather than schema has nothing to drop: `strip_agent_credentials_from_profiles` reverses to a documented `SELECT 1;`, because the entries it removed carried no information the launcher does not already act on.

@@ -662,7 +662,7 @@ fn require_state(session: &Session, allowed: &[SessionState]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ProfileKind, SessionState};
+    use crate::models::{ProfileKind, SessionLaunchSource, SessionState};
 
     fn session(state: SessionState) -> Session {
         Session {
@@ -671,6 +671,7 @@ mod tests {
             profile_id: Uuid::new_v4(),
             kind: ProfileKind::Conversational,
             created_by: None,
+            launch_source: SessionLaunchSource::User,
             title: None,
             task_id: None,
             handoff_id: None,

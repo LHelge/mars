@@ -216,6 +216,8 @@ The first start builds both images, the orchestrator and nginx, which takes a wh
 
 TLS is terminated in front of nginx by the operator — a host reverse proxy or a load balancer — and `PUBLIC_URL` must be the `https://` URL users actually open, because the session cookie is marked `Secure` exactly when `PUBLIC_URL` is https.
 
+nginx sends a Content-Security-Policy with every response (`nginx/default.conf.template`, rationale in `ARCHITECTURE.md`, "Content-Security-Policy"): scripts, styles, images, fonts and connections come from the deployment's own origin and nowhere else, so nothing an agent writes into a transcript, a task or a comment can make an operator's browser fetch a remote address. The WebSocket origin it allows is derived from the `Host` header the browser sent, so no configuration variable carries it and no reverse proxy setup needs to name it. Check it with `curl -sI http://localhost:8080/ | grep -i content-security-policy`. Two things change it. A reverse proxy in front that adds a CSP of its own sends a second header, and a browser then enforces both intersected — the strictest wins, and a directive missing from this one but present in the other still applies; prefer removing the outer one over loosening this. And an operator who embeds the console in another page, or serves anything else from this origin, is editing the policy: `frame-ancestors 'none'` forbids the frame, and anything loaded from a third-party origin needs that origin named in the matching directive. Keep `script-src` free of `'unsafe-inline'` and `'unsafe-eval'` in either case — the access token is mirrored to `localStorage` (`SPEC.md`, "Frontend"), which those two would expose.
+
 If the orchestrator restarts in a loop, check `compose logs orchestrator`. Three lines account for nearly all of it, and every one of them appears once per restart:
 
 - **`the container engine refused a startup step … Permission denied (os error 13)`** — `DATA_DIR_HOST` is not writable by the uid the orchestrator runs as, so it cannot even create the directory the startup probe needs. On Docker that is uid 1000 and the fix is `chown 1000:1000` on the data directory; on Podman it is the service user. (Writability is what is actually required: a directory owned by another uid but world-writable gets past this and the probe then passes, which is not a configuration to rely on.)
@@ -421,7 +423,7 @@ The stack sets every orchestrator variable itself and ignores the repository's `
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright against a real orchestrator, Postgres and the stub session image on rootless Podman, all brought up by `frontend/tests/e2e-stack.sh`; the report, traces and orchestrator log are uploaded on failure |
 | Images | `images/**` | Lint the entrypoint, Dockerfiles and stub; build all three session images — base, dev and stub — on Docker and Podman; run `images/smoke-test.sh` over them |
-| Deploy | Dockerfiles, `nginx/`, compose files | Build orchestrator and nginx images on Docker and Podman; `nginx -t`; compose config for both overrides |
+| Deploy | Dockerfiles, `nginx/`, compose files | Build orchestrator and nginx images on Docker and Podman; `nginx -t`; the Content-Security-Policy on real responses from the nginx image; compose config for both overrides |
 
 ## Roadmap after v1
 

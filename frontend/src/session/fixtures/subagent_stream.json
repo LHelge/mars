@@ -1,0 +1,64 @@
+[
+  {
+    "seq": 1,
+    "ts": "2026-01-02T22:00:00Z",
+    "kind": "tool_call",
+    "tool_use_id": "toolu_task_fake",
+    "name": "Task",
+    "input": { "description": "Survey the routes", "subagent_type": "Explore" }
+  },
+  {
+    "seq": 2,
+    "ts": "2026-01-02T22:00:01Z",
+    "kind": "subagent_start",
+    "tool_use_id": "toolu_task_fake",
+    "description": "Survey the routes",
+    "agent_type": "Explore"
+  },
+  {
+    "seq": 3,
+    "ts": "2026-01-02T22:00:02Z",
+    "parent_tool_use_id": "toolu_task_fake",
+    "kind": "text_delta",
+    "text": "Scanning "
+  },
+  {
+    "seq": 4,
+    "ts": "2026-01-02T22:00:03Z",
+    "parent_tool_use_id": "toolu_task_fake",
+    "kind": "permission_denied",
+    "tool_use_id": "toolu_denied_fake",
+    "name": "WebFetch",
+    "reason": "not allowed by policy"
+  },
+  {
+    "seq": 5,
+    "ts": "2026-01-02T22:00:04Z",
+    "parent_tool_use_id": "toolu_task_fake",
+    "kind": "text_delta",
+    "text": "the routes."
+  },
+  {
+    "seq": 6,
+    "ts": "2026-01-02T22:00:05Z",
+    "parent_tool_use_id": "toolu_task_fake",
+    "kind": "text",
+    "text": "Scanning the routes."
+  },
+  {
+    "seq": 7,
+    "ts": "2026-01-02T22:00:06Z",
+    "kind": "subagent_end",
+    "tool_use_id": "toolu_task_fake",
+    "is_error": false
+  },
+  {
+    "seq": 8,
+    "ts": "2026-01-02T22:00:07Z",
+    "kind": "tool_result",
+    "tool_use_id": "toolu_task_fake",
+    "content": "The routes live in App.tsx.",
+    "is_error": false,
+    "truncated": false
+  }
+]

@@ -22,6 +22,24 @@ const MARK: Record<DiffLine["type"], string> = {
   context: " ",
 };
 
+/**
+ * What a screen reader is told a row is. The `+`/`-` marker is decorative —
+ * it is announced as punctuation or not at all — and in side-by-side mode
+ * there is no marker at all, only colour and which pane the line is in, so
+ * every changed row says so in words. A context line says nothing: it is the
+ * unchanged majority and naming it would drown the two that matter.
+ */
+const SR_LABEL: Record<DiffLine["type"], string | null> = {
+  add: "added",
+  del: "removed",
+  context: null,
+};
+
+function Marker({ type }: { type: DiffLine["type"] }) {
+  const label = SR_LABEL[type];
+  return label === null ? null : <span className="sr-only">{label} </span>;
+}
+
 function LineNo({ value }: { value?: number }) {
   return (
     <span className="text-console-muted w-10 shrink-0 pr-2 text-right tabular-nums select-none">
@@ -38,6 +56,7 @@ function UnifiedRow({ line }: { line: DiffLine }) {
       <span aria-hidden="true" className="text-console-muted w-3 shrink-0">
         {MARK[line.type]}
       </span>
+      <Marker type={line.type} />
       <span className="whitespace-pre">{line.text}</span>
     </div>
   );
@@ -45,12 +64,13 @@ function UnifiedRow({ line }: { line: DiffLine }) {
 
 function HalfRow({ line }: { line?: DiffLine }) {
   if (!line) {
-    return <div className="bg-console-raised/40 flex min-h-[1.25rem] flex-1" />;
+    return <div className="bg-console-raised/40 flex min-h-[1.25rem]" />;
   }
   return (
-    <div className={`flex min-w-0 flex-1 ${TINT[line.type]}`}>
+    <div className={`flex min-h-[1.25rem] ${TINT[line.type]}`}>
       <LineNo value={line.type === "add" ? line.newNo : line.oldNo} />
-      <span className="overflow-x-auto whitespace-pre">{line.text}</span>
+      <Marker type={line.type} />
+      <span className="whitespace-pre">{line.text}</span>
     </div>
   );
 }
@@ -80,6 +100,27 @@ function pairs(lines: DiffLine[]): { left?: DiffLine; right?: DiffLine }[] {
     }
   }
   return rows;
+}
+
+function SplitPanes({
+  rows,
+}: {
+  rows: { left?: DiffLine; right?: DiffLine }[];
+}) {
+  return (
+    <div className="flex gap-2 px-1 py-1 font-mono text-xs">
+      <div className="min-w-0 flex-1 overflow-x-auto">
+        {rows.map((row, index) => (
+          <HalfRow key={index} line={row.left} />
+        ))}
+      </div>
+      <div className="min-w-0 flex-1 overflow-x-auto">
+        {rows.map((row, index) => (
+          <HalfRow key={index} line={row.right} />
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export interface DiffViewProps {
@@ -121,16 +162,18 @@ export function DiffView({ lines, path, notice }: DiffViewProps) {
           {notice}
         </p>
       )}
-      <div className="overflow-x-auto px-1 py-1 font-mono text-xs">
-        {split
-          ? pairs(lines).map((row, index) => (
-              <div key={index} className="flex gap-2">
-                <HalfRow line={row.left} />
-                <HalfRow line={row.right} />
-              </div>
-            ))
-          : lines.map((line, index) => <UnifiedRow key={index} line={line} />)}
-      </div>
+      {split ? (
+        // One scrollbar per pane, not one per row: the overflow belongs to
+        // the two columns, so a long line scrolls its whole side and the row
+        // numbers of the two versions stay level.
+        <SplitPanes rows={pairs(lines)} />
+      ) : (
+        <div className="overflow-x-auto px-1 py-1 font-mono text-xs">
+          {lines.map((line, index) => (
+            <UnifiedRow key={index} line={line} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

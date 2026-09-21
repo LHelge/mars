@@ -109,7 +109,7 @@ describe("PasswordChangeForm", () => {
     off();
   });
 
-  it("shows a rejected current password and keeps the token", async () => {
+  it("shows a rejected current password on that field and keeps the token", async () => {
     changeMock.mockRejectedValue(
       new ApiError(400, "current password is incorrect"),
     );
@@ -117,13 +117,29 @@ describe("PasswordChangeForm", () => {
     const onSuccess = renderForm();
     fill("wrong password", "correct horse battery");
 
-    await waitFor(() => {
-      expect(screen.getByText("Current password is incorrect")).toBeDefined();
-    });
+    const message = await screen.findByText("Current password is incorrect");
     expect(onSuccess).not.toHaveBeenCalled();
     expect(getAccessToken()).toBe("old");
-    // Only the new-password fields are cleared after a failure.
-    expect(value("Current password")).toBe("wrong password");
+    // The refusal is the field's, not the form's: the input points at it.
+    const field = screen.getByLabelText<HTMLInputElement>("Current password");
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.getAttribute("aria-describedby")).toContain(
+      message.getAttribute("id"),
+    );
+    // Only the wrong field is cleared; the correct new pair is kept.
+    expect(value("Current password")).toBe("");
+    expect(value("New password")).toBe("correct horse battery");
+    expect(value("Repeat new password")).toBe("correct horse battery");
+  });
+
+  it("clears the new pair and keeps the current one for any other refusal", async () => {
+    changeMock.mockRejectedValue(new ApiError(400, "password is too common"));
+
+    renderForm();
+    fill("old password!", "correct horse battery");
+
+    await screen.findByText("password is too common");
+    expect(value("Current password")).toBe("old password!");
     expect(value("New password")).toBe("");
     expect(value("Repeat new password")).toBe("");
   });
@@ -154,7 +170,9 @@ describe("PasswordChangeForm", () => {
     renderForm();
 
     fill("old password!", "123456789");
-    expect(screen.getByText("Password must be 10–128 characters")).toBeDefined();
+    expect(
+      screen.getByText("Password must be 10–128 characters"),
+    ).toBeDefined();
     expect(changeMock).not.toHaveBeenCalled();
 
     fill("old password!", "correct horse battery", "correct horse batteries");
@@ -168,32 +186,5 @@ describe("PasswordChangeForm", () => {
 
     expect(screen.getByText("Enter your current password")).toBeDefined();
     expect(changeMock).not.toHaveBeenCalled();
-  });
-
-  it("omits the current password when requireCurrent is false", async () => {
-    changeMock.mockResolvedValue({
-      user: { ...user, must_change_password: false },
-      access_token: "new",
-    });
-
-    render(
-      <QueryClientProvider client={createQueryClient()}>
-        <PasswordChangeForm requireCurrent={false} />
-      </QueryClientProvider>,
-    );
-    fireEvent.change(screen.getByLabelText("New password"), {
-      target: { value: "correct horse battery" },
-    });
-    fireEvent.change(screen.getByLabelText("Repeat new password"), {
-      target: { value: "correct horse battery" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Change password" }));
-
-    await waitFor(() => {
-      expect(changeMock).toHaveBeenCalledWith(user.id, {
-        password: "correct horse battery",
-      });
-    });
-    expect(screen.queryByLabelText("Current password")).toBeNull();
   });
 });

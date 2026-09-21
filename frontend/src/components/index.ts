@@ -61,7 +61,7 @@ export type { SessionStatePillProps } from "./SessionStatePill";
 export type { SectionHeaderProps } from "./SectionHeader";
 
 export { StatusBadge } from "./StatusBadge";
-export type { BadgeState, StatusBadgeProps } from "./StatusBadge";
+export type { StatusBadgeProps } from "./StatusBadge";
 
 export { SubmitButton } from "./SubmitButton";
 export type { SubmitButtonProps, SubmitButtonVariant } from "./SubmitButton";

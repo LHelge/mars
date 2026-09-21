@@ -1,59 +1,39 @@
-// One badge for every state the dashboard, the admin page and the session and
-// task lists show. Only the four state tokens carry colour (`CLAUDE.md`,
-// "Frontend conventions": quiet colour reserved for state); the remaining
-// states are neutral, so a list of finished work reads as quiet as it is.
+// One badge for the lifecycle state of a session (`SessionState`), as the
+// dashboard and the session lists show it. Only the four state tokens carry
+// colour (`CLAUDE.md`, "Frontend conventions": quiet colour reserved for
+// state); `done` is neutral, so a list of finished work reads as quiet as it
+// is. A project's clone state is a different vocabulary and is drawn by
+// `pages/projects/ProjectStatusPill`, which colours its `error` red.
 
-export type BadgeState =
-  | "running"
-  | "parked"
-  | "failed"
-  | "human"
-  | "done"
-  | "creating"
-  | "cloning"
-  | "ready"
-  | "error";
+import type { SessionState } from "../types";
 
 export interface StatusBadgeProps {
-  state: BadgeState;
-  /** Overrides the state's own name. */
-  label?: string;
+  state: SessionState;
 }
 
-const COLOURS: Record<BadgeState, string> = {
+const COLOURS: Record<SessionState, string> = {
   running: "text-state-running",
   parked: "text-state-parked",
   failed: "text-state-failed",
-  human: "text-state-human",
   done: "text-console-muted",
   creating: "text-console-muted",
-  cloning: "text-console-muted",
-  ready: "text-console-muted",
-  error: "text-console-muted",
 };
 
-const LABELS: Record<BadgeState, string> = {
+const LABELS: Record<SessionState, string> = {
   running: "running",
   parked: "parked",
   failed: "failed",
-  human: "needs human",
   done: "done",
   creating: "creating",
-  cloning: "cloning",
-  ready: "ready",
-  error: "error",
 };
 
-export function StatusBadge({ state, label }: StatusBadgeProps) {
+export function StatusBadge({ state }: StatusBadgeProps) {
   return (
     <span
       className={`border-console-border bg-console-surface inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 font-mono text-xs ${COLOURS[state]}`}
     >
-      <span
-        aria-hidden="true"
-        className="size-1.5 rounded-full bg-current"
-      />
-      {label ?? LABELS[state]}
+      <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
+      {LABELS[state]}
     </span>
   );
 }

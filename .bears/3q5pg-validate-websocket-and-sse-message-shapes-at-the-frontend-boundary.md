@@ -1,10 +1,10 @@
 ---
 id: "3q5pg"
 title: Validate WebSocket and SSE message shapes at the frontend boundary
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:44:47.343970291Z"
-updated: "2026-09-21T10:56:47.558117130Z"
+updated: "2026-09-21T22:12:05.067837929Z"
 tags:
   - frontend
   - technical-review
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - "3rgt7"
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: JSON.parse(data) as ServerMessage/TaskEvent asserts a compile-time type but performs no runtime validation. Syntactically valid malformed messages can reach dispatch/reducers and cause exceptions or corrupt cursors/state.

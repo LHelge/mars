@@ -1,16 +1,17 @@
 ---
 id: h53mn
 title: "One launch path for both launch forms: server-default base ref, both invalidations, no navigation after Cancel"
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:54:23.047352111Z"
-updated: "2026-09-21T10:54:23.047352111Z"
+updated: "2026-09-21T22:12:09.365905042Z"
 tags:
   - frontend
   - technical-review
   - bug
   - refactor
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: pages/project/LaunchSessionForm.tsx and tasks/LaunchForTask.tsx implement the same launch twice and have diverged. (Both files changed after the review for the agent-credential notice; line numbers below are from before it, the findings were re-checked on main.)

@@ -559,6 +559,85 @@ async fn secrets_schema_holds_the_documented_guarantees() {
     );
 }
 
+/// The one migration that changes rows rather than schema:
+/// `strip_agent_credentials_from_profiles` (`docs/data-model.md`, "Migration
+/// list for v1"; ADR 0036).
+///
+/// Asserting it means arranging a row it can find, which means stopping the
+/// migrator just short of it, writing the profile the older code was allowed
+/// to write, and then letting the rest run. What the migration owes is that
+/// the credential names are gone and that nothing else about the array is:
+/// the other entries and their order survive.
+#[tokio::test]
+async fn stripping_agent_credentials_leaves_the_other_profile_secrets_in_order() {
+    let (_postgres, pool) = common::db::raw_pool().await;
+
+    MIGRATOR
+        .run_to(version_before(STRIP_AGENT_CREDENTIALS_VERSION), &pool)
+        .await
+        .expect("the migrations before the strip apply");
+
+    // A profile of the shape the rule now refuses: the credential is listed
+    // between two ordinary secrets.
+    let project_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO projects (id, name, remote_url) VALUES ($1, $2, $3)")
+        .bind(project_id)
+        .bind("stripped")
+        .bind("https://example.invalid/stripped.git")
+        .execute(&pool)
+        .await
+        .expect("the project is inserted");
+    let profile_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO agent_profiles (id, project_id, name, image, secrets, partial_messages) \
+         VALUES ($1, $2, $3, $4, $5, TRUE)",
+    )
+    .bind(profile_id)
+    .bind(project_id)
+    .bind("planner")
+    .bind("localhost/mars-stub:latest")
+    .bind(vec![
+        "NPM_TOKEN".to_string(),
+        "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+        "X".to_string(),
+    ])
+    .execute(&pool)
+    .await
+    .expect("the profile is inserted");
+
+    MIGRATOR
+        .run(&pool)
+        .await
+        .expect("the remaining migrations apply");
+
+    let secrets: Vec<String> =
+        sqlx::query_scalar("SELECT secrets FROM agent_profiles WHERE id = $1")
+            .bind(profile_id)
+            .fetch_one(&pool)
+            .await
+            .expect("the profile is readable");
+    assert_eq!(
+        secrets,
+        vec!["NPM_TOKEN".to_string(), "X".to_string()],
+        "the credential must be removed and the rest left in order"
+    );
+}
+
+/// The version of the migration that strips agent credential names, as its
+/// file name carries it.
+const STRIP_AGENT_CREDENTIALS_VERSION: i64 = 20260921055132;
+
+/// The version of the migration immediately before `version`, which is what
+/// [`sqlx::migrate::Migrator::run_to`] takes to stop just short of it.
+fn version_before(version: i64) -> i64 {
+    MIGRATOR
+        .iter()
+        .map(|migration| migration.version)
+        .filter(|candidate| *candidate < version)
+        .max()
+        .unwrap_or_else(|| panic!("{version} is not the first migration"))
+}
+
 /// A syntactically valid UUID that belongs to no row; `scope_id` has no
 /// foreign key, so nothing looks it up.
 const FAKE_SCOPE_ID: &str = "00000000-0000-0000-0000-0000000000ff";

@@ -25,6 +25,18 @@ export default tseslint.config(
     rules: {
       "react-hooks/rules-of-hooks": "error",
       "react-hooks/exhaustive-deps": "error",
+      // A `switch` over a union names every member of it. The frontend's
+      // unions mirror server enums that are only ever added to (`SPEC.md`,
+      // "AgentEvent", "TaskEvent"), and TypeScript calls such a switch
+      // exhaustive without saying whether it covers the cases by name or by a
+      // `default:` that guesses at them. `considerDefaultExhaustiveForUnions`
+      // keeps a deliberate `default:` legal — the forward-compatible arm of a
+      // boundary reducer — while a switch that simply forgot a member is an
+      // error.
+      "@typescript-eslint/switch-exhaustiveness-check": [
+        "error",
+        { considerDefaultExhaustiveForUnions: true },
+      ],
     },
   },
   {

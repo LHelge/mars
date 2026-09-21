@@ -16,6 +16,7 @@
 import { memo } from "react";
 
 import { SubagentGroup } from "../SubagentGroup";
+import type { Message } from "../sessionStore";
 import { useSessionStore } from "../sessionStore";
 import { ToolFrame } from "../tools/ToolFrame";
 import { AssistantText } from "./AssistantText";
@@ -25,8 +26,12 @@ import { SystemMessage } from "./SystemMessage";
 import { ThinkingMessage } from "./ThinkingMessage";
 import { UserMessage } from "./UserMessage";
 
-/** The gutter glyph, quiet enough to scan past and specific enough to find. */
-const GLYPH: Record<string, string> = {
+/**
+ * The gutter glyph, quiet enough to scan past and specific enough to find.
+ * Keyed by `Message["kind"]` and not by `string`, so a new message kind is a
+ * compile error here rather than an empty gutter nobody notices.
+ */
+const GLYPH: Record<Message["kind"], string> = {
   user: "›",
   assistant_text: "",
   thinking: "~",
@@ -101,6 +106,14 @@ export const MessageRow = memo(function MessageRow({
         </ToolFrame>
       );
       break;
+    default: {
+      // Every `Message` kind is rendered above, or this stops compiling. The
+      // arm itself is unreachable: the store's fold produces only these kinds,
+      // and an `AgentEvent` kind it does not know becomes a `raw` message.
+      const unhandled: never = message;
+      body = <RawMessage message={unhandled} />;
+      break;
+    }
   }
 
   return (

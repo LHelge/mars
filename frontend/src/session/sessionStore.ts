@@ -752,6 +752,21 @@ export function foldEvent(state: SessionState, event: AgentEvent): SessionState 
 
     case "raw":
       return placeMessage(next, { id, kind: "raw", native: event.native }, parent);
+
+    default: {
+      // Forward compatibility (`SPEC.md`, "AgentEvent"). Event kinds are only
+      // ever added, and a tab stays open across an orchestrator upgrade, so a
+      // kind this build has never heard of is a thing that happens rather than
+      // a thing that cannot. It is shown as a `raw` row — the transcript is
+      // one event short of legible, not lost — and the caller advances the
+      // cursor over it as over any other, because a fold that returned
+      // nothing would leave `lastSeq` behind and replay the gap for ever.
+      //
+      // The annotation is the compile-time half: every kind the union does
+      // name is still handled above, or this assignment stops compiling.
+      const unhandled: never = event;
+      return placeMessage(next, { id, kind: "raw", native: unhandled }, parent);
+    }
   }
 }
 

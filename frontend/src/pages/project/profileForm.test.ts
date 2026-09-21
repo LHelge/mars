@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { Profile, SecretMeta } from "../../types";
+import type { Profile, ProfileTemplate, SecretMeta } from "../../types";
 import {
   DEFAULT_IDLE_TIMEOUT_SECS,
   defaultInputForKind,
   idleTimeoutError,
   mergeSecretOptions,
   MIN_IDLE_TIMEOUT_SECS,
+  nextFreeName,
+  prefillFromTemplate,
   toFormState,
   toggleMember,
   toInput,
@@ -251,5 +253,106 @@ describe("mergeSecretOptions", () => {
     ]);
 
     expect(options.map((option) => option.name)).toEqual(["EXAMPLE_TOKEN"]);
+  });
+});
+
+describe("nextFreeName", () => {
+  it("keeps the template's own name when nothing has taken it", () => {
+    expect(nextFreeName("reviewer", ["planner", "implementer"])).toBe(
+      "reviewer",
+    );
+  });
+
+  it("suffixes the first free number when the name is taken", () => {
+    expect(nextFreeName("reviewer", ["reviewer"])).toBe("reviewer-2");
+    expect(nextFreeName("reviewer", ["reviewer", "reviewer-2"])).toBe(
+      "reviewer-3",
+    );
+  });
+
+  it("skips over a gap rather than reusing a taken suffix", () => {
+    expect(nextFreeName("reviewer", ["reviewer", "reviewer-3"])).toBe(
+      "reviewer-2",
+    );
+  });
+});
+
+describe("prefillFromTemplate", () => {
+  const TEMPLATE: ProfileTemplate = {
+    name: "reviewer",
+    kind: "conversational",
+    backend: "claude",
+    serves_states: ["review"],
+    mcp_tools: ["list_session_branches"],
+    system_prompt: "You are a reviewer of this project.",
+    is_default: true,
+  };
+
+  it("fills name, states, tools and prompt and leaves the rest at the defaults", () => {
+    const { form, droppedStates } = prefillFromTemplate(TEMPLATE, {
+      defaultImage: "example.invalid/mars/session:1",
+      existingNames: [],
+      queueStates: ["backlog", "ready", "review", "merge"],
+    });
+
+    expect(form.name).toBe("reviewer");
+    expect(form.serves_states).toEqual(["review"]);
+    expect(form.mcp_tools).toEqual(["list_session_branches"]);
+    expect(form.system_prompt).toBe("You are a reviewer of this project.");
+    expect(droppedStates).toEqual([]);
+
+    // Everything the template does not carry is a new profile's default.
+    expect(form.kind).toBe("conversational");
+    expect(form.image).toBe("example.invalid/mars/session:1");
+    expect(form.model).toBe("");
+    expect(form.runtime).toBe("");
+    expect(form.secrets).toEqual([]);
+    expect(form.partial_messages).toBe(true);
+    expect(form.idle_timeout_secs).toBe(String(DEFAULT_IDLE_TIMEOUT_SECS));
+  });
+
+  it("suffixes the name when the project already has that role", () => {
+    const { form } = prefillFromTemplate(TEMPLATE, {
+      defaultImage: "img:1",
+      existingNames: ["planner", "reviewer"],
+      queueStates: ["review"],
+    });
+
+    expect(form.name).toBe("reviewer-2");
+  });
+
+  it("drops a served state this project has no queue state for", () => {
+    const { form, droppedStates } = prefillFromTemplate(
+      { ...TEMPLATE, serves_states: ["review", "triage"] },
+      {
+        defaultImage: "img:1",
+        existingNames: [],
+        queueStates: ["ready", "review"],
+      },
+    );
+
+    expect(form.serves_states).toEqual(["review"]);
+    expect(droppedStates).toEqual(["triage"]);
+  });
+
+  it("keeps the template's states while the project's own are unknown", () => {
+    const { form, droppedStates } = prefillFromTemplate(TEMPLATE, {
+      defaultImage: "img:1",
+      existingNames: [],
+      queueStates: null,
+    });
+
+    expect(form.serves_states).toEqual(["review"]);
+    expect(droppedStates).toEqual([]);
+  });
+
+  it("never carries the template's is_default into the form", () => {
+    const { form } = prefillFromTemplate(TEMPLATE, {
+      defaultImage: "img:1",
+      existingNames: [],
+      queueStates: ["review"],
+    });
+
+    expect(form).not.toHaveProperty("is_default");
   });
 });

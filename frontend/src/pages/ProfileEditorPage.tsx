@@ -24,7 +24,11 @@ import {
 import { useFormSubmit } from "../hooks";
 import { AgentCredentialNotice } from "../secrets/AgentCredentialNotice";
 import { ApiError } from "../services/apiClient";
-import { createProfile, updateProfile } from "../services/profiles";
+import {
+  createProfile,
+  listProfileTemplates,
+  updateProfile,
+} from "../services/profiles";
 import { queryKeys } from "../services/queryKeys";
 import { listSecrets } from "../services/secrets";
 import { listTaskStates } from "../services/taskStates";
@@ -32,11 +36,13 @@ import type { Profile, ProfileKind } from "../types";
 import { PROFILE_GATED_TOOLS } from "../types";
 import { SECRET_NAME_RE, validateSecretName } from "../utils/secretName";
 import {
+  BLANK_TEMPLATE,
   defaultInputForKind,
   idleTimeoutError,
   mergeSecretOptions,
   MIN_IDLE_TIMEOUT_SECS,
   partialMessagesDefault,
+  prefillFromTemplate,
   PROFILE_BACKEND,
   PROFILE_PERMISSION_MODE,
   toFormState,
@@ -60,6 +66,11 @@ export interface ProfileEditorPageProps {
   profile: Profile | null;
   /** The project's default profile image, prefilled when creating. */
   defaultImage: string;
+  /**
+   * The profile names already taken in this project, so a pre-fill from a
+   * role template suffixes its name instead of colliding on save.
+   */
+  existingNames: string[];
   /** Back to the list, after a save or a cancel. */
   onClose: () => void;
 }
@@ -68,6 +79,7 @@ export function ProfileEditorPage({
   projectId,
   profile,
   defaultImage,
+  existingNames,
   onClose,
 }: ProfileEditorPageProps) {
   const queryClient = useQueryClient();
@@ -84,6 +96,25 @@ export function ProfileEditorPage({
   const [partialTouched, setPartialTouched] = useState(false);
   const [newSecret, setNewSecret] = useState("");
   const [newSecretError, setNewSecretError] = useState<string | null>(null);
+
+  /** The template the form was last filled from; `""` is `Blank`. */
+  const [templateName, setTemplateName] = useState(BLANK_TEMPLATE);
+  /** Served states of that template this project has no queue state for. */
+  const [droppedStates, setDroppedStates] = useState<string[]>([]);
+  // Whether a field has been typed since the last pre-fill, so switching
+  // template asks before throwing that work away.
+  const [edited, setEdited] = useState(false);
+
+  // Only when creating: an existing profile has nothing to start from. The
+  // four roles are compiled into the orchestrator, so the answer is constant
+  // per build and never goes stale; a failure simply leaves `Blank`.
+  const templates = useQuery({
+    queryKey: queryKeys.profileTemplates.list(),
+    queryFn: listProfileTemplates,
+    enabled: profile === null,
+    retry: false,
+    staleTime: Infinity,
+  });
 
   const states = useQuery({
     queryKey: queryKeys.projects.taskStates(projectId),
@@ -145,7 +176,55 @@ export function ProfileEditorPage({
   const blocked = timeoutError !== null || nameMissing || imageMissing;
 
   function patch(next: Partial<ProfileFormState>) {
+    setEdited(true);
     setForm((current) => ({ ...current, ...next }));
+  }
+
+  /**
+   * `Start from`: a role template pre-fills the form, `Blank` puts the
+   * defaults back. Nothing is saved here — what lands is whatever the user
+   * then submits, through the ordinary `POST`.
+   */
+  function onTemplateChange(next: string) {
+    if (next === templateName) {
+      return;
+    }
+    if (
+      edited &&
+      !window.confirm(
+        "Replace what you have filled in? The template overwrites the name, served states, git tools and system prompt.",
+      )
+    ) {
+      // The select is controlled, so declining simply re-renders the old value.
+      return;
+    }
+
+    const chosen = (templates.data ?? []).find(
+      (template) => template.name === next,
+    );
+
+    if (chosen === undefined) {
+      setForm(toFormState(defaultInputForKind("conversational", defaultImage)));
+      setDroppedStates([]);
+      setTemplateName(BLANK_TEMPLATE);
+    } else {
+      // States are only dropped once this project's own list has arrived;
+      // until then the template's are kept and the served-states fieldset
+      // flags each unknown one on its own, as it does for an edited profile.
+      const prefill = prefillFromTemplate(chosen, {
+        defaultImage,
+        existingNames,
+        queueStates: states.isSuccess
+          ? queueStates.map((state) => state.name)
+          : null,
+      });
+      setForm(prefill.form);
+      setDroppedStates(prefill.droppedStates);
+      setTemplateName(chosen.name);
+    }
+
+    setPartialTouched(false);
+    setEdited(false);
   }
 
   function onKindChange(kind: ProfileKind) {
@@ -209,6 +288,46 @@ export function ProfileEditorPage({
       <div className="grid gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
         {/* Settings */}
         <div className="flex flex-col gap-3">
+          {/* Only on a new profile (`SPEC.md`, "Frontend", Role templates).
+              With the request still out or failed the select holds `Blank`
+              alone and the editor behaves as it did before. */}
+          {profile === null && (
+            <FormField
+              label="Start from"
+              name="profile-template"
+              value={templateName}
+              onChange={onTemplateChange}
+              hint="A role template fills the name, served states, git tools and prompt; you can change anything before saving."
+            >
+              <select
+                id="profile-template"
+                name="profile-template"
+                value={templateName}
+                onChange={(event) => {
+                  onTemplateChange(event.target.value);
+                }}
+                disabled={save.loading}
+                className={`${INPUT_CLASS} w-full`}
+              >
+                <option value={BLANK_TEMPLATE}>Blank</option>
+                {(templates.data ?? []).map((template) => (
+                  <option key={template.name} value={template.name}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+              {droppedStates.length > 0 && (
+                <p className="text-console-muted text-xs">
+                  This project has no queue state called{" "}
+                  <span className="text-console-text font-mono">
+                    {droppedStates.join(", ")}
+                  </span>
+                  , so the template&rsquo;s served states were left off.
+                </p>
+              )}
+            </FormField>
+          )}
+
           <FormField
             label="Name"
             name="profile-name"
@@ -407,7 +526,9 @@ export function ProfileEditorPage({
             <textarea
               id="profile-system-prompt"
               name="profile-system-prompt"
-              rows={14}
+              // A role prompt is five paragraphs; short enough to scroll, tall
+              // enough that the whole of one is on screen while it is edited.
+              rows={20}
               value={form.system_prompt}
               onChange={(event) => {
                 patch({ system_prompt: event.target.value });

@@ -75,6 +75,16 @@ export const queryKeys = {
       ["projects", id, "agent-credentials"] as const,
   },
 
+  /**
+   * The role templates of `GET /profile-templates`. Not under `projects`: the
+   * answer names no project and is constant for a build, which is why the
+   * editor reads it with a long `staleTime` and never invalidates it.
+   */
+  profileTemplates: {
+    all: ["profile-templates"] as const,
+    list: () => ["profile-templates"] as const,
+  },
+
   secrets: {
     all: ["secrets"] as const,
     /**

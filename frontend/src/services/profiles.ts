@@ -1,8 +1,17 @@
 // `SPEC.md`, "Agent profiles (`/api/projects/{pid}/profiles`)". `PUT` replaces
 // the whole profile rather than patching it.
 
-import type { Profile, ProfileInput } from "../types";
+import type { Profile, ProfileInput, ProfileTemplate } from "../types";
 import { apiDelete, apiGet, apiPost, apiPut } from "./apiClient";
+
+/**
+ * The four role templates (`SPEC.md`, "Role profile templates"), in that
+ * section's order. Top-level rather than project-scoped: the answer does not
+ * depend on the project, and it is the same for every build.
+ */
+export function listProfileTemplates(): Promise<ProfileTemplate[]> {
+  return apiGet<ProfileTemplate[]>("/profile-templates");
+}
 
 /** Oldest first. */
 export function listProfiles(pid: string): Promise<Profile[]> {

@@ -40,6 +40,27 @@ export interface Profile {
 }
 
 /**
+ * One role template of `SPEC.md`, "Role profile templates", as
+ * `GET /profile-templates` serves it: the same four for every caller, with no
+ * project and no ids. Deliberately not a whole `Profile` — a template says
+ * what makes the role a role, and every other field of a profile created from
+ * one is the documented default of "Agent profiles".
+ *
+ * `is_default` is informational — it says which template project creation
+ * makes the project's default — and the editor never sends it on.
+ */
+export interface ProfileTemplate {
+  name: string;
+  kind: ProfileKind;
+  backend: string;
+  /** Names of the seeded queue states; a project may have renamed them away. */
+  serves_states: string[];
+  mcp_tools: string[];
+  system_prompt: string;
+  is_default: boolean;
+}
+
+/**
  * The body of `POST` and `PUT`: the profile without ids and timestamps. `PUT`
  * replaces the whole profile, so an omitted field takes its default again.
  * Only `name` is required; `partial_messages` is optional so the backend

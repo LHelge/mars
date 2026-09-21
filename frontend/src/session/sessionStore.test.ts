@@ -22,6 +22,7 @@ import interjectMidStreamFixture from "./fixtures/interject_mid_stream.json";
 import rawAndUnknownFixture from "./fixtures/raw_and_unknown.json";
 import simpleTurnFixture from "./fixtures/simple_turn.json";
 import splitStreamFixture from "./fixtures/split_stream.json";
+import splitStreamParkedFixture from "./fixtures/split_stream_parked.json";
 import stopAndParkFixture from "./fixtures/stop_and_park.json";
 import subagentFixture from "./fixtures/subagent.json";
 import subagentStreamFixture from "./fixtures/subagent_stream.json";
@@ -41,6 +42,7 @@ const rawAndUnknown = events(rawAndUnknownFixture);
 const interjectMidStream = events(interjectMidStreamFixture);
 const gitMidStream = events(gitMidStreamFixture);
 const splitStream = events(splitStreamFixture);
+const splitStreamParked = events(splitStreamParkedFixture);
 const subagentStream = events(subagentStreamFixture);
 
 function applyAll(
@@ -655,6 +657,7 @@ describe("a streamed block with other rows in the middle", () => {
     const assistant = state.messages.e2 as AssistantTextMessage;
     expect(assistant.text).toBe("Running");
     expect(assistant.streaming).toBe(false);
+    expect(assistant.interrupted).toBe(true);
     expect(state.streamEndSeq).toBe(3);
   });
 
@@ -747,6 +750,71 @@ describe("a history page cut inside a delta run", () => {
     const assistant = state.messages.e2 as AssistantTextMessage;
     expect(assistant.text).toBe("Running");
     expect(assistant.streaming).toBe(false);
+    expect(assistant.interrupted).toBe(true);
+  });
+
+  it("keeps both halves when a park interrupts the live half's deltas", () => {
+    // The live half holds only the deltas after the cut and no completing
+    // `text` ever arrives, so its text is appended, not substituted.
+    const store = createSessionStore();
+    applyAll(store, splitStreamParked.slice(3, 5));
+    const live = store.getState();
+    expect((live.messages.e4 as AssistantTextMessage).text).toBe("two halves");
+    expect((live.messages.e4 as AssistantTextMessage).streaming).toBe(false);
+
+    store.getState().prependHistory(splitStreamParked.slice(0, 3), false);
+    const state = store.getState();
+
+    expect(state.order).toEqual(["e1", "e2", "e5"]);
+    expect(state.messages.e4).toBeUndefined();
+    const assistant = state.messages.e2 as AssistantTextMessage;
+    expect(assistant.text).toBe("The merge joins the two halves");
+    expect(assistant.streaming).toBe(false);
+    expect(assistant.interrupted).toBe(true);
+  });
+
+  it("keeps both halves when a park interrupts a subagent's deltas", () => {
+    const park: AgentEvent = {
+      seq: 6,
+      ts: "2026-01-02T22:00:05Z",
+      kind: "state_change",
+      from: "running",
+      to: "parked",
+      reason: "stopped by user",
+      signal: "SIGINT",
+    };
+    const store = createSessionStore();
+    applyAll(store, [subagentStream[4], park]);
+    store.getState().prependHistory(subagentStream.slice(0, 4), false);
+    const state = store.getState();
+
+    expect(state.subagents).toEqual({ toolu_task_fake: ["e3", "e4"] });
+    expect(state.messages.e5).toBeUndefined();
+    const nested = state.messages.e3 as AssistantTextMessage;
+    expect(nested.text).toBe("Scanning the routes.");
+    expect(nested.streaming).toBe(false);
+    expect(nested.interrupted).toBe(true);
+  });
+
+  it("keeps a later turn's block separate from the interrupted fragment", () => {
+    // Park, resume, a new message and a new block: only transparent rows sit
+    // between the fragment and that block, and it is not the same block.
+    const store = createSessionStore();
+    applyAll(store, splitStreamParked.slice(4));
+    store.getState().prependHistory(splitStreamParked.slice(0, 4), false);
+    const state = store.getState();
+
+    expect(state.order).toEqual(["e1", "e2", "e5", "e6", "e7", "e8"]);
+    const fragment = state.messages.e2 as AssistantTextMessage;
+    expect(fragment.text).toBe("The merge joins the two halves");
+    expect(fragment.streaming).toBe(false);
+    expect(fragment.interrupted).toBe(true);
+
+    const fresh = state.messages.e8 as AssistantTextMessage;
+    expect(fresh.kind).toBe("assistant_text");
+    expect(fresh.text).toBe("A fresh block after the park.");
+    expect(fresh.streaming).toBe(false);
+    expect(fresh.interrupted).toBeUndefined();
   });
 
   it("leaves the fragment streaming when only quiet rows follow", () => {

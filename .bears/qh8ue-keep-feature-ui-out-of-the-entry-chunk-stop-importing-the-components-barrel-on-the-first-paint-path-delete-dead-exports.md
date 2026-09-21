@@ -1,16 +1,17 @@
 ---
 id: qh8ue
 title: "Keep feature UI out of the entry chunk: stop importing the components barrel on the first-paint path; delete dead exports"
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:56:13.188192720Z"
-updated: "2026-09-21T10:56:13.188192720Z"
+updated: "2026-09-21T23:08:47.595388509Z"
 tags:
   - frontend
   - technical-review
   - build
   - refactor
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: src/AuthBootstrap.tsx:27 imports Alert, LoadingState and SubmitButton from "./components". That barrel re-exports SecretsManager, GitActionsPanel, PushForm, DiffView and JsonTree, so Rollup places them in the entry chunk: the built index-*.js (about 280 KB) contains the strings "Add secret", "Replace value", "Force push" and `orchestrator_only`, while SecretsPage-*.js is 2.9 KB. This contradicts SPEC.md, "Code splitting" ("entry bundle carries only what a first paint needs") and the comment at src/App.tsx:9-16, which already explains why App does not import the pages barrel. utils/index.ts has the same hazard (it re-exports diff.ts and the router-dependent useReturnTo).

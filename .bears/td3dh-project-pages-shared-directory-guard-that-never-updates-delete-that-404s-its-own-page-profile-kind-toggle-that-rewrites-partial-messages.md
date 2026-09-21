@@ -1,15 +1,16 @@
 ---
 id: td3dh
 title: "Project pages: shared-directory guard that never updates, delete that 404s its own page, profile-kind toggle that rewrites partial_messages"
-status: open
+status: done
 priority: P3
 created: "2026-09-21T10:55:09.160352674Z"
-updated: "2026-09-21T10:55:09.160352674Z"
+updated: "2026-09-21T23:08:43.194875073Z"
 tags:
   - frontend
   - technical-review
   - bug
 parent: "579dz"
+attempts: 1
 ---
 
 Problem, each small and confirmed by reading:

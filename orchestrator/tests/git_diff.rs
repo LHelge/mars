@@ -378,6 +378,68 @@ async fn a_binary_file_reports_no_counted_lines() {
 }
 
 #[tokio::test]
+async fn a_non_ascii_path_is_literal_in_the_patch_and_in_the_file_list() {
+    let project = Project::create().await;
+    let session_id = project.start_session().await;
+    let work = project.work(session_id);
+
+    // Sorted after the text file, so the binary notice arrives under its own
+    // `diff --git` header and below a file with hunks: the shape that made a
+    // frontend parser attribute the notice to the text file above it.
+    std::fs::write(work.join("döc.md"), "# räksmörgås\n").expect("the text file is written");
+    std::fs::write(work.join("zz-bild.png"), [0u8, 1, 2, 0, 255, 254, 0, 7])
+        .expect("the binary file is written");
+    commit_all(&work, "feat: a non-ASCII name and a binary file").await;
+    project.sync(session_id).await;
+
+    let diff = project.session_diff(session_id).await;
+
+    assert_eq!(
+        summary(&diff),
+        vec![
+            ("döc.md".to_string(), DiffStatus::Added, 1, 0),
+            ("zz-bild.png".to_string(), DiffStatus::Added, 0, 0),
+        ]
+    );
+
+    // `-c core.quotePath=false`: every listed path is spelled in the patch
+    // exactly as the file list spells it, so the panel can match the two.
+    for file in &diff.files {
+        let header = format!("diff --git a/{0} b/{0}", file.path);
+        assert!(
+            diff.patch.contains(&header),
+            "the patch has no `{header}`: {}",
+            diff.patch
+        );
+    }
+    assert!(
+        !diff.patch.contains("\\303"),
+        "the patch C-quoted a path: {}",
+        diff.patch
+    );
+
+    // The binary notice belongs to the binary file, which follows the text
+    // one: git decided the contents, not the test.
+    let text_at = diff
+        .patch
+        .find("diff --git a/döc.md")
+        .expect("the text file has a header");
+    let binary_at = diff
+        .patch
+        .find("diff --git a/zz-bild.png")
+        .expect("the binary file has a header");
+    let notice_at = diff
+        .patch
+        .find("Binary files")
+        .expect("git refused to diff the binary file");
+    assert!(
+        text_at < binary_at && binary_at < notice_at,
+        "the binary notice is not under the binary file's header: {}",
+        diff.patch
+    );
+}
+
+#[tokio::test]
 async fn a_head_that_is_its_own_base_has_nothing_to_show() {
     let project = Project::create().await;
     let base = project.resolved(DEFAULT_BRANCH).await;

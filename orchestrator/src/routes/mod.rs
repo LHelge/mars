@@ -49,7 +49,8 @@ pub fn routes() -> Router<AppState> {
         .merge(health::routes())
         .nest("/auth", auth::routes())
         // One `nest` per prefix — axum panics on two at the same path — so the
-        // git, profile, shared-directory and project-scoped session routes,
+        // git, profile, secret, shared-directory and project-scoped session
+        // routes,
         // which carry their own `{pid}/…` paths, are merged into the projects
         // router rather than nested beside it.
         .nest(
@@ -57,6 +58,7 @@ pub fn routes() -> Router<AppState> {
             projects::routes()
                 .merge(git::routes())
                 .merge(profiles::routes())
+                .merge(secrets::project_routes())
                 .merge(sessions::project_routes())
                 .merge(shared_dirs::routes())
                 .merge(task_states::routes())

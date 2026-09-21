@@ -1,9 +1,14 @@
 //! `/api/secrets` (`SPEC.md`, "Secrets (`/api/secrets`)").
 //!
 //! A thin adapter over [`SecretsService`], which owns every rule the six
-//! endpoints enforce: who may touch which row, what a scope means, what a
-//! rename does to the ciphertext and how far back the audit reaches
-//! (`src/secrets/service.rs`). What is decided here is only what belongs to
+//! `/secrets` endpoints enforce: who may touch which row, what a scope means,
+//! what a rename does to the ciphertext and how far back the audit reaches
+//! (`src/secrets/service.rs`). The seventh endpoint is this resource's one
+//! project-scoped path, `GET /projects/{pid}/agent-credentials`, which is a
+//! preflight over metadata and goes straight to
+//! [`crate::secrets::preview_credential`] — the selection a launch runs —
+//! rather than through the service, because it enforces no rule of its own.
+//! What is decided here is only what belongs to
 //! HTTP — reading a body or a query string, building the caller's [`Actor`],
 //! and choosing the status of a success (201 for a create, 204 for a delete,
 //! 200 otherwise, `SPEC.md`, "REST API"). Failures need no mapping at all:
@@ -32,10 +37,15 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::models::{SecretMeta, SecretScope, SecretUse as SecretUseRow, SecretUsePurpose, User};
+use crate::agent;
+use crate::models::{
+    AgentBackend, SecretMeta, SecretScope, SecretUse as SecretUseRow, SecretUsePurpose, User,
+};
 use crate::prelude::*;
+use crate::repositories::ProjectRepository;
 use crate::routes::CurrentUser;
 use crate::secrets::service::{Actor, CreateSecret, PatchSecret, SecretsService};
+use crate::secrets::{CredentialPreview, preview_credential};
 
 /// The router nested under `/api/secrets`.
 ///
@@ -47,6 +57,17 @@ pub fn routes() -> Router<AppState> {
         .route("/", get(list).post(create))
         .route("/{id}", put(replace).patch(patch).delete(remove))
         .route("/{id}/uses", get(uses))
+}
+
+/// The one project-scoped path of this resource, merged onto `/api/projects`.
+///
+/// `GET /projects/{pid}/agent-credentials` is documented in `SPEC.md`,
+/// "Secrets" and answers about secrets, so the handler lives here rather than
+/// in [`crate::routes::projects`]; the `{pid}` capture is part of the path
+/// rather than of a `nest`, for the reason [`crate::routes::shared_dirs`]
+/// gives (`routes::mod`).
+pub fn project_routes() -> Router<AppState> {
+    Router::new().route("/{pid}/agent-credentials", get(agent_credentials))
 }
 
 /// The service over this request's pool and keyring.
@@ -264,6 +285,80 @@ async fn uses(
     let uses = service(&state).uses(&actor(&user), id, query.limit).await?;
 
     Ok(Json(uses.into_iter().map(SecretUse::from).collect()))
+}
+
+// ---- agent credentials ----
+
+/// `AgentCredentialStatus = { backend, credential: { secret_id, name, scope } |
+/// null }` (`SPEC.md`, "Secrets").
+///
+/// One entry per backend, whether or not it has a credential, so a client can
+/// render a row per backend without knowing the list.
+#[derive(Debug, Serialize)]
+struct AgentCredentialStatus {
+    backend: AgentBackend,
+    credential: Option<AgentCredentialDto>,
+}
+
+/// The credential half of one [`AgentCredentialStatus`]: which row, under
+/// which of the backend's names, at which scope.
+///
+/// Three fields and no more — no `scope_id`, no flag, and structurally no
+/// value: [`CredentialPreview`] has none to serialise, because the preflight
+/// decrypts nothing (`SPEC.md`, "Secrets").
+#[derive(Debug, Serialize)]
+struct AgentCredentialDto {
+    secret_id: Uuid,
+    name: String,
+    scope: SecretScope,
+}
+
+impl From<CredentialPreview> for AgentCredentialDto {
+    fn from(preview: CredentialPreview) -> Self {
+        Self {
+            secret_id: preview.secret_id,
+            name: preview.name.as_str().to_string(),
+            scope: preview.scope,
+        }
+    }
+}
+
+/// `GET /projects/{pid}/agent-credentials` → which credential a session of
+/// this project launched by *the caller* would be given, per backend (404
+/// unknown project).
+///
+/// The project is looked up although the answer barely depends on it —
+/// credentials do not depend on the mirror, so a `cloning` project answers
+/// normally — because an unknown project must be 404 rather than a list of
+/// global credentials for a project that does not exist.
+///
+/// The user scope is the caller's own and there is no `?user_id=`: an admin
+/// gets their own answer like anyone else, which is what "if I launch now"
+/// means. One [`preview_credential`] call per backend, each one query; the
+/// list is one long in v1 and a second backend is a second query rather than a
+/// shared one, because the slot is per backend.
+async fn agent_credentials(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(pid): Path<Uuid>,
+) -> Result<Json<Vec<AgentCredentialStatus>>> {
+    ProjectRepository::new(&state.pool)
+        .find(pid)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    let mut statuses = Vec::with_capacity(agent::BACKENDS.len());
+    for backend in agent::BACKENDS {
+        let names = agent::credential_secret_names(agent::backend_for(*backend).as_ref());
+        let credential = preview_credential(&state.pool, pid, user.id, &names).await?;
+
+        statuses.push(AgentCredentialStatus {
+            backend: *backend,
+            credential: credential.map(AgentCredentialDto::from),
+        });
+    }
+
+    Ok(Json(statuses))
 }
 
 // ---- extraction ----

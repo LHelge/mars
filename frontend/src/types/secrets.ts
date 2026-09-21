@@ -27,6 +27,29 @@ export interface SecretMeta {
   credential_for: AgentBackend | null;
 }
 
+/**
+ * The credential half of one [`AgentCredentialStatus`] (`SPEC.md`, "Secrets"):
+ * which secret row would be injected, under which of the backend's names, from
+ * which scope. Structurally valueless — the preflight decrypts nothing — and
+ * carries no `scope_id`, because the answer is already per caller and per
+ * project.
+ */
+export interface AgentCredential {
+  secret_id: string;
+  name: string;
+  scope: SecretScope;
+}
+
+/**
+ * One entry of `GET /projects/{pid}/agent-credentials` (`SPEC.md`, "Secrets"):
+ * which credential a session of that project launched by *the caller* would be
+ * given, per backend, or `null` when there is none at any scope.
+ */
+export interface AgentCredentialStatus {
+  backend: AgentBackend;
+  credential: AgentCredential | null;
+}
+
 /** A row of `GET /secrets/{id}/uses`. */
 export interface SecretUse {
   session_id: string | null;

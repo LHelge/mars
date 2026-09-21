@@ -31,6 +31,12 @@ import {
   type Api,
 } from "./utils/test-helpers";
 
+// Every other spec's user is given an agent credential by the `api` fixture, so
+// the launch forms take their ordinary path. This file is the one that is
+// *about* having none: the guided form creates the first one, and the launch
+// scenario below starts from the warning.
+test.use({ agentCredential: false });
+
 /** Obviously fake, and the whole point of the scenarios below (rule 3). */
 const VALUE = "fake-value-1";
 const REPLACEMENT = "fake-value-2";
@@ -497,6 +503,78 @@ test("an agent credential is added under its label, and a second kind at that sc
   await expect(
     page.getByText(/Sessions cannot authenticate without one/),
   ).toBeVisible();
+});
+
+test("the launch form warns without a credential, launches anyway, and names the credential once there is one", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  test.slow();
+
+  await loginViaToken(context, user);
+
+  // --- with no credential ---------------------------------------------------
+
+  await page.goto(`/projects/${project.id}?tab=sessions`);
+  const form = page.getByRole("form", { name: "Launch a session" });
+  await expect(form).toBeVisible();
+
+  await expect(
+    form.getByText(
+      "No agent credential: sessions of this profile will fail to authenticate",
+    ),
+  ).toBeVisible();
+  await expect(
+    form.getByRole("button", { name: "Add credential" }),
+  ).toBeVisible();
+  // The ordinary primary action is gone; the launch is the secondary one.
+  await expect(
+    form.getByRole("button", { name: "Launch session" }),
+  ).toHaveCount(0);
+
+  // --- `Launch anyway` still launches (ADR 0036) ----------------------------
+
+  await form.getByLabel("First message (optional)").fill("launched anyway");
+  await form.getByRole("button", { name: "Launch anyway" }).click();
+  await page.waitForURL(/\/sessions\/[0-9a-f-]{8}-/);
+  const sessionId = sessions.track(
+    api,
+    page.url().slice(page.url().lastIndexOf("/") + 1),
+  );
+  await waitForSessionState(api, sessionId, ["running", "done", "failed"]);
+
+  // --- the warning's link is the way to fix it ------------------------------
+
+  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await form.getByRole("button", { name: "Add credential" }).click();
+  await page.waitForURL(/\/secrets$/);
+
+  const credentialForm = page.getByRole("form", {
+    name: "Add agent credential",
+  });
+  await credentialForm.getByLabel("Value").fill(FAKE_OAUTH_TOKEN);
+  await credentialForm
+    .getByRole("button", { name: "Add agent credential" })
+    .click();
+  await expect(secretRow(page, "Claude subscription token")).toBeVisible();
+  trackSecret(api, await readSecret(api, "?scope=user", "CLAUDE_CODE_OAUTH_TOKEN"));
+
+  // --- and the form says whose credential it is -----------------------------
+
+  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await expect(
+    form.getByText("Authenticates with your Claude subscription token"),
+  ).toBeVisible();
+  await expect(
+    form.getByRole("button", { name: "Launch session" }),
+  ).toBeVisible();
+  await expect(
+    form.getByRole("button", { name: "Add credential" }),
+  ).toHaveCount(0);
 });
 
 test("a name that is not an environment-variable name is refused", async ({

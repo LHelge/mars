@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Profile } from "../../types";
+import type { Profile, SecretMeta } from "../../types";
 import {
   DEFAULT_IDLE_TIMEOUT_SECS,
   defaultInputForKind,
   idleTimeoutError,
+  mergeSecretOptions,
   MIN_IDLE_TIMEOUT_SECS,
   toFormState,
   toggleMember,
@@ -199,5 +200,56 @@ describe("toggleMember", () => {
     toggleMember(list, "review");
 
     expect(list).toEqual(["ready"]);
+  });
+});
+
+describe("mergeSecretOptions", () => {
+  /** An ordinary secret; only the fields the picker reads carry meaning. */
+  function secret(name: string, extra: Partial<SecretMeta> = {}): SecretMeta {
+    return {
+      id: `id-${name}`,
+      scope: "global",
+      scope_id: null,
+      name,
+      orchestrator_only: false,
+      key_version: 1,
+      created_by: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      last_used_at: null,
+      credential_for: null,
+      ...extra,
+    };
+  }
+
+  it("sorts the names of every scope into one list", () => {
+    const options = mergeSecretOptions([
+      [secret("ZULU")],
+      [secret("ALPHA")],
+      undefined,
+    ]);
+
+    expect(options.map((option) => option.name)).toEqual(["ALPHA", "ZULU"]);
+  });
+
+  it("keeps the later scope's flag when a name is defined twice", () => {
+    const options = mergeSecretOptions([
+      [secret("SHARED", { orchestrator_only: true })],
+      [secret("SHARED")],
+    ]);
+
+    expect(options).toEqual([{ name: "SHARED", orchestrator_only: false }]);
+  });
+
+  it("leaves out every name the server marked as an agent credential", () => {
+    const options = mergeSecretOptions([
+      [
+        secret("CLAUDE_CODE_OAUTH_TOKEN", { credential_for: "claude" }),
+        secret("ANTHROPIC_API_KEY", { credential_for: "claude" }),
+        secret("EXAMPLE_TOKEN"),
+      ],
+    ]);
+
+    expect(options.map((option) => option.name)).toEqual(["EXAMPLE_TOKEN"]);
   });
 });

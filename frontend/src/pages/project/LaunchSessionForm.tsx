@@ -25,6 +25,8 @@ import {
   SubmitButton,
 } from "../../components";
 import { useFormSubmit } from "../../hooks/useFormSubmit";
+import { AgentCredentialNotice } from "../../secrets/AgentCredentialNotice";
+import { useAgentCredential } from "../../secrets/useAgentCredential";
 import { listProfiles } from "../../services/profiles";
 import { listBranches } from "../../services/projects";
 import { queryKeys } from "../../services/queryKeys";
@@ -85,6 +87,16 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
     rows.find((profile) => profile.is_default) ??
     rows[0];
   const ephemeral = selected?.kind === "ephemeral";
+
+  // Which credential this launch would use, for the profile that is selected
+  // right now (`SPEC.md`, "Frontend", Agent credentials). A missing one warns
+  // and renames the button; it never blocks, because the stub image and an
+  // image with its own authentication need none (ADR 0036).
+  const { credential } = useAgentCredential(
+    project.id,
+    selected?.backend ?? "",
+  );
+  const noCredential = credential === null;
 
   const lookup = useTaskLookup(project.id, taskRef, ready);
   const task = lookup.status === "found" ? lookup.task : null;
@@ -302,8 +314,27 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
         )}
       </div>
 
+      {selected !== undefined && (
+        <AgentCredentialNotice
+          projectId={project.id}
+          backend={selected.backend}
+        />
+      )}
+
       <div className="flex items-center gap-3">
+        {noCredential && (
+          <SubmitButton
+            type="button"
+            loading={false}
+            onClick={() => {
+              void navigate("/secrets");
+            }}
+          >
+            Add credential
+          </SubmitButton>
+        )}
         <SubmitButton
+          variant={noCredential ? "ghost" : "primary"}
           loading={launch.loading}
           disabled={
             !ready ||
@@ -313,7 +344,11 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
             launch.loading
           }
         >
-          {ephemeral ? "Run" : "Launch session"}
+          {noCredential
+            ? "Launch anyway"
+            : ephemeral
+              ? "Run"
+              : "Launch session"}
         </SubmitButton>
         {needsInput && (
           <span className="text-console-muted text-xs">

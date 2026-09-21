@@ -26,6 +26,8 @@ import { Link, useNavigate } from "react-router";
 import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
+import { AgentCredentialNotice } from "../secrets/AgentCredentialNotice";
+import { useAgentCredential } from "../secrets/useAgentCredential";
 import { ApiError } from "../services/apiClient";
 import { listProfiles } from "../services/profiles";
 import { getProject } from "../services/projects";
@@ -147,6 +149,12 @@ function LaunchFormPanel({
 
   const override = baseRef.trim();
   const handoff = task.handoff;
+
+  // The same answer the profile editor and the project's launch form show, for
+  // the profile selected here (`SPEC.md`, "Frontend", Agent credentials). It
+  // warns and renames the button; it never blocks the launch (ADR 0036).
+  const { credential } = useAgentCredential(projectId, selected?.backend ?? "");
+  const noCredential = credential === null;
 
   const launch = useFormSubmit(async () => {
     if (selected === undefined) {
@@ -296,12 +304,31 @@ function LaunchFormPanel({
         />
       </div>
 
+      {selected !== undefined && (
+        <AgentCredentialNotice
+          projectId={projectId}
+          backend={selected.backend}
+        />
+      )}
+
       <div className="flex items-center gap-2">
+        {noCredential && (
+          <SubmitButton
+            type="button"
+            loading={false}
+            onClick={() => {
+              void navigate("/secrets");
+            }}
+          >
+            Add credential
+          </SubmitButton>
+        )}
         <SubmitButton
+          variant={noCredential ? "ghost" : "primary"}
           loading={launch.loading}
           disabled={selected === undefined}
         >
-          {ACTION[kind]}
+          {noCredential ? "Launch anyway" : ACTION[kind]}
         </SubmitButton>
         <SubmitButton
           type="button"

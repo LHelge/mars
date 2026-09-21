@@ -5,6 +5,7 @@
 // (`CLAUDE.md`, rule 3).
 
 import type {
+  AgentCredentialStatus,
   CreateSecretRequest,
   PatchSecretRequest,
   SecretMeta,
@@ -54,6 +55,21 @@ export function patchSecret(
 
 export function deleteSecret(id: string): Promise<void> {
   return apiDelete(`/secrets/${encodeURIComponent(id)}`);
+}
+
+/**
+ * Which agent credential a session of this project, launched by the caller,
+ * would authenticate with — one entry per backend, `credential: null` when
+ * there is none (`SPEC.md`, "Secrets": 404 for an unknown project). It
+ * decrypts nothing and writes no use, so a page may read it as often as it
+ * likes.
+ */
+export function getAgentCredentials(
+  projectId: string,
+): Promise<AgentCredentialStatus[]> {
+  return apiGet<AgentCredentialStatus[]>(
+    `/projects/${encodeURIComponent(projectId)}/agent-credentials`,
+  );
 }
 
 /** The audit trail, newest first. The server caps `limit` at 500. */

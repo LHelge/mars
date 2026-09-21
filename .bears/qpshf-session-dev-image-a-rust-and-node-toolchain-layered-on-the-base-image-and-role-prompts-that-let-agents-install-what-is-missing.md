@@ -2,10 +2,10 @@
 id: qpshf
 title: "Session dev image: a Rust and Node toolchain layered on the base image, and role prompts that let agents install what is missing"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:00:16.816029740Z"
-updated: "2026-09-21T10:00:16.816029740Z"
+updated: "2026-09-21T12:12:51.209360769Z"
 tags:
   - images
   - orchestrator

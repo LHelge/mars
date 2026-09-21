@@ -1,10 +1,10 @@
 ---
 id: vbtbj
 title: "Role templates: reach for `cargo binstall` first and name `cargo install` as the fallback"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-21T11:56:49.474588004Z"
-updated: "2026-09-21T11:56:53.120777858Z"
+updated: "2026-09-21T12:12:47.715589675Z"
 tags:
   - orchestrator
   - profiles

@@ -11,7 +11,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde_json::json;
 
-use super::{AgentBackend, Command, LaunchContext, TranslateState};
+use super::{AgentBackend, Command, CredentialName, LaunchContext, TranslateState};
 use crate::events::{AgentEvent, AgentEventBody, SessionInput};
 use crate::models::AgentBackend as Backend;
 use crate::prelude::*;
@@ -95,6 +95,19 @@ impl AgentBackend for MockAgentBackend {
             Error::Internal("failed to encode the session input".to_string())
         })?;
         Ok(format!("{line}\n"))
+    }
+
+    /// The Claude adapter's two names, in its order.
+    ///
+    /// The mock stands in for whichever backend a test drives, and a launcher
+    /// test that seeds a credential seeds it under a real name, so the mock
+    /// declaring the same list is what keeps those tests shaped like a launch
+    /// (ADR 0036).
+    fn credential_names(&self) -> &'static [CredentialName] {
+        &[
+            CredentialName::ClaudeCodeOauthToken,
+            CredentialName::AnthropicApiKey,
+        ]
     }
 
     fn as_any(&self) -> &dyn Any {

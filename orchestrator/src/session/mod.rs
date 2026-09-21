@@ -51,8 +51,8 @@ pub mod token;
 
 pub use idle_reaper::{SIGKILL_GRACE, reap_idle, sigkill_after};
 pub use launcher::{
-    BOTH_CREDENTIALS_ERROR, FRESH_FETCH_MAX_AGE, LAUNCH_FAILED_REASON, LAUNCHED_REASON, LaunchMode,
-    Launcher,
+    FRESH_FETCH_MAX_AGE, LAUNCH_FAILED_REASON, LAUNCHED_REASON, LaunchMode, Launcher,
+    no_agent_credential_warning,
 };
 pub use owner::{
     COST_ACCOUNTING, CostAccounting, MARS_MCP_SERVER, OwnerContext, ResultSummary, SessionOwner,

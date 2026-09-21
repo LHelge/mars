@@ -232,15 +232,19 @@ jobs:
       # store, where the `load: true` above put it. The buildx builder that
       # `setup-buildx-action` creates runs in its own container with its own
       # store, so a `FROM mars-session-claude:ci` there would miss it and go to
-      # a registry, where no such image exists. `docker build` resolves it from
-      # the daemon, the same path the stub build below already relies on
-      # (`setup-buildx-action` is used with its default `install: false`, so it
-      # does not alias `docker build` to buildx). The cost is that the layers
-      # are not in the Actions cache; this workflow only runs on `images/**`.
+      # a registry, where no such image exists. The daemon's own builder
+      # resolves it from the image store. `BUILDX_BUILDER: default` names that
+      # builder outright, because `setup-buildx-action` leaves its container
+      # builder selected as the current one and a Docker whose `docker build`
+      # forwards to buildx would otherwise build there; a Docker that does not
+      # forward ignores the variable. The cost is that the layers are not in
+      # the Actions cache; this workflow only runs on `images/**`.
       # rustup and the crates.io downloads make a registry hiccup as likely
       # here as for the npm install above, so the same retry-once applies.
       - name: Build the dev session image
         if: matrix.engine == 'docker'
+        env:
+          BUILDX_BUILDER: default
         run: |
           for attempt in 1 2; do
             if docker build --build-arg BASE_IMAGE=mars-session-claude:ci \

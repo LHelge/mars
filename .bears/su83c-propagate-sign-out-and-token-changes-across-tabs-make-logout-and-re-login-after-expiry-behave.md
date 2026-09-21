@@ -1,10 +1,10 @@
 ---
 id: su83c
 title: Propagate sign-out and token changes across tabs; make logout and re-login after expiry behave
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:54:35.034790374Z"
-updated: "2026-09-21T10:56:44.525220288Z"
+updated: "2026-09-21T20:46:10.204191027Z"
 tags:
   - frontend
   - technical-review
@@ -14,6 +14,7 @@ depends_on:
   - "4srw8"
   - xreap
 parent: "579dz"
+attempts: 1
 ---
 
 Problem:

@@ -1,10 +1,10 @@
 ---
 id: ntepg
 title: Resolve repeated socket authentication rejection into an actionable state
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:44:36.634530929Z"
-updated: "2026-09-21T10:50:13.545375192Z"
+updated: "2026-09-21T20:46:03.984665151Z"
 tags:
   - frontend
   - technical-review
@@ -14,6 +14,7 @@ tags:
 depends_on:
   - "4srw8"
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: SessionSocket.handleClose returns after a second authentication close inside AUTH_RETRY_WINDOW_MS. It leaves status 'reconnecting' but schedules no retry, triggers no sign-out and surfaces no error; the claimed foundation redirect in the comment never happens.

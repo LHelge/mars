@@ -31,10 +31,12 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
-use mars_orchestrator::models::TaskState;
+use mars_orchestrator::models::{NewEvent, TaskRef, TaskState};
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::TaskRepository;
-use mars_orchestrator::tracker::{Escalation, TaskDto, TrackerMutation};
+use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
+use mars_orchestrator::tracker::{Escalation, TaskDto, TrackerMutation, delete_task};
+use serde_json::json;
+use sqlx::Postgres;
 use sqlx::postgres::PgListener;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
@@ -604,6 +606,139 @@ async fn mutations_serialise_per_project_and_not_across_projects() {
         .await
         .expect("the second mutation proceeds once the lock is free")
         .expect("the second mutation does not panic");
+}
+
+/// A session-only writer, as the session owner is for a `result` line: the
+/// session row lock, an event batch, and then the usage counters — a second
+/// `UPDATE` of a row this transaction already rewrote, which is what makes
+/// Postgres check the row's foreign keys again and take `FOR KEY SHARE` on the
+/// project, the task and the hand-off it names (`ARCHITECTURE.md`, "Task
+/// tracker", the lock strength).
+async fn open_session_write(
+    pool: &PgPool,
+    session_id: Uuid,
+) -> sqlx::Transaction<'static, Postgres> {
+    let repository = SessionRepository::new(pool);
+    let mut tx = pool.begin().await.expect("the session writer opens");
+    repository
+        .append_events(
+            &mut tx,
+            session_id,
+            &[NewEvent::now(
+                "assistant_message",
+                json!({ "text": "fake" }),
+            )],
+        )
+        .await
+        .expect("the batch is appended under the session row lock");
+
+    tx
+}
+
+async fn finish_session_write(
+    pool: &PgPool,
+    mut tx: sqlx::Transaction<'static, Postgres>,
+    session_id: Uuid,
+) -> Result<()> {
+    SessionRepository::new(pool)
+        .add_usage(&mut tx, session_id, 0.01, 1, 1)
+        .await?;
+    tx.commit().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_session_writer_and_a_mutation_naming_its_session_do_not_deadlock() {
+    let (_postgres, pool) = common::db::test_pool_with(6).await;
+    let fixture = seed(&pool).await;
+
+    // The owner's half first: the session row is held.
+    let writer = open_session_write(&pool, fixture.session_id).await;
+
+    // The tracker's half: the project row is held, and the commit will write
+    // a session link and an event whose foreign keys name that session.
+    let mut mutation = TrackerMutation::begin(
+        &pool,
+        fixture.project_id,
+        TaskActor::Session {
+            session_id: fixture.session_id,
+        },
+    )
+    .await
+    .expect("the mutation opens");
+    let task = task_dto(&mut mutation, &pool, fixture.task_id).await;
+    mutation
+        .emit_task(TaskEventKind::Updated, &task)
+        .expect("the event is emitted");
+    mutation.touch_actor(fixture.task_id);
+
+    // With the project row held `FOR UPDATE` these two waited for each other
+    // until Postgres broke the cycle with 40P01 (kb48s).
+    let (written, committed) = timeout(UNBLOCKED_WITHIN, async {
+        tokio::join!(
+            finish_session_write(&pool, writer, fixture.session_id),
+            mutation.commit(),
+        )
+    })
+    .await
+    .expect("neither transaction waits for the other indefinitely");
+
+    written.expect("the session writer commits");
+    committed.expect("the mutation commits");
+}
+
+#[tokio::test]
+async fn deleting_a_task_waits_for_its_session_instead_of_deadlocking_with_it() {
+    let (_postgres, pool) = common::db::test_pool_with(6).await;
+    let fixture = seed(&pool).await;
+    // A row-level fact no verb arranges without a launch: the session is the
+    // one launched for this task.
+    sqlx::query("UPDATE sessions SET task_id = $2 WHERE id = $1")
+        .bind(fixture.session_id)
+        .bind(fixture.task_id)
+        .execute(&pool)
+        .await
+        .expect("the session is linked to the task");
+
+    let writer = open_session_write(&pool, fixture.session_id).await;
+
+    let deletion_pool = pool.clone();
+    let (project_id, task_id) = (fixture.project_id, fixture.task_id);
+    let deletion = tokio::spawn(async move {
+        let mut mutation =
+            TrackerMutation::begin(&deletion_pool, project_id, TaskActor::System).await?;
+        let task = TaskRepository::new(&deletion_pool)
+            .find_task_for_update(mutation.conn(), project_id, TaskRef::Id(task_id))
+            .await?
+            .ok_or(Error::NotFound)?;
+        delete_task(&mut mutation, &task).await?;
+        mutation.commit().await?;
+
+        Ok::<(), Error>(())
+    });
+
+    // The deletion has to clear `sessions.task_id`, so it waits for the
+    // writer — holding nothing the writer's foreign-key re-check needs.
+    sleep(BLOCKED_FOR).await;
+    assert!(
+        !deletion.is_finished(),
+        "the deletion did not wait for the session row",
+    );
+
+    timeout(
+        UNBLOCKED_WITHIN,
+        finish_session_write(&pool, writer, fixture.session_id),
+    )
+    .await
+    .expect("the session writer is not blocked by the deletion")
+    .expect("the session writer commits");
+
+    timeout(UNBLOCKED_WITHIN, deletion)
+        .await
+        .expect("the deletion proceeds once the session row is free")
+        .expect("the deletion does not panic")
+        .expect("the deletion commits");
 }
 
 fn escalation(fixture: &Fixture) -> Escalation {

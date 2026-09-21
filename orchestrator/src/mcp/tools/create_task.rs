@@ -163,7 +163,7 @@ async fn create(
 ///
 /// Scoped to the calling session's project in the `WHERE` clause, so a parent
 /// in another project is indistinguishable from one that does not exist. The
-/// row is read `FOR UPDATE` like every other task this mutation touches: the
+/// row is read `FOR NO KEY UPDATE` like every other task this mutation touches: the
 /// parent the one-level rule is checked against is then the row the insert
 /// hangs the child off.
 ///

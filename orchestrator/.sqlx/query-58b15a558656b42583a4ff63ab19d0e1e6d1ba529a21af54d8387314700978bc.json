@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT id, project_id, number, title, description, state_id, priority, blocked,\n                           labels, parent_id, assignee_user_id, lease_holder_session_id,\n                           lease_since, attempts, needs_human_reason, current_handoff_id,\n                           created_by_user_id, created_by_session_id, created_at, updated_at,\n                           closed_at\n                    FROM tasks\n                    WHERE id = $1 AND project_id = $2\n                    FOR UPDATE\n                    ",
+  "query": "\n                    SELECT id, project_id, number, title, description, state_id, priority, blocked,\n                           labels, parent_id, assignee_user_id, lease_holder_session_id,\n                           lease_since, attempts, needs_human_reason, current_handoff_id,\n                           created_by_user_id, created_by_session_id, created_at, updated_at,\n                           closed_at\n                    FROM tasks\n                    WHERE id = $1 AND project_id = $2\n                    FOR NO KEY UPDATE\n                    ",
   "describe": {
     "columns": [
       {
@@ -265,5 +265,5 @@
       true
     ]
   },
-  "hash": "e1613bda64ecbd1e8b12340e05f55dafa0e6b117ef59c6f7ffa2c23e81e3bdd9"
+  "hash": "58b15a558656b42583a4ff63ab19d0e1e6d1ba529a21af54d8387314700978bc"
 }

@@ -93,6 +93,25 @@ impl<'a> Transition<'a> {
     }
 }
 
+/// How many sessions are live — `creating` or `running` — in each of the three
+/// scopes the unattended-launch capacity rule bounds.
+///
+/// One value per cap of `ARCHITECTURE.md`, "Task tracker" → "Unattended
+/// launches" → "Capacity", read in one round trip because the three are
+/// compared against each other's caps in the same breath and a launch decided
+/// from three separately-taken counts would be answering about three different
+/// moments. Every count includes *all* live sessions in its scope, whoever
+/// launched them (ADR 0042).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveSessionCounts {
+    /// Live sessions of one agent profile.
+    pub profile: i64,
+    /// Live sessions of the project that profile belongs to.
+    pub project: i64,
+    /// Live sessions on the whole instance.
+    pub instance: i64,
+}
+
 /// What one turn added to a session's counters (`ARCHITECTURE.md`, "Cost
 /// accounting").
 ///
@@ -503,6 +522,50 @@ impl<'a> SessionRepository<'a> {
         .await?;
 
         Ok(count)
+    }
+
+    /// The live-session counts the unattended-launch capacity rule is decided
+    /// from: this profile's, its project's and the instance's.
+    ///
+    /// One statement and one round trip. The `WHERE` carries the one scope all
+    /// three share — `creating` or `running`, the two states that have, or are
+    /// about to have, a container — and the two narrower scopes are `FILTER`
+    /// clauses over the same scan, because the widest of the three is the whole
+    /// table and a `WHERE` cannot be both. The profile filter names the project
+    /// as well as the profile: a profile belongs to one project, so the second
+    /// predicate is redundant by the schema and present by the convention that
+    /// a scoped read says its scope (`CLAUDE.md`, "Backend conventions").
+    ///
+    /// Read on the pool, outside any transaction, which is what makes the
+    /// answer advisory; [`crate::session::capacity`] documents why that is
+    /// enough.
+    pub async fn count_live(
+        &self,
+        project_id: Uuid,
+        profile_id: Uuid,
+    ) -> Result<LiveSessionCounts> {
+        let row = sqlx::query!(
+            r#"
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE profile_id = $2 AND project_id = $1
+                ) AS "profile!",
+                COUNT(*) FILTER (WHERE project_id = $1) AS "project!",
+                COUNT(*) AS "instance!"
+            FROM sessions
+            WHERE state IN ('running'::session_state, 'creating'::session_state)
+            "#,
+            project_id,
+            profile_id,
+        )
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(LiveSessionCounts {
+            profile: row.profile,
+            project: row.project,
+            instance: row.instance,
+        })
     }
 
     /// The ids of every session of this project, whatever its state.

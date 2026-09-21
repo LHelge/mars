@@ -13,6 +13,11 @@
 //! that a dispatcher or a schedule launches through the same path as a person
 //! (`ARCHITECTURE.md`, "Unattended launches").
 //!
+//! [`capacity`] is the question that comes immediately before [`create`] for a
+//! launch with no user behind it: the three caps and the project pause of
+//! `ARCHITECTURE.md`, "Unattended launches", in one answer that says which
+//! bound refused. A user launch never asks it.
+//!
 //! [`prepare`] is what a launch does before it asks the engine for anything:
 //! the session's directories under `DATA_DIR/sessions/<sid>/`, a fresh MCP
 //! bearer token from [`token`] and the `mcp.json` that carries it, written
@@ -45,6 +50,7 @@
 //! gone and fails the ones the restart caught mid-creation
 //! (`ARCHITECTURE.md`, "Restart procedure").
 
+pub mod capacity;
 pub mod create;
 pub mod idle_reaper;
 pub mod launcher;
@@ -56,6 +62,7 @@ pub mod service;
 pub mod task_message;
 pub mod token;
 
+pub use capacity::{CapacityRefusal, LaunchCapacity, unattended_capacity};
 pub use create::{
     LaunchActor, LaunchRequest, NOT_READY, UNKNOWN_PROFILE, UNRESOLVED_BASE, create_session,
 };

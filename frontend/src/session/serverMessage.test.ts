@@ -14,6 +14,9 @@ import { SessionSocket } from "./useSessionSocket";
 
 vi.mock("../services/auth", () => ({
   getAccessToken: vi.fn(() => "token-one"),
+  // The store registry reads the current principal when it creates a store;
+  // this suite signs nobody in.
+  getCurrentUser: vi.fn(() => null),
   refreshAccessToken: vi.fn(),
   onCredentialsReplaced: vi.fn(() => () => {}),
   onSignOut: vi.fn(() => () => {}),

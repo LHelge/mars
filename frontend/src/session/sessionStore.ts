@@ -113,6 +113,13 @@ export type Message =
 export type ConnectionStatus = "connecting" | "live" | "reconnecting";
 
 /**
+ * Where the older-history request stands. `loading` is an actual request in
+ * flight and nothing else, so the transcript's indicator cannot outlive one;
+ * `error` is a request that failed, which is what offers the reader a retry.
+ */
+export type HistoryStatus = "idle" | "loading" | "error";
+
+/**
  * The state shape of `SPEC.md`, "Session state", plus the documented internal
  * cursors the transcript view and the Changes panel need.
  */
@@ -132,6 +139,10 @@ export interface SessionState {
   oldestSeq: number | null;
   /** Whether older history remains behind `oldestSeq`. */
   hasMore: boolean;
+  /** Whether a page before `oldestSeq` is being fetched, and how it ended. */
+  historyStatus: HistoryStatus;
+  /** Why the last older-history request failed; `null` unless `error`. */
+  historyError: string | null;
   /** `seq` of the last `git` event, consumed by the Changes panel. */
   gitEventSeq: number;
   /**
@@ -160,6 +171,12 @@ export interface SessionActions {
   applyEvent: (event: AgentEvent) => void;
   /** An older page, newest-last as the REST endpoint returns it. */
   prependHistory: (events: AgentEvent[], hasMore: boolean) => void;
+  /**
+   * Where the older-history request stands. The owner of the request — the
+   * socket's `loadOlder` — is the only caller: the transcript reads the status
+   * and never sets it.
+   */
+  setHistoryStatus: (status: HistoryStatus, error?: string) => void;
   /**
    * A message the client itself has to show — a socket `error` frame, say —
    * rendered like any other system message but carrying no `seq`, so it never
@@ -200,6 +217,8 @@ export function emptySessionState(): SessionState {
     subagents: {},
     oldestSeq: null,
     hasMore: false,
+    historyStatus: "idle",
+    historyError: null,
     gitEventSeq: 0,
     streamEndSeq: 0,
     turnActive: false,
@@ -984,6 +1003,13 @@ export function createSessionStore(): StoreApi<SessionStore> {
             ...accepted.map((event) => event.seq),
           ),
         };
+      });
+    },
+
+    setHistoryStatus: (status, error) => {
+      set({
+        historyStatus: status,
+        historyError: status === "error" ? (error ?? "unknown error") : null,
       });
     },
 

@@ -73,7 +73,7 @@ function fakeSocket(status: SessionSocketApi["status"] = "live"): FakeSocket {
       status,
       send,
       stop,
-      loadOlder: vi.fn(async () => {}),
+      loadOlder: vi.fn(() => Promise.resolve(true)),
       terminal: {
         open: vi.fn(),
         resize: vi.fn(),

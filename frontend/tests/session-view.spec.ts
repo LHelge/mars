@@ -384,9 +384,10 @@ test("older history loads on scroll-up", async ({
   const rows = transcript(page);
   await pinToLatest(page);
 
-  // The newest page only: the first turn is not in the store at all, and the
-  // transcript says so above itself.
-  await expect(page.getByText("Loading earlier messages")).toBeVisible();
+  // The newest page only: the first turn is not in the store at all. Older
+  // history remains, but nothing is being fetched — the indicator belongs to a
+  // request and not to `hasMore` (`SPEC.md`, "Transcript rendering").
+  await expect(page.getByText("Loading earlier messages")).toHaveCount(0);
   const windowed = await rowCount(page);
   await expect(rows.getByText("hello stub", { exact: true })).toHaveCount(0);
 

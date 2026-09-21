@@ -277,7 +277,7 @@ mars/
 ├── docs/               data model, decisions, open questions
 ├── .github/workflows/  CI: orchestrator, frontend, e2e, images
 ├── .env.example
-├── images/             session container images (claude/, stub/)
+├── images/             session container images (claude/, claude-dev/, stub/)
 ├── nginx/              nginx.conf, default.conf.template and Dockerfile for the frontend image
 ├── deploy/             mars-orchestrator.service, the user unit for the host-run fallback
 ├── scripts/            verify-deployment.sh, the smoke test for a started stack
@@ -336,10 +336,11 @@ cargo run                    # runs migrations, listens on API_PORT and MCP_PORT
 
 ```bash
 podman build -t mars-session-claude:$(sed -n 's/^ARG CLAUDE_CODE_VERSION=//p' images/claude/Dockerfile) -t mars-session-claude:latest images/claude
+podman build -t mars-session-claude-dev:$(sed -n 's/^ARG CLAUDE_CODE_VERSION=//p' images/claude/Dockerfile) -t mars-session-claude-dev:latest images/claude-dev
 podman build -t mars-session-stub:latest images/stub
 ```
 
-The claude image's version tag is the CLI version pinned in `images/claude/Dockerfile` and `mars-session-claude:latest` is an alias for that same build, which is what `SESSION_IMAGE_DEFAULT` points at; the stub image replays a recorded transcript instead of calling a model, so tests run on it without credentials. `ENGINE=podman images/smoke-test.sh` checks both. With Docker, run the same two commands with `docker build`.
+The order matters: the dev image is built `FROM` the base (`ARG BASE_IMAGE=mars-session-claude:latest`), so the base must already exist under that tag. Both take their version tag from the one `ARG CLAUDE_CODE_VERSION=` line in `images/claude/Dockerfile`, so the CLI is pinned in a single place; `:latest` is an alias for the same build, and `SESSION_IMAGE_DEFAULT` points at one of them. The dev image adds a pinned Rust toolchain (rustup and cargo under `/opt`, owned by `agent`), `cargo-binstall`, the system libraries a session cannot install without root, and `corepack` with an unprivileged npm global prefix (`ARCHITECTURE.md`, "Session image"; ADR 0039); it is roughly 1.9 GB against the base's 850 MB, so expect a slow first pull. A repository that needs a system library the dev image does not carry builds its own image `FROM mars-session-claude-dev` and names it in its profiles. The stub image replays a recorded transcript instead of calling a model, so tests run on it without credentials. `ENGINE=podman images/smoke-test.sh` checks the base and the stub. With Docker, run the same commands with `docker build`.
 
 `orchestrator/tests/session_e2e.rs` runs the session lifecycle on real containers and needs the stub image; it takes the tag from `MARS_STUB_IMAGE` and defaults to `localhost/mars-session-stub:dev`, so either build it under that tag (`podman build -t localhost/mars-session-stub:dev images/stub`) or point the variable at the tag you have. `orchestrator/tests/engine.rs` reads the same variable for its one scenario that needs a real session image — the terminal running `/bin/bash -l` as `agent` — but has no default for it: with `MARS_STUB_IMAGE` unset that scenario prints a line and passes, and the rest of the engine suite runs on a plain `alpine` image. Like the rest of the engine suite both run only with `DOCKER_HOST` set, and both run under `cargo test --test engine --test session_e2e` rather than under `cargo nextest`, which excludes them (ADR 0037). The test suite starts its own Postgres through testcontainers; on an engine that cannot publish a port to it, set `MARS_TEST_POSTGRES_URL` (`postgres://user:password@host:port`, no database name) to a throw-away server and the suite uses that instead, building its template database there.
 

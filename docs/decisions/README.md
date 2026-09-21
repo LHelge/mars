@@ -44,3 +44,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0036](0036-agent-credentials-belong-to-the-backend.md) | Agent credentials belong to the backend and are resolved implicitly | accepted |
 | [0037](0037-nextest-runs-the-backend-suite.md) | `cargo nextest` runs the backend suite; the live engine suites keep `cargo test` | accepted |
 | [0038](0038-seed-role-profiles-at-project-creation.md) | Seed the four role profiles at project creation, copied not referenced | accepted |
+| [0039](0039-layered-dev-session-image.md) | A layered dev session image on top of the contract base | accepted |

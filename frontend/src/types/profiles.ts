@@ -35,6 +35,18 @@ export interface Profile {
   partial_messages: boolean;
   idle_timeout_secs: number;
   is_default: boolean;
+  /**
+   * The dispatcher may start a session of this profile by itself. Only an
+   * `ephemeral` profile may carry it, and only while the backend's agent
+   * credential resolves without a user (`SPEC.md`, "Agent profiles";
+   * `ARCHITECTURE.md`, "Task tracker" → "Unattended launches").
+   */
+  auto_launch: boolean;
+  /**
+   * How many live sessions of this profile an unattended launch may leave
+   * behind; at least 1, and read whether or not `auto_launch` is set.
+   */
+  max_concurrent: number;
   created_at: string;
   updated_at: string;
 }
@@ -80,4 +92,8 @@ export interface ProfileInput {
   serves_states?: string[];
   partial_messages?: boolean;
   idle_timeout_secs?: number;
+  /** Defaults to `false` when omitted, on `PUT` as well as on `POST`. */
+  auto_launch?: boolean;
+  /** Defaults to 1 when omitted, on `PUT` as well as on `POST`. */
+  max_concurrent?: number;
 }

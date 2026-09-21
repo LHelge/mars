@@ -30,6 +30,7 @@ import {
   SessionStatePill,
 } from "../../components";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
+import { LaunchSourceTag } from "../../session/LaunchSourceTag";
 import { listProfiles } from "../../services/profiles";
 import { queryKeys } from "../../services/queryKeys";
 import { deleteSession, listProjectSessions } from "../../services/sessions";
@@ -227,14 +228,19 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
                       />
                     </td>
                     <td className={`${CELL} min-w-0`}>
-                      <Link
-                        to={`/sessions/${session.id}`}
-                        className="text-console-text hover:text-console-accent"
-                      >
-                        {session.title ?? (
-                          <span className="text-console-muted">untitled</span>
-                        )}
-                      </Link>
+                      {/* Who launched it, where its name is: a row with no tag
+                          was launched by a person (`SPEC.md`, "Sessions"). */}
+                      <span className="flex flex-wrap items-center gap-2">
+                        <Link
+                          to={`/sessions/${session.id}`}
+                          className="text-console-text hover:text-console-accent"
+                        >
+                          {session.title ?? (
+                            <span className="text-console-muted">untitled</span>
+                          )}
+                        </Link>
+                        <LaunchSourceTag source={session.launch_source} />
+                      </span>
                       {error !== null && (
                         <p className="text-state-failed text-xs">{error}</p>
                       )}

@@ -93,6 +93,17 @@ export function ProjectHeader({
       <div className="border-console-border bg-console-surface flex flex-wrap items-center gap-x-4 gap-y-2 rounded border px-3 py-2">
         <ProjectStatusPill status={project.status} />
 
+        {/* The one thing on this strip that is a state rather than an
+            identifier, and the only reason it takes colour: while it is set,
+            nothing in the project launches itself (`ARCHITECTURE.md`, "Task
+            tracker" → "Unattended launches"). */}
+        {project.automation_paused && (
+          <span className="border-state-parked/60 text-state-parked bg-console-surface inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 font-mono text-xs whitespace-nowrap">
+            <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
+            automation paused
+          </span>
+        )}
+
         <span className="min-w-0 truncate">
           <span className={LABEL}>remote </span>
           <span className={VALUE}>{project.remote_url}</span>
@@ -115,6 +126,13 @@ export function ProjectHeader({
         <span>
           <span className={LABEL}>max attempts </span>
           <span className={VALUE}>{project.max_attempts}</span>
+        </span>
+
+        <span>
+          <span className={LABEL}>session cap </span>
+          <span className={VALUE}>
+            {project.max_concurrent_sessions ?? "none"}
+          </span>
         </span>
 
         <div className="ml-auto flex shrink-0 items-center gap-2">

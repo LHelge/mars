@@ -47,6 +47,8 @@ function project(): Project {
     status_message: null,
     last_fetched_at: null,
     max_attempts: 3,
+    max_concurrent_sessions: null,
+    automation_paused: false,
     created_at: "2026-01-01T00:00:00Z",
     has_credential: true,
   };

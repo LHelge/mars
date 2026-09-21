@@ -26,6 +26,7 @@ function session(
     profile_id: "00000000-0000-4000-8000-0000000000c3",
     kind,
     created_by: null,
+    launch_source: "user",
     title: "Fix the login redirect",
     task_id: null,
     handoff_id: null,

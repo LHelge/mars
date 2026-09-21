@@ -109,6 +109,7 @@ function session(state: SessionState): Session {
     profile_id: "33333333-3333-4333-8333-333333333333",
     kind: "conversational",
     created_by: null,
+    launch_source: "user",
     title: "Fake session",
     task_id: null,
     handoff_id: null,

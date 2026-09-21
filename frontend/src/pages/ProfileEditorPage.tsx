@@ -15,6 +15,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import { Link } from "react-router";
 import {
   Alert,
   CONTROL,
@@ -27,6 +28,7 @@ import {
 } from "../components";
 import { useFormSubmit } from "../hooks";
 import { AgentCredentialNotice } from "../secrets/AgentCredentialNotice";
+import { useAgentCredential } from "../secrets/useAgentCredential";
 import { ApiError } from "../services/apiClient";
 import {
   createProfile,
@@ -43,8 +45,10 @@ import {
   BLANK_TEMPLATE,
   defaultInputForKind,
   idleTimeoutError,
+  maxConcurrentError,
   mergeSecretOptions,
   MIN_IDLE_TIMEOUT_SECS,
+  MIN_MAX_CONCURRENT,
   partialMessagesDefault,
   prefillFromTemplate,
   PROFILE_BACKEND,
@@ -53,6 +57,7 @@ import {
   toggleMember,
   toInput,
   toProfileInput,
+  unattendedCredential,
 } from "./project/profileForm";
 import type { ProfileFormState } from "./project/profileForm";
 
@@ -98,6 +103,8 @@ export function ProfileEditorPage({
   const [partialTouched, setPartialTouched] = useState(false);
   const [newSecret, setNewSecret] = useState("");
   const [newSecretError, setNewSecretError] = useState<string | null>(null);
+  // The server's refusal of `auto_launch`, shown at the toggle it is about.
+  const [autoLaunchError, setAutoLaunchError] = useState<string | null>(null);
 
   /** The template the form was last filled from; `""` is `Blank`. */
   const [templateName, setTemplateName] = useState(BLANK_TEMPLATE);
@@ -156,6 +163,13 @@ export function ProfileEditorPage({
     (state) => state.kind === "queue",
   );
 
+  // The same answer the notice beside the secrets field already renders — one
+  // query per project, shared — read here for the second question it happens
+  // to settle: would this credential resolve for a launch with no user?
+  const backend = profile?.backend ?? PROFILE_BACKEND;
+  const { credential } = useAgentCredential(projectId, backend);
+  const unattended = unattendedCredential(credential);
+
   const save = useFormSubmit(async () => {
     const input = toInput(form);
     try {
@@ -174,6 +188,12 @@ export function ProfileEditorPage({
         setNewSecretError(caught.error);
         return;
       }
+      // So is a refusal of `auto_launch` — the kind, the cap or the missing
+      // credential — which belongs at the toggle, in the server's own words.
+      if (form.kind === "ephemeral" && isAutoLaunchError(caught)) {
+        setAutoLaunchError(caught.error);
+        return;
+      }
       throw caught;
     }
     await queryClient.invalidateQueries({
@@ -183,9 +203,16 @@ export function ProfileEditorPage({
   });
 
   const timeoutError = idleTimeoutError(form.idle_timeout_secs);
+  // The cap is sent on every kind, so it blocks the save on every kind — the
+  // field itself is only shown, and only editable, on an ephemeral profile.
+  const concurrentError = maxConcurrentError(form.max_concurrent);
   const nameMissing = form.name.trim() === "";
   const imageMissing = form.image.trim() === "";
-  const blocked = timeoutError !== null || nameMissing || imageMissing;
+  const blocked =
+    timeoutError !== null ||
+    concurrentError !== null ||
+    nameMissing ||
+    imageMissing;
 
   function patch(next: Partial<ProfileFormState>) {
     setEdited(true);
@@ -240,9 +267,16 @@ export function ProfileEditorPage({
   }
 
   function onKindChange(kind: ProfileKind) {
+    // The auto-launch controls are hidden on a conversational profile and the
+    // payload drops the flag with them, so a half-typed cap must not be left
+    // behind blocking a save nobody can see the reason for.
+    const capStranded =
+      kind !== "ephemeral" && maxConcurrentError(form.max_concurrent) !== null;
+    setAutoLaunchError(null);
     patch({
       kind,
       ...(partialTouched ? {} : { partial_messages: partialMessagesDefault(kind) }),
+      ...(capStranded ? { max_concurrent: String(MIN_MAX_CONCURRENT) } : {}),
     });
   }
 
@@ -504,6 +538,87 @@ export function ProfileEditorPage({
               </span>
             </span>
           </label>
+
+          {/* Only an ephemeral profile can be launched without a person
+              (`SPEC.md`, "Agent profiles"), so the controls exist only for
+              one; `toInput` clears the flag for the other kind whatever the
+              checkbox last held. */}
+          {form.kind === "ephemeral" && (
+            <fieldset className="border-console-border rounded border p-3">
+              <legend className="text-console-muted px-1 text-xs">
+                Unattended launches
+              </legend>
+              <p className="text-console-muted pb-2 text-xs">
+                The dispatcher picks up tasks in the served states above and
+                runs this profile on them without anyone asking. The cap holds
+                it back only: your own launches are never refused by it.
+              </p>
+
+              <label className="text-console-text flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.auto_launch}
+                  onChange={(event) => {
+                    setAutoLaunchError(null);
+                    patch({ auto_launch: event.target.checked });
+                  }}
+                  disabled={save.loading}
+                  className={`${CHECK_CLASS} mt-1`}
+                />
+                <span>
+                  Let the dispatcher launch this profile
+                  <span className="text-console-muted block text-xs">
+                    Off: this profile only runs when someone launches it.
+                  </span>
+                </span>
+              </label>
+
+              {/* Before the save, from the answer the secrets notice below
+                  already read; after it, in the server's own words. */}
+              {form.auto_launch &&
+                autoLaunchError === null &&
+                (unattended === "missing" || unattended === "user_only") && (
+                  <p className="text-state-parked pt-2 text-xs">
+                    {unattended === "missing"
+                      ? "No agent credential is stored for this project."
+                      : "Only your own agent credential is stored."}{" "}
+                    An unattended launch has no user behind it, so it needs one
+                    at the project or shared scope.{" "}
+                    <CredentialLink />
+                  </p>
+                )}
+
+              {autoLaunchError !== null && (
+                <p className="text-state-failed pt-2 text-xs">
+                  {autoLaunchError}. <CredentialLink />
+                </p>
+              )}
+
+              <div className="pt-3">
+                <FieldShell
+                  label="Live sessions of this profile"
+                  name="profile-max-concurrent"
+                  hint="The dispatcher waits once this many are creating or running. Every live session counts, whoever launched it."
+                  error={concurrentError ?? undefined}
+                >
+                  {(control) => (
+                    <input
+                      {...control}
+                      type="number"
+                      min={MIN_MAX_CONCURRENT}
+                      step={1}
+                      value={form.max_concurrent}
+                      onChange={(event) => {
+                        patch({ max_concurrent: event.target.value });
+                      }}
+                      disabled={save.loading}
+                      className={FIELD}
+                    />
+                  )}
+                </FieldShell>
+              </div>
+            </fieldset>
+          )}
         </div>
 
         {/* The prompt and the grants */}
@@ -779,6 +894,35 @@ export function ProfileEditorPage({
         </SubmitButton>
       </div>
     </form>
+  );
+}
+
+/** Where a credential that an unattended launch can resolve is stored. */
+function CredentialLink() {
+  return (
+    <Link to="/secrets" className="underline">
+      Add one under Agent credentials
+    </Link>
+  );
+}
+
+/**
+ * A 400 about `auto_launch` (`SPEC.md`, "Agent profiles"). It is about the one
+ * fieldset, so it is shown there rather than as a form error — and only while
+ * that fieldset is on screen, so nothing is ever swallowed into a hidden
+ * element. The credential refusal is the only one in this editor a user cannot
+ * act on from the editor, hence the pointer to where a project or global
+ * credential is set up.
+ *
+ * `max_concurrent must be at least 1` is deliberately not matched: the field
+ * blocks that value before it is sent, so if the server ever says it anyway,
+ * the form's own alert is where it belongs.
+ */
+function isAutoLaunchError(caught: unknown): caught is ApiError {
+  return (
+    caught instanceof ApiError &&
+    caught.status === 400 &&
+    caught.error.includes("auto_launch")
   );
 }
 

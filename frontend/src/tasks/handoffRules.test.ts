@@ -44,6 +44,7 @@ function session(
     profile_id: "pr1",
     kind: "conversational",
     created_by: null,
+    launch_source: "user",
     title: null,
     task_id: null,
     handoff_id: null,

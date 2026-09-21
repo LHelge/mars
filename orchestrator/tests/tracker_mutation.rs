@@ -21,7 +21,13 @@
 //!
 //! Last, the lock. `begin` is the serialisation point, asserted the only way a
 //! lock can be: a second mutation on the same project must wait for the first
-//! to commit, while one on another project must not.
+//! to commit, while one on another project must not. The same seam carries the
+//! lock *order* (`ARCHITECTURE.md`, "Task tracker" → "Lock order"): a session
+//! deletion cascades into the tracker's tables, so it queues at the project
+//! row like any other tracker writer instead of taking the session row first
+//! and deadlocking against a mutation that reaches the same session through
+//! its own foreign keys. What Postgres does raise as `40P01` is retried whole
+//! and never answered to a caller.
 //!
 //! Needs a container engine; see `tests/common/db.rs`.
 
@@ -34,7 +40,9 @@ use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{NewEvent, TaskRef, TaskState};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
-use mars_orchestrator::tracker::{Escalation, TaskDto, TrackerMutation, delete_task};
+use mars_orchestrator::tracker::{
+    Escalation, TaskDto, TrackerMutation, delete_task, retry_on_serialization_failure,
+};
 use serde_json::json;
 use sqlx::Postgres;
 use sqlx::postgres::PgListener;
@@ -751,4 +759,165 @@ fn escalation(fixture: &Fixture) -> Escalation {
         assignee_user_id: Some(fixture.user_id),
         reason: "stalled".to_string(),
     }
+}
+
+// ---- lock order and the deadlock retry ----
+
+/// Raise a genuine Postgres `40P01` and return it as the crate's `Error`.
+///
+/// A real `deadlock_detected` rather than a hand-built one: the retry decides
+/// on the SQLSTATE `sqlx` carries, so the test has to hand it a database error
+/// that really carries it.
+async fn deadlock_error(pool: &PgPool) -> Error {
+    sqlx::query("DO $$ BEGIN RAISE EXCEPTION 'deadlock detected' USING ERRCODE = '40P01'; END $$;")
+        .execute(pool)
+        .await
+        .expect_err("the statement raises")
+        .into()
+}
+
+#[tokio::test]
+async fn deleting_a_session_queues_behind_a_tracker_mutation_instead_of_deadlocking() {
+    // The mutation, the deletion and the helpers each want a connection.
+    let (_postgres, pool) = common::db::test_pool_with(6).await;
+    let fixture = seed(&pool).await;
+
+    // The session created the task, so the deletion's referential action —
+    // `tasks.created_by_session_id ON DELETE SET NULL` — has to lock the very
+    // task row the mutation below holds (`docs/data-model.md`, `sessions`).
+    sqlx::query("UPDATE tasks SET created_by_session_id = $1 WHERE id = $2")
+        .bind(fixture.session_id)
+        .bind(fixture.task_id)
+        .execute(&pool)
+        .await
+        .expect("the task records its creating session");
+
+    // The tracker mutation: the project row, then the task row, and a
+    // `task_sessions` link owed to that same session — which is where its
+    // commit takes `FOR KEY SHARE` on the session row.
+    let mut mutation = TrackerMutation::begin(
+        &pool,
+        fixture.project_id,
+        TaskActor::Session {
+            session_id: fixture.session_id,
+        },
+    )
+    .await
+    .expect("the mutation opens");
+    TaskRepository::new(&pool)
+        .find_task_for_update(
+            mutation.conn(),
+            fixture.project_id,
+            TaskRef::Id(fixture.task_id),
+        )
+        .await
+        .expect("the task reads")
+        .expect("the task is in this project");
+    let dto = task_dto(&mut mutation, &pool, fixture.task_id).await;
+    mutation
+        .emit_task(TaskEventKind::Updated, &dto)
+        .expect("the event is emitted");
+    mutation.touch(fixture.task_id, fixture.session_id);
+
+    // The deletion, in its own transaction, while the mutation is still open.
+    let delete_pool = pool.clone();
+    let project_id = fixture.project_id;
+    let session_id = fixture.session_id;
+    let delete = tokio::spawn(async move {
+        let mut tx = delete_pool.begin().await.expect("the transaction opens");
+        let deleted = SessionRepository::new(&delete_pool)
+            .delete(&mut tx, project_id, session_id)
+            .await
+            .expect("the delete runs");
+        tx.commit().await.expect("the deletion commits");
+        deleted
+    });
+
+    // It waits at the project row. Without that lock it would go straight for
+    // the task row the mutation holds, and the commit below — reaching the
+    // session row it holds — would close the cycle.
+    sleep(BLOCKED_FOR).await;
+    assert!(
+        !delete.is_finished(),
+        "the session deletion did not wait for the project lock",
+    );
+
+    mutation
+        .commit()
+        .await
+        .expect("the mutation commits rather than deadlocking with the deletion");
+
+    let deleted = timeout(UNBLOCKED_WITHIN, delete)
+        .await
+        .expect("the deletion proceeds once the project lock is free")
+        .expect("the deletion does not panic");
+    assert!(deleted, "the session row was deleted");
+
+    // The link the mutation wrote went with the session, which is the cascade
+    // the deletion queued for.
+    assert!(session_links(&pool, fixture.task_id).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_deadlocked_operation_is_retried_instead_of_being_answered() {
+    let (_postgres, pool) = common::db::test_pool().await;
+
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let outcome = retry_on_serialization_failure("test_operation", || async {
+        let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if attempt == 0 {
+            return Err(deadlock_error(&pool).await);
+        }
+
+        Ok(attempt)
+    })
+    .await
+    .expect("the second attempt answers");
+
+    assert_eq!(outcome, 1, "the answer is the retried attempt's");
+    assert_eq!(
+        attempts.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the operation ran exactly twice",
+    );
+}
+
+#[tokio::test]
+async fn an_operation_that_deadlocks_every_time_gives_up_after_three_attempts() {
+    let (_postgres, pool) = common::db::test_pool().await;
+
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let error = retry_on_serialization_failure("test_operation", || async {
+        attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err::<(), _>(deadlock_error(&pool).await)
+    })
+    .await
+    .expect_err("every attempt deadlocked");
+
+    assert!(error.is_serialization_failure());
+    assert_eq!(
+        attempts.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "the retry is bounded at three attempts",
+    );
+}
+
+#[tokio::test]
+async fn a_failure_that_is_not_a_deadlock_is_answered_at_once() {
+    let (_postgres, _pool) = common::db::test_pool().await;
+
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let error = retry_on_serialization_failure("test_operation", || async {
+        attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err::<(), _>(Error::Conflict("task is not claimable".into()))
+    })
+    .await
+    .expect_err("the conflict is the answer");
+
+    assert_eq!(error.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        attempts.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a conflict is not retried",
+    );
 }

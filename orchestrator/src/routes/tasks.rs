@@ -78,7 +78,7 @@ use crate::tracker::tasks::{
 };
 use crate::tracker::{
     CommentAuthor, CommentDto, HandoffService, TaskDetailDto, TaskDto, TrackerMutation,
-    add_comment, dependencies, release_by_user,
+    add_comment, dependencies, release_by_user, retry_on_serialization_failure,
 };
 
 /// What `GET /tasks` without a `state_kind` is told (400).
@@ -182,10 +182,15 @@ async fn create(
         created_by: CreatedBy::User(user.id),
     };
 
-    let mut mutation =
-        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
-    let task = create_task(&mut mutation, input).await?;
-    mutation.commit().await?;
+    let task = retry_on_serialization_failure("create_task", || async {
+        let mut mutation =
+            TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+        let task = create_task(&mut mutation, input.clone()).await?;
+        mutation.commit().await?;
+
+        Ok(task)
+    })
+    .await?;
 
     Ok((StatusCode::CREATED, Json(task)))
 }
@@ -377,31 +382,39 @@ async fn update(
     // rule, so the handler parses, dispatches and maps. A user is not bound by
     // leases here either (`SPEC.md`, "Code hand-offs and review").
     if let Some(handoff) = body.handoff {
-        let published = HandoffService::from_state(&state)
-            .update_with_handoff(
-                pid,
-                reference,
-                input,
-                handoff,
-                HandoffCaller::User { user_id: user.id },
-            )
-            .await?;
+        let published = retry_on_serialization_failure("publish_handoff", || async {
+            HandoffService::from_state(&state)
+                .update_with_handoff(
+                    pid,
+                    reference,
+                    input.clone(),
+                    handoff.clone(),
+                    HandoffCaller::User { user_id: user.id },
+                )
+                .await
+        })
+        .await?;
 
         return Ok(Json(published));
     }
 
-    let mut mutation =
-        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+    let outcome = retry_on_serialization_failure("update_task", || async {
+        let mut mutation =
+            TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
 
-    let task = locked_task(&mut mutation, pid, reference).await?;
+        let task = locked_task(&mut mutation, pid, reference).await?;
 
-    let outcome = update_task(&mut mutation, &task, input).await?;
+        let outcome = update_task(&mut mutation, &task, input.clone()).await?;
 
-    if outcome.changed {
-        mutation.commit().await?;
-    } else {
-        mutation.no_change().await?;
-    }
+        if outcome.changed {
+            mutation.commit().await?;
+        } else {
+            mutation.no_change().await?;
+        }
+
+        Ok(outcome)
+    })
+    .await?;
 
     Ok(Json(outcome.task))
 }
@@ -434,7 +447,10 @@ async fn remove(
 ) -> Result<StatusCode> {
     let reference = task_ref(&id)?;
 
-    delete_task_with_refs(&state, pid, reference, TaskActor::User { user_id: user.id }).await?;
+    retry_on_serialization_failure("delete_task", || async {
+        delete_task_with_refs(&state, pid, reference, TaskActor::User { user_id: user.id }).await
+    })
+    .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -480,14 +496,19 @@ async fn add_dependency(
         None => TaskDependencyKind::default(),
     };
 
-    let mut mutation =
-        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+    let task = retry_on_serialization_failure("add_dependency", || async {
+        let mut mutation =
+            TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
 
-    let task = locked_task(&mut mutation, pid, dependant).await?;
-    let depends_on = dependencies::resolve_dependency(&mut mutation, prerequisite).await?;
-    let task = dependencies::add_dependency(&mut mutation, &task, &depends_on, kind).await?;
+        let task = locked_task(&mut mutation, pid, dependant).await?;
+        let depends_on = dependencies::resolve_dependency(&mut mutation, prerequisite).await?;
+        let task = dependencies::add_dependency(&mut mutation, &task, &depends_on, kind).await?;
 
-    mutation.commit().await?;
+        mutation.commit().await?;
+
+        Ok(task)
+    })
+    .await?;
 
     Ok(Json(task))
 }
@@ -526,14 +547,19 @@ async fn remove_dependency(
         None => return Err(Error::BadRequest(KIND_REQUIRED.into())),
     };
 
-    let mut mutation =
-        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+    let task = retry_on_serialization_failure("remove_dependency", || async {
+        let mut mutation =
+            TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
 
-    let task = locked_task(&mut mutation, pid, dependant).await?;
-    let depends_on = dependencies::resolve_dependency(&mut mutation, prerequisite).await?;
-    let task = dependencies::remove_dependency(&mut mutation, &task, &depends_on, kind).await?;
+        let task = locked_task(&mut mutation, pid, dependant).await?;
+        let depends_on = dependencies::resolve_dependency(&mut mutation, prerequisite).await?;
+        let task = dependencies::remove_dependency(&mut mutation, &task, &depends_on, kind).await?;
 
-    mutation.commit().await?;
+        mutation.commit().await?;
+
+        Ok(task)
+    })
+    .await?;
 
     Ok(Json(task))
 }
@@ -563,19 +589,24 @@ async fn comment(
 ) -> Result<(StatusCode, Json<CommentDto>)> {
     let reference = task_ref(&id)?;
 
-    let mut mutation =
-        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+    let comment = retry_on_serialization_failure("comment_task", || async {
+        let mut mutation =
+            TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
 
-    let task = locked_task(&mut mutation, pid, reference).await?;
-    let comment = add_comment(
-        &mut mutation,
-        &task,
-        CommentAuthor::User(user.id),
-        &body.body,
-    )
+        let task = locked_task(&mut mutation, pid, reference).await?;
+        let comment = add_comment(
+            &mut mutation,
+            &task,
+            CommentAuthor::User(user.id),
+            &body.body,
+        )
+        .await?;
+
+        mutation.commit().await?;
+
+        Ok(comment)
+    })
     .await?;
-
-    mutation.commit().await?;
 
     Ok((StatusCode::CREATED, Json(comment)))
 }
@@ -669,16 +700,21 @@ async fn release(
 ) -> Result<Json<TaskDto>> {
     let reference = task_ref(&id)?;
 
-    let mut mutation =
-        TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+    let released = retry_on_serialization_failure("release_task", || async {
+        let mut mutation =
+            TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
 
-    let task = TaskRepository::new(&state.pool)
-        .find_task_for_update(mutation.conn(), pid, reference)
-        .await?
-        .ok_or(Error::NotFound)?;
+        let task = TaskRepository::new(&state.pool)
+            .find_task_for_update(mutation.conn(), pid, reference)
+            .await?
+            .ok_or(Error::NotFound)?;
 
-    let released = release_by_user(&mut mutation, &task).await?;
-    mutation.commit().await?;
+        let released = release_by_user(&mut mutation, &task).await?;
+        mutation.commit().await?;
+
+        Ok(released)
+    })
+    .await?;
 
     Ok(Json(released))
 }

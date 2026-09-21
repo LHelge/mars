@@ -56,7 +56,7 @@ use crate::models::{AgentProfile, ProfileInput};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::routes::{CurrentUser, Path};
-use crate::tracker::TrackerMutation;
+use crate::tracker::{TrackerMutation, retry_on_serialization_failure};
 
 /// The router nested under `/api/projects`.
 ///
@@ -125,15 +125,21 @@ async fn create(
     let tasks = TaskRepository::new(&state.pool);
 
     let actor = TaskActor::User { user_id: user.id };
-    let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
-    let mut locked = mutation.conn();
-    let inserted = projects.insert_profile(&mut locked, &profile).await?;
-    tasks
-        .set_profile_states_by_name(locked, pid, inserted.id, &profile.serves_states)
-        .await?;
-    // Served states are a tracker mutation but not a board edit, so the batch
-    // is empty and the commit notifies nothing (`SPEC.md`, "TaskEvent").
-    mutation.commit().await?;
+    let inserted = retry_on_serialization_failure("create_profile", || async {
+        let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
+        let mut locked = mutation.conn();
+        let inserted = projects.insert_profile(&mut locked, &profile).await?;
+        tasks
+            .set_profile_states_by_name(locked, pid, inserted.id, &profile.serves_states)
+            .await?;
+        // Served states are a tracker mutation but not a board edit, so the
+        // batch is empty and the commit notifies nothing (`SPEC.md`,
+        // "TaskEvent").
+        mutation.commit().await?;
+
+        Ok(inserted)
+    })
+    .await?;
 
     info!(project_id = %pid, profile_id = %inserted.id, "profile created");
 
@@ -187,18 +193,23 @@ async fn update(
     let tasks = TaskRepository::new(&state.pool);
 
     let actor = TaskActor::User { user_id: user.id };
-    let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
-    let mut locked = mutation.conn();
-    // Before the states are resolved, so a profile of another project is a 404
-    // and not the 400 an unknown state name would otherwise win.
-    let updated = projects
-        .update_profile(&mut locked, pid, id, &resolved)
-        .await?
-        .ok_or(Error::NotFound)?;
-    tasks
-        .set_profile_states_by_name(locked, pid, updated.id, &resolved.serves_states)
-        .await?;
-    mutation.commit().await?;
+    retry_on_serialization_failure("update_profile", || async {
+        let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
+        let mut locked = mutation.conn();
+        // Before the states are resolved, so a profile of another project is a
+        // 404 and not the 400 an unknown state name would otherwise win.
+        let updated = projects
+            .update_profile(&mut locked, pid, id, &resolved)
+            .await?
+            .ok_or(Error::NotFound)?;
+        tasks
+            .set_profile_states_by_name(locked, pid, updated.id, &resolved.serves_states)
+            .await?;
+        mutation.commit().await?;
+
+        Ok(())
+    })
+    .await?;
 
     info!(project_id = %pid, profile_id = %id, "profile updated");
 
@@ -222,15 +233,20 @@ async fn remove(
     let projects = ProjectRepository::new(&state.pool);
 
     let actor = TaskActor::User { user_id: user.id };
-    let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
-    if !projects
-        .delete_profile(&mut mutation.conn(), pid, id)
-        .await?
-    {
-        // Dropping the mutation rolls it back and releases the lock.
-        return Err(Error::NotFound);
-    }
-    mutation.commit().await?;
+    retry_on_serialization_failure("delete_profile", || async {
+        let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
+        if !projects
+            .delete_profile(&mut mutation.conn(), pid, id)
+            .await?
+        {
+            // Dropping the mutation rolls it back and releases the lock.
+            return Err(Error::NotFound);
+        }
+        mutation.commit().await?;
+
+        Ok(())
+    })
+    .await?;
 
     info!(project_id = %pid, profile_id = %id, "profile deleted");
 

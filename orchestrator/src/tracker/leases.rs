@@ -60,6 +60,7 @@ use crate::tracker::escalation::{
 use crate::tracker::state::{StateChangeOptions, StateEventKind, change_state};
 use crate::tracker::{
     CommentAuthor, Escalation, TaskDto, TaskSummary, TrackerMutation, add_comment,
+    retry_on_serialization_failure,
 };
 
 /// The conflict every lost claim answers with (`SPEC.md`, `claim`).
@@ -387,6 +388,23 @@ impl ReleaseReason {
 /// rows. The returned escalations are the emails the commit made due, for the
 /// caller to send outside the transaction.
 pub async fn release_leases_for_session(
+    pool: &PgPool,
+    session_id: Uuid,
+    reason: ReleaseReason,
+) -> Result<Vec<Escalation>> {
+    // The whole release, retried if Postgres aborts it as a deadlock victim:
+    // it rolled back whole, and the held list is read again from the state the
+    // winner left (`ARCHITECTURE.md`, "Task tracker" -> "Lock order"). Both
+    // callers — the session hook and the stuck-task reaper — inherit the bound
+    // from here rather than each writing a loop of their own.
+    retry_on_serialization_failure("release_leases_for_session", || async {
+        release_leases_once(pool, session_id, reason).await
+    })
+    .await
+}
+
+/// One attempt of [`release_leases_for_session`].
+async fn release_leases_once(
     pool: &PgPool,
     session_id: Uuid,
     reason: ReleaseReason,

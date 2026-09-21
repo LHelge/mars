@@ -86,6 +86,17 @@ pub struct McpError {
     /// Only ever `Some` for a git merge or rebase that stopped on conflicting
     /// paths; the order is git's and is preserved.
     pub conflicts: Option<Vec<String>>,
+    /// Was this `internal` failure a Postgres deadlock or serialisation
+    /// abort?
+    ///
+    /// It never reaches the wire — [`ErrorData`] carries the six codes and
+    /// nothing else — and exists only so the dispatch boundary can tell the
+    /// one failure worth attempting again from every other `internal` one.
+    /// The transaction behind it was rolled back whole, so the tool call can
+    /// simply be made again (`ARCHITECTURE.md`, "Task tracker" → "Lock
+    /// order"). Set by `From<Error>` alone; every constructor leaves it
+    /// `false`.
+    pub retry: bool,
 }
 
 impl McpError {
@@ -94,6 +105,7 @@ impl McpError {
             code,
             message: message.into(),
             conflicts: None,
+            retry: false,
         }
     }
 
@@ -156,6 +168,16 @@ impl From<Error> for McpError {
         let status = err.status();
 
         if status.is_server_error() {
+            // A deadlock is the one 5xx the dispatch boundary retries rather
+            // than answers, so it is not logged as an internal error here: the
+            // retry either succeeds or gives up with its own `error!`.
+            if err.is_serialization_failure() {
+                return McpError {
+                    retry: true,
+                    ..McpError::internal()
+                };
+            }
+
             // The one place the detail is allowed to exist, and it goes to the
             // log, never to the agent (`CLAUDE.md` rule 3).
             error!(error = ?err, "internal error");

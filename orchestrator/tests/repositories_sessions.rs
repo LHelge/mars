@@ -368,13 +368,23 @@ async fn a_session_survives_an_insert_find_list_update_delete_round_trip() {
             .await
             .unwrap()
     );
-    assert!(!repository.delete(&mut tx, Uuid::new_v4()).await.unwrap());
+    assert!(
+        !repository
+            .delete(&mut tx, fixture.project_id, Uuid::new_v4())
+            .await
+            .unwrap()
+    );
     tx.commit().await.unwrap();
 
     // Events cascade with the session row.
     append(&pool, new.id, &text_events(2)).await;
     let mut tx = pool.begin().await.unwrap();
-    assert!(repository.delete(&mut tx, new.id).await.unwrap());
+    assert!(
+        repository
+            .delete(&mut tx, fixture.project_id, new.id)
+            .await
+            .unwrap()
+    );
     tx.commit().await.unwrap();
 
     assert!(repository.find(new.id).await.unwrap().is_none());

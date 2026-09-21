@@ -112,7 +112,7 @@ use crate::session::{
     HandoffContext, LaunchMode, McpToken, Phase, QueuedInput, SessionRegistry, SessionService,
     SubmitResult, generated_task_message,
 };
-use crate::tracker::{TaskDto, TrackerMutation, claim_for_launch};
+use crate::tracker::{TaskDto, TrackerMutation, claim_for_launch, retry_on_serialization_failure};
 
 /// What a create against a project that has no repository to clone is told
 /// (409).
@@ -516,6 +516,26 @@ struct LaunchBase<'a> {
 /// claim. An explicit `base_ref` overrides the hand-off commit and leaves
 /// `handoff_id` null, and the generated message says so.
 async fn insert_claiming(
+    state: &AppState,
+    profile: &AgentProfile,
+    user_id: Uuid,
+    task_id: Uuid,
+    base: LaunchBase<'_>,
+    title: Option<&str>,
+    token: &McpToken,
+) -> Result<(Session, Option<String>)> {
+    // The whole transaction is retried if Postgres aborts it as a deadlock
+    // victim: it rolled back whole, so nothing of the session or the claim
+    // survived it to be half-applied (`ARCHITECTURE.md`, "Task tracker" →
+    // "Lock order").
+    retry_on_serialization_failure("launch_session", || async {
+        insert_claiming_once(state, profile, user_id, task_id, base, title, token).await
+    })
+    .await
+}
+
+/// One attempt of [`insert_claiming`], from the project lock to the commit.
+async fn insert_claiming_once(
     state: &AppState,
     profile: &AgentProfile,
     user_id: Uuid,

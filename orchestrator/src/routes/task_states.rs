@@ -50,10 +50,10 @@ use crate::models::{TaskState, TaskStateKind, TaskStateName};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::routes::{CurrentUser, Path};
-use crate::tracker::TrackerMutation;
 use crate::tracker::states::{
     NewStateInput, StateUpdate, create_state, delete_state, update_state,
 };
+use crate::tracker::{TrackerMutation, retry_on_serialization_failure};
 
 /// What a `kind` that is not one of the three is told (400).
 const INVALID_KIND: &str = "invalid state kind";
@@ -104,17 +104,23 @@ async fn create(
     let name = TaskStateName::parse(&body.name)?;
 
     let actor = TaskActor::User { user_id: user.id };
-    let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
-    let created = create_state(
-        &mut mutation,
-        NewStateInput {
-            name: name.into(),
-            kind,
-            position: body.position,
-        },
-    )
+    let name: String = name.into();
+    let created = retry_on_serialization_failure("create_task_state", || async {
+        let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
+        let created = create_state(
+            &mut mutation,
+            NewStateInput {
+                name: name.clone(),
+                kind,
+                position: body.position,
+            },
+        )
+        .await?;
+        mutation.commit().await?;
+
+        Ok(created)
+    })
     .await?;
-    mutation.commit().await?;
 
     info!(project_id = %pid, state_id = %created.id, "task state created");
 
@@ -192,25 +198,26 @@ async fn update(
     }
 
     let actor = TaskActor::User { user_id: user.id };
-    let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
-    let (updated, changed) = update_state(
-        &mut mutation,
-        &name,
-        StateUpdate {
-            name: body.name,
-            position: body.position,
-        },
-    )
-    .await?;
+    let update = StateUpdate {
+        name: body.name,
+        position: body.position,
+    };
+    let updated = retry_on_serialization_failure("update_task_state", || async {
+        let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
+        let (updated, changed) = update_state(&mut mutation, &name, update.clone()).await?;
 
-    if changed {
-        mutation.commit().await?;
-        info!(project_id = %pid, state_id = %updated.id, "task state updated");
-    } else {
-        // Nothing was written, so there is nothing to commit and nothing to
-        // announce; the 200 answers with the state as it stands.
-        mutation.no_change().await?;
-    }
+        if changed {
+            mutation.commit().await?;
+            info!(project_id = %pid, state_id = %updated.id, "task state updated");
+        } else {
+            // Nothing was written, so there is nothing to commit and nothing to
+            // announce; the 200 answers with the state as it stands.
+            mutation.no_change().await?;
+        }
+
+        Ok(updated)
+    })
+    .await?;
 
     Ok(Json(updated))
 }
@@ -226,9 +233,12 @@ async fn remove(
     Path((pid, name)): Path<(Uuid, String)>,
 ) -> Result<StatusCode> {
     let actor = TaskActor::User { user_id: user.id };
-    let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
-    delete_state(&mut mutation, &name).await?;
-    mutation.commit().await?;
+    retry_on_serialization_failure("delete_task_state", || async {
+        let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
+        delete_state(&mut mutation, &name).await?;
+        mutation.commit().await
+    })
+    .await?;
 
     info!(project_id = %pid, state = %name, "task state deleted");
 

@@ -56,6 +56,11 @@ pub const MAX_MAX_ATTEMPTS: i16 = 20;
 /// without an explicit value use the documented number.
 pub const DEFAULT_MAX_ATTEMPTS: i16 = 3;
 
+/// Fewest live sessions a project may cap itself at (`SPEC.md`, "Projects").
+///
+/// See [`MaxConcurrentSessions`] for why zero is not it.
+pub const MIN_MAX_CONCURRENT_SESSIONS: i32 = 1;
+
 /// Where a project is in its clone lifecycle (`docs/data-model.md`, "Enums").
 ///
 /// `Cloning` is set at creation; the clone job moves it to `Ready` or `Error`.
@@ -101,6 +106,11 @@ pub enum ProjectError {
     /// `max_attempts` was outside 1–20.
     #[error("max attempts must be between 1 and 20")]
     InvalidMaxAttempts,
+    /// `max_concurrent_sessions` was below [`MIN_MAX_CONCURRENT_SESSIONS`].
+    ///
+    /// `null` is not this: it is the documented way to say "no project cap".
+    #[error("max_concurrent_sessions must be at least 1 when set")]
+    InvalidMaxConcurrentSessions,
 }
 
 impl ProjectError {
@@ -388,6 +398,39 @@ impl std::fmt::Display for MaxAttempts {
     }
 }
 
+/// A validated project session cap: at least 1 (`SPEC.md`, "Projects").
+///
+/// How many live sessions the project may have before an unattended launch is
+/// held back. Absent — the column is nullable — means no project cap; a cap of
+/// zero would mean "never launch anything unattended here", which
+/// `automation_paused` already says reversibly, so the lower bound is 1 and the
+/// table `CHECK` is the same bound (ADR 0042).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct MaxConcurrentSessions(i32);
+
+impl MaxConcurrentSessions {
+    /// Accept `raw` when it is at least [`MIN_MAX_CONCURRENT_SESSIONS`].
+    pub fn parse(raw: i32) -> ProjectResult<Self> {
+        if raw >= MIN_MAX_CONCURRENT_SESSIONS {
+            Ok(Self(raw))
+        } else {
+            Err(ProjectError::InvalidMaxConcurrentSessions)
+        }
+    }
+
+    /// The number, ready to bind to the `INTEGER` column.
+    pub fn get(self) -> i32 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for MaxConcurrentSessions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// A `projects` row, column for column (`docs/data-model.md`, `projects`).
 ///
 /// The API-facing `Project` — the same fields without `created_by`,
@@ -414,6 +457,13 @@ pub struct Project {
     pub last_fetched_at: Option<DateTime<Utc>>,
     pub max_attempts: i16,
     pub next_task_number: i32,
+    /// How many live sessions the project may have before an unattended launch
+    /// is held back, or `None` for no project cap (`ARCHITECTURE.md`, "Task
+    /// tracker" → "Unattended launches"; ADR 0042).
+    pub max_concurrent_sessions: Option<i32>,
+    /// While set, no unattended launch happens in this project. People can
+    /// still launch by hand, and sessions already running are unaffected.
+    pub automation_paused: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Derived, not stored; see the type documentation. Last, because
@@ -475,12 +525,26 @@ pub struct ProjectUpdate {
     pub name: Option<ProjectName>,
     pub default_branch: Option<BranchName>,
     pub max_attempts: Option<MaxAttempts>,
+    /// The project's unattended-launch cap, in two layers: the outer `None` is
+    /// this update's "leave it alone" and the inner `None` is the column's
+    /// "no project cap".
+    ///
+    /// The one nullable field a `PUT` can *clear*, so it needs the distinction
+    /// the other fields do not: `{"max_concurrent_sessions": null}` removes the
+    /// cap and an omitted key keeps whatever the row has (`SPEC.md`,
+    /// "Projects").
+    pub max_concurrent_sessions: Option<Option<MaxConcurrentSessions>>,
+    pub automation_paused: Option<bool>,
 }
 
 impl ProjectUpdate {
     /// Whether this update would change anything at all.
     pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.default_branch.is_none() && self.max_attempts.is_none()
+        self.name.is_none()
+            && self.default_branch.is_none()
+            && self.max_attempts.is_none()
+            && self.max_concurrent_sessions.is_none()
+            && self.automation_paused.is_none()
     }
 }
 
@@ -496,6 +560,7 @@ mod tests {
             ProjectError::RemoteUrlHasCredentials,
             ProjectError::InvalidDefaultBranch,
             ProjectError::InvalidMaxAttempts,
+            ProjectError::InvalidMaxConcurrentSessions,
         ] {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
             assert!(!error.to_string().is_empty(), "{error:?} has no message");
@@ -813,6 +878,50 @@ mod tests {
         assert!(
             !ProjectUpdate {
                 max_attempts: Some(MaxAttempts::parse(5).unwrap()),
+                ..ProjectUpdate::default()
+            }
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_session_cap_is_at_least_one_and_null_is_not_a_value() {
+        assert_eq!(
+            MaxConcurrentSessions::parse(MIN_MAX_CONCURRENT_SESSIONS)
+                .unwrap()
+                .get(),
+            1
+        );
+        assert_eq!(MaxConcurrentSessions::parse(12).unwrap().to_string(), "12");
+
+        for raw in [i32::MIN, -1, 0] {
+            assert_eq!(
+                MaxConcurrentSessions::parse(raw),
+                Err(ProjectError::InvalidMaxConcurrentSessions),
+                "accepted {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn clearing_the_cap_and_leaving_it_alone_are_different_updates() {
+        // The distinction the two layers exist for: `Some(None)` writes NULL
+        // and `None` writes nothing (`SPEC.md`, "Projects").
+        let clear = ProjectUpdate {
+            max_concurrent_sessions: Some(None),
+            ..ProjectUpdate::default()
+        };
+        assert!(!clear.is_empty());
+
+        let set = ProjectUpdate {
+            max_concurrent_sessions: Some(Some(MaxConcurrentSessions::parse(3).unwrap())),
+            ..ProjectUpdate::default()
+        };
+        assert!(!set.is_empty());
+
+        assert!(
+            !ProjectUpdate {
+                automation_paused: Some(true),
                 ..ProjectUpdate::default()
             }
             .is_empty()

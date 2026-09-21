@@ -48,6 +48,18 @@ pub const MAX_IMAGE_CHARS: usize = 255;
 /// every launch of the profile, so 64 KiB is generous and still bounded.
 pub const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
 
+/// The column default for `max_concurrent`, repeated here for the reason
+/// [`DEFAULT_IDLE_TIMEOUT_SECS`] is.
+pub const DEFAULT_MAX_CONCURRENT: i32 = 1;
+
+/// Fewest live sessions an unattended launch of a profile may be allowed
+/// (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches").
+///
+/// A cap of zero would be "never launch", which `auto_launch = false` already
+/// says; the table `CHECK` is the same bound, so this is what keeps a zero from
+/// reaching the database as a 500 instead of a 400.
+pub const MIN_MAX_CONCURRENT: i32 = 1;
+
 /// The state a profile serves when the caller names none (`SPEC.md`, "Agent
 /// profiles": `serves_states` "default to `[\"ready\"]`").
 pub const DEFAULT_SERVED_STATE: &str = "ready";
@@ -166,6 +178,13 @@ pub enum ProfileError {
     /// resolves without the profile declaring it (ADR 0036).
     #[error("{0} is an agent credential and is injected automatically")]
     AgentCredentialSecret(String),
+    /// `auto_launch` was set on a `conversational` profile, which exists to
+    /// talk to a person (ADR 0042).
+    #[error("auto_launch requires an ephemeral profile")]
+    AutoLaunchNotEphemeral,
+    /// `max_concurrent` was below [`MIN_MAX_CONCURRENT`].
+    #[error("max_concurrent must be at least 1")]
+    InvalidMaxConcurrent,
 }
 
 impl ProfileError {
@@ -215,6 +234,12 @@ pub struct AgentProfile {
     pub partial_messages: bool,
     pub idle_timeout_secs: i32,
     pub is_default: bool,
+    /// Whether the dispatcher may start a session of this profile by itself
+    /// (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042).
+    pub auto_launch: bool,
+    /// How many live sessions of this profile an unattended launch may leave
+    /// behind. Read by the scheduler too, whether or not `auto_launch` is set.
+    pub max_concurrent: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -294,6 +319,8 @@ pub struct NewAgentProfile {
     pub partial_messages: Option<bool>,
     pub idle_timeout_secs: i32,
     pub is_default: bool,
+    pub auto_launch: bool,
+    pub max_concurrent: i32,
     /// When this profile was created, for the one caller that cannot let the
     /// column default decide: project creation.
     ///
@@ -335,6 +362,8 @@ impl NewAgentProfile {
             partial_messages: None,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             is_default: false,
+            auto_launch: false,
+            max_concurrent: DEFAULT_MAX_CONCURRENT,
             created_at: None,
         };
         profile.validate()?;
@@ -362,6 +391,7 @@ impl NewAgentProfile {
         self.secrets = validate_secrets(&self.secrets)?;
         self.serves_states = deduplicate(&self.serves_states);
         self.partial_messages = Some(self.partial_messages());
+        validate_unattended(self.kind, self.auto_launch, self.max_concurrent)?;
 
         Ok(())
     }
@@ -402,6 +432,8 @@ pub struct ProfileUpdate {
     pub partial_messages: Option<bool>,
     pub idle_timeout_secs: i32,
     pub is_default: Option<bool>,
+    pub auto_launch: bool,
+    pub max_concurrent: i32,
 }
 
 impl ProfileUpdate {
@@ -418,6 +450,7 @@ impl ProfileUpdate {
         self.secrets = validate_secrets(&self.secrets)?;
         self.serves_states = deduplicate(&self.serves_states);
         self.partial_messages = Some(self.partial_messages());
+        validate_unattended(self.kind, self.auto_launch, self.max_concurrent)?;
 
         Ok(())
     }
@@ -454,6 +487,8 @@ impl ProfileUpdate {
             partial_messages: self.partial_messages,
             idle_timeout_secs: self.idle_timeout_secs,
             is_default: self.is_default.unwrap_or(false),
+            auto_launch: self.auto_launch,
+            max_concurrent: self.max_concurrent,
             created_at: None,
         }
     }
@@ -478,6 +513,8 @@ impl From<&AgentProfile> for ProfileUpdate {
             partial_messages: Some(profile.partial_messages),
             idle_timeout_secs: profile.idle_timeout_secs,
             is_default: Some(profile.is_default),
+            auto_launch: profile.auto_launch,
+            max_concurrent: profile.max_concurrent,
         }
     }
 }
@@ -523,6 +560,10 @@ pub struct ProfileInput {
     pub idle_timeout_secs: Option<i32>,
     #[serde(default)]
     pub is_default: Option<bool>,
+    #[serde(default)]
+    pub auto_launch: Option<bool>,
+    #[serde(default)]
+    pub max_concurrent: Option<i32>,
 }
 
 impl ProfileInput {
@@ -556,6 +597,8 @@ impl ProfileInput {
             partial_messages: self.partial_messages,
             idle_timeout_secs: self.idle_timeout_secs.unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS),
             is_default: self.is_default,
+            auto_launch: self.auto_launch.unwrap_or(false),
+            max_concurrent: self.max_concurrent.unwrap_or(DEFAULT_MAX_CONCURRENT),
         };
         resolved.validate()?;
 
@@ -701,6 +744,35 @@ fn validate_secrets(secrets: &[String]) -> ProfileResult<Vec<String>> {
     Ok(deduplicate(secrets))
 }
 
+/// The two unattended-launch rules of `ARCHITECTURE.md`, "Task tracker" →
+/// "Unattended launches" that a profile can decide by itself.
+///
+/// `auto_launch` is for `ephemeral` profiles only: a conversational profile
+/// exists to talk to a person, and starting one unattended produces a session
+/// waiting for input nobody asked for (ADR 0042). `max_concurrent` is valid on
+/// any profile whether or not `auto_launch` is set, because the scheduler reads
+/// it too, and is at least [`MIN_MAX_CONCURRENT`].
+///
+/// The third rule — the backend's agent credential has to resolve without a
+/// user — is not here: it is a question for the `secrets` table, so it lives
+/// beside the lookup that answers it
+/// ([`crate::secrets::require_unattended_credential`]) and a model that holds
+/// no SQL cannot ask it (`CLAUDE.md`, "Backend conventions").
+fn validate_unattended(
+    kind: ProfileKind,
+    auto_launch: bool,
+    max_concurrent: i32,
+) -> ProfileResult<()> {
+    if auto_launch && kind != ProfileKind::Ephemeral {
+        return Err(ProfileError::AutoLaunchNotEphemeral);
+    }
+    if max_concurrent < MIN_MAX_CONCURRENT {
+        return Err(ProfileError::InvalidMaxConcurrent);
+    }
+
+    Ok(())
+}
+
 /// `values` without repeats, keeping the caller's order.
 ///
 /// `mcp_tools`, `secrets` and `serves_states` are sets the caller sent as
@@ -749,6 +821,8 @@ mod tests {
             partial_messages: true,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             is_default: false,
+            auto_launch: false,
+            max_concurrent: DEFAULT_MAX_CONCURRENT,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -767,6 +841,8 @@ mod tests {
             ProfileError::InvalidIdleTimeout,
             ProfileError::InvalidSecretName,
             ProfileError::AgentCredentialSecret("ANTHROPIC_API_KEY".into()),
+            ProfileError::AutoLaunchNotEphemeral,
+            ProfileError::InvalidMaxConcurrent,
         ] {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
             assert!(!error.to_string().is_empty(), "{error:?} has no message");
@@ -812,6 +888,9 @@ mod tests {
         assert!(profile.secrets.is_empty());
         assert_eq!(profile.serves_states, [DEFAULT_SERVED_STATE]);
         assert!(!profile.is_default);
+        // Nothing launches itself until somebody says so (ADR 0042).
+        assert!(!profile.auto_launch);
+        assert_eq!(profile.max_concurrent, DEFAULT_MAX_CONCURRENT);
         // Resolved in place by the `validate()` inside `new`.
         assert_eq!(profile.partial_messages, Some(true));
     }
@@ -1012,6 +1091,8 @@ mod tests {
             partial_messages: false,
             idle_timeout_secs: 60,
             is_default: true,
+            auto_launch: true,
+            max_concurrent: 3,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -1025,9 +1106,13 @@ mod tests {
         assert_eq!(update.serves_states, row.serves_states);
         assert_eq!(update.partial_messages(), row.partial_messages);
         assert_eq!(update.is_default, Some(row.is_default));
+        assert_eq!(update.auto_launch, row.auto_launch);
+        assert_eq!(update.max_concurrent, row.max_concurrent);
 
         // And the same values as a fresh profile of another project.
         let new = update.clone().into_new(Uuid::nil());
+        assert_eq!(new.auto_launch, row.auto_launch);
+        assert_eq!(new.max_concurrent, row.max_concurrent);
         assert_ne!(new.id, row.id);
         assert_eq!(new.project_id, Uuid::nil());
         assert_eq!(new.name, row.name);
@@ -1296,6 +1381,90 @@ mod tests {
             Err(ProfileError::AgentCredentialSecret(
                 "ANTHROPIC_API_KEY".into()
             ))
+        );
+    }
+
+    #[test]
+    fn auto_launch_is_refused_on_a_conversational_profile() {
+        // The rule of `ARCHITECTURE.md`, "Task tracker" → "Unattended
+        // launches": an unattended launch produces an ephemeral session, and a
+        // conversational one started by itself waits for input nobody asked
+        // for.
+        let mut profile = profile();
+        profile.auto_launch = true;
+        assert_eq!(
+            profile.validate(),
+            Err(ProfileError::AutoLaunchNotEphemeral)
+        );
+
+        profile.kind = ProfileKind::Ephemeral;
+        assert!(profile.validate().is_ok());
+
+        // And `false` is legal on either kind.
+        profile.auto_launch = false;
+        profile.kind = ProfileKind::Conversational;
+        assert!(profile.validate().is_ok());
+    }
+
+    #[test]
+    fn max_concurrent_is_at_least_one_on_any_profile() {
+        let mut profile = profile();
+        for cap in [i32::MIN, -1, 0] {
+            profile.max_concurrent = cap;
+            assert_eq!(
+                profile.validate(),
+                Err(ProfileError::InvalidMaxConcurrent),
+                "accepted {cap}"
+            );
+        }
+
+        // Valid on an ephemeral profile that does not launch itself: the
+        // scheduler reads it too.
+        profile.kind = ProfileKind::Ephemeral;
+        profile.auto_launch = false;
+        profile.max_concurrent = MIN_MAX_CONCURRENT;
+        assert!(profile.validate().is_ok());
+        profile.max_concurrent = 5;
+        assert!(profile.validate().is_ok());
+    }
+
+    #[test]
+    fn an_input_takes_the_unattended_defaults_and_carries_an_explicit_pair() {
+        let config = test_config();
+
+        let resolved = input("planner").resolve(&config).unwrap();
+        assert!(!resolved.auto_launch);
+        assert_eq!(resolved.max_concurrent, DEFAULT_MAX_CONCURRENT);
+
+        let mut scanner = input("scanner");
+        scanner.kind = Some(ProfileKind::Ephemeral);
+        scanner.auto_launch = Some(true);
+        scanner.max_concurrent = Some(3);
+        let resolved = scanner.clone().resolve(&config).unwrap();
+        assert!(resolved.auto_launch);
+        assert_eq!(resolved.max_concurrent, 3);
+        // And the insert shape carries them on unchanged.
+        let new = scanner.resolve_new(Uuid::nil(), &config).unwrap();
+        assert!(new.auto_launch);
+        assert_eq!(new.max_concurrent, 3);
+    }
+
+    #[test]
+    fn an_input_is_refused_for_the_same_two_reasons_a_profile_is() {
+        let config = test_config();
+
+        let mut conversational = input("planner");
+        conversational.auto_launch = Some(true);
+        assert_eq!(
+            conversational.resolve(&config),
+            Err(ProfileError::AutoLaunchNotEphemeral)
+        );
+
+        let mut capped = input("planner");
+        capped.max_concurrent = Some(0);
+        assert_eq!(
+            capped.resolve(&config),
+            Err(ProfileError::InvalidMaxConcurrent)
         );
     }
 

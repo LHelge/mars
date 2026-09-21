@@ -1171,6 +1171,7 @@ mod tests {
             profile_id: Uuid::new_v4(),
             kind: SessionKind::Conversational,
             created_by: None,
+            launch_source: crate::models::SessionLaunchSource::User,
             title: None,
             task_id: None,
             handoff_id: None,

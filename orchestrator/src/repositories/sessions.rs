@@ -28,8 +28,8 @@ use uuid::Uuid;
 
 use crate::events::{AgentEvent, AgentEventBody, SessionEvent, StopSignal};
 use crate::models::{
-    EventRow, NewEvent, NewSession, ProfileKind, Session, SessionError, SessionState, SessionTitle,
-    StateChange,
+    EventRow, NewEvent, NewSession, ProfileKind, Session, SessionError, SessionLaunchSource,
+    SessionState, SessionTitle, StateChange,
 };
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, unique_violation};
@@ -204,11 +204,11 @@ impl<'a> SessionRepository<'a> {
         let inserted = sqlx::query_as!(
             Session,
             r#"
-            INSERT INTO sessions (id, project_id, profile_id, kind, created_by, title,
-                                  base_ref, branch, mcp_token_hash, task_id, handoff_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            INSERT INTO sessions (id, project_id, profile_id, kind, created_by, launch_source,
+                                  title, base_ref, branch, mcp_token_hash, task_id, handoff_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING id, project_id, profile_id, kind AS "kind: ProfileKind", created_by,
-                      title, task_id, handoff_id, state AS "state: SessionState", base_ref,
+                      launch_source AS "launch_source: SessionLaunchSource", title, task_id, handoff_id, state AS "state: SessionState", base_ref,
                       branch, container_id, cli_session_id, mcp_token_hash, last_seq,
                       last_activity_at, cost_usd, input_tokens, output_tokens, error,
                       created_at, parked_at, ended_at
@@ -218,6 +218,7 @@ impl<'a> SessionRepository<'a> {
             session.profile_id,
             session.kind as ProfileKind,
             session.created_by,
+            session.launch_source as SessionLaunchSource,
             session.title.as_ref().map(SessionTitle::as_str),
             session.base_ref,
             session.branch,
@@ -245,7 +246,7 @@ impl<'a> SessionRepository<'a> {
             Session,
             r#"
             SELECT id, project_id, profile_id, kind AS "kind: ProfileKind", created_by,
-                   title, task_id, handoff_id, state AS "state: SessionState", base_ref,
+                   launch_source AS "launch_source: SessionLaunchSource", title, task_id, handoff_id, state AS "state: SessionState", base_ref,
                    branch, container_id, cli_session_id, mcp_token_hash, last_seq,
                    last_activity_at, cost_usd, input_tokens, output_tokens, error,
                    created_at, parked_at, ended_at
@@ -315,7 +316,7 @@ impl<'a> SessionRepository<'a> {
             Session,
             r#"
             SELECT id, project_id, profile_id, kind AS "kind: ProfileKind", created_by,
-                   title, task_id, handoff_id, state AS "state: SessionState", base_ref,
+                   launch_source AS "launch_source: SessionLaunchSource", title, task_id, handoff_id, state AS "state: SessionState", base_ref,
                    branch, container_id, cli_session_id, mcp_token_hash, last_seq,
                    last_activity_at, cost_usd, input_tokens, output_tokens, error,
                    created_at, parked_at, ended_at
@@ -345,7 +346,7 @@ impl<'a> SessionRepository<'a> {
             Session,
             r#"
             SELECT id, project_id, profile_id, kind AS "kind: ProfileKind", created_by,
-                   title, task_id, handoff_id, state AS "state: SessionState", base_ref,
+                   launch_source AS "launch_source: SessionLaunchSource", title, task_id, handoff_id, state AS "state: SessionState", base_ref,
                    branch, container_id, cli_session_id, mcp_token_hash, last_seq,
                    last_activity_at, cost_usd, input_tokens, output_tokens, error,
                    created_at, parked_at, ended_at
@@ -370,7 +371,7 @@ impl<'a> SessionRepository<'a> {
             Session,
             r#"
             SELECT id, project_id, profile_id, kind AS "kind: ProfileKind", created_by,
-                   title, task_id, handoff_id, state AS "state: SessionState", base_ref,
+                   launch_source AS "launch_source: SessionLaunchSource", title, task_id, handoff_id, state AS "state: SessionState", base_ref,
                    branch, container_id, cli_session_id, mcp_token_hash, last_seq,
                    last_activity_at, cost_usd, input_tokens, output_tokens, error,
                    created_at, parked_at, ended_at
@@ -417,7 +418,8 @@ impl<'a> SessionRepository<'a> {
         let rows = sqlx::query!(
             r#"
             SELECT s.id, s.project_id, s.profile_id, s.kind AS "kind: ProfileKind",
-                   s.created_by, s.title, s.task_id, s.handoff_id,
+                   s.created_by, s.launch_source AS "launch_source: SessionLaunchSource",
+                   s.title, s.task_id, s.handoff_id,
                    s.state AS "state: SessionState", s.base_ref, s.branch, s.container_id,
                    s.cli_session_id, s.mcp_token_hash, s.last_seq, s.last_activity_at,
                    s.cost_usd, s.input_tokens, s.output_tokens, s.error, s.created_at,
@@ -442,6 +444,7 @@ impl<'a> SessionRepository<'a> {
                     profile_id: row.profile_id,
                     kind: row.kind,
                     created_by: row.created_by,
+                    launch_source: row.launch_source,
                     title: row.title,
                     task_id: row.task_id,
                     handoff_id: row.handoff_id,
@@ -547,7 +550,7 @@ impl<'a> SessionRepository<'a> {
             SET title = $2
             WHERE id = $1
             RETURNING id, project_id, profile_id, kind AS "kind: ProfileKind", created_by,
-                      title, task_id, handoff_id, state AS "state: SessionState", base_ref,
+                      launch_source AS "launch_source: SessionLaunchSource", title, task_id, handoff_id, state AS "state: SessionState", base_ref,
                       branch, container_id, cli_session_id, mcp_token_hash, last_seq,
                       last_activity_at, cost_usd, input_tokens, output_tokens, error,
                       created_at, parked_at, ended_at
@@ -735,7 +738,7 @@ impl<'a> SessionRepository<'a> {
             Session,
             r#"
             SELECT id, project_id, profile_id, kind AS "kind: ProfileKind", created_by,
-                   title, task_id, handoff_id, state AS "state: SessionState", base_ref,
+                   launch_source AS "launch_source: SessionLaunchSource", title, task_id, handoff_id, state AS "state: SessionState", base_ref,
                    branch, container_id, cli_session_id, mcp_token_hash, last_seq,
                    last_activity_at, cost_usd, input_tokens, output_tokens, error,
                    created_at, parked_at, ended_at
@@ -882,7 +885,7 @@ impl<'a> SessionRepository<'a> {
                 error = CASE WHEN $5 THEN $6 WHEN $7 THEN NULL ELSE error END
             WHERE id = $1
             RETURNING id, project_id, profile_id, kind AS "kind: ProfileKind", created_by,
-                      title, task_id, handoff_id, state AS "state: SessionState", base_ref,
+                      launch_source AS "launch_source: SessionLaunchSource", title, task_id, handoff_id, state AS "state: SessionState", base_ref,
                       branch, container_id, cli_session_id, mcp_token_hash, last_seq,
                       last_activity_at, cost_usd, input_tokens, output_tokens, error,
                       created_at, parked_at, ended_at

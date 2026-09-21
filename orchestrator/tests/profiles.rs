@@ -36,8 +36,9 @@ const TEST_REMOTE: &str = "https://example.invalid/org/repo.git";
 /// a profile that names none is stored with.
 const TEST_IMAGE: &str = "mars-session-stub:test";
 
-/// The eighteen fields of `Profile` (`SPEC.md`, "Agent profiles"), sorted.
-const PROFILE_FIELDS: [&str; 18] = [
+/// The twenty fields of `Profile` (`SPEC.md`, "Agent profiles"), sorted.
+const PROFILE_FIELDS: [&str; 20] = [
+    "auto_launch",
     "backend",
     "created_at",
     "id",
@@ -45,6 +46,7 @@ const PROFILE_FIELDS: [&str; 18] = [
     "image",
     "is_default",
     "kind",
+    "max_concurrent",
     "mcp_tools",
     "model",
     "name",
@@ -330,7 +332,7 @@ async fn listing_shows_the_four_seeded_profiles_in_the_documented_shape() {
         assert!(!prompt.trim().is_empty());
     }
 
-    // Exactly the documented eighteen fields, and nothing the row might add.
+    // Exactly the documented twenty fields, and nothing the row might add.
     let mut keys: Vec<&str> = default
         .as_object()
         .expect("a profile is an object")
@@ -757,6 +759,10 @@ async fn an_update_is_a_full_replacement() {
     assert_eq!(replaced["idle_timeout_secs"], json!(1800));
     assert_eq!(replaced["image"], json!(TEST_IMAGE));
     assert_eq!(replaced["partial_messages"], json!(true));
+    // A `PUT` is a replacement here too: omitted means off and 1, not "keep"
+    // (`SPEC.md`, "Agent profiles").
+    assert_eq!(replaced["auto_launch"], json!(false));
+    assert_eq!(replaced["max_concurrent"], json!(1));
     // `is_default` is the exception: omitted leaves the flag alone.
     assert_eq!(replaced["is_default"], json!(false));
     assert_eq!(served_row_count(&app, id).await, 1);
@@ -951,4 +957,225 @@ async fn deleting_from_an_unknown_project_is_not_found() {
         .await;
 
     assert_error(&response, StatusCode::NOT_FOUND, "not found");
+}
+
+// ---- unattended launching (`ARCHITECTURE.md`, "Unattended launches") ----
+
+/// Not a real credential: the value every credential row below holds (rule 3).
+const FAKE_CREDENTIAL: &str = "fake-value-not-a-credential";
+
+/// The Claude adapter's preferred credential name (`agent::credential_names`).
+const OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/// The refusal a save without a resolvable credential gets
+/// (`secrets::NO_UNATTENDED_CREDENTIAL`).
+const NO_CREDENTIAL: &str =
+    "auto_launch requires this backend's agent credential at global or project scope";
+
+/// The refusal `auto_launch` on a profile that talks to a person gets.
+const NOT_EPHEMERAL: &str = "auto_launch requires an ephemeral profile";
+
+/// The refusal a cap below one gets.
+const CAP_TOO_LOW: &str = "max_concurrent must be at least 1";
+
+/// Store an agent credential at `scope` through the documented endpoint.
+async fn seed_credential(
+    app: &TestApp,
+    caller: &AuthenticatedUser,
+    scope: &str,
+    scope_id: Option<Uuid>,
+) {
+    let response = app
+        .post_as(caller, "/api/secrets")
+        .json(&json!({
+            "scope": scope,
+            "scope_id": scope_id.map(|id| id.to_string()),
+            "name": OAUTH_TOKEN,
+            "value": FAKE_CREDENTIAL,
+        }))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+}
+
+/// The body of an `auto_launch` profile, which must be ephemeral.
+fn auto_launch_body(name: &str) -> Value {
+    json!({ "name": name, "kind": "ephemeral", "auto_launch": true, "max_concurrent": 2 })
+}
+
+#[tokio::test]
+async fn the_unattended_fields_default_to_off_and_one() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let scout = created(&app, &user, pid, &json!({ "name": "scout" })).await;
+    assert_eq!(scout["auto_launch"], json!(false));
+    assert_eq!(scout["max_concurrent"], json!(1));
+
+    // The seeded role profiles are launched by people, so none of them
+    // launches itself (ADR 0042).
+    for profile in list(&app, &user, pid).await {
+        assert_eq!(
+            profile["auto_launch"],
+            json!(false),
+            "{} launches itself",
+            profile["name"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_project_scoped_credential_lets_an_ephemeral_profile_launch_itself() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+
+    // Without a credential the jobs could use, the save is refused before
+    // anything is written.
+    let refused = post(&app, &user, pid, &auto_launch_body("scanner")).await;
+    assert_error(&refused, StatusCode::BAD_REQUEST, NO_CREDENTIAL);
+    assert_eq!(names(&list(&app, &user, pid).await), seeded_and(&[]));
+
+    // A `user`-scope row is the caller's own and can never resolve for a
+    // launch whose `created_by` is NULL, so it does not satisfy the rule.
+    seed_credential(&app, &user, "user", Some(user.user.id)).await;
+    let still_refused = post(&app, &user, pid, &auto_launch_body("scanner")).await;
+    assert_error(&still_refused, StatusCode::BAD_REQUEST, NO_CREDENTIAL);
+
+    seed_credential(&app, &user, "project", Some(pid)).await;
+    let stored = created(&app, &user, pid, &auto_launch_body("scanner")).await;
+    assert_eq!(stored["auto_launch"], json!(true));
+    assert_eq!(stored["max_concurrent"], json!(2));
+    assert_eq!(stored["kind"], json!("ephemeral"));
+
+    // And the stored row answers the same on a re-read.
+    let id = id_of(&stored);
+    let read = app.get_as(&user, &profile_path(pid, id)).await;
+    read.assert_status_ok();
+    let body = read.json::<Value>();
+    assert_eq!(body["auto_launch"], json!(true));
+    assert_eq!(body["max_concurrent"], json!(2));
+}
+
+#[tokio::test]
+async fn a_global_credential_satisfies_the_rule_for_every_project() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+
+    seed_credential(&app, &user, "global", None).await;
+
+    // On create, and on the update of a profile that was saved without it.
+    let stored = created(&app, &user, pid, &auto_launch_body("scanner")).await;
+    assert_eq!(stored["auto_launch"], json!(true));
+
+    let scout = created(
+        &app,
+        &user,
+        pid,
+        &json!({ "name": "scout", "kind": "ephemeral" }),
+    )
+    .await;
+    let response = put(&app, &user, pid, id_of(&scout), &auto_launch_body("scout")).await;
+    response.assert_status_ok();
+    assert_eq!(response.json::<Value>()["auto_launch"], json!(true));
+}
+
+#[tokio::test]
+async fn an_update_that_turns_auto_launch_on_needs_the_credential_too() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+    let scout = created(
+        &app,
+        &user,
+        pid,
+        &json!({ "name": "scout", "kind": "ephemeral" }),
+    )
+    .await;
+    let id = id_of(&scout);
+
+    let refused = put(&app, &user, pid, id, &auto_launch_body("scout")).await;
+    assert_error(&refused, StatusCode::BAD_REQUEST, NO_CREDENTIAL);
+
+    // Nothing was written: the refusal happens before the transaction opens.
+    let read = app.get_as(&user, &profile_path(pid, id)).await;
+    read.assert_status_ok();
+    assert_eq!(read.json::<Value>()["auto_launch"], json!(false));
+
+    seed_credential(&app, &user, "project", Some(pid)).await;
+    let accepted = put(&app, &user, pid, id, &auto_launch_body("scout")).await;
+    accepted.assert_status_ok();
+    assert_eq!(accepted.json::<Value>()["auto_launch"], json!(true));
+}
+
+#[tokio::test]
+async fn auto_launch_is_refused_on_a_conversational_profile() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+    seed_credential(&app, &user, "project", Some(pid)).await;
+
+    // The kind is checked by the model, before the credential lookup, so a
+    // project that *has* a credential still gets this answer.
+    for body in [
+        json!({ "name": "scout", "auto_launch": true }),
+        json!({ "name": "scout", "kind": "conversational", "auto_launch": true }),
+    ] {
+        let response = post(&app, &user, pid, &body).await;
+        assert_error(&response, StatusCode::BAD_REQUEST, NOT_EPHEMERAL);
+    }
+
+    // The same rule on the way through `PUT`.
+    let scout = created(&app, &user, pid, &json!({ "name": "scout" })).await;
+    let response = put(
+        &app,
+        &user,
+        pid,
+        id_of(&scout),
+        &json!({ "name": "scout", "auto_launch": true }),
+    )
+    .await;
+    assert_error(&response, StatusCode::BAD_REQUEST, NOT_EPHEMERAL);
+}
+
+#[tokio::test]
+async fn max_concurrent_is_valid_on_any_ephemeral_profile_and_never_below_one() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+
+    // The scheduler reads it too, so it needs no `auto_launch` beside it.
+    let scout = created(
+        &app,
+        &user,
+        pid,
+        &json!({ "name": "scout", "kind": "ephemeral", "max_concurrent": 4 }),
+    )
+    .await;
+    assert_eq!(scout["max_concurrent"], json!(4));
+    assert_eq!(scout["auto_launch"], json!(false));
+
+    for cap in [0, -1] {
+        let response = post(
+            &app,
+            &user,
+            pid,
+            &json!({ "name": "capped", "kind": "ephemeral", "max_concurrent": cap }),
+        )
+        .await;
+        assert_error(&response, StatusCode::BAD_REQUEST, CAP_TOO_LOW);
+
+        let updated = put(
+            &app,
+            &user,
+            pid,
+            id_of(&scout),
+            &json!({ "name": "scout", "kind": "ephemeral", "max_concurrent": cap }),
+        )
+        .await;
+        assert_error(&updated, StatusCode::BAD_REQUEST, CAP_TOO_LOW);
+    }
+
+    assert_eq!(names(&list(&app, &user, pid).await), seeded_and(&["scout"]));
 }

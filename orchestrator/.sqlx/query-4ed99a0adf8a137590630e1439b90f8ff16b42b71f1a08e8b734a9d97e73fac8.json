@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, project_id, profile_id, kind AS \"kind: ProfileKind\", created_by,\n                   title, task_id, handoff_id, state AS \"state: SessionState\", base_ref,\n                   branch, container_id, cli_session_id, mcp_token_hash, last_seq,\n                   last_activity_at, cost_usd, input_tokens, output_tokens, error,\n                   created_at, parked_at, ended_at\n            FROM sessions\n            WHERE project_id = $1\n              AND ($2::session_state IS NULL OR state = $2)\n            ORDER BY created_at DESC, id\n            ",
+  "query": "\n            UPDATE sessions\n            SET title = $2\n            WHERE id = $1\n            RETURNING id, project_id, profile_id, kind AS \"kind: ProfileKind\", created_by,\n                      launch_source AS \"launch_source: SessionLaunchSource\", title, task_id, handoff_id, state AS \"state: SessionState\", base_ref,\n                      branch, container_id, cli_session_id, mcp_token_hash, last_seq,\n                      last_activity_at, cost_usd, input_tokens, output_tokens, error,\n                      created_at, parked_at, ended_at\n            ",
   "describe": {
     "columns": [
       {
@@ -70,6 +70,28 @@
       },
       {
         "ordinal": 5,
+        "name": "launch_source: SessionLaunchSource",
+        "type_info": {
+          "Custom": {
+            "name": "session_launch_source",
+            "kind": {
+              "Enum": [
+                "user",
+                "dispatcher",
+                "schedule"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "launch_source"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "title",
         "type_info": "Text",
         "origin": {
@@ -80,7 +102,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "task_id",
         "type_info": "Uuid",
         "origin": {
@@ -91,7 +113,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "handoff_id",
         "type_info": "Uuid",
         "origin": {
@@ -102,7 +124,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "state: SessionState",
         "type_info": {
           "Custom": {
@@ -126,7 +148,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "base_ref",
         "type_info": "Text",
         "origin": {
@@ -137,7 +159,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "branch",
         "type_info": "Text",
         "origin": {
@@ -148,7 +170,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "container_id",
         "type_info": "Text",
         "origin": {
@@ -159,7 +181,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "cli_session_id",
         "type_info": "Text",
         "origin": {
@@ -170,7 +192,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "mcp_token_hash",
         "type_info": "Text",
         "origin": {
@@ -181,7 +203,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "last_seq",
         "type_info": "Int8",
         "origin": {
@@ -192,7 +214,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "last_activity_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -203,7 +225,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "cost_usd",
         "type_info": "Float8",
         "origin": {
@@ -214,7 +236,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "input_tokens",
         "type_info": "Int8",
         "origin": {
@@ -225,7 +247,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "output_tokens",
         "type_info": "Int8",
         "origin": {
@@ -236,7 +258,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
         "name": "error",
         "type_info": "Text",
         "origin": {
@@ -247,7 +269,7 @@
         }
       },
       {
-        "ordinal": 20,
+        "ordinal": 21,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -258,7 +280,7 @@
         }
       },
       {
-        "ordinal": 21,
+        "ordinal": 22,
         "name": "parked_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -269,7 +291,7 @@
         }
       },
       {
-        "ordinal": 22,
+        "ordinal": 23,
         "name": "ended_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -283,20 +305,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        {
-          "Custom": {
-            "name": "session_state",
-            "kind": {
-              "Enum": [
-                "creating",
-                "running",
-                "parked",
-                "done",
-                "failed"
-              ]
-            }
-          }
-        }
+        "Text"
       ]
     },
     "nullable": [
@@ -305,6 +314,7 @@
       false,
       false,
       true,
+      false,
       true,
       true,
       true,
@@ -325,5 +335,5 @@
       true
     ]
   },
-  "hash": "b6d2dcfb3f9f4b33cf14ef2bb47d3d7e20d8e315f48f04e08e1cf97773fa84f8"
+  "hash": "4ed99a0adf8a137590630e1439b90f8ff16b42b71f1a08e8b734a9d97e73fac8"
 }

@@ -22,6 +22,13 @@
 //!
 //! What this module does decide:
 //!
+//! - **`auto_launch` needs a credential the jobs can use**, which is a
+//!   question for the `secrets` table and so cannot live in
+//!   [`ProfileInput::resolve`] with the other field rules. Both handlers ask
+//!   [`require_unattended_credential`] — the lookup an unattended launch will
+//!   itself perform, with no user scope — right after the body resolves and
+//!   before the transaction opens, so the 400 costs no lock either
+//!   (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042);
 //! - **one mutation, one transaction, project row locked first.**
 //!   [`TrackerMutation::begin`] opens it and takes the lock, and an
 //!   unknown project is its [`Error::NotFound`] before anything is written
@@ -56,6 +63,7 @@ use crate::models::{AgentProfile, ProfileInput};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::routes::{CurrentUser, Path};
+use crate::secrets::require_unattended_credential;
 use crate::tracker::{TrackerMutation, retry_on_serialization_failure};
 
 /// The router nested under `/api/projects`.
@@ -76,10 +84,10 @@ pub fn routes() -> Router<AppState> {
 /// There is no projection here, unlike `routes::projects`: [`AgentProfile`]
 /// serialises to exactly `{ id, project_id, name, kind, backend, model,
 /// system_prompt, permission_mode, image, runtime, mcp_tools, secrets,
-/// serves_states, partial_messages, idle_timeout_secs, is_default, created_at,
-/// updated_at }` — every documented field, no field the contract does not have
-/// and nothing skipped — so a DTO would be the same eighteen fields written
-/// twice. `tests/profiles.rs` asserts the key set against a real response, so
+/// serves_states, partial_messages, idle_timeout_secs, is_default, auto_launch,
+/// max_concurrent, created_at, updated_at }` — every documented field, no field
+/// the contract does not have and nothing skipped — so a DTO would be the same
+/// twenty fields written twice. `tests/profiles.rs` asserts the key set against a real response, so
 /// a column added to the model without a line in `SPEC.md` fails there.
 type Profile = AgentProfile;
 
@@ -107,8 +115,9 @@ async fn list(
 // ---- create ----
 
 /// `POST /projects/{pid}/profiles` (`ProfileInput`) → the stored profile (201;
-/// 400 for any invalid field or a `serves_states` entry that is not a `queue`
-/// state, 404 for an unknown project, 409 for a name that is taken).
+/// 400 for any invalid field, a `serves_states` entry that is not a `queue`
+/// state or an `auto_launch` with no credential the jobs could use, 404 for an
+/// unknown project, 409 for a name that is taken).
 ///
 /// The body is resolved first, so the 400s cost no lock, and the insert and
 /// the served states are one transaction: a profile that is stored without its
@@ -120,6 +129,9 @@ async fn create(
     Json(body): Json<ProfileInput>,
 ) -> Result<(StatusCode, Json<Profile>)> {
     let profile = body.resolve_new(pid, &state.config)?;
+    if profile.auto_launch {
+        require_unattended_credential(&state.pool, pid, profile.backend).await?;
+    }
 
     let projects = ProjectRepository::new(&state.pool);
     let tasks = TaskRepository::new(&state.pool);
@@ -188,6 +200,9 @@ async fn update(
     Json(body): Json<ProfileInput>,
 ) -> Result<Json<Profile>> {
     let resolved = body.resolve(&state.config)?;
+    if resolved.auto_launch {
+        require_unattended_credential(&state.pool, pid, resolved.backend).await?;
+    }
 
     let projects = ProjectRepository::new(&state.pool);
     let tasks = TaskRepository::new(&state.pool);
@@ -303,6 +318,8 @@ mod tests {
             partial_messages: true,
             idle_timeout_secs: 1800,
             is_default: false,
+            auto_launch: false,
+            max_concurrent: 1,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -328,6 +345,8 @@ mod tests {
                 "partial_messages": true,
                 "idle_timeout_secs": 1800,
                 "is_default": false,
+                "auto_launch": false,
+                "max_concurrent": 1,
                 "created_at": row.created_at,
                 "updated_at": row.updated_at,
             })

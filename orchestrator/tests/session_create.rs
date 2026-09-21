@@ -29,7 +29,7 @@ use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::events::{TaskActor, TaskEvent};
 use mars_orchestrator::git::testutil::TestUpstream;
 use mars_orchestrator::models::{
-    NewSession, NewTask, ProfileKind, ProjectStatus, Session, Task, TaskRef,
+    NewSession, NewTask, ProfileKind, ProjectStatus, Session, SessionLaunchSource, Task, TaskRef,
 };
 use mars_orchestrator::projects::clone_job;
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
@@ -287,9 +287,29 @@ async fn an_unattended_task_launch_claims_as_system_and_records_no_user() {
         .expect("the dispatcher launch succeeds");
 
     // Nobody launched it, so there is nobody to attribute it to
-    // (`docs/data-model.md`, `sessions.created_by`).
+    // (`docs/data-model.md`, `sessions.created_by`), and `launch_source` is
+    // what says which job did (ADR 0042).
     assert_eq!(session.created_by, None);
+    assert_eq!(session.launch_source, SessionLaunchSource::Dispatcher);
     assert_eq!(session.task_id, Some(task.id));
+
+    // Stored, not merely answered: the column is what a later reader has.
+    let stored = SessionRepository::new(&app.state.pool)
+        .get(session.id)
+        .await
+        .expect("the row is readable");
+    assert_eq!(stored.launch_source, SessionLaunchSource::Dispatcher);
+    assert_eq!(stored.created_by, None);
+
+    // And it is on the wire under the documented spelling (`SPEC.md`,
+    // "Sessions").
+    let rendered = app
+        .get_as(&fixture.user, &format!("/api/sessions/{}", session.id))
+        .await;
+    rendered.assert_status(StatusCode::OK);
+    let body = rendered.json::<Value>();
+    assert_eq!(body["launch_source"], json!("dispatcher"));
+    assert_eq!(body["created_by"], Value::Null);
     assert_eq!(session.title.as_deref(), Some("Fix the login form"));
 
     // The claim committed with the row, under the orchestrator's own actor.
@@ -329,7 +349,14 @@ async fn a_scheduled_ephemeral_launch_runs_its_message_as_the_prompt() {
         .expect("the scheduled launch succeeds");
 
     assert_eq!(session.created_by, None);
+    assert_eq!(session.launch_source, SessionLaunchSource::Schedule);
     assert_eq!(session.task_id, None, "a scheduled agent needs no task");
+
+    let stored = SessionRepository::new(&app.state.pool)
+        .get(session.id)
+        .await
+        .expect("the row is readable");
+    assert_eq!(stored.launch_source, SessionLaunchSource::Schedule);
 
     wait_for("the launch created a container", || {
         app.engine().container_id_for_session(session.id).is_some()

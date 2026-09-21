@@ -70,7 +70,8 @@ impl<'a> ProjectRepository<'a> {
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, created_at, updated_at,
+                      next_task_number, max_concurrent_sessions, automation_paused,
+                      created_at, updated_at,
                       EXISTS (
                           SELECT 1 FROM secrets s
                           WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $7
@@ -117,7 +118,8 @@ impl<'a> ProjectRepository<'a> {
             r#"
             SELECT p.id, p.name, p.remote_url, p.default_branch,
                    p.status as "status: ProjectStatus", p.status_message, p.created_by,
-                   p.last_fetched_at, p.max_attempts, p.next_task_number, p.created_at,
+                   p.last_fetched_at, p.max_attempts, p.next_task_number,
+                   p.max_concurrent_sessions, p.automation_paused, p.created_at,
                    p.updated_at,
                    EXISTS (
                        SELECT 1 FROM secrets s
@@ -147,7 +149,8 @@ impl<'a> ProjectRepository<'a> {
             r#"
             SELECT p.id, p.name, p.remote_url, p.default_branch,
                    p.status as "status: ProjectStatus", p.status_message, p.created_by,
-                   p.last_fetched_at, p.max_attempts, p.next_task_number, p.created_at,
+                   p.last_fetched_at, p.max_attempts, p.next_task_number,
+                   p.max_concurrent_sessions, p.automation_paused, p.created_at,
                    p.updated_at,
                    EXISTS (
                        SELECT 1 FROM secrets s
@@ -223,20 +226,35 @@ impl<'a> ProjectRepository<'a> {
             SET name = COALESCE($2, name),
                 default_branch = COALESCE($3, default_branch),
                 max_attempts = COALESCE($4, max_attempts),
+                -- Nullable and clearable, so "leave it alone" cannot be
+                -- `COALESCE`: $5 says whether the caller sent the key at all
+                -- and $6 is the value, NULL included.
+                max_concurrent_sessions = CASE
+                    WHEN $5 THEN $6
+                    ELSE max_concurrent_sessions
+                END,
+                automation_paused = COALESCE($7, automation_paused),
                 updated_at = NOW()
             WHERE id = $1
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, created_at, updated_at,
+                      next_task_number, max_concurrent_sessions, automation_paused,
+                      created_at, updated_at,
                       EXISTS (
                           SELECT 1 FROM secrets s
-                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $5
+                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $8
                       ) AS "has_credential!"
             "#,
             id,
             update.name.as_ref().map(|name| name.as_str()),
             update.default_branch.as_ref().map(|branch| branch.as_str()),
             update.max_attempts.map(|attempts| attempts.get()),
+            update.max_concurrent_sessions.is_some(),
+            update
+                .max_concurrent_sessions
+                .flatten()
+                .map(|cap| cap.get()),
+            update.automation_paused,
             GIT_CREDENTIAL_NAME,
         )
         .fetch_optional(&mut *tx)
@@ -276,7 +294,8 @@ impl<'a> ProjectRepository<'a> {
             WHERE id = $1
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, created_at, updated_at,
+                      next_task_number, max_concurrent_sessions, automation_paused,
+                      created_at, updated_at,
                       EXISTS (
                           SELECT 1 FROM secrets s
                           WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $4
@@ -387,7 +406,8 @@ impl<'a> ProjectRepository<'a> {
             WHERE id = $1 AND status = 'error'::project_status
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, created_at, updated_at,
+                      next_task_number, max_concurrent_sessions, automation_paused,
+                      created_at, updated_at,
                       EXISTS (
                           SELECT 1 FROM secrets s
                           WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $2
@@ -423,7 +443,8 @@ impl<'a> ProjectRepository<'a> {
             WHERE id = $1
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, created_at, updated_at,
+                      next_task_number, max_concurrent_sessions, automation_paused,
+                      created_at, updated_at,
                       EXISTS (
                           SELECT 1 FROM secrets s
                           WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $2
@@ -710,15 +731,15 @@ impl<'a> ProjectRepository<'a> {
             INSERT INTO agent_profiles (
                 id, project_id, name, kind, backend, model, system_prompt, permission_mode,
                 image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,
-                is_default, created_at, updated_at
+                is_default, auto_launch, max_concurrent, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                    COALESCE($16::timestamptz, now()), COALESCE($16::timestamptz, now()))
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                    COALESCE($18::timestamptz, now()), COALESCE($18::timestamptz, now()))
             RETURNING id, project_id, name, kind as "kind: ProfileKind",
                       backend as "backend: AgentBackend", model, system_prompt, permission_mode,
                       image, runtime, mcp_tools, secrets,
                       ARRAY[]::text[] as "serves_states!", partial_messages, idle_timeout_secs,
-                      is_default, created_at, updated_at
+                      is_default, auto_launch, max_concurrent, created_at, updated_at
             "#,
             profile.id,
             profile.project_id,
@@ -735,6 +756,8 @@ impl<'a> ProjectRepository<'a> {
             profile.partial_messages(),
             profile.idle_timeout_secs,
             profile.is_default,
+            profile.auto_launch,
+            profile.max_concurrent,
             profile.created_at,
         )
         .fetch_one(&mut *tx)
@@ -767,8 +790,8 @@ impl<'a> ProjectRepository<'a> {
                    p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,
                    array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
                        as "serves_states!",
-                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.created_at,
-                   p.updated_at
+                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,
+                   p.max_concurrent, p.created_at, p.updated_at
             FROM agent_profiles AS p
             LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
             LEFT JOIN task_states AS ts ON ts.id = ps.state_id
@@ -797,8 +820,8 @@ impl<'a> ProjectRepository<'a> {
                    p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,
                    array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
                        as "serves_states!",
-                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.created_at,
-                   p.updated_at
+                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,
+                   p.max_concurrent, p.created_at, p.updated_at
             FROM agent_profiles AS p
             LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
             LEFT JOIN task_states AS ts ON ts.id = ps.state_id
@@ -831,8 +854,8 @@ impl<'a> ProjectRepository<'a> {
                    p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,
                    array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
                        as "serves_states!",
-                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.created_at,
-                   p.updated_at
+                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,
+                   p.max_concurrent, p.created_at, p.updated_at
             FROM agent_profiles AS p
             LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
             LEFT JOIN task_states AS ts ON ts.id = ps.state_id
@@ -911,11 +934,14 @@ impl<'a> ProjectRepository<'a> {
                     partial_messages = $13,
                     idle_timeout_secs = $14,
                     is_default = $15,
+                    auto_launch = $16,
+                    max_concurrent = $17,
                     updated_at = NOW()
                 WHERE id = $1 AND project_id = $2
                 RETURNING id, project_id, name, kind, backend, model, system_prompt,
                           permission_mode, image, runtime, mcp_tools, secrets, partial_messages,
-                          idle_timeout_secs, is_default, created_at, updated_at
+                          idle_timeout_secs, is_default, auto_launch, max_concurrent, created_at,
+                          updated_at
             )
             SELECT u.id, u.project_id, u.name, u.kind as "kind: ProfileKind",
                    u.backend as "backend: AgentBackend", u.model, u.system_prompt,
@@ -929,8 +955,8 @@ impl<'a> ProjectRepository<'a> {
                        ),
                        '{}'
                    ) as "serves_states!",
-                   u.partial_messages, u.idle_timeout_secs, u.is_default, u.created_at,
-                   u.updated_at
+                   u.partial_messages, u.idle_timeout_secs, u.is_default, u.auto_launch,
+                   u.max_concurrent, u.created_at, u.updated_at
             FROM updated AS u
             "#,
             id,
@@ -948,6 +974,8 @@ impl<'a> ProjectRepository<'a> {
             update.partial_messages(),
             update.idle_timeout_secs,
             is_default,
+            update.auto_launch,
+            update.max_concurrent,
         )
         .fetch_optional(&mut *tx)
         .await

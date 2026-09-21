@@ -9,10 +9,11 @@
 //! this and answers 201.
 //!
 //! **Who asked** is [`LaunchActor`]: a user, the dispatcher or a schedule. It
-//! decides three things and nothing else — the `created_by` on the row (null
-//! for the two unattended ones, which have no user to name), the
-//! [`TaskActor`] the tracker mutation runs under (`system` for them), and the
-//! `user_id` a queued caller message carries.
+//! decides three things and nothing else — the `created_by` and
+//! `launch_source` on the row (null and `dispatcher`/`schedule` for the two
+//! unattended ones, which have no user to name), the [`TaskActor`] the tracker
+//! mutation runs under (`system` for them), and the `user_id` a queued caller
+//! message carries.
 //!
 //! **What is asked for** is [`LaunchRequest`]: the profile, an optional task,
 //! an optional first message, an optional title and an optional `base_ref` —
@@ -99,8 +100,8 @@ use super::token::McpToken;
 use crate::events::{SessionInput, TaskActor};
 use crate::git::{DataPaths, resolve_base};
 use crate::models::{
-    AgentProfile, NewSession, ProjectStatus, Session, SessionKind, TaskRef, default_title,
-    validate_launch_prompt, validate_title,
+    AgentProfile, NewSession, ProjectStatus, Session, SessionKind, SessionLaunchSource, TaskRef,
+    default_title, validate_launch_prompt, validate_title,
 };
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, SessionRepository, TaskRepository};
@@ -153,6 +154,20 @@ impl LaunchActor {
         match self {
             Self::User { user_id } => Some(user_id),
             Self::Dispatcher | Self::Schedule => None,
+        }
+    }
+
+    /// The `launch_source` the session row records.
+    ///
+    /// The third and last thing an actor decides, and the only one that
+    /// survives the launching user being deleted: `created_by` goes NULL with
+    /// that user, so this column is the record of who launched a session
+    /// (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042).
+    pub fn launch_source(self) -> SessionLaunchSource {
+        match self {
+            Self::User { .. } => SessionLaunchSource::User,
+            Self::Dispatcher => SessionLaunchSource::Dispatcher,
+            Self::Schedule => SessionLaunchSource::Schedule,
         }
     }
 
@@ -344,6 +359,7 @@ pub async fn create_session(
                 token.hash(),
             );
             new_session.created_by = actor.user_id();
+            new_session.launch_source = actor.launch_source();
             let new_session = new_session.with_title(title.as_deref())?;
 
             let mut tx = state.pool.begin().await?;
@@ -515,6 +531,7 @@ async fn insert_claiming_once(
     let mut new_session =
         NewSession::new(project_id, profile.id, profile.kind, base_ref, token.hash());
     new_session.created_by = actor.user_id();
+    new_session.launch_source = actor.launch_source();
     new_session.task_id = Some(task.id);
     new_session.handoff_id = handoff_id;
     let new_session = new_session.with_title(title)?;
@@ -618,7 +635,7 @@ fn queue_first(state: &AppState, session: &Session, user_id: Option<Uuid>, text:
 mod tests {
     use super::*;
 
-    /// The three actors differ in exactly two answers, and in nothing else.
+    /// The three actors differ in exactly three answers, and in nothing else.
     #[test]
     fn only_a_user_launch_names_a_user() {
         let user_id = Uuid::from_u128(11);
@@ -626,11 +643,26 @@ mod tests {
         let user = LaunchActor::User { user_id };
         assert_eq!(user.user_id(), Some(user_id));
         assert_eq!(user.task_actor(), TaskActor::User { user_id });
+        assert_eq!(user.launch_source(), SessionLaunchSource::User);
 
         for unattended in [LaunchActor::Dispatcher, LaunchActor::Schedule] {
             assert_eq!(unattended.user_id(), None, "{unattended:?}");
             assert_eq!(unattended.task_actor(), TaskActor::System, "{unattended:?}");
         }
+    }
+
+    /// Each unattended actor records itself, so a session says which job
+    /// launched it and not merely that no user did (ADR 0042).
+    #[test]
+    fn each_actor_records_its_own_launch_source() {
+        assert_eq!(
+            LaunchActor::Dispatcher.launch_source(),
+            SessionLaunchSource::Dispatcher
+        );
+        assert_eq!(
+            LaunchActor::Schedule.launch_source(),
+            SessionLaunchSource::Schedule
+        );
     }
 
     /// A message of whitespace is no message at all.

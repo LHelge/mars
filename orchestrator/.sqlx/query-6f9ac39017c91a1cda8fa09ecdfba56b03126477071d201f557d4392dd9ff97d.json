@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT p.id, p.project_id, p.name, p.kind as \"kind: ProfileKind\",\n                   p.backend as \"backend: AgentBackend\", p.model, p.system_prompt,\n                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,\n                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)\n                       as \"serves_states!\",\n                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.created_at,\n                   p.updated_at\n            FROM agent_profiles AS p\n            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id\n            LEFT JOIN task_states AS ts ON ts.id = ps.state_id\n            WHERE p.project_id = $1 AND p.is_default\n            GROUP BY p.id\n            ",
+  "query": "\n            WITH updated AS (\n                UPDATE agent_profiles\n                SET name = $3,\n                    kind = $4,\n                    backend = $5,\n                    model = $6,\n                    system_prompt = $7,\n                    permission_mode = $8,\n                    image = $9,\n                    runtime = $10,\n                    mcp_tools = $11,\n                    secrets = $12,\n                    partial_messages = $13,\n                    idle_timeout_secs = $14,\n                    is_default = $15,\n                    auto_launch = $16,\n                    max_concurrent = $17,\n                    updated_at = NOW()\n                WHERE id = $1 AND project_id = $2\n                RETURNING id, project_id, name, kind, backend, model, system_prompt,\n                          permission_mode, image, runtime, mcp_tools, secrets, partial_messages,\n                          idle_timeout_secs, is_default, auto_launch, max_concurrent, created_at,\n                          updated_at\n            )\n            SELECT u.id, u.project_id, u.name, u.kind as \"kind: ProfileKind\",\n                   u.backend as \"backend: AgentBackend\", u.model, u.system_prompt,\n                   u.permission_mode, u.image, u.runtime, u.mcp_tools, u.secrets,\n                   COALESCE(\n                       (\n                           SELECT array_agg(ts.name ORDER BY ts.position)\n                           FROM profile_states AS ps\n                           JOIN task_states AS ts ON ts.id = ps.state_id\n                           WHERE ps.profile_id = u.id\n                       ),\n                       '{}'\n                   ) as \"serves_states!\",\n                   u.partial_messages, u.idle_timeout_secs, u.is_default, u.auto_launch,\n                   u.max_concurrent, u.created_at, u.updated_at\n            FROM updated AS u\n            ",
   "describe": {
     "columns": [
       {
@@ -195,6 +195,28 @@
       },
       {
         "ordinal": 16,
+        "name": "auto_launch",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "auto_launch"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "max_concurrent",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "max_concurrent"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -205,7 +227,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 19,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -218,7 +240,42 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "profile_kind",
+            "kind": {
+              "Enum": [
+                "conversational",
+                "ephemeral"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "agent_backend",
+            "kind": {
+              "Enum": [
+                "claude"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "Bool",
+        "Int4",
+        "Bool",
+        "Bool",
+        "Int4"
       ]
     },
     "nullable": [
@@ -239,8 +296,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "05079bc879d2c9a217f0fb9e0116ce211d59eeca727ca6bd910735dcddc0b1b5"
+  "hash": "6f9ac39017c91a1cda8fa09ecdfba56b03126477071d201f557d4392dd9ff97d"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT p.id, p.project_id, p.name, p.kind as \"kind: ProfileKind\",\n                   p.backend as \"backend: AgentBackend\", p.model, p.system_prompt,\n                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,\n                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)\n                       as \"serves_states!\",\n                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.created_at,\n                   p.updated_at\n            FROM agent_profiles AS p\n            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id\n            LEFT JOIN task_states AS ts ON ts.id = ps.state_id\n            WHERE p.id = $1 AND p.project_id = $2\n            GROUP BY p.id\n            ",
+  "query": "\n            SELECT p.id, p.project_id, p.name, p.kind as \"kind: ProfileKind\",\n                   p.backend as \"backend: AgentBackend\", p.model, p.system_prompt,\n                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,\n                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)\n                       as \"serves_states!\",\n                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,\n                   p.max_concurrent, p.created_at, p.updated_at\n            FROM agent_profiles AS p\n            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id\n            LEFT JOIN task_states AS ts ON ts.id = ps.state_id\n            WHERE p.project_id = $1\n            GROUP BY p.id\n            ORDER BY p.created_at, p.name\n            ",
   "describe": {
     "columns": [
       {
@@ -195,6 +195,28 @@
       },
       {
         "ordinal": 16,
+        "name": "auto_launch",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "auto_launch"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "max_concurrent",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "max_concurrent"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -205,7 +227,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 19,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -218,7 +240,6 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
         "Uuid"
       ]
     },
@@ -240,8 +261,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "6150485070c00432a1cfbe336391fce5a5d9daf654405415afd999770e5be66f"
+  "hash": "14864bdf3c4d14b0cec557487fb42eaca01e32decffb79b49ae76565296d7ce4"
 }

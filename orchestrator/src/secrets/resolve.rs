@@ -569,9 +569,85 @@ pub async fn preview_credential(
     }))
 }
 
+/// What a save that turns unattended launching on without a credential the
+/// jobs could use is told (400).
+///
+/// It names the two scopes that work rather than only the one that does not,
+/// because the person reading it is configuring the profile and can fix it
+/// there and then (`SPEC.md`, "Agent profiles").
+pub const NO_UNATTENDED_CREDENTIAL: &str =
+    "auto_launch requires this backend's agent credential at global or project scope";
+
+/// Refuse unless `backend`'s agent credential would resolve for a launch with
+/// no user behind it.
+///
+/// The eligibility half of `ARCHITECTURE.md`, "Task tracker" → "Unattended
+/// launches" that a model cannot answer: an unattended launch has
+/// `created_by = NULL`, so the resolution it will get is the one
+/// [`resolve_for_launch`] performs with no user scope, and a `user`-scope row
+/// — the caller's own included — can never be it (ADR 0036, ADR 0042). The
+/// lookup is therefore [`preview_credential`]'s, with `None` for the user:
+/// the same query, the same [`select_credential`] and the same reading of
+/// `orchestrator_only`, so a profile that saves is a profile whose launches
+/// would be given a credential.
+///
+/// It is refused at save and checked again at launch, because a credential can
+/// be deleted afterwards; this is the save half, and the dispatcher and the
+/// scheduler (`tup8z`) call the same function before claiming anything.
+pub async fn require_unattended_credential(
+    pool: &PgPool,
+    project_id: Uuid,
+    backend: crate::models::AgentBackend,
+) -> Result<()> {
+    if has_unattended_credential(pool, project_id, backend).await? {
+        Ok(())
+    } else {
+        Err(Error::BadRequest(NO_UNATTENDED_CREDENTIAL.to_string()))
+    }
+}
+
+/// Whether `backend`'s agent credential resolves for `project_id` without a
+/// user; see [`require_unattended_credential`], which is the refusing form.
+pub async fn has_unattended_credential(
+    pool: &PgPool,
+    project_id: Uuid,
+    backend: crate::models::AgentBackend,
+) -> Result<bool> {
+    let adapter = crate::agent::backend_for(backend);
+    let names: Vec<String> = crate::agent::credential_secret_names(adapter.as_ref())
+        .iter()
+        .map(|name| name.as_str().to_string())
+        .collect();
+
+    if names.is_empty() {
+        // A backend whose image carries its own authentication declares no
+        // name, and an unattended launch of it needs no row (`ARCHITECTURE.md`,
+        // "Secrets", Agent credentials).
+        return Ok(true);
+    }
+
+    // `None` is the whole point: the `user` scope is left out of the query, so
+    // only a `global` or `project` row can win.
+    let rows = SecretRepository::new(pool)
+        .find_for_resolution(&names, project_id, None)
+        .await?;
+
+    Ok(matches!(
+        select_credential(&names, rows),
+        CredentialSlot::Injectable(_)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_refusal_names_the_two_scopes_that_work() {
+        assert!(NO_UNATTENDED_CREDENTIAL.contains("global"));
+        assert!(NO_UNATTENDED_CREDENTIAL.contains("project"));
+        assert!(!NO_UNATTENDED_CREDENTIAL.contains("user"));
+    }
 
     #[test]
     fn the_warning_names_the_secret_and_says_nothing_else() {

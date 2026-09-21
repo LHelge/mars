@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE projects\n            SET name = COALESCE($2, name),\n                default_branch = COALESCE($3, default_branch),\n                max_attempts = COALESCE($4, max_attempts),\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $5\n                      ) AS \"has_credential!\"\n            ",
+  "query": "\n            UPDATE projects\n            SET name = COALESCE($2, name),\n                default_branch = COALESCE($3, default_branch),\n                max_attempts = COALESCE($4, max_attempts),\n                -- Nullable and clearable, so \"leave it alone\" cannot be\n                -- `COALESCE`: $5 says whether the caller sent the key at all\n                -- and $6 is the value, NULL included.\n                max_concurrent_sessions = CASE\n                    WHEN $5 THEN $6\n                    ELSE max_concurrent_sessions\n                END,\n                automation_paused = COALESCE($7, automation_paused),\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, max_concurrent_sessions, automation_paused,\n                      created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $8\n                      ) AS \"has_credential!\"\n            ",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,28 @@
       },
       {
         "ordinal": 10,
+        "name": "max_concurrent_sessions",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "max_concurrent_sessions"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "automation_paused",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "automation_paused"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +158,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 13,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +169,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 14,
         "name": "has_credential!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -159,6 +181,9 @@
         "Text",
         "Text",
         "Int2",
+        "Bool",
+        "Int4",
+        "Bool",
         "Text"
       ]
     },
@@ -173,10 +198,12 @@
       true,
       false,
       false,
+      true,
+      false,
       false,
       false,
       null
     ]
   },
-  "hash": "fcb91f6662a5f7f2ac94963f51dbfc095ce31d7f41bd9f72bc9e7794373a5053"
+  "hash": "ebcdf4b63ee70558e5d75bfd995c36ba5f7604b585618e12f217602410ea68e8"
 }

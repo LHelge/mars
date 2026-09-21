@@ -18,10 +18,10 @@ pub mod token;
 pub mod user;
 
 pub use agent_profile::{
-    AgentBackend, AgentProfile, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_SERVED_STATE, KNOWN_MCP_TOOLS,
-    MAX_IMAGE_CHARS, MAX_MODEL_CHARS, MAX_PROFILE_NAME_CHARS, MAX_SYSTEM_PROMPT_BYTES,
-    NewAgentProfile, PERMISSION_MODE_BYPASS, ProfileError, ProfileInput, ProfileKind,
-    ProfileResult, ProfileUpdate,
+    AgentBackend, AgentProfile, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MAX_CONCURRENT,
+    DEFAULT_SERVED_STATE, KNOWN_MCP_TOOLS, MAX_IMAGE_CHARS, MAX_MODEL_CHARS,
+    MAX_PROFILE_NAME_CHARS, MAX_SYSTEM_PROMPT_BYTES, MIN_MAX_CONCURRENT, NewAgentProfile,
+    PERMISSION_MODE_BYPASS, ProfileError, ProfileInput, ProfileKind, ProfileResult, ProfileUpdate,
 };
 pub use event::{EventRow, INTERNAL_FIELD_PREFIX, NewEvent, OFFSET_FIELD};
 pub use git::{
@@ -30,8 +30,9 @@ pub use git::{
 };
 pub use project::{
     BranchName, DEFAULT_MAX_ATTEMPTS, MAX_BRANCH_NAME_CHARS, MAX_MAX_ATTEMPTS,
-    MAX_PROJECT_NAME_CHARS, MIN_MAX_ATTEMPTS, MaxAttempts, NewProject, Project, ProjectError,
-    ProjectName, ProjectResult, ProjectStatus, ProjectUpdate, RemoteUrl, is_branch_name,
+    MAX_PROJECT_NAME_CHARS, MIN_MAX_ATTEMPTS, MIN_MAX_CONCURRENT_SESSIONS, MaxAttempts,
+    MaxConcurrentSessions, NewProject, Project, ProjectError, ProjectName, ProjectResult,
+    ProjectStatus, ProjectUpdate, RemoteUrl, is_branch_name,
 };
 pub use secret::{
     MAX_SECRET_NAME_CHARS, MAX_SECRET_VALUE_BYTES, NewSecret, ScopeRef, Secret, SecretError,
@@ -40,8 +41,8 @@ pub use secret::{
 };
 pub use session::{
     MAX_DERIVED_TITLE_CHARS, MAX_SESSION_TITLE_CHARS, NewSession, Session, SessionError,
-    SessionKind, SessionResult, SessionState, SessionTitle, StateChange, default_title,
-    session_branch, state_change_payload, validate_launch_prompt, validate_title,
+    SessionKind, SessionLaunchSource, SessionResult, SessionState, SessionTitle, StateChange,
+    default_title, session_branch, state_change_payload, validate_launch_prompt, validate_title,
 };
 pub use shared_dir::{
     ContainerPath, MAX_CONTAINER_PATH_BYTES, MAX_SHARED_DIR_NAME_CHARS, MCP_CONFIG_PATH,

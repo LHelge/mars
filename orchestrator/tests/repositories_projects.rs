@@ -204,6 +204,8 @@ async fn a_project_survives_an_insert_find_list_update_delete_round_trip() {
         name: Some(ProjectName::parse("mars-2").unwrap()),
         default_branch: Some(BranchName::parse("main").unwrap()),
         max_attempts: Some(MaxAttempts::parse(7).unwrap()),
+        max_concurrent_sessions: None,
+        automation_paused: None,
     };
     let mut tx = pool.begin().await.unwrap();
     let updated = repository

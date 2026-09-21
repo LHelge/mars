@@ -1,10 +1,10 @@
 ---
 id: hf9nk
 title: "Wake the dispatcher from task_events: a coalesced trigger from the Postgres listener, the timer as the fallback"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:24:21.055470308Z"
-updated: "2026-09-21T20:24:21.055470308Z"
+updated: "2026-09-21T22:49:15.294606921Z"
 tags:
   - orchestrator
   - dispatcher
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - svgjq
 parent: qabvt
+attempts: 1
 ---
 
 ## Summary

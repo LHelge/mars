@@ -4,6 +4,10 @@
 //
 // Depth 0 and 1 are open, everything below starts folded: an MCP payload is
 // usually one or two levels of envelope around the part worth reading.
+//
+// Nothing here is virtualised, so what is drawn is bounded instead: a long
+// string is cut and a branch draws its first `ENTRY_LIMIT` entries, the rest
+// of each one click away (`SPEC.md`, "Frontend", "Transcript rendering").
 
 import { useState } from "react";
 
@@ -11,6 +15,13 @@ import { useState } from "react";
 const OPEN_DEPTH = 2;
 /** Strings longer than this are cut, with the rest one click away. */
 const STRING_LIMIT = 500;
+/**
+ * Entries of one array or object drawn before the rest are held back. A tool
+ * result that is a ten-thousand-element array would otherwise mount ten
+ * thousand stateful nodes the moment its row is opened; the rest are one
+ * click away, exactly as the tail of a long string is.
+ */
+const ENTRY_LIMIT = 100;
 
 type Json = unknown;
 
@@ -26,7 +37,9 @@ function StringValue({ text }: { text: string }) {
   }
   return (
     <span className="break-all">
-      <span className="text-state-running">"{text.slice(0, STRING_LIMIT)}…"</span>{" "}
+      <span className="text-state-running">
+        "{text.slice(0, STRING_LIMIT)}…"
+      </span>{" "}
       <button
         type="button"
         onClick={() => setExpanded(true)}
@@ -78,9 +91,12 @@ function Branch({
   depth: number;
 }) {
   const [open, setOpen] = useState(depth < OPEN_DEPTH);
+  const [showAll, setShowAll] = useState(false);
   const entries: [string, Json][] = Array.isArray(value)
     ? value.map((item, index) => [String(index), item])
     : Object.entries(value as Record<string, Json>);
+  const shown = showAll ? entries : entries.slice(0, ENTRY_LIMIT);
+  const held = entries.length - shown.length;
 
   return (
     <div>
@@ -101,9 +117,20 @@ function Branch({
           {entries.length === 0 ? (
             <span className="text-console-muted">empty</span>
           ) : (
-            entries.map(([key, child]) => (
-              <Node key={key} name={key} value={child} depth={depth + 1} />
-            ))
+            <>
+              {shown.map(([key, child]) => (
+                <Node key={key} name={key} value={child} depth={depth + 1} />
+              ))}
+              {held > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAll(true)}
+                  className="text-console-accent underline underline-offset-2"
+                >
+                  {held} more {held === 1 ? "entry" : "entries"}
+                </button>
+              )}
+            </>
           )}
         </div>
       )}

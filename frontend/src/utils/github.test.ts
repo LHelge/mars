@@ -35,6 +35,22 @@ describe("githubCompareUrl", () => {
     );
   });
 
+  it("percent-encodes each segment of a ref, keeping the slashes", () => {
+    expect(
+      githubCompareUrl("https://github.com/owner/repo", "main", "fix#12"),
+    ).toBe("https://github.com/owner/repo/compare/main...fix%2312?expand=1");
+    expect(
+      githubCompareUrl("https://github.com/owner/repo", "main", "wip/a?b%c"),
+    ).toBe(
+      "https://github.com/owner/repo/compare/main...wip/a%3Fb%25c?expand=1",
+    );
+    expect(
+      githubCompareUrl("https://github.com/owner/repo", "release/1.0", "topic"),
+    ).toBe(
+      "https://github.com/owner/repo/compare/release/1.0...topic?expand=1",
+    );
+  });
+
   it("answers null for any other host", () => {
     expect(
       githubCompareUrl("https://gitlab.com/owner/repo", "main", "topic"),
@@ -58,7 +74,11 @@ describe("githubCompareUrl", () => {
   });
 
   it("answers null without a target or a remote branch", () => {
-    expect(githubCompareUrl("https://github.com/owner/repo", "", "topic")).toBeNull();
-    expect(githubCompareUrl("https://github.com/owner/repo", "main", "")).toBeNull();
+    expect(
+      githubCompareUrl("https://github.com/owner/repo", "", "topic"),
+    ).toBeNull();
+    expect(
+      githubCompareUrl("https://github.com/owner/repo", "main", ""),
+    ).toBeNull();
   });
 });

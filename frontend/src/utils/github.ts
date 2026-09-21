@@ -45,9 +45,19 @@ function parseRepo(remoteUrl: string): Repo | null {
 }
 
 /**
+ * A ref name as a path in a URL: each `/`-separated segment percent-encoded on
+ * its own, so the slashes of `session/<id>` stay slashes — GitHub compares it
+ * as a path, not as `session%2F<id>` — while a `#`, `?` or `%` a git branch
+ * name may legally carry cannot end the path and turn the rest of the compare
+ * link into a fragment or a query.
+ */
+function encodeRef(ref: string): string {
+  return ref.split("/").map(encodeURIComponent).join("/");
+}
+
+/**
  * The compare page for `remote_branch` against `target`, or `null` when the
- * project does not live on GitHub. Ref names are kept as git spells them:
- * `session/<id>` compares as a path, not as `session%2F<id>`.
+ * project does not live on GitHub.
  */
 export function githubCompareUrl(
   remoteUrl: string,
@@ -58,5 +68,5 @@ export function githubCompareUrl(
   if (parsed === null || target === "" || remoteBranch === "") {
     return null;
   }
-  return `https://${HOST}/${parsed.owner}/${parsed.repo}/compare/${target}...${remoteBranch}?expand=1`;
+  return `https://${HOST}/${parsed.owner}/${parsed.repo}/compare/${encodeRef(target)}...${encodeRef(remoteBranch)}?expand=1`;
 }

@@ -115,7 +115,22 @@ describe("PushForm", () => {
     expect(screen.queryByRole("link")).toBeNull();
   });
 
-  it("explains a rejected push beside the server's message", async () => {
+  it("trims the remote branch once, for the request and the enable check", async () => {
+    mount();
+    fireEvent.change(screen.getByLabelText("Remote branch"), {
+      target: { value: "  topic  " },
+    });
+    submit();
+
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith(PROJECT_ID, {
+        ref: SESSION_ID,
+        remote_branch: "topic",
+      });
+    });
+  });
+
+  it("explains a rejected push as the only answer on screen", async () => {
     pushMock.mockRejectedValue(new ApiError(409, "non-fast-forward"));
     mount();
     submit();
@@ -123,6 +138,24 @@ describe("PushForm", () => {
     expect(
       await screen.findByText(/Push rejected: upstream has advanced\./),
     ).toBeTruthy();
-    expect(screen.getByText("non-fast-forward")).toBeTruthy();
+    // A handled 409 returns, so the server's text does not raise a second
+    // alert beside the advice.
+    expect(screen.queryByText("non-fast-forward")).toBeNull();
+  });
+
+  it("names the branch that was rejected, not the one now typed", async () => {
+    pushMock.mockRejectedValue(new ApiError(409, "non-fast-forward"));
+    mount();
+    fireEvent.change(screen.getByLabelText("Remote branch"), {
+      target: { value: "topic" },
+    });
+    submit();
+
+    await screen.findByText(/merge origin\/topic and retry\./);
+
+    fireEvent.change(screen.getByLabelText("Remote branch"), {
+      target: { value: "something-else" },
+    });
+    expect(screen.getByText(/merge origin\/topic and retry\./)).toBeTruthy();
   });
 });

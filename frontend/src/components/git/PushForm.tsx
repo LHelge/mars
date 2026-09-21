@@ -14,11 +14,7 @@ import { shortSha } from "../../utils/format";
 import { Alert } from "../Alert";
 import { FormField } from "../FormField";
 import { SubmitButton } from "../SubmitButton";
-import {
-  compareUrlFor,
-  defaultRemoteBranch,
-  useReportBusy,
-} from "./formState";
+import { compareUrlFor, defaultRemoteBranch, useReportBusy } from "./formState";
 import type { ReportBusy } from "./formState";
 
 export interface PushFormProps {
@@ -58,16 +54,21 @@ export function PushForm({
   const [force, setForce] = useState(false);
   const [pushed, setPushed] = useState<PushResult | null>(null);
   const [compare, setCompare] = useState<string | null>(null);
-  const [rejected, setRejected] = useState(false);
+  // The branch a 409 refused, not a flag: the advice names what was rejected,
+  // and editing the field afterwards must not rewrite it.
+  const [rejected, setRejected] = useState<string | null>(null);
 
   const form = useFormSubmit(async () => {
     setPushed(null);
     setCompare(null);
-    setRejected(false);
+    setRejected(null);
+    // Trimmed once, here: what is sent, what the enable check measures and
+    // what a refusal is reported against are the same string.
+    const branch = remoteBranch.trim();
     try {
       const result = await push(projectId, {
         ref: gitRef,
-        remote_branch: remoteBranch,
+        remote_branch: branch,
         // `force` is only sent when it was asked for: the server's default is
         // a safe push and an absent field is the same answer as `false`.
         ...(force ? { force: true } : {}),
@@ -77,8 +78,12 @@ export function PushForm({
       setCompare(url);
       onPushed(result, url);
     } catch (caught) {
+      // A non-fast-forward (`SPEC.md`, "Git") is handled, not failed: the
+      // banner below says what to do, so it returns here as `MergeForm` does
+      // for a 422 rather than raising a second alert beside it.
       if (caught instanceof ApiError && caught.status === 409) {
-        setRejected(true);
+        setRejected(branch);
+        return;
       }
       throw caught;
     }
@@ -156,9 +161,9 @@ export function PushForm({
         )}
       </div>
 
-      {rejected && (
+      {rejected !== null && (
         <Alert kind="warning">
-          {`Push rejected: upstream has advanced. Fetch, merge origin/${remoteBranch} and retry.`}
+          {`Push rejected: upstream has advanced. Fetch, merge origin/${rejected} and retry.`}
         </Alert>
       )}
       {form.error !== null && (

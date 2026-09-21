@@ -27,7 +27,6 @@ import { useAuth, useFormSubmit } from "../hooks";
 import {
   ApiError,
   changePassword,
-  errorMessage,
   installSession,
   MessageError,
 } from "../services";
@@ -40,38 +39,28 @@ import { SubmitButton } from "./SubmitButton";
  * The orchestrator's wording for a wrong current password. The status alone
  * cannot tell it from the 400 of a new password that breaks a rule, so this
  * one reading is keyed on that prose; `SPEC.md`, "Frontend", Failure
- * messages, records the coupling.
+ * messages, records the coupling. It is read in exactly one place, the catch
+ * below, because it is the one refusal that belongs to a field rather than to
+ * the form: any other 400 is the server's own rule — the authoritative one —
+ * and is shown exactly as it was sent, and a 401 never reaches here, because
+ * `apiClient` refreshes once and, if that fails, signs out.
  */
 const CURRENT_PASSWORD_INCORRECT = "current password is incorrect";
+
+function isWrongCurrentPassword(caught: unknown): boolean {
+  return (
+    caught instanceof ApiError &&
+    caught.status === 400 &&
+    caught.error === CURRENT_PASSWORD_INCORRECT
+  );
+}
 
 export interface PasswordChangeFormProps {
   /** Run after the new pair is installed; the page navigates from here. */
   onSuccess?: () => void;
-  /** False only where the server does not ask for it (an admin form). */
-  requireCurrent?: boolean;
 }
 
-/**
- * The one refusal this form capitalises for itself. Any other 400 is the
- * server's own rule — the authoritative one — and is shown exactly as it was
- * sent; a 401 never reaches here, because `apiClient` refreshes once and, if
- * that fails, signs out.
- */
-function changeFailure(caught: unknown): string {
-  if (
-    caught instanceof ApiError &&
-    caught.status === 400 &&
-    caught.error === CURRENT_PASSWORD_INCORRECT
-  ) {
-    return "Current password is incorrect";
-  }
-  return errorMessage(caught);
-}
-
-export function PasswordChangeForm({
-  onSuccess,
-  requireCurrent = true,
-}: PasswordChangeFormProps) {
+export function PasswordChangeForm({ onSuccess }: PasswordChangeFormProps) {
   const { user } = useAuth();
 
   const [currentPassword, setCurrentPassword] = useState("");
@@ -81,55 +70,57 @@ export function PasswordChangeForm({
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
 
-  const { submit, loading, error } = useFormSubmit(
-    async () => {
-      if (user === null) {
-        // Only reachable behind `ProtectedRoute`, which waits for `GET
-        // /users/me`; nothing sensible to send without an id.
-        throw new MessageError("Not signed in");
-      }
+  const { submit, loading, error } = useFormSubmit(async () => {
+    if (user === null) {
+      // Only reachable behind `ProtectedRoute`, which waits for `GET
+      // /users/me`; nothing sensible to send without an id.
+      throw new MessageError("Not signed in");
+    }
 
-      let auth;
-      try {
-        auth = await changePassword(user.id, {
-          ...(requireCurrent ? { current_password: currentPassword } : {}),
-          password,
-        });
-      } catch (caught) {
-        // Keep the current password so a mistyped new one costs one field,
-        // not all three.
-        setPassword("");
-        setConfirm("");
-        throw caught;
+    let auth;
+    try {
+      auth = await changePassword(user.id, {
+        current_password: currentPassword,
+        password,
+      });
+    } catch (caught) {
+      if (isWrongCurrentPassword(caught)) {
+        // The one field that was wrong is the one that is cleared, and the
+        // refusal is shown on it: the new pair the user typed is fine and
+        // retyping it would be the form's own fault. Handled, so it returns
+        // rather than raising a form-level alert as well.
+        setCurrentPassword("");
+        setCurrentError("Current password is incorrect");
+        return;
       }
-
-      if (auth === undefined) {
-        // 204 is the administrator's answer; changing your own password always
-        // carries the replacement pair.
-        throw new MessageError(
-          "Password changed, but no new session was issued",
-        );
-      }
-
-      setCurrentPassword("");
+      // Any other refusal is about the new password: keep the current one so
+      // a mistyped new one costs one field, not all three.
       setPassword("");
       setConfirm("");
+      throw caught;
+    }
 
-      // `installSession` is what makes the response the current user; there
-      // is no second copy to keep in step (`SPEC.md`, "Frontend", Rules).
-      installSession(auth, "password_change");
-      onSuccess?.();
-    },
-    { mapError: changeFailure },
-  );
+    if (auth === undefined) {
+      // 204 is the administrator's answer; changing your own password always
+      // carries the replacement pair.
+      throw new MessageError("Password changed, but no new session was issued");
+    }
+
+    setCurrentPassword("");
+    setPassword("");
+    setConfirm("");
+
+    // `installSession` is what makes the response the current user; there is
+    // no second copy to keep in step (`SPEC.md`, "Frontend", Rules).
+    installSession(auth, "password_change");
+    onSuccess?.();
+  });
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
 
     const nextCurrentError =
-      requireCurrent && currentPassword === ""
-        ? "Enter your current password"
-        : null;
+      currentPassword === "" ? "Enter your current password" : null;
     const nextPasswordError = validatePassword(password);
     const nextConfirmError =
       nextPasswordError === null && confirm !== password
@@ -153,22 +144,20 @@ export function PasswordChangeForm({
     <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
       {error !== null && <Alert kind="error">{error}</Alert>}
 
-      {requireCurrent && (
-        <FormField
-          label="Current password"
-          name="current_password"
-          type="password"
-          value={currentPassword}
-          onChange={(value) => {
-            setCurrentPassword(value);
-            setCurrentError(null);
-          }}
-          error={currentError ?? undefined}
-          autoComplete="current-password"
-          autoFocus
-          disabled={loading}
-        />
-      )}
+      <FormField
+        label="Current password"
+        name="current_password"
+        type="password"
+        value={currentPassword}
+        onChange={(value) => {
+          setCurrentPassword(value);
+          setCurrentError(null);
+        }}
+        error={currentError ?? undefined}
+        autoComplete="current-password"
+        autoFocus
+        disabled={loading}
+      />
 
       <FormField
         label="New password"
@@ -182,7 +171,6 @@ export function PasswordChangeForm({
         error={passwordError ?? undefined}
         hint="10–128 characters."
         autoComplete="new-password"
-        autoFocus={!requireCurrent}
         disabled={loading}
       />
 

@@ -7,8 +7,8 @@
 // (`README.md`, "Operating notes").
 //
 // The task hand-off form of `MergeInput` (`task_id` + `handoff_id`) is the
-// board's, and `mode` is here so the board can reuse this component without
-// reshaping it; only `branch` is implemented.
+// board's own action and not a mode of this form: this component only ever
+// merges a branch into a head.
 
 import { useState } from "react";
 import { useFormSubmit } from "../../hooks/useFormSubmit";
@@ -25,8 +25,6 @@ import { chosenOr, keptIfKnown, refsOfKind, useReportBusy } from "./formState";
 import type { ReportBusy } from "./formState";
 
 export interface MergeFormProps {
-  /** Only `branch` is implemented; the board's drawer will add `task`. */
-  mode?: "branch";
   projectId: string;
   branches: Branch[];
   /** A fixed source — a row's session id — or `undefined` to choose one. */
@@ -46,7 +44,6 @@ export interface MergeFormProps {
 }
 
 export function MergeForm({
-  mode = "branch",
   projectId,
   branches,
   source,
@@ -90,7 +87,7 @@ export function MergeForm({
     }
   });
 
-  const ready = mode === "branch" && from !== "" && target !== "";
+  const ready = from !== "" && target !== "";
 
   useReportBusy(formId, form.loading, onBusy);
 
@@ -218,4 +215,3 @@ function Options({
     </optgroup>
   );
 }
-

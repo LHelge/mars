@@ -158,7 +158,7 @@ orchestrator/
 │   ├── engine/                ContainerEngine trait + bollard implementation + mock
 │   ├── agent/                 AgentBackend trait, claude/ adapter, event translation
 │   ├── projects/              project layout on /data, creation (incl. the seeded role profile templates), clone job, deletion
-│   ├── session/               SessionOwner task, launcher (incl. launch-for-task), user action service (input, stop, end, retry, sync, delete), idle reaper, recovery
+│   ├── session/               session creation (the one launch path, for a user, the dispatcher or a schedule), SessionOwner task, launcher (incl. launch-for-task), user action service (input, stop, end, retry, sync, delete), idle reaper, recovery
 │   ├── git/                   git binary wrapper, mirror + session clone ops, GitCredentialProvider
 │   ├── healthcheck.rs         the `healthcheck` subcommand's probe of the local /api/health
 │   ├── secrets/               envelope crypto, resolution, injection

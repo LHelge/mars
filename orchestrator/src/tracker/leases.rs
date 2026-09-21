@@ -66,7 +66,12 @@ use crate::tracker::{
 /// The conflict every lost claim answers with (`SPEC.md`, `claim`).
 const NOT_CLAIMABLE: &str = "task is not claimable";
 /// The conflict a claim outside the profile's served states answers with.
-const NOT_SERVED: &str = "task is not in a state this profile serves";
+///
+/// Public because an unattended launch refuses the same thing under the same
+/// lock, before it inserts a session row that would have to roll back
+/// ([`crate::session::create_session`]), and the two refusals must be the same
+/// sentence.
+pub const NOT_SERVED: &str = "task is not in a state this profile serves";
 /// The conflict a release of an unheld task answers with (`SPEC.md`, "Tasks").
 const NOT_HELD: &str = "task is not held";
 /// The conflict an agent releasing a task it does not hold answers with

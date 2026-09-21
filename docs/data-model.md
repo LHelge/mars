@@ -189,7 +189,7 @@ Per-project configuration of one kind of agent. Every project gets one default c
 | `image` | `TEXT` | NOT NULL | Container image reference for sessions of this profile. |
 | `runtime` | `TEXT` | NULL | Container runtime name (`runsc`, `kata`), passed as `HostConfig.Runtime`. NULL means engine default. |
 | `mcp_tools` | `TEXT[]` | NOT NULL DEFAULT `'{}'` | Names of MCP tools this profile may call. Empty means the task-tracker set only; see `SPEC.md`, "MCP tool contracts". |
-| `secrets` | `TEXT[]` | NOT NULL DEFAULT `'{}'` | Secret names to inject beside the backend's agent credential, which is never listed here (ADR 0036). Orchestrator-only secrets are never injected even if listed. |
+| `secrets` | `TEXT[]` | NOT NULL DEFAULT `'{}'` | Secret names to inject beside the backend's agent credential, which is never listed here: `ProfileInput` refuses an agent credential name of any backend and the `strip_agent_credentials_from_profiles` migration removed the ones older rows carried (ADR 0036). Orchestrator-only secrets are never injected even if listed. |
 | `partial_messages` | `BOOLEAN` | NOT NULL | Whether to request partial (streaming) messages from the CLI. No column default: the model sets `true` for `conversational` and `false` for `ephemeral` when the caller does not specify it. |
 | `idle_timeout_secs` | `INTEGER` | NOT NULL DEFAULT 1800 | Time without any event after which a running conversational session is parked, or a running ephemeral session is treated as stalled and failed (`ARCHITECTURE.md`, "Task tracker"). |
 | `is_default` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Exactly one per project. |
@@ -534,5 +534,6 @@ Migrations are created with `sqlx migrate add -r <name>` and applied automatical
 4. `sessions` — `sessions`, `events`.
 5. `tasks` — `task_states`, `profile_states`, `tasks`, `task_dependencies`, `task_comments`, `task_handoffs`, `task_sessions`, `task_events`, then `ALTER TABLE tasks ADD COLUMN current_handoff_id` and `ALTER TABLE sessions ADD COLUMN task_id, ADD COLUMN handoff_id` with their foreign keys. The down migration removes these referencing columns before dropping the tables.
 6. `secrets` — `secrets`, `secret_uses`.
+7. `strip_agent_credentials_from_profiles` — removes `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` from every `agent_profiles.secrets` array (ADR 0036).
 
-Each `.down.sql` drops exactly what its `.up.sql` created, in reverse order.
+Each `.down.sql` drops exactly what its `.up.sql` created, in reverse order. A migration that changes rows rather than schema has nothing to drop: `strip_agent_credentials_from_profiles` reverses to a documented `SELECT 1;`, because the entries it removed carried no information the launcher does not already act on.

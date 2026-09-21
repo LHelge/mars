@@ -162,6 +162,10 @@ pub enum ProfileError {
     /// A secret name did not match `[A-Z][A-Z0-9_]*` at 1–128 characters.
     #[error("secret names must be 1-128 characters matching [A-Z][A-Z0-9_]*")]
     InvalidSecretName,
+    /// A listed secret is some backend's agent credential, which the launcher
+    /// resolves without the profile declaring it (ADR 0036).
+    #[error("{0} is an agent credential and is injected automatically")]
+    AgentCredentialSecret(String),
 }
 
 impl ProfileError {
@@ -226,10 +230,25 @@ impl AgentProfile {
     /// straight into the column, is dropped with a warning rather than
     /// failing a launch, because a profile that lists an impossible name has
     /// no row to resolve it to either.
+    ///
+    /// An agent credential name is dropped the same way and for the same
+    /// reason: [`validate_secrets`] refuses one on the way in and a migration
+    /// removed the ones older rows carried, so this is the defence in depth
+    /// for a column written by something else. The launcher resolves the
+    /// credential itself (ADR 0036), and letting a listed one through would
+    /// only make the declared half of the resolution compete with it.
     pub fn secret_names(&self) -> Vec<SecretName> {
         self.secrets
             .iter()
             .filter_map(|raw| match SecretName::parse(raw) {
+                Ok(_) if crate::agent::credential_backend_of(raw).is_some() => {
+                    warn!(
+                        profile_id = %self.id,
+                        secret_name = %raw,
+                        "a stored profile secret is an agent credential and is injected anyway"
+                    );
+                    None
+                }
                 Ok(name) => Some(name),
                 Err(_) => {
                     warn!(
@@ -648,9 +667,20 @@ fn validate_idle_timeout(secs: i32) -> ProfileResult<()> {
 /// and one place it lives (`docs/data-model.md`, `secrets`). Only the error
 /// changes, because a malformed entry in a profile body is a profile's
 /// rejection.
+///
+/// An entry that is some backend's agent credential is refused outright: the
+/// launcher resolves the credential for every session of its backend without
+/// the profile declaring it, so listing one is redundant and misleading
+/// (ADR 0036; `ARCHITECTURE.md`, "Secrets", Agent credentials). The names are
+/// the adapters' — [`crate::agent::credential_backend_of`] — and not repeated
+/// here, and every backend's count, not just the profile's own: a Claude
+/// profile has no use for another backend's credential either.
 fn validate_secrets(secrets: &[String]) -> ProfileResult<Vec<String>> {
     for name in secrets {
         SecretName::parse(name).map_err(|_| ProfileError::InvalidSecretName)?;
+        if crate::agent::credential_backend_of(name).is_some() {
+            return Err(ProfileError::AgentCredentialSecret(name.clone()));
+        }
     }
 
     Ok(deduplicate(secrets))
@@ -721,6 +751,7 @@ mod tests {
             ProfileError::UnknownMcpTool("nope".into()),
             ProfileError::InvalidIdleTimeout,
             ProfileError::InvalidSecretName,
+            ProfileError::AgentCredentialSecret("ANTHROPIC_API_KEY".into()),
         ] {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
             assert!(!error.to_string().is_empty(), "{error:?} has no message");
@@ -860,7 +891,7 @@ mod tests {
         // `models::secret`; what this file owns is that a profile applies it
         // to every entry and reports its own error.
         let mut profile = profile();
-        profile.secrets = vec!["ANTHROPIC_API_KEY".to_string(), "NPM_TOKEN".to_string()];
+        profile.secrets = vec!["DEPLOY_TOKEN".to_string(), "NPM_TOKEN".to_string()];
         assert!(profile.validate().is_ok());
 
         for raw in ["not-a-name", "lower", "9LEADING", ""] {
@@ -874,16 +905,41 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_credential_name_is_refused_in_a_profiles_secrets() {
+        // Every backend's names, not just this profile's backend (ADR 0036);
+        // the names themselves are the adapters' and asserted in `agent`.
+        let mut profile = profile();
+        for raw in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] {
+            profile.secrets = vec!["NPM_TOKEN".to_string(), raw.to_string()];
+            assert_eq!(
+                profile.validate(),
+                Err(ProfileError::AgentCredentialSecret(raw.to_string())),
+                "accepted {raw}"
+            );
+        }
+
+        // The message names the first offending entry in input order.
+        profile.secrets = vec![
+            "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+            "ANTHROPIC_API_KEY".to_string(),
+        ];
+        assert_eq!(
+            profile.validate().unwrap_err().to_string(),
+            "CLAUDE_CODE_OAUTH_TOKEN is an agent credential and is injected automatically"
+        );
+    }
+
+    #[test]
     fn a_row_hands_the_resolver_names_and_drops_what_cannot_be_one() {
         let mut row = profile_row();
-        row.secrets = vec!["NPM_TOKEN".into(), "ANTHROPIC_API_KEY".into()];
+        row.secrets = vec!["NPM_TOKEN".into(), "DEPLOY_TOKEN".into()];
 
         assert_eq!(
             row.secret_names()
                 .iter()
                 .map(SecretName::as_str)
                 .collect::<Vec<_>>(),
-            ["NPM_TOKEN", "ANTHROPIC_API_KEY"]
+            ["NPM_TOKEN", "DEPLOY_TOKEN"]
         );
 
         // Validation refuses these on the way in, so this is the defence in
@@ -896,6 +952,29 @@ mod tests {
                 .map(SecretName::as_str)
                 .collect::<Vec<_>>(),
             ["NPM_TOKEN"]
+        );
+    }
+
+    #[test]
+    fn a_row_drops_an_agent_credential_name_too() {
+        // The same defence in depth: validation refuses one on the way in and
+        // a migration removed the ones older rows carried, so a credential
+        // here is a column written by something else. The launcher injects it
+        // anyway (ADR 0036), so the declared half drops it.
+        let mut row = profile_row();
+        row.secrets = vec![
+            "NPM_TOKEN".into(),
+            "CLAUDE_CODE_OAUTH_TOKEN".into(),
+            "ANTHROPIC_API_KEY".into(),
+            "DEPLOY_TOKEN".into(),
+        ];
+
+        assert_eq!(
+            row.secret_names()
+                .iter()
+                .map(SecretName::as_str)
+                .collect::<Vec<_>>(),
+            ["NPM_TOKEN", "DEPLOY_TOKEN"]
         );
     }
 
@@ -1186,10 +1265,22 @@ mod tests {
     #[test]
     fn a_secret_name_is_an_environment_variable_name_here_too() {
         let mut input = input("planner");
-        input.secrets = vec!["ANTHROPIC_API_KEY".into(), "npm_token".into()];
+        input.secrets = vec!["DEPLOY_TOKEN".into(), "npm_token".into()];
         assert_eq!(
             input.resolve(&test_config()),
             Err(ProfileError::InvalidSecretName)
+        );
+    }
+
+    #[test]
+    fn an_agent_credential_name_is_refused_from_an_input_too() {
+        let mut input = input("planner");
+        input.secrets = vec!["NPM_TOKEN".into(), "ANTHROPIC_API_KEY".into()];
+        assert_eq!(
+            input.resolve(&test_config()),
+            Err(ProfileError::AgentCredentialSecret(
+                "ANTHROPIC_API_KEY".into()
+            ))
         );
     }
 

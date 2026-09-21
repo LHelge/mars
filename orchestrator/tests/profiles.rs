@@ -446,6 +446,66 @@ async fn every_invalid_field_is_a_bad_request() {
 }
 
 #[tokio::test]
+async fn an_agent_credential_name_in_secrets_is_a_bad_request_on_create_and_replace() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+
+    // A profile's `secrets` are the extra things its job needs; the backend's
+    // credential is injected without being declared (ADR 0036; `SPEC.md`,
+    // "Agent profiles"). Both of the Claude backend's names are refused, and
+    // the message names the offending entry.
+    for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] {
+        let response = post(
+            &app,
+            &user,
+            pid,
+            &json!({ "name": "planner", "secrets": ["NPM_TOKEN", name] }),
+        )
+        .await;
+
+        assert_error(
+            &response,
+            StatusCode::BAD_REQUEST,
+            &format!("{name} is an agent credential and is injected automatically"),
+        );
+    }
+
+    // Nothing was stored by either of them, and an ordinary list still is.
+    assert_eq!(names(&list(&app, &user, pid).await), ["default"]);
+    let planner = created(
+        &app,
+        &user,
+        pid,
+        &json!({ "name": "planner", "secrets": ["NPM_TOKEN", "DEPLOY_TOKEN"] }),
+    )
+    .await;
+    assert_eq!(planner["secrets"], json!(["NPM_TOKEN", "DEPLOY_TOKEN"]));
+
+    // The replacement runs the same rule, and the profile keeps what it had.
+    let replaced = put(
+        &app,
+        &user,
+        pid,
+        id_of(&planner),
+        &json!({ "name": "planner", "secrets": ["CLAUDE_CODE_OAUTH_TOKEN"] }),
+    )
+    .await;
+
+    assert_error(
+        &replaced,
+        StatusCode::BAD_REQUEST,
+        "CLAUDE_CODE_OAUTH_TOKEN is an agent credential and is injected automatically",
+    );
+    let stored = list(&app, &user, pid).await;
+    let stored = stored
+        .iter()
+        .find(|profile| profile["name"] == json!("planner"))
+        .expect("the planner is still there");
+    assert_eq!(stored["secrets"], json!(["NPM_TOKEN", "DEPLOY_TOKEN"]));
+}
+
+#[tokio::test]
 async fn a_served_state_that_is_not_a_queue_state_lists_the_ones_that_are() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;

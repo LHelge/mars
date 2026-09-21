@@ -4,7 +4,7 @@
 //!
 //! The read side of the tracker and the creation that fills it. What the
 //! *rules* are is asserted against the models and against a real database in
-//! `tests/repositories_tasks_rows.rs` and `tests/repositories_tasks_core.rs`;
+//! `tests/tracker_tasks.rs` and `tests/tracker_states.rs`;
 //! what is asserted here is everything the endpoints add on top:
 //!
 //! - the documented status and body of each success and each refusal, and the
@@ -1015,7 +1015,7 @@ async fn releasing_needs_a_token_a_project_and_a_task_that_exist() {
 // which columns a hand-off moves, what a re-parenting does to the `blocked`
 // flags — is asserted against the tracker and the repository in
 // `tests/tracker_state.rs`, `tests/tracker_graph.rs` and
-// `tests/repositories_tasks_rows.rs`. What is asserted here is the endpoint:
+// `tests/tracker_tasks.rs`. What is asserted here is the endpoint:
 // its statuses, its bodies, and the events an edit owes in the order it owes
 // them.
 

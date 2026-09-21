@@ -1,7 +1,7 @@
 //! The shared Postgres listener, end to end (`CLAUDE.md`, "Testing
 //! expectations").
 //!
-//! `tests/repositories_sessions.rs` and `tests/repositories_tasks_core.rs`
+//! `tests/repositories_sessions.rs` and `tests/tracker_states.rs`
 //! assert that the writers issue their `pg_notify` inside the writing
 //! transaction, over a `PgListener` of the test's own. This file asserts the
 //! other half — that the orchestrator's *one* listener turns those

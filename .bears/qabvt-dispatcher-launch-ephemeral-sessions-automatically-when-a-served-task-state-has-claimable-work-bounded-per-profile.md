@@ -2,10 +2,10 @@
 id: qabvt
 title: "Dispatcher: launch ephemeral sessions automatically when a served task state has claimable work, bounded per profile"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:07:03.177266837Z"
-updated: "2026-09-21T20:23:04.230602948Z"
+updated: "2026-09-21T23:37:21.030708021Z"
 tags:
   - orchestrator
   - frontend

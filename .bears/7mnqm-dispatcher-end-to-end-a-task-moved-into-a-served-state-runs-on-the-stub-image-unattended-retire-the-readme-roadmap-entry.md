@@ -1,10 +1,10 @@
 ---
 id: "7mnqm"
 title: "Dispatcher end to end: a task moved into a served state runs on the stub image unattended; retire the README roadmap entry"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:24:45.322323428Z"
-updated: "2026-09-21T20:24:45.322323428Z"
+updated: "2026-09-21T23:37:21.030350753Z"
 tags:
   - orchestrator
   - frontend
@@ -15,6 +15,7 @@ depends_on:
   - hf9nk
   - nsvc5
 parent: qabvt
+attempts: 1
 ---
 
 ## Summary

@@ -2,12 +2,27 @@
 // Each `describe` loads one hand-written `AgentEvent[]` fixture, applies it
 // event by event and asserts the folded state explicitly (no snapshots).
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { AgentEvent, Session } from "../types";
 import {
+  clearAuth,
+  installSession,
+  TOKEN_STORAGE_KEY,
+} from "../services/auth";
+import type { AgentEvent, Session, User } from "../types";
+import {
+  clearSessionStores,
   createSessionStore,
+  disposeSessionStore,
+  getSessionStore,
+  isNewerSession,
+  MAX_RETAINED_SESSIONS,
+  onSessionStoreCleared,
   optimisticId,
+  releaseSessionStore,
+  retainedSessionIds,
+  retainSessionStore,
+  sessionStoreGeneration,
   type AssistantTextMessage,
   type Message,
   type ResultMessage,
@@ -1022,5 +1037,260 @@ describe("store lifecycle", () => {
 
     expect(second.getState().order).toEqual([]);
     expect(second.getState().lastSeq).toBe(0);
+  });
+});
+
+/**
+ * The registry's lifecycle: who keeps a store alive, how many unused ones are
+ * kept, and what the end of a login takes with it (`SPEC.md`, "Frontend",
+ * "Session state").
+ */
+describe("the store registry", () => {
+  /** Distinct, obviously fake session ids. */
+  function id(n: number): string {
+    return `00000000-0000-4000-8000-00000000000${n}`;
+  }
+
+  beforeEach(() => {
+    for (const sessionId of retainedSessionIds()) disposeSessionStore(sessionId);
+  });
+
+  it("keeps a released store, so a return visit resumes from it", () => {
+    const store = retainSessionStore(id(1));
+    applyAll(store, simpleTurn);
+    releaseSessionStore(id(1));
+
+    const again = getSessionStore(id(1));
+
+    expect(again).toBe(store);
+    expect(again.getState().lastSeq).toBe(store.getState().lastSeq);
+    expect(again.getState().order.length).toBeGreaterThan(0);
+  });
+
+  it("keeps no more than the bound of unused stores, least recent first", () => {
+    for (let n = 1; n <= MAX_RETAINED_SESSIONS + 1; n += 1) {
+      getSessionStore(id(n));
+    }
+
+    expect(retainedSessionIds()).toHaveLength(MAX_RETAINED_SESSIONS);
+    // The first one opened is the one nothing has touched since.
+    expect(retainedSessionIds()).not.toContain(id(1));
+  });
+
+  it("evicts by use, not by creation: a re-read store outlives an older one", () => {
+    for (let n = 1; n <= MAX_RETAINED_SESSIONS; n += 1) getSessionStore(id(n));
+    getSessionStore(id(1));
+
+    getSessionStore(id(MAX_RETAINED_SESSIONS + 1));
+
+    expect(retainedSessionIds()).toContain(id(1));
+    expect(retainedSessionIds()).not.toContain(id(2));
+  });
+
+  it("never evicts a store that is in use", () => {
+    const held = retainSessionStore(id(1));
+    applyAll(held, simpleTurn);
+    for (let n = 2; n <= MAX_RETAINED_SESSIONS + 3; n += 1) getSessionStore(id(n));
+
+    expect(retainedSessionIds()).toContain(id(1));
+    expect(getSessionStore(id(1))).toBe(held);
+    expect(getSessionStore(id(1)).getState().order.length).toBeGreaterThan(0);
+  });
+
+  it("evicts a store only when its last owner has let go", () => {
+    retainSessionStore(id(1));
+    retainSessionStore(id(1));
+    releaseSessionStore(id(1));
+    for (let n = 2; n <= MAX_RETAINED_SESSIONS + 3; n += 1) getSessionStore(id(n));
+
+    expect(retainedSessionIds()).toContain(id(1));
+
+    releaseSessionStore(id(1));
+    for (let n = 2; n <= MAX_RETAINED_SESSIONS + 3; n += 1) getSessionStore(id(n));
+
+    expect(retainedSessionIds()).not.toContain(id(1));
+  });
+
+  it("clears every store and drops the unused ones on sign-out", () => {
+    const held = retainSessionStore(id(1));
+    applyAll(held, simpleTurn);
+    held.getState().setSession(fakeSession());
+    held.getState().setStatus("live");
+    held.getState().inputRejected("client-1", "session is not running");
+    const released = getSessionStore(id(2));
+    applyAll(released, simpleTurn);
+
+    clearSessionStores();
+
+    // Still in use, so still the same store — with nothing of the old login
+    // left in it.
+    expect(getSessionStore(id(1))).toBe(held);
+    expect(held.getState()).toMatchObject({
+      session: null,
+      status: "connecting",
+      lastSeq: 0,
+      order: [],
+      lastRejection: null,
+    });
+    expect(retainedSessionIds()).not.toContain(id(2));
+    expect(getSessionStore(id(2))).not.toBe(released);
+  });
+
+  it("moves the generation on, so a request in flight can tell", () => {
+    const before = sessionStoreGeneration();
+
+    clearSessionStores();
+
+    expect(sessionStoreGeneration()).not.toBe(before);
+  });
+
+  it("tells its listeners whose session state was cleared", () => {
+    const cleared: string[] = [];
+    const off = onSessionStoreCleared((sessionId) => cleared.push(sessionId));
+    try {
+      retainSessionStore(id(1));
+      getSessionStore(id(2));
+      clearSessionStores();
+      disposeSessionStore(id(1));
+    } finally {
+      off();
+    }
+
+    expect(cleared).toEqual([id(1), id(2), id(1)]);
+  });
+
+  it("forgets a disposed session outright", () => {
+    const store = getSessionStore(id(1));
+    applyAll(store, simpleTurn);
+
+    disposeSessionStore(id(1));
+
+    expect(retainedSessionIds()).not.toContain(id(1));
+    expect(getSessionStore(id(1)).getState().lastSeq).toBe(0);
+  });
+});
+
+/**
+ * The other way a tab changes hands: no sign-out, a different principal
+ * (`SPEC.md`, "Frontend", Rules — a token another tab wrote for another
+ * account, or a login over an existing one). Only a replacement that leaves
+ * the same user in place — a self-service password change — keeps what has
+ * been folded.
+ */
+describe("the store registry across a change of principal", () => {
+  const sessionId = "00000000-0000-4000-8000-0000000000f1";
+
+  /** An access token shaped like the orchestrator's, with a readable `sub`. */
+  function accessToken(sub: string): string {
+    const payload = globalThis.btoa(JSON.stringify({ sub })).replace(/=+$/, "");
+    return `fake-header.${payload}.not-a-signature`;
+  }
+
+  function fakeUser(id: string, username: string): User {
+    return {
+      id,
+      username,
+      email: `${username}@example.invalid`,
+      admin: false,
+      must_change_password: false,
+      notify_email: true,
+      created_at: "2026-01-01T00:00:00Z",
+    };
+  }
+
+  const first = fakeUser("00000000-0000-0000-0000-000000000001", "tester");
+  const second = fakeUser("00000000-0000-0000-0000-000000000002", "other");
+
+  beforeEach(() => {
+    for (const held of retainedSessionIds()) disposeSessionStore(held);
+    clearAuth();
+    globalThis.localStorage.clear();
+  });
+
+  afterEach(() => {
+    clearAuth();
+    globalThis.localStorage.clear();
+  });
+
+  function foldedFor(user: User) {
+    installSession({ user, access_token: accessToken(user.id) });
+    const store = retainSessionStore(sessionId);
+    applyAll(store, simpleTurn);
+    return store;
+  }
+
+  it("keeps the transcript through a self-service password change", () => {
+    const store = foldedFor(first);
+    const folded = store.getState().lastSeq;
+
+    installSession(
+      { user: first, access_token: accessToken(first.id) },
+      "password_change",
+    );
+
+    expect(store.getState().lastSeq).toBe(folded);
+    expect(store.getState().order.length).toBeGreaterThan(0);
+  });
+
+  it("clears it when somebody else signs in over it", () => {
+    const store = foldedFor(first);
+
+    installSession({ user: second, access_token: accessToken(second.id) });
+
+    expect(store.getState().lastSeq).toBe(0);
+    expect(store.getState().order).toEqual([]);
+  });
+
+  it("clears it when another tab installs another account's token", () => {
+    const store = foldedFor(first);
+
+    const theirs = accessToken(second.id);
+    globalThis.localStorage.setItem(TOKEN_STORAGE_KEY, theirs);
+    globalThis.dispatchEvent(
+      new StorageEvent("storage", {
+        key: TOKEN_STORAGE_KEY,
+        newValue: theirs,
+        storageArea: globalThis.localStorage,
+      }),
+    );
+
+    expect(store.getState().lastSeq).toBe(0);
+    expect(store.getState().order).toEqual([]);
+  });
+
+  it("keeps it when another tab merely rotates this session's token", () => {
+    const store = foldedFor(first);
+    const folded = store.getState().lastSeq;
+
+    // The same `sub`: an ordinary rotation, which changes no credentials.
+    const rotated = `${accessToken(first.id)}-rotated`;
+    globalThis.localStorage.setItem(TOKEN_STORAGE_KEY, rotated);
+    globalThis.dispatchEvent(
+      new StorageEvent("storage", {
+        key: TOKEN_STORAGE_KEY,
+        newValue: rotated,
+        storageArea: globalThis.localStorage,
+      }),
+    );
+
+    expect(store.getState().lastSeq).toBe(folded);
+  });
+});
+
+describe("isNewerSession", () => {
+  it("prefers the reading with the higher cursor", () => {
+    const held = { ...fakeSession(), last_seq: 12 };
+    const read = { ...fakeSession(), last_seq: 14, state: "parked" as const };
+
+    expect(isNewerSession(read, held)).toBe(true);
+    expect(isNewerSession(held, read)).toBe(false);
+  });
+
+  it("falls back to activity when the cursor has not moved", () => {
+    const held = fakeSession();
+    const read = { ...fakeSession(), last_activity_at: "2026-01-02T13:05:00Z" };
+
+    expect(isNewerSession(read, held)).toBe(true);
+    expect(isNewerSession(held, held)).toBe(false);
   });
 });

@@ -28,7 +28,7 @@ import { deleteSession, endSession, retrySession } from "../services/sessions";
 import type { Session } from "../types";
 import { shortSha } from "../utils/format";
 import { sessionActions } from "./sessionActionRules";
-import { getSessionStore } from "./sessionStore";
+import { disposeSessionStore, getSessionStore } from "./sessionStore";
 import { useStopSession } from "./useStopSession";
 import { useSyncSession } from "./useSyncSession";
 
@@ -116,6 +116,10 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.projects.sessions(session.project_id),
       });
+      // Nothing will ever resume this transcript, so it is not kept for a
+      // return visit the way a closed session's is (`sessionStore`, the
+      // registry).
+      disposeSessionStore(id);
       // Leaving unmounts the socket; the session is gone, so nothing reopens it.
       void navigate(`/projects/${session.project_id}?tab=sessions`);
     },

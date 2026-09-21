@@ -4,7 +4,13 @@ import { ApiError } from "../services/apiClient";
 import * as auth from "../services/auth";
 import * as sessions from "../services/sessions";
 import type { AgentEvent, AuthResponse, Session, SessionState } from "../types";
-import { disposeSessionStore, getSessionStore } from "./sessionStore";
+import {
+  clearSessionStores,
+  disposeSessionStore,
+  getSessionStore,
+  MAX_RETAINED_SESSIONS,
+  retainedSessionIds,
+} from "./sessionStore";
 import type { SocketLike } from "./useSessionSocket";
 import { SessionSocket } from "./useSessionSocket";
 
@@ -12,6 +18,9 @@ vi.mock("../services/auth", async (original) => {
   const actual = await original<typeof auth>();
   return {
     getAccessToken: vi.fn(() => "token-one"),
+    // The registry reads the current principal when it creates a store; this
+    // suite signs nobody in.
+    getCurrentUser: vi.fn(() => null),
     refreshAccessToken: vi.fn(),
     onCredentialsReplaced: vi.fn(() => () => {}),
     onSignOut: vi.fn(() => () => {}),
@@ -32,6 +41,7 @@ vi.mock("../services/sessions", () => ({
 const getAccessToken = vi.mocked(auth.getAccessToken);
 const refreshAccessToken = vi.mocked(auth.refreshAccessToken);
 const onCredentialsReplaced = vi.mocked(auth.onCredentialsReplaced);
+const onSignOut = vi.mocked(auth.onSignOut);
 const getSession = vi.mocked(sessions.getSession);
 const listEvents = vi.mocked(sessions.listEvents);
 const sendInput = vi.mocked(sessions.sendInput);
@@ -685,5 +695,185 @@ describe("SessionSocket", () => {
     expect(last().url).toContain("token=token-two");
     expect(last().url).toContain("after=9");
     expect(refreshAccessToken).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * What a connection does when the browser stops being the login it was folding
+ * for — a sign-out, or a token another tab installed for somebody else. The
+ * transcript is cleared by the registry (`sessionStore`); what is asserted
+ * here is that nothing this object still has in flight can put any of it back
+ * (`SPEC.md`, "Frontend", Rules: sign-out "clears authenticated query and
+ * stream stores, closes streams").
+ */
+describe("SessionSocket when the login ends", () => {
+  function deferred<T>() {
+    let settle!: (value: T) => void;
+    let fail!: (error: unknown) => void;
+    const promise = new Promise<T>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    return { promise, settle, fail };
+  }
+
+  /** The socket's own sign-out handler, as `services/auth` would call it. */
+  function signOutHandler(): () => void {
+    const registered = onSignOut.mock.calls.at(-1)?.[0];
+    if (registered === undefined) throw new Error("no sign-out handler");
+    return () => {
+      registered("user");
+    };
+  }
+
+  it("drops an older history page that lands after the login ended", async () => {
+    track(await startLive([textEvent(5, "five")]));
+    store().prependHistory([textEvent(5, "five")], true);
+    const page = deferred<{ events: AgentEvent[]; has_more: boolean }>();
+    listEvents.mockReturnValueOnce(page.promise);
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+
+    const loading = socket.loadOlder();
+    clearSessionStores();
+    page.settle({ events: [textEvent(1, "one")], has_more: false });
+    await loading;
+
+    expect(store().order).toEqual([]);
+    expect(store().oldestSeq).toBeNull();
+    expect(store().historyStatus).toBe("idle");
+  });
+
+  it("drops a failed page's reason too, rather than explaining it to the next user", async () => {
+    track(await startLive([textEvent(5, "five")]));
+    store().prependHistory([textEvent(5, "five")], true);
+    const page = deferred<{ events: AgentEvent[]; has_more: boolean }>();
+    listEvents.mockReturnValueOnce(page.promise);
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+
+    const loading = socket.loadOlder();
+    clearSessionStores();
+    page.fail(new ApiError(503, "network down"));
+
+    expect(await loading).toBe(false);
+    expect(store().historyStatus).toBe("idle");
+    expect(store().historyError).toBeNull();
+  });
+
+  it("drops the first history page when the login ends during start", async () => {
+    const page = deferred<{ events: AgentEvent[]; has_more: boolean }>();
+    listEvents.mockReturnValueOnce(page.promise);
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+
+    const starting = socket.start();
+    clearSessionStores();
+    page.settle({ events: [textEvent(1, "one")], has_more: false });
+    await starting;
+
+    expect(store().order).toEqual([]);
+    expect(store().lastSeq).toBe(0);
+    // Nothing is opened for a login that has ended either.
+    expect(FakeSocket.instances).toHaveLength(0);
+  });
+
+  it("drops an input rejection that lands after the login ended", async () => {
+    listEvents.mockResolvedValueOnce({ events: [], has_more: false });
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+    await socket.start();
+    // The socket has not opened, so the composer's send goes over REST.
+    const accepted = deferred<void>();
+    sendInput.mockReturnValueOnce(accepted.promise);
+
+    socket.send({ kind: "message", text: "hello" });
+    expect(store().order).toHaveLength(1);
+    clearSessionStores();
+    accepted.fail(new ApiError(409, "session is not running"));
+    await settle();
+
+    expect(store().order).toEqual([]);
+    expect(store().lastRejection).toBeNull();
+  });
+
+  it("stops for good on sign-out and never reconnects", async () => {
+    track(await startLive());
+    const opened = last();
+
+    signOutHandler()();
+
+    expect(opened.closed).toEqual([1000]);
+    expect(store().status).toBe("offline");
+    expect(store().connectionError).toBe(
+      "Your sign-in has ended. Sign in again to reconnect.",
+    );
+
+    // A close arriving from the socket that was just torn down, and the timer
+    // it would otherwise have scheduled, change nothing.
+    vi.useFakeTimers();
+    opened.serverClose(1006);
+    vi.advanceTimersByTime(60_000);
+
+    expect(FakeSocket.instances).toHaveLength(1);
+    expect(store().status).toBe("offline");
+  });
+
+  it("writes nothing more after a sign-out, even with a page in flight", async () => {
+    track(await startLive([textEvent(5, "five")]));
+    store().prependHistory([textEvent(5, "five")], true);
+    const page = deferred<{ events: AgentEvent[]; has_more: boolean }>();
+    listEvents.mockReturnValueOnce(page.promise);
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+    await socket.start();
+
+    const loading = socket.loadOlder();
+    signOutHandler()();
+    page.settle({ events: [textEvent(1, "one")], has_more: false });
+    await loading;
+
+    expect(store().order).toHaveLength(1);
+    expect(store().oldestSeq).toBe(5);
+  });
+});
+
+/**
+ * The store outlives the page (`sessionStore`, the registry), so what a
+ * connection leaves in it is what the next visit starts from.
+ */
+describe("SessionSocket and the store it leaves behind", () => {
+  it("keeps the transcript but not the connection's status", async () => {
+    const socket = track(await startLive([textEvent(5, "five")]));
+    expect(store().status).toBe("live");
+
+    socket.dispose();
+
+    expect(store().status).toBe("connecting");
+    expect(store().connectionError).toBeNull();
+    expect(store().lastSeq).toBe(5);
+    expect(store().order).toHaveLength(1);
+  });
+
+  it("does not leave the reason it gave up for the next visit to read", async () => {
+    getSession.mockRejectedValue(new ApiError(404, "not found"));
+    listEvents.mockResolvedValueOnce({ events: [], has_more: false });
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+    await socket.start();
+    // A connection that never opened, of a session that has been deleted.
+    last().serverClose(1006);
+    await settle();
+    expect(store().status).toBe("offline");
+
+    socket.dispose();
+
+    expect(store().status).toBe("connecting");
+    expect(store().connectionError).toBeNull();
+  });
+
+  it("lets go of the store, so an unused one can be evicted", async () => {
+    const socket = track(await startLive([textEvent(5, "five")]));
+    socket.dispose();
+
+    for (let n = 0; n <= MAX_RETAINED_SESSIONS; n += 1) {
+      getSessionStore(`22222222-2222-4222-8222-00000000000${n}`);
+    }
+
+    expect(retainedSessionIds()).not.toContain(SESSION_ID);
   });
 });

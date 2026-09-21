@@ -23,7 +23,14 @@ import { getSession, listEvents, sendInput, stopSession } from "../services/sess
 import type { ClientMessage, ServerMessage, SessionInput } from "../types";
 import { backoffDelay } from "../utils/backoff";
 import type { ConnectionStatus, SessionStore } from "./sessionStore";
-import { getSessionStore, useSessionStore } from "./sessionStore";
+import {
+  getSessionStore,
+  peekSessionStore,
+  releaseSessionStore,
+  retainSessionStore,
+  sessionStoreGeneration,
+  useSessionStore,
+} from "./sessionStore";
 import { parseServerMessage } from "./serverMessage";
 import { buildSessionSocketUrl } from "./socketUrl";
 
@@ -135,11 +142,32 @@ function detach(socket: SocketLike): void {
 export class SessionSocket {
   readonly sessionId: string;
 
-  private readonly store: StoreApi<SessionStore>;
   private readonly factory: SocketFactory;
+
+  /**
+   * Always the store currently bound to this id, never a captured one: a
+   * clear can replace what the registry holds, and writing into the object
+   * that was there before would be writing into nothing.
+   */
+  private get store(): StoreApi<SessionStore> {
+    return getSessionStore(this.sessionId);
+  }
 
   private socket: SocketLike | null = null;
   private disposed = false;
+  /** This connection holds the store open (`retainSessionStore`). */
+  private retained = false;
+  /**
+   * The store generation this connection belongs to. A clear moves it on, and
+   * everything this object would write afterwards belongs to the login that
+   * clear ended (`sessionStore`, the registry).
+   */
+  private generation = sessionStoreGeneration();
+  /**
+   * Signed out: nothing more is attempted and nothing more is written, until
+   * a `reconnect()` adopts whatever credentials the browser holds now.
+   */
+  private invalidated = false;
   /** The closed connection had reached `open`: reconnect without backoff. */
   private wasOpen = false;
   private attempt = 0;
@@ -172,7 +200,6 @@ export class SessionSocket {
 
   constructor(sessionId: string, factory: SocketFactory = browserSocket) {
     this.sessionId = sessionId;
-    this.store = getSessionStore(sessionId);
     this.factory = factory;
   }
 
@@ -181,14 +208,37 @@ export class SessionSocket {
   }
 
   /**
+   * Nothing this object does may touch the store any more: it is disposed, it
+   * is signed out, or the store it was folding into belongs to a login that
+   * has ended. Every path that resumes after an `await` asks this before it
+   * writes, so a history page or an input rejection that lands late is
+   * dropped rather than folded into whoever holds the tab now.
+   */
+  private get dead(): boolean {
+    return (
+      this.disposed ||
+      this.invalidated ||
+      this.generation !== sessionStoreGeneration()
+    );
+  }
+
+  /**
    * Loads the newest history page when this session has none yet, then opens
    * the socket at `after = lastSeq`.
    *
-   * The store is per session id (`getSessionStore`), so returning to a session
-   * resumes from the transcript already folded: nothing is reset and REST is
-   * skipped whenever `lastSeq > 0`.
+   * The store is per session id and outlives the page while the registry
+   * keeps it (`sessionStore`, the registry), so returning to a session resumes
+   * from the transcript already folded: nothing is reset and REST is skipped
+   * whenever `lastSeq > 0`. This connection is that store's owner for as long
+   * as it lives, which is what makes it un-evictable.
    */
   async start(): Promise<void> {
+    if (this.disposed) return;
+    this.generation = sessionStoreGeneration();
+    if (!this.retained) {
+      this.retained = true;
+      retainSessionStore(this.sessionId);
+    }
     this.unsubscribes.push(
       onCredentialsReplaced(() => {
         this.onCredentialsReplaced();
@@ -201,20 +251,20 @@ export class SessionSocket {
     if (this.store.getState().lastSeq === 0) {
       try {
         const page = await listEvents(this.sessionId, { limit: PAGE_SIZE });
-        if (this.disposed) return;
+        if (this.dead) return;
         this.store.getState().prependHistory(page.events, page.has_more);
       } catch (error) {
         // The socket replays from `after = 0` anyway, so a failed page is not
         // fatal: log it and connect.
         console.warn("session history failed to load:", reason(error));
-        if (this.disposed) return;
+        if (this.dead) return;
       }
     }
     this.connect();
   }
 
   private connect(): void {
-    if (this.disposed || this.socket !== null) return;
+    if (this.dead || this.socket !== null) return;
     const token = getAccessToken();
     if (token === null) {
       // Signed out; `onSignOut` already stopped us. Say so rather than leave
@@ -349,7 +399,7 @@ export class SessionSocket {
   private handleClose(code: number): void {
     this.socket = null;
     this.terminalRunning = false;
-    if (this.disposed) return;
+    if (this.dead) return;
 
     if (this.wasOpen) {
       // It opened, so this is a live connection that dropped: the counters of
@@ -408,7 +458,7 @@ export class SessionSocket {
    * ends it.
    */
   private retryOrCheck(): void {
-    if (this.disposed) return;
+    if (this.dead) return;
     if (this.failedOpens >= ATTEMPTS_BEFORE_OFFLINE) {
       this.giveUp(UNREACHABLE);
       return;
@@ -445,14 +495,14 @@ export class SessionSocket {
    * survived a token rotation, where it is not.
    */
   private async checkSession(onAlive: Alive, fallback: string): Promise<void> {
-    if (this.checking || this.disposed) return;
+    if (this.checking || this.dead) return;
     this.checking = true;
     const first = this.checkedAt === 0 && this.failedOpens === 1;
     this.checkedAt = Math.max(this.failedOpens, 1);
     try {
       await getSession(this.sessionId);
     } catch (error) {
-      if (this.disposed) return;
+      if (this.dead) return;
       if (isNotFound(error)) {
         this.giveUp(GONE);
         return;
@@ -475,7 +525,7 @@ export class SessionSocket {
     } finally {
       this.checking = false;
     }
-    if (this.disposed) return;
+    if (this.dead) return;
     if (onAlive === "stop") {
       this.giveUp(fallback);
       return;
@@ -523,7 +573,7 @@ export class SessionSocket {
     } finally {
       this.refreshing = false;
     }
-    if (this.disposed) return;
+    if (this.dead) return;
     if (this.wasOpen) {
       this.attempt = 0;
       this.connect();
@@ -537,7 +587,7 @@ export class SessionSocket {
   }
 
   private scheduleRetry(): void {
-    if (this.disposed || this.retryTimer !== null) return;
+    if (this.dead || this.retryTimer !== null) return;
     const delay = backoffDelay(this.attempt);
     this.attempt += 1;
     this.retryTimer = setTimeout(() => {
@@ -566,9 +616,18 @@ export class SessionSocket {
     this.reconnect();
   }
 
+  /**
+   * The sign-in ended. The stream is closed and nothing is attempted again,
+   * and — because `invalidated` is part of `dead` — no request still in
+   * flight can fold anything into this session either: whatever it answers
+   * belongs to the login that just ended. The registry clears the transcript
+   * itself, from its own `onSignOut` (`sessionStore`); what is left here is
+   * the sentence saying why the connection stopped.
+   */
   private onSignOut(): void {
     this.cancelRetry();
     this.teardown(1000);
+    this.invalidated = true;
     this.store.getState().setStatus("offline", SIGNED_OUT);
   }
 
@@ -580,6 +639,11 @@ export class SessionSocket {
    */
   reconnect(): void {
     if (this.disposed) return;
+    // Whatever the browser holds now is what this connection belongs to: a
+    // clear that ran just before this — the credentials-replaced path — left
+    // an empty store for this id, and this is the connection that fills it.
+    this.invalidated = false;
+    this.generation = sessionStoreGeneration();
     this.cancelRetry();
     this.attempt = 0;
     this.failedOpens = 0;
@@ -605,6 +669,10 @@ export class SessionSocket {
       // carries the same `client_id`, so the `user_message` that follows
       // replaces the optimistic message instead of doubling it.
       void sendInput(this.sessionId, input, clientId).catch((error: unknown) => {
+        // A refusal that lands after this transcript stopped being ours
+        // belongs to nobody: the optimistic message it would mark rejected is
+        // already gone.
+        if (this.dead) return;
         this.store.getState().inputRejected(clientId, reason(error));
       });
     }
@@ -614,6 +682,7 @@ export class SessionSocket {
   stop(): void {
     if (this.sendJson({ type: "stop" })) return;
     void stopSession(this.sessionId).catch((error: unknown) => {
+      if (this.dead) return;
       this.store.getState().addSystemMessage(`Stop failed: ${reason(error)}`);
     });
   }
@@ -638,6 +707,7 @@ export class SessionSocket {
   }
 
   private async fetchOlder(): Promise<boolean> {
+    if (this.dead) return true;
     const state = this.store.getState();
     if (!state.hasMore) return true;
     const before = state.oldestSeq;
@@ -650,6 +720,11 @@ export class SessionSocket {
     state.setHistoryStatus("loading");
     try {
       const page = await listEvents(this.sessionId, { before, limit: PAGE_SIZE });
+      // A page of one login's transcript, arriving after that login ended, is
+      // exactly what must never be prepended: the store it was asked for has
+      // been cleared, and whoever holds the tab now would be reading somebody
+      // else's session (ADR 0027).
+      if (this.dead) return true;
       this.store.getState().prependHistory(page.events, page.has_more);
       this.store.getState().setHistoryStatus("idle");
       return true;
@@ -657,6 +732,7 @@ export class SessionSocket {
       // The transcript keeps what it holds; only the status changes, so the
       // reader sees why and can ask again.
       console.warn("older session history failed to load:", reason(error));
+      if (this.dead) return false;
       this.store.getState().setHistoryStatus("error", reason(error));
       return false;
     }
@@ -705,7 +781,17 @@ export class SessionSocket {
     },
   };
 
-  /** Closes the terminal, then the socket, and cancels pending backoff. */
+  /**
+   * Closes the terminal, then the socket, cancels pending backoff and gives
+   * the store back to the registry, which decides whether to keep it for a
+   * return visit (`sessionStore`, the registry).
+   *
+   * The store it leaves behind says `connecting`, not whatever the connection
+   * last was: a retained `live` would have the next visit's header claim a
+   * stream that does not exist yet and its terminal attach to a socket that
+   * has not opened, and a retained `offline` would show the reason the last
+   * visit ended as though it were this one's.
+   */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -714,6 +800,10 @@ export class SessionSocket {
     this.terminal.close();
     this.teardown(1000);
     this.terminalListeners.clear();
+    peekSessionStore(this.sessionId)?.getState().setStatus("connecting");
+    if (!this.retained) return;
+    this.retained = false;
+    releaseSessionStore(this.sessionId);
   }
 }
 

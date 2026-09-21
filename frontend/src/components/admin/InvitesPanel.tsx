@@ -6,10 +6,13 @@
 // (`/api/users`)"), so it appears nowhere on this page. The success message
 // says where the link is when no email is configured, which is the whole of
 // ADR 0026 from an operator's side.
+//
+// This panel owns the invitation form and nothing else: resending and revoking
+// are `InviteRow`'s, one observer and one answer line per row, so the panel's
+// banners always describe the form the user just submitted.
 
 import {
   keepPreviousData,
-  useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -22,11 +25,8 @@ import {
   listInvites,
   listUsers,
   queryKeys,
-  resendInvite,
-  revokeInvite,
 } from "../../services";
 import type { Invite } from "../../types";
-import { formatDateTime, formatRelative, PLACEHOLDER } from "../../utils/format";
 import { Alert } from "../Alert";
 import { EmptyState } from "../EmptyState";
 import { FormField } from "../FormField";
@@ -34,65 +34,11 @@ import { LoadingState } from "../LoadingState";
 import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SectionHeader } from "../SectionHeader";
 import { SubmitButton } from "../SubmitButton";
-import { errorMessage, logUnexpected } from "../../services/errorMessage";
-import { CELL, HEAD, ROW, SCROLLER, TABLE, THEAD } from "./tableStyles";
+import { errorMessage } from "../../services/errorMessage";
+import { InviteRow } from "./InviteRow";
+import { HEAD, SCROLLER, TABLE, THEAD } from "./tableStyles";
 
-const DUPLICATE =
-  "That email already has an account or an open invitation.";
-
-const MINUTE = 60;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
-
-/**
- * How long is left, as `in 6d` / `in 3h` / `in 12m`. `formatRelative` measures
- * age and clamps the future away, so a deadline needs its own reading; a
- * deadline already past is handed back to `formatRelative` and shown in the
- * failed-state colour.
- */
-function untilLabel(iso: string, now: Date): string | null {
-  const at = new Date(iso).getTime();
-  if (Number.isNaN(at)) {
-    return null;
-  }
-  const seconds = Math.round((at - now.getTime()) / 1000);
-  if (seconds <= 0) {
-    return null;
-  }
-  if (seconds < MINUTE) {
-    return "in under a minute";
-  }
-  if (seconds < HOUR) {
-    return `in ${Math.floor(seconds / MINUTE)}m`;
-  }
-  if (seconds < DAY) {
-    return `in ${Math.floor(seconds / HOUR)}h`;
-  }
-  return `in ${Math.floor(seconds / DAY)}d`;
-}
-
-/**
- * An invite the reaper has not collected yet is still listed; it reads as
- * expired and keeps its Resend action, because a resend issues a new expiry.
- */
-export function Expiry({ iso, now = new Date() }: { iso: string; now?: Date }) {
-  if (Number.isNaN(new Date(iso).getTime())) {
-    return <span className="text-console-muted">{PLACEHOLDER}</span>;
-  }
-  const remaining = untilLabel(iso, now);
-  return (
-    <span
-      title={formatDateTime(iso)}
-      className={
-        remaining === null
-          ? "text-state-failed font-mono text-xs"
-          : "text-console-muted font-mono text-xs"
-      }
-    >
-      {remaining ?? `expired ${formatRelative(iso, now)}`}
-    </span>
-  );
-}
+const DUPLICATE = "That email already has an account or an open invitation.";
 
 /**
  * The one thing this panel says differently from the server: 400 keeps the
@@ -111,8 +57,9 @@ export function InvitesPanel() {
 
   const [email, setEmail] = useState("");
   const [admin, setAdmin] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [rowError, setRowError] = useState<string | null>(null);
+  // Which address the last successful submission invited; the banner is shown
+  // by `succeeded`, this only says who it went to.
+  const [sentTo, setSentTo] = useState<string | null>(null);
 
   const invites = useQuery({
     queryKey: queryKeys.invites.list(),
@@ -136,72 +83,29 @@ export function InvitesPanel() {
     [users.data],
   );
 
-  function writeRows(next: (rows: Invite[]) => Invite[]) {
-    queryClient.setQueryData<Invite[]>(queryKeys.invites.list(), (rows) =>
-      next(rows ?? []),
-    );
-    void queryClient.invalidateQueries({ queryKey: queryKeys.invites.all });
-  }
+  const { submit, loading, error, succeeded, reset } = useFormSubmit(
+    async () => {
+      // The server lower-cases and trims the address; matching it here keeps
+      // the duplicate check predictable.
+      const normalised = email.trim().toLowerCase();
 
-  const { submit, loading, error } = useFormSubmit(async () => {
-    setNotice(null);
-    setRowError(null);
-    // The server lower-cases and trims the address; matching it here keeps the
-    // duplicate check predictable.
-    const normalised = email.trim().toLowerCase();
+      const invite = await createInvite({ email: normalised, admin });
 
-    const invite = await createInvite({ email: normalised, admin });
-
-    writeRows((rows) => [invite, ...rows]);
-    setEmail("");
-    setAdmin(false);
-    setNotice(
-      `Invitation sent to ${invite.email}. Without email configured, the link is in the orchestrator log.`,
-    );
-  }, {
-    mapError: inviteFailure,
-  });
-
-  const resend = useMutation({
-    mutationFn: (invite: Invite) => resendInvite(invite.id),
-    onSuccess: (updated) => {
-      setRowError(null);
-      writeRows((rows) =>
-        rows.map((row) => (row.id === updated.id ? updated : row)),
-      );
-      setNotice("Invitation re-sent");
+      queryClient.setQueryData<Invite[]>(queryKeys.invites.list(), (rows) => [
+        invite,
+        ...(rows ?? []),
+      ]);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.invites.all });
+      setEmail("");
+      setAdmin(false);
+      setSentTo(invite.email);
     },
-    onError: (caught) => {
-      logUnexpected(caught);
-      setRowError(errorMessage(caught));
-      void queryClient.invalidateQueries({ queryKey: queryKeys.invites.all });
-    },
-  });
-
-  const revoke = useMutation({
-    mutationFn: (invite: Invite) => revokeInvite(invite.id),
-    onSuccess: (_void, invite) => {
-      setRowError(null);
-      setNotice(null);
-      writeRows((rows) => rows.filter((row) => row.id !== invite.id));
-    },
-    onError: (caught) => {
-      logUnexpected(caught);
-      setRowError(errorMessage(caught));
-      void queryClient.invalidateQueries({ queryKey: queryKeys.invites.all });
-    },
-  });
+    { mapError: inviteFailure },
+  );
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
     void submit();
-  }
-
-  function onRevoke(invite: Invite) {
-    if (!window.confirm(`Revoke the invitation for ${invite.email}?`)) {
-      return;
-    }
-    revoke.mutate(invite);
   }
 
   const rows = invites.data ?? [];
@@ -225,6 +129,9 @@ export function InvitesPanel() {
             value={email}
             onChange={(value) => {
               setEmail(value);
+              // The last answer described the address that has just been
+              // edited away.
+              reset();
             }}
             autoComplete="email"
             required
@@ -249,24 +156,9 @@ export function InvitesPanel() {
       </form>
 
       {error !== null && <Alert kind="error">{error}</Alert>}
-      {rowError !== null && (
-        <Alert
-          kind="error"
-          onDismiss={() => {
-            setRowError(null);
-          }}
-        >
-          {rowError}
-        </Alert>
-      )}
-      {notice !== null && (
-        <Alert
-          kind="success"
-          onDismiss={() => {
-            setNotice(null);
-          }}
-        >
-          {notice}
+      {succeeded && sentTo !== null && (
+        <Alert kind="success">
+          {`Invitation sent to ${sentTo}. Without email configured, the link is in the orchestrator log.`}
         </Alert>
       )}
 
@@ -314,69 +206,17 @@ export function InvitesPanel() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((invite) => {
-                const busy =
-                  (resend.isPending && resend.variables?.id === invite.id) ||
-                  (revoke.isPending && revoke.variables?.id === invite.id);
-
-                return (
-                  <tr key={invite.id} className={ROW}>
-                    <td className={`${CELL} text-console-text min-w-0 font-mono`}>
-                      {invite.email}
-                    </td>
-                    <td className={`${CELL} text-console-muted font-mono text-xs`}>
-                      {invite.admin ? "yes" : PLACEHOLDER}
-                    </td>
-                    <td
-                      className={`${CELL} text-console-muted hidden sm:table-cell`}
-                    >
-                      {(invite.invited_by === null
-                        ? null
-                        : usernamesById.get(invite.invited_by)) ?? PLACEHOLDER}
-                    </td>
-                    <td className={`${CELL} whitespace-nowrap`}>
-                      <Expiry iso={invite.expires_at} />
-                    </td>
-                    <td
-                      className={`${CELL} text-console-muted hidden font-mono text-xs whitespace-nowrap md:table-cell`}
-                    >
-                      {formatRelative(invite.created_at)}
-                    </td>
-                    <td className={`${CELL} pr-0 text-right`}>
-                      <div className="flex justify-end gap-2">
-                        <SubmitButton
-                          type="button"
-                          variant="ghost"
-                          loading={
-                            resend.isPending &&
-                            resend.variables?.id === invite.id
-                          }
-                          disabled={busy}
-                          onClick={() => {
-                            resend.mutate(invite);
-                          }}
-                        >
-                          Resend
-                        </SubmitButton>
-                        <SubmitButton
-                          type="button"
-                          variant="danger"
-                          loading={
-                            revoke.isPending &&
-                            revoke.variables?.id === invite.id
-                          }
-                          disabled={busy}
-                          onClick={() => {
-                            onRevoke(invite);
-                          }}
-                        >
-                          Revoke
-                        </SubmitButton>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+              {rows.map((invite) => (
+                <InviteRow
+                  key={invite.id}
+                  invite={invite}
+                  invitedBy={
+                    invite.invited_by === null
+                      ? null
+                      : (usernamesById.get(invite.invited_by) ?? null)
+                  }
+                />
+              ))}
             </tbody>
           </table>
         </div>

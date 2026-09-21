@@ -38,6 +38,7 @@ import {
   signOut,
   subscribe,
 } from "./services";
+import { refreshCurrentUser } from "./services/currentUser";
 import { getMe } from "./services/users";
 import { useTaskStore } from "./tasks/taskStore";
 import { safeReturnTo } from "./utils/returnTo";
@@ -80,9 +81,7 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
     const offForbidden = onForbidden(() => {
       // A demotion or a scope the user just lost: re-read the user so the nav
       // and `AdminRoute` follow. A failure here is not worth surfacing.
-      void getMe()
-        .then(setCurrentUser)
-        .catch(() => undefined);
+      void refreshCurrentUser().catch(() => undefined);
     });
     const offPasswordChange = onPasswordChangeRequired(() => {
       void navigate("/change-password");

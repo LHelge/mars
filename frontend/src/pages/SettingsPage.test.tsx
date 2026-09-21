@@ -9,6 +9,7 @@ import {
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryClient } from "../queryClient";
+import { queryKeys } from "../services/queryKeys";
 import { ApiError } from "../services/apiClient";
 import { clearAuth, getCurrentUser, installSession } from "../services/auth";
 import { changePassword, getMe, updateMe } from "../services/users";
@@ -47,9 +48,9 @@ function LocationProbe() {
   return <span data-testid="location">{useLocation().pathname}</span>;
 }
 
-function renderPage() {
+function renderPage(client = createQueryClient()) {
   render(
-    <QueryClientProvider client={createQueryClient()}>
+    <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={["/settings"]}>
         <LocationProbe />
         <Routes>
@@ -142,6 +143,44 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(checkbox().checked).toBe(true);
     });
+  });
+
+  it("disables the checkbox while its PATCH is in flight", async () => {
+    updateMeMock.mockReturnValue(new Promise<User>(() => {}));
+    renderPage();
+
+    await waitFor(() => {
+      expect(checkbox().checked).toBe(true);
+    });
+    fireEvent.click(checkbox());
+
+    // One PATCH at a time: two in flight would be settled by whichever
+    // answered last, not by the box the user left behind.
+    await waitFor(() => {
+      expect(checkbox().disabled).toBe(true);
+    });
+    fireEvent.click(checkbox());
+    expect(updateMeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("never gives a demoted user their admin role back from the query cache", async () => {
+    // The visit before the demotion left an administrator in the cache, which
+    // outlives it by `gcTime`; the store holds the demoted user.
+    const client = createQueryClient();
+    client.setQueryData(queryKeys.users.me(), { ...user, admin: true });
+    clearAuth();
+    installSession({
+      user: { ...user, admin: false },
+      access_token: "fake-access-token",
+    });
+    // The authoritative answer is still on its way.
+    getMeMock.mockReturnValue(new Promise<User>(() => {}));
+
+    renderPage(client);
+
+    expect(await screen.findByText("Member")).toBeTruthy();
+    expect(screen.queryByText("Administrator")).toBeNull();
+    expect(getCurrentUser()?.admin).toBe(false);
   });
 
   it("confirms a password change without navigating away", async () => {

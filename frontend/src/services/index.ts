@@ -50,6 +50,8 @@ export type {
   SignOutReason,
 } from "./auth";
 
+export { refreshCurrentUser } from "./currentUser";
+
 export { getHealth } from "./health";
 export type { Health } from "./health";
 

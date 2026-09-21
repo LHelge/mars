@@ -36,6 +36,18 @@
   --color-state-parked: oklch(0.78 0.13 85);
   --color-state-failed: oklch(0.68 0.19 25);
   --color-state-human: oklch(0.72 0.13 265);
+
+  /* Syntax tokens for highlighted code fences (`SPEC.md`, "Frontend",
+     "Markdown"). Four hints, no more — a keyword, a literal, a name and a
+     comment — every one of them at a chroma well under the state hues and
+     clear of their angles, so nothing inside a code block can be misread as
+     running, parked, failed or needing a human. A diff fence carries its own
+     `+` and `-` in the text; its added and removed lines are told apart by
+     brightness here, never by green and red. */
+  --color-code-keyword: oklch(0.74 0.055 305);
+  --color-code-literal: oklch(0.76 0.05 180);
+  --color-code-name: oklch(0.78 0.045 240);
+  --color-code-comment: oklch(0.56 0.012 260);
 }
 
 :root {
@@ -62,7 +74,78 @@
     --color-state-parked: oklch(0.55 0.12 85);
     --color-state-failed: oklch(0.52 0.19 25);
     --color-state-human: oklch(0.5 0.15 265);
+
+    --color-code-keyword: oklch(0.48 0.09 305);
+    --color-code-literal: oklch(0.45 0.08 180);
+    --color-code-name: oklch(0.46 0.08 240);
+    --color-code-comment: oklch(0.6 0.012 260);
   }
+}
+
+/* The highlighter's classes, defined once against the tokens above. The spans
+   come from `lowlight` inside `CodeBlock`'s lazy chunk; the colours do not, so
+   a block is the same shape before and after that chunk arrives and nothing
+   moves when it does. Anything `highlight.js` marks that is not named here
+   inherits the block's own text colour, which is the right answer for it. */
+.hljs-keyword,
+.hljs-built_in,
+.hljs-type,
+.hljs-selector-tag,
+.hljs-tag,
+.hljs-operator,
+.hljs-doctag,
+.hljs-bullet,
+.hljs-meta,
+.hljs-meta .hljs-keyword {
+  color: var(--color-code-keyword);
+}
+
+.hljs-string,
+.hljs-number,
+.hljs-literal,
+.hljs-regexp,
+.hljs-symbol,
+.hljs-char.escape_,
+.hljs-quote,
+.hljs-link,
+.hljs-template-variable {
+  color: var(--color-code-literal);
+}
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-title.class_,
+.hljs-section,
+.hljs-name,
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-variable,
+.hljs-selector-class,
+.hljs-selector-id,
+.hljs-params {
+  color: var(--color-code-name);
+}
+
+.hljs-comment {
+  color: var(--color-code-comment);
+}
+
+/* A diff fence: the markers are already in the text. */
+.hljs-addition {
+  color: var(--color-console-text);
+}
+
+.hljs-deletion {
+  color: var(--color-console-muted);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
 }
 
 html,

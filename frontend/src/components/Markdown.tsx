@@ -20,11 +20,17 @@
 // `react-markdown`'s default `urlTransform` stays in place; it is what drops
 // `javascript:` and other dangerous schemes from links.
 
+import type { Element } from "hast";
 import type { ComponentProps } from "react";
 import { createContext, use } from "react";
 import Markdown from "react-markdown";
 import type { Components, ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+// By path, not through the barrel: `CodeBlock` reaches the highlighter with a
+// dynamic import, and the barrel is in the entry chunk (`SPEC.md`, "Frontend",
+// "Code splitting").
+import { CodeBlock } from "./CodeBlock";
 
 // Block code is `pre > code`; react-markdown 10 no longer tells the `code`
 // component whether it is inline, so `pre` says so for it. The provider wraps
@@ -115,7 +121,44 @@ function MdCode(props: Props<"code">) {
   );
 }
 
+// What a fenced block is made of, read off the syntax tree rather than off the
+// rendered children: the code has to reach `Copy` as the text the writer
+// fenced, not as a walk of the DOM. `mdast-util-to-hast` closes every code
+// node with a newline of its own; that one is the fence, not the code, so it
+// is dropped and never copied.
+interface Fence {
+  code: string;
+  language?: string;
+}
+
+function fenceOf(node: Element | undefined): Fence | null {
+  const code = node?.children.find(
+    (child) => child.type === "element" && child.tagName === "code",
+  );
+  if (code === undefined || code.type !== "element") return null;
+  if (code.children.some((child) => child.type !== "text")) return null;
+
+  let text = code.children
+    .map((child) => (child.type === "text" ? child.value : ""))
+    .join("");
+  if (text.endsWith("\n")) text = text.slice(0, -1);
+
+  const classes = code.properties.className;
+  const tag = (Array.isArray(classes) ? classes : [])
+    .map(String)
+    .find((name) => name.startsWith("language-"))
+    ?.slice("language-".length);
+
+  return { code: text, language: tag === "" ? undefined : tag };
+}
+
 function MdPre(props: Props<"pre">) {
+  const fence = fenceOf(props.node);
+  if (fence !== null) {
+    return <CodeBlock code={fence.code} language={fence.language} />;
+  }
+  // Anything else that arrived as a `pre` — there is no `rehype-raw`, so this
+  // is rare — keeps the plain bordered box.
   return (
     <pre
       {...attrs(props)}

@@ -98,6 +98,24 @@ describe("MarkdownBody", () => {
     expect(block.closest("pre")).not.toBeNull();
   });
 
+  it("gives a fence a header with its language and a Copy action", () => {
+    const container = markdown("```rust\nfn main() {}\n```\n");
+
+    expect(container.textContent).toContain("rust");
+    const button = container.querySelector("button");
+    expect(button?.textContent).toBe("Copy");
+  });
+
+  it("hands the fence's exact text to the block, fence newline and all", () => {
+    const container = markdown("```sh\necho one\necho two\n```\n");
+
+    // `mdast-util-to-hast` closes a code node with a newline of its own; the
+    // block shows and copies what was fenced, not that closing newline.
+    expect(container.querySelector("code")?.textContent).toBe(
+      "echo one\necho two",
+    );
+  });
+
   it("styles a code fence inside a blockquote as a block", () => {
     const container = markdown("> quoted\n>\n> ```sh\n> echo hi\n> ```\n");
 

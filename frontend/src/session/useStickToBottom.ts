@@ -40,6 +40,14 @@ export interface StickToBottomOptions {
    * put it. Any number that changes when the content grows will do.
    */
   contentHeight?: number;
+  /**
+   * Whether an id appended at the tail is the reader's own message. Their own
+   * send re-pins the view however far up they had scrolled: they wrote it, so
+   * they are following it — and the pill counting it as unread would be
+   * counting what they just did. Stable across renders, or the effect below
+   * runs for nothing.
+   */
+  isOwnAppend?: (id: string) => boolean;
 }
 
 export interface StickToBottom {
@@ -59,13 +67,21 @@ export interface StickToBottom {
   jumpToLatest: () => void;
 }
 
-/** Messages appended after `lastId`; the whole list when it is gone. */
+/**
+ * Messages appended after `lastId`; the whole list when there was no tail yet.
+ *
+ * A tail id that is no longer in `order` is zero growth, not a whole list of
+ * it: the one thing that removes an id is a rename in place — the optimistic
+ * `client:<id>` the user's own `user_message` event turns into `e<seq>`, at the
+ * same position — and reading that as "everything is new" is how the pill came
+ * to say "Jump to latest 413".
+ */
 function appendedAfter(order: string[], lastId: string | null): number {
   if (lastId === null) {
     return order.length;
   }
   const index = order.lastIndexOf(lastId);
-  return index === -1 ? order.length : order.length - 1 - index;
+  return index === -1 ? 0 : order.length - 1 - index;
 }
 
 /**
@@ -74,7 +90,7 @@ function appendedAfter(order: string[], lastId: string | null): number {
  */
 export function useStickToBottom(
   scrollRef: RefObject<HTMLDivElement | null>,
-  { order, tailLength, contentHeight = 0 }: StickToBottomOptions,
+  { order, tailLength, contentHeight = 0, isOwnAppend }: StickToBottomOptions,
 ): StickToBottom {
   // The flag is needed synchronously inside the layout effect, where the state
   // value would still be the one from the render that is being committed.
@@ -128,16 +144,31 @@ export function useStickToBottom(
     // Counting from the previous tail id rather than from the previous length
     // keeps a prepended history page out of the "new messages" count.
     const appended = appendedAfter(order, lastIdRef.current);
-    lastIdRef.current = order.length === 0 ? null : order[order.length - 1];
+    const tail = order.length === 0 ? null : order[order.length - 1];
+    lastIdRef.current = tail;
+    // The reader has just sent something: pin before the branch below, so
+    // following their own message down is the same path as following the tail
+    // — and the pill never counts what they themselves did.
+    if (
+      !pinnedRef.current &&
+      appended > 0 &&
+      tail !== null &&
+      isOwnAppend?.(tail) === true
+    ) {
+      pinnedRef.current = true;
+    }
     if (pinnedRef.current) {
       scrollToBottom();
       setNewCount(0);
+      // Almost always the value it already holds, which React drops without
+      // re-rendering; it is the re-pin above that makes it worth setting.
+      setPinned(true);
       return;
     }
     if (appended > 0) {
       setNewCount((count) => count + appended);
     }
-  }, [order, tailLength, contentHeight, scrollToBottom]);
+  }, [order, tailLength, contentHeight, isOwnAppend, scrollToBottom]);
 
   const jumpToLatest = useCallback(() => {
     pinnedRef.current = true;

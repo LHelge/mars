@@ -185,7 +185,8 @@ describe("SummaryToolRenderer", () => {
       />,
     );
 
-    expect(screen.getByText("Read README.md :10-20")).toBeDefined();
+    // `limit` is a count, so the line the range ends at is offset + limit.
+    expect(screen.getByText("Read README.md :10-30")).toBeDefined();
     expect(screen.getByText("# Mars")).toBeDefined();
     fireEvent.click(screen.getByRole("button", { name: /Read README.md/ }));
     expect(screen.queryByText("# Mars")).toBeNull();

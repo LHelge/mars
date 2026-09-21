@@ -1,6 +1,12 @@
 // Long output is collapsed above 40 lines (`SPEC.md`, "Transcript
 // rendering"). The head stays visible, so a row never becomes a blank box and
 // the count in the control says what is still hidden.
+//
+// The expansion is the caller's to own when it has somewhere better to keep it:
+// inside the transcript a row is unmounted as soon as the reader scrolls away
+// from it, so `ToolResult` holds this state per message in `session/sessionUi`
+// and passes it in. With nothing passed in it stays here, which is what a
+// listing outside a virtualised list wants.
 
 import { useState } from "react";
 
@@ -22,6 +28,10 @@ export interface CollapsibleLinesProps {
   wrap?: boolean;
   /** Extra classes for the `<pre>`, used for error tinting. */
   className?: string;
+  /** Whether the whole output is shown, when the caller owns that state. */
+  expanded?: boolean;
+  /** Flips it; required with `expanded` and unused without it. */
+  onToggle?: () => void;
 }
 
 export function CollapsibleLines({
@@ -29,8 +39,16 @@ export function CollapsibleLines({
   label = "output",
   wrap = true,
   className = "",
+  expanded: controlled,
+  onToggle,
 }: CollapsibleLinesProps) {
-  const [expanded, setExpanded] = useState(false);
+  const [own, setOwn] = useState(false);
+  const expanded = controlled ?? own;
+  const toggle =
+    onToggle ??
+    (() => {
+      setOwn((value) => !value);
+    });
   // `splitLines`, so the count in the control is the count an editor shows:
   // the newline that ends the last line is a terminator, not a line of its
   // own, and 40 lines ending in one must not read "Show all 41 lines".
@@ -51,7 +69,7 @@ export function CollapsibleLines({
       {long && (
         <button
           type="button"
-          onClick={() => setExpanded((value) => !value)}
+          onClick={toggle}
           aria-label={
             collapsed ? `Show all ${total} lines of ${label}` : `Collapse ${label}`
           }

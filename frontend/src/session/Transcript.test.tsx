@@ -13,6 +13,7 @@ import { act } from "react";
 import type { AgentEvent } from "../types";
 import { Transcript } from "./Transcript";
 import { disposeSessionStore, getSessionStore } from "./sessionStore";
+import { peekSessionUi } from "./sessionUi";
 
 import simpleTurnFixture from "./fixtures/simple_turn.json";
 import subagentFixture from "./fixtures/subagent.json";
@@ -414,12 +415,13 @@ describe("Transcript", () => {
       store.getState().addOptimisticUser("c-9", { kind: "message", text: "hi" });
       store.getState().inputRejected("c-9", "session is parked");
     });
-    const onResend = vi.fn();
-    render(<Transcript sessionId={sessionId} onResend={onResend} />);
+    render(<Transcript sessionId={sessionId} />);
 
     expect(screen.getByText(/session is parked/)).toBeDefined();
     fireEvent.click(screen.getByRole("button", { name: "Resend" }));
 
-    expect(onResend).toHaveBeenCalledWith("hi");
+    // The composer is the one that takes it; what the row does is record it
+    // for this session (`sessionUi`).
+    expect(peekSessionUi(sessionId)?.resend?.text).toBe("hi");
   });
 });

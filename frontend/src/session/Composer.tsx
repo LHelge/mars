@@ -11,22 +11,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
+import { useSessionSocketApi } from "./SessionSocketContext";
 import { getSessionStore, optimisticId, useSessionStore } from "./sessionStore";
-import type { SessionSocketApi } from "./useSessionSocket";
+import { useResendRequest } from "./sessionUi";
 import { useStopSession } from "./useStopSession";
 
 /** The text area grows to this many lines and then scrolls. */
 const MAX_LINES = 8;
 /** Past this length a message is worth a word of warning, never a refusal. */
 const LARGE_TEXT = 100 * 1024;
+/**
+ * Safari fires the Enter that confirms an IME composition *after*
+ * `compositionend`, with `isComposing` already false and this legacy key code
+ * in its place. Submitting on it turns the act of accepting a candidate into
+ * sending the message.
+ */
+const IME_KEY_CODE = 229;
 
 export interface ComposerProps {
   sessionId: string;
-  socket: SessionSocketApi;
-  /** Text to start from, e.g. the transcript's resend of a rejected message. */
-  initialText?: string;
-  /** Called once `initialText` has been taken into the text area. */
-  onConsumedInitialText?: () => void;
 }
 
 function number(value: string): number {
@@ -50,12 +53,8 @@ function autoGrow(area: HTMLTextAreaElement): void {
   area.style.overflowY = wanted > max ? "auto" : "hidden";
 }
 
-export function Composer({
-  sessionId,
-  socket,
-  initialText,
-  onConsumedInitialText,
-}: ComposerProps) {
+export function Composer({ sessionId }: ComposerProps) {
+  const socket = useSessionSocketApi();
   const session = useSessionStore(sessionId, (state) => state.session);
   const turnActive = useSessionStore(sessionId, (state) => state.turnActive);
   const lastRejection = useSessionStore(
@@ -63,8 +62,10 @@ export function Composer({
     (state) => state.lastRejection,
   );
 
-  const [text, setText] = useState(initialText ?? "");
-  const [consumedInitial, setConsumedInitial] = useState(initialText);
+  const resend = useResendRequest(sessionId);
+
+  const [text, setText] = useState("");
+  const [consumedResend, setConsumedResend] = useState(0);
   // The same stop the header's button makes, including what it says while the
   // request is outstanding.
   const stop = useStopSession(sessionId, socket.stop);
@@ -74,12 +75,13 @@ export function Composer({
   const ended = state === "done" || state === "failed";
   const running = state === "running";
 
-  // The transcript hands a rejected message back to be edited and resent; a
-  // new `initialText` is adopted as it arrives, the React way of reacting to a
-  // changed prop without an effect.
-  if (initialText !== consumedInitial) {
-    setConsumedInitial(initialText);
-    if (initialText !== undefined && initialText !== "") setText(initialText);
+  // The transcript hands a rejected message back to be edited and resent. Its
+  // button is a plain handler that records the request; the composer adopts it
+  // here, once per token, which is the React way of reacting to changed state
+  // without an effect and a render of its own.
+  if (resend !== null && resend.token !== consumedResend) {
+    setConsumedResend(resend.token);
+    setText(resend.text);
   }
 
   useEffect(() => {
@@ -88,10 +90,11 @@ export function Composer({
   }, [text]);
 
   useEffect(() => {
-    if (consumedInitial === undefined || consumedInitial === "") return;
+    // The one thing adopting the text cannot do during render: put the cursor
+    // where the user is about to edit.
+    if (consumedResend === 0) return;
     areaRef.current?.focus();
-    onConsumedInitialText?.();
-  }, [consumedInitial, onConsumedInitialText]);
+  }, [consumedResend]);
 
   // The store is the external system the composer reacts to: a rejection puts
   // the refused text back in the box. (A session that leaves `running` ends a
@@ -173,6 +176,7 @@ export function Composer({
           if (event.key !== "Enter") return;
           // IME composition ends on an Enter that must not submit.
           if (event.nativeEvent.isComposing) return;
+          if (event.nativeEvent.keyCode === IME_KEY_CODE) return;
           if (event.shiftKey && !(event.metaKey || event.ctrlKey)) return;
           event.preventDefault();
           send();

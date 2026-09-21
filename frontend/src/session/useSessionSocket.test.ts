@@ -507,7 +507,42 @@ describe("SessionSocket", () => {
     expect(store().messages[`client:${clientId}`]).toMatchObject({
       kind: "user",
       text: "hello",
-      pending: true,
+      delivery: { state: "pending" },
+    });
+  });
+
+  it("offers a resend for a message the socket carried away unacknowledged", async () => {
+    // The socket says `OPEN` and the frame goes out; what never comes back is
+    // the `input_accepted`. A tab that slept through the connection dying sees
+    // exactly this (`SPEC.md`, "Session state").
+    const socket = track(await startLive());
+    const clientId = socket.send({ kind: "message", text: "hello" });
+    expect(store().messages[`client:${clientId}`]).toMatchObject({
+      delivery: { state: "pending" },
+    });
+
+    last().serverClose(1006);
+
+    expect(store().messages[`client:${clientId}`]).toMatchObject({
+      kind: "user",
+      text: "hello",
+      delivery: {
+        state: "rejected",
+        reason: "the connection closed before this was acknowledged",
+      },
+    });
+  });
+
+  it("leaves an accepted message alone when the socket closes", async () => {
+    const socket = track(await startLive());
+    const clientId = socket.send({ kind: "message", text: "hello" });
+    last().text({ type: "input_accepted", client_id: clientId, seq: 12 });
+
+    last().serverClose(1006);
+
+    // The orchestrator has it: the reconnect's replay is what settles it.
+    expect(store().messages[`client:${clientId}`]).toMatchObject({
+      delivery: { state: "accepted", seq: 12 },
     });
   });
 
@@ -538,6 +573,11 @@ describe("SessionSocket", () => {
 
     const clientId = socket.send({ kind: "message", text: "hello" });
     expect(store().order).toEqual([`client:${clientId}`]);
+    await settle();
+    // The 202 is the acceptance the socket path gets as `input_accepted`.
+    expect(store().messages[`client:${clientId}`]).toMatchObject({
+      delivery: { state: "accepted" },
+    });
 
     // The orchestrator recorded the input and echoed the id back, as it does
     // for the socket path (`SPEC.md`, "Sessions").
@@ -559,7 +599,9 @@ describe("SessionSocket", () => {
       kind: "user",
       text: "hello",
     });
-    expect(store().messages["e1"]).not.toHaveProperty("pending", true);
+    expect(store().messages["e1"]).toMatchObject({
+      delivery: { state: "confirmed" },
+    });
   });
 
   it("refuses terminal_open unless the session is running", async () => {

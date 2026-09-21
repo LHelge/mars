@@ -72,6 +72,14 @@ const SIGNED_OUT = "Your sign-in has ended. Sign in again to reconnect.";
 const REFUSED = "The server refused this session's live stream.";
 /** ... when nothing answered at all for as long as we kept trying. */
 const UNREACHABLE = "Could not reconnect to this session.";
+/**
+ * ... and what a message the connection carried away unacknowledged says about
+ * itself. `readyState === OPEN` is true of a socket that died while the tab
+ * slept, so a send can go out and never be answered; ADR 0020 gives no delivery
+ * guarantee but does have the user resend by hand, which they can only do if
+ * the message stops claiming to be on its way.
+ */
+const UNACKNOWLEDGED = "the connection closed before this was acknowledged";
 
 /** What a REST check that answered decides, when it answers "still yours". */
 type Alive = "retry" | "stop";
@@ -298,8 +306,26 @@ export class SessionSocket {
     };
   }
 
+  /**
+   * Every send this connection never got an answer for is marked not sent.
+   * Called wherever the connection ends — a close we did not ask for, and every
+   * close we did — because the one thing an unacknowledged message must not do
+   * is go on saying "sending" for ever (`SPEC.md`, "Session state"). A send
+   * that really did land is put back by the replay: the `user_message` carries
+   * the same `client_id` and replaces the message wherever it stands.
+   */
+  private markUnsent(): void {
+    if (this.invalidated || this.generation !== sessionStoreGeneration()) {
+      // Signed out, or the transcript belongs to a login that has ended:
+      // there is nothing left of this session to mark (ADR 0027).
+      return;
+    }
+    peekSessionStore(this.sessionId)?.getState().connectionLost(UNACKNOWLEDGED);
+  }
+
   /** Drops our handlers before closing, so this close never reconnects. */
   private teardown(code: number): void {
+    this.markUnsent();
     const socket = this.socket;
     this.socket = null;
     this.terminalRunning = false;
@@ -400,6 +426,7 @@ export class SessionSocket {
     this.socket = null;
     this.terminalRunning = false;
     if (this.dead) return;
+    this.markUnsent();
 
     if (this.wasOpen) {
       // It opened, so this is a live connection that dropped: the counters of
@@ -668,13 +695,21 @@ export class SessionSocket {
       // Closed or reconnecting: the REST equivalent accepts it with 202, and
       // carries the same `client_id`, so the `user_message` that follows
       // replaces the optimistic message instead of doubling it.
-      void sendInput(this.sessionId, input, clientId).catch((error: unknown) => {
-        // A refusal that lands after this transcript stopped being ours
-        // belongs to nobody: the optimistic message it would mark rejected is
-        // already gone.
-        if (this.dead) return;
-        this.store.getState().inputRejected(clientId, reason(error));
-      });
+      void sendInput(this.sessionId, input, clientId).then(
+        () => {
+          // A 202 is the same answer `input_accepted` is, without a `seq`:
+          // the orchestrator has it, so the next close is not what lost it.
+          if (this.dead) return;
+          this.store.getState().inputAccepted(clientId);
+        },
+        (error: unknown) => {
+          // A refusal that lands after this transcript stopped being ours
+          // belongs to nobody: the optimistic message it would mark rejected is
+          // already gone.
+          if (this.dead) return;
+          this.store.getState().inputRejected(clientId, reason(error));
+        },
+      );
     }
     return clientId;
   }

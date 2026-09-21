@@ -24,14 +24,33 @@ const UNKNOWN_TOOL = "unknown";
 /** The name a subagent parent carries until its `tool_call` is seen. */
 const PLACEHOLDER_AGENT = "Agent";
 
+/**
+ * How far a message the user sent has got (`SPEC.md`, "Session state").
+ *
+ * One field, so "pending and rejected at once" cannot be written down:
+ * `pending` is optimistic with no answer yet, `accepted` is the orchestrator's
+ * `input_accepted` — or the 202 of the REST fallback — carrying the `seq` the
+ * echo will have, `confirmed` is that echo itself, and `rejected` carries what
+ * the refusal said. Acceptance is not delivery (ADR 0020), which is why the
+ * two are different states and why anything still `pending` when the
+ * connection ends is offered for resending rather than left saying "sending".
+ */
+export type Delivery =
+  | { state: "pending" }
+  | { state: "accepted"; seq?: number }
+  | { state: "confirmed" }
+  | { state: "rejected"; reason: string };
+
 export interface UserMessage {
   id: string;
   kind: "user";
   text: string;
-  /** Optimistic and not yet confirmed by its `user_message` event. */
-  pending?: boolean;
-  /** Set from `input_rejected`; the message stays visible so it can be resent. */
-  rejected?: string;
+  delivery: Delivery;
+}
+
+/** Whether this send is still out there with no answer of either kind. */
+export function isInFlight(delivery: Delivery): boolean {
+  return delivery.state === "pending" || delivery.state === "accepted";
 }
 
 export interface AssistantTextMessage {
@@ -224,14 +243,35 @@ export interface SessionStoreActions {
     detail?: unknown,
   ) => void;
   addOptimisticUser: (clientId: string, input: SessionInput) => void;
-  inputAccepted: (clientId: string, seq: number) => void;
+  /** The orchestrator has the input and will echo it at `seq`. */
+  inputAccepted: (clientId: string, seq?: number) => void;
   inputRejected: (clientId: string, reason: string) => void;
+  /**
+   * The connection that carried them is gone: every send still `pending` — one
+   * the orchestrator never acknowledged — is marked not sent, so the reader can
+   * send it again (ADR 0020: no delivery guarantee, but a message may be resent
+   * by hand). An accepted send is left alone; it is the orchestrator's now, and
+   * a reconnect replays the `user_message` that confirms it.
+   */
+  connectionLost: (reason: string) => void;
 }
 
 export type SessionStore = SessionState & SessionStoreActions;
 
+/** The prefix of an id this client invented for a message of its own. */
+const OPTIMISTIC_PREFIX = "client:";
+
 export function optimisticId(clientId: string): string {
-  return `client:${clientId}`;
+  return `${OPTIMISTIC_PREFIX}${clientId}`;
+}
+
+/**
+ * Whether `id` is a message this browser added itself — the reader's own send,
+ * before the orchestrator has echoed it. The transcript follows such a message
+ * however far up the reader had scrolled: it is theirs.
+ */
+export function isOptimisticId(id: string): boolean {
+  return id.startsWith(OPTIMISTIC_PREFIX);
 }
 
 function eventId(seq: number): string {
@@ -530,7 +570,13 @@ export function foldEvent(state: SessionState, event: AgentEvent): SessionState 
       );
 
     case "user_message": {
-      const message: UserMessage = { id, kind: "user", text: event.text };
+      // Its own event: this one is on the record, whoever sent it.
+      const message: UserMessage = {
+        id,
+        kind: "user",
+        text: event.text,
+        delivery: { state: "confirmed" },
+      };
       if (event.client_id !== undefined) {
         const replaced = replaceOptimistic(next, event.client_id, message);
         if (replaced) return replaced;
@@ -1143,7 +1189,7 @@ export function createSessionStore(): StoreApi<SessionStore> {
           id,
           kind: "user",
           text: input.text,
-          pending: true,
+          delivery: { state: "pending" },
         };
         return {
           messages: { ...state.messages, [id]: message },
@@ -1155,7 +1201,7 @@ export function createSessionStore(): StoreApi<SessionStore> {
       });
     },
 
-    inputAccepted: (clientId) => {
+    inputAccepted: (clientId, seq) => {
       // Accepted: the turn this send started is the live one, so there is
       // nothing left to restore.
       turnActiveBefore.delete(clientId);
@@ -1163,12 +1209,14 @@ export function createSessionStore(): StoreApi<SessionStore> {
         const id = optimisticId(clientId);
         const message = state.messages[id];
         if (message?.kind !== "user") return state;
-        // Acceptance is not delivery (ADR 0020): the message stays pending
-        // until its `user_message` event replaces it.
+        // Acceptance is not delivery (ADR 0020): the message is still shown as
+        // sending until its `user_message` event replaces it. What changes is
+        // that it can no longer be lost with the connection — the orchestrator
+        // has it, at the `seq` it answered with.
         return {
           messages: {
             ...state.messages,
-            [id]: { ...message, pending: true, rejected: undefined },
+            [id]: { ...message, delivery: { state: "accepted", seq } },
           },
         };
       });
@@ -1188,18 +1236,44 @@ export function createSessionStore(): StoreApi<SessionStore> {
         // Another send is still in flight, or an event has arrived since:
         // only this send's own optimism is undone.
         const othersPending = Object.values(state.messages).some(
-          (other) => other.kind === "user" && other.pending && other.id !== id,
+          (other) =>
+            other.kind === "user" &&
+            isInFlight(other.delivery) &&
+            other.id !== id,
         );
         const restore =
           before !== undefined && !othersPending && before.seq === state.lastSeq;
         return {
           messages: {
             ...state.messages,
-            [id]: { ...message, pending: false, rejected: reason },
+            [id]: { ...message, delivery: { state: "rejected", reason } },
           },
           turnActive: restore ? before.active : state.turnActive,
           lastRejection,
         };
+      });
+    },
+
+    connectionLost: (reason) => {
+      set((state) => {
+        let messages: Record<string, Message> | null = null;
+        for (const message of Object.values(state.messages)) {
+          if (message.kind !== "user" || message.delivery.state !== "pending") {
+            continue;
+          }
+          messages ??= { ...state.messages };
+          messages[message.id] = {
+            ...message,
+            delivery: { state: "rejected", reason },
+          };
+          // Nothing is in flight for it any more, so the turn it optimistically
+          // started is not this send's to undo either: the session may well be
+          // running, and only the orchestrator's own answer says otherwise.
+          turnActiveBefore.delete(message.id.slice(OPTIMISTIC_PREFIX.length));
+        }
+        // No banner and no restored text: this is not a refusal the composer
+        // has to explain, it is one message that has to be sent again.
+        return messages === null ? state : { ...state, messages };
       });
     },
   }));

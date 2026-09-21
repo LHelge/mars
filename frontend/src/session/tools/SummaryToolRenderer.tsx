@@ -3,9 +3,8 @@
 // the time this is drawn the user has asked to see the answer and it starts
 // open; the line still folds it away (`SPEC.md`, "Transcript rendering").
 
-import { useState } from "react";
-
 import { JsonTree } from "../../components/JsonTree";
+import { Disclosure } from "../Disclosure";
 import type { ToolMessage } from "../sessionStore";
 import { ToolResult } from "./ToolResult";
 import { summaryLine } from "./toolInput";
@@ -15,32 +14,25 @@ export interface SummaryToolRendererProps {
 }
 
 export function SummaryToolRenderer({ message }: SummaryToolRendererProps) {
-  const [open, setOpen] = useState(true);
   const summary = summaryLine(message.name, message.input);
 
   return (
     <div className="space-y-2">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        className={`flex w-full items-center gap-2 text-left font-mono text-xs ${
+      <Disclosure
+        rowId={message.id}
+        slot="summary"
+        defaultOpen
+        summaryClassName={`flex w-full items-center gap-2 text-left font-mono text-xs ${
           message.is_error === true ? "text-state-failed" : "text-console-text"
         }`}
+        bodyClassName="space-y-2"
+        summary={<span className="truncate">{summary}</span>}
       >
-        <span aria-hidden="true" className="text-console-muted">
-          {open ? "▾" : "▸"}
-        </span>
-        <span className="truncate">{summary}</span>
-      </button>
-      {open && (
-        <div className="space-y-2">
-          {message.input !== undefined && message.input !== null && (
-            <JsonTree value={message.input} name="input" />
-          )}
-          <ToolResult message={message} wrap={false} />
-        </div>
-      )}
+        {message.input !== undefined && message.input !== null && (
+          <JsonTree value={message.input} name="input" />
+        )}
+        <ToolResult message={message} wrap={false} />
+      </Disclosure>
     </div>
   );
 }

@@ -6,55 +6,47 @@
 // measure what is actually in the DOM. Depth is unbounded and drawn plain, so a
 // subagent inside a subagent indents once more and nothing else changes.
 
-import { useState } from "react";
 import type { ReactNode } from "react";
 
 import { SUBAGENT_CHILDREN } from "../utils/testIds";
+import { Disclosure } from "./Disclosure";
 import type { ToolMessage } from "./sessionStore";
 
 export interface SubagentGroupProps {
   message: ToolMessage;
-  /**
-   * The nested rows, rendered only while expanded. Optional because the tool
-   * registry resolves this component for `Task` and `Agent`, and a resolved
-   * renderer is only handed the message.
-   */
+  /** The nested rows, rendered only while expanded. */
   children?: ReactNode;
 }
 
 export function SubagentGroup({ message, children }: SubagentGroupProps) {
   // Folded whether it is running or has ended: the frame above says `running`,
-  // and the nested transcript is one click away.
-  const [open, setOpen] = useState(false);
+  // and the nested transcript is one click away. A subagent the reader is
+  // following stays open while they look elsewhere, because the fold's state
+  // is held outside this row (`sessionUi`).
   const subagent = message.subagent;
   const failed = subagent?.is_error === true;
 
   return (
     <div className="border-console-border border-t">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs"
+      <Disclosure
+        rowId={message.id}
+        slot="subagent"
+        summaryClassName="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs"
+        bodyClassName="border-console-border ml-4 space-y-2 border-l pt-1 pb-2 pl-3"
+        bodyTestId={SUBAGENT_CHILDREN}
+        summary={
+          <>
+            <span className={failed ? "text-state-failed" : "text-state-human"}>
+              {subagent?.agent_type ?? "Agent"}
+            </span>
+            <span className="text-console-muted truncate">
+              {subagent?.description ?? ""}
+            </span>
+          </>
+        }
       >
-        <span aria-hidden="true" className="text-console-muted">
-          {open ? "▾" : "▸"}
-        </span>
-        <span className={failed ? "text-state-failed" : "text-state-human"}>
-          {subagent?.agent_type ?? "Agent"}
-        </span>
-        <span className="text-console-muted truncate">
-          {subagent?.description ?? ""}
-        </span>
-      </button>
-      {open && (
-        <div
-          data-testid={SUBAGENT_CHILDREN}
-          className="border-console-border ml-4 space-y-2 border-l pt-1 pb-2 pl-3"
-        >
-          {children}
-        </div>
-      )}
+        {children}
+      </Disclosure>
     </div>
   );
 }

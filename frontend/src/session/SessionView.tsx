@@ -6,7 +6,7 @@
 // transcript and the open panel scroll, so the composer stays where the hands
 // are and the header stays readable while a long run streams past.
 
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 
 import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
@@ -24,17 +24,13 @@ export interface SessionViewProps {
 }
 
 export function SessionView({ session, socket }: SessionViewProps) {
-  // The transcript hands a rejected message back to be edited and resent; the
-  // composer takes it and says so, which clears it again.
-  const [resend, setResend] = useState<string | undefined>(undefined);
-
+  // A rejected message's Resend goes from the transcript to the composer
+  // through the per-session UI store (`sessionUi`), so nothing about it passes
+  // through this view.
   const { loadOlder, stop } = socket;
   const older = useCallback(() => {
     void loadOlder();
   }, [loadOlder]);
-  const consumed = useCallback(() => {
-    setResend(undefined);
-  }, []);
 
   return (
     <SessionSocketContext.Provider value={socket}>
@@ -66,17 +62,8 @@ export function SessionView({ session, socket }: SessionViewProps) {
 
         <div className="flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
-            <Transcript
-              sessionId={session.id}
-              loadOlder={older}
-              onResend={setResend}
-            />
-            <Composer
-              sessionId={session.id}
-              socket={socket}
-              initialText={resend}
-              onConsumedInitialText={consumed}
-            />
+            <Transcript sessionId={session.id} loadOlder={older} />
+            <Composer sessionId={session.id} />
           </div>
 
           <SidePanel session={session} />

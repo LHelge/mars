@@ -9,9 +9,10 @@
 // row in the viewport. Nothing in this build memoises for us (there is no
 // React Compiler; `ARCHITECTURE.md`, "Frontend architecture"), so the row is
 // `memo()`-wrapped by hand. Its props are stable across those re-renders: the
-// id comes from `order` and `onResend` is the `setResend` state setter of
-// `SessionView`. A prop that is a fresh object or closure per render would
-// silently undo this.
+// session id and the message id both come from `Transcript`. A prop that is a
+// fresh object or closure per render would silently undo this, which is why
+// what a row does — resend a refused message, open a fold — it does through the
+// per-session UI store rather than through a callback handed down from the view.
 
 import { memo } from "react";
 
@@ -44,13 +45,11 @@ const GLYPH: Record<Message["kind"], string> = {
 export interface MessageRowProps {
   sessionId: string;
   id: string;
-  onResend?: (text: string) => void;
 }
 
 export const MessageRow = memo(function MessageRow({
   sessionId,
   id,
-  onResend,
 }: MessageRowProps) {
   const message = useSessionStore(sessionId, (state) => state.messages[id]);
   // Children are resolved from `subagents`, never from `order`: a subagent
@@ -67,7 +66,7 @@ export const MessageRow = memo(function MessageRow({
   let body;
   switch (message.kind) {
     case "user":
-      body = <UserMessage message={message} onResend={onResend} />;
+      body = <UserMessage sessionId={sessionId} message={message} />;
       break;
     case "assistant_text":
       body = <AssistantText message={message} />;
@@ -94,7 +93,6 @@ export const MessageRow = memo(function MessageRow({
                   key={childId}
                   sessionId={sessionId}
                   id={childId}
-                  onResend={onResend}
                 />
               ))}
             </SubagentGroup>

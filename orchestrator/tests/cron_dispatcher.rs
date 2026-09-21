@@ -4,8 +4,17 @@
 //!
 //! The job is driven directly through `TestApp::cron()`, one run at a time with
 //! the `now` the scenario chose, because what is under test is a sweep and not
-//! a timer — the loop, its interval and its non-overlap belong to
+//! a timer — the loop, its interval, its debounce and its non-overlap belong to
 //! `cron::scheduler` and are tested there.
+//!
+//! The one exception is the last section, "the wake-up": what it asserts is
+//! that a committed task event really reaches the job through the shared
+//! listener and its fan-out, which nothing below the whole app can show. Those
+//! scenarios start the real loop and its waker through
+//! `CronService::start_job`, on the suite's `DISPATCHER_INTERVAL_SECS` of 45 —
+//! long enough that no launch they wait for can be a tick — and stop both
+//! tasks at the end the way the drain does. Nothing sleeps for a fixed period
+//! to wait for a launch: the polls have deadlines.
 //!
 //! Everything the job composes has its own suite already: the claim
 //! transaction and the actor are `tests/session_create.rs`'s, the four bounds
@@ -30,12 +39,13 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
 use chrono::Utc;
 use common::{AuthenticatedUser, TestApp};
-use mars_orchestrator::cron::JobReport;
+use mars_orchestrator::cron::{JobName, JobReport};
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::git::testutil::TestUpstream;
 use mars_orchestrator::models::{
@@ -47,6 +57,8 @@ use mars_orchestrator::repositories::{ProjectRepository, SessionRepository, Task
 use mars_orchestrator::session::McpToken;
 use mars_orchestrator::tracker::{ReviewCarry, TaskDto, TrackerMutation};
 use serde_json::{Value, json};
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 /// How long a clone or a launch may take before a scenario gives up with a
@@ -776,4 +788,192 @@ async fn a_project_that_is_not_ready_is_not_swept() {
     assert_eq!(report.items, 0, "{report:?}");
     assert!(fixture.sessions(&app).await.is_empty());
     assert_eq!(fixture.read_task(&app, task.id).await.attempts, 0);
+}
+
+// ---- the wake-up ----
+
+/// How long a wake-up scenario waits for a launch it expects.
+///
+/// Well inside `DISPATCHER_INTERVAL_SECS`, which the suite sets to 45
+/// (`tests/common/app.rs`): a session that appears within this window cannot
+/// be the timer's doing, because the timer's next tick is a good half minute
+/// after the startup one every scenario below waits for first.
+const WAKE_PATIENCE: Duration = Duration::from_secs(15);
+
+/// Long enough for a wake-up and its debounce to have happened, for the
+/// assertions that nothing *more* was launched.
+const SETTLE: Duration = Duration::from_secs(1);
+
+/// The dispatcher's loop and its waker, running as `CronService::start` runs
+/// them and stopped by [`RunningDispatcher::stop`] the way the drain does.
+struct RunningDispatcher {
+    shutdown: watch::Sender<bool>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl RunningDispatcher {
+    /// Start the job on its own timer, plus the waker that subscribes to the
+    /// fan-out.
+    fn start(app: &TestApp) -> Self {
+        let (shutdown, rx) = watch::channel(false);
+        let handles = Arc::new(app.cron()).start_job(JobName::Dispatcher, rx);
+        assert_eq!(handles.len(), 2, "the dispatcher runs a loop and a waker");
+
+        RunningDispatcher { shutdown, handles }
+    }
+
+    /// Stop both tasks and wait for them, as the drain does.
+    async fn stop(self) {
+        self.shutdown.send(true).expect("both tasks are listening");
+        for handle in self.handles {
+            tokio::time::timeout(PATIENCE, handle)
+                .await
+                .expect("the dispatcher stops within the drain grace")
+                .expect("neither task panics");
+        }
+    }
+}
+
+/// Wait until the project has at least `count` sessions, or fail.
+async fn wait_for_sessions(
+    app: &TestApp,
+    fixture: &Fixture,
+    count: usize,
+    patience: Duration,
+) -> Vec<Session> {
+    let deadline = tokio::time::Instant::now() + patience;
+
+    loop {
+        let sessions = fixture.sessions(app).await;
+        if sessions.len() >= count {
+            return sessions;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "only {} of {count} sessions were launched within {patience:?}",
+            sessions.len(),
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// A task moved into a served state launches a session without anybody
+/// calling the job: the `task_events` notification wakes it long before its
+/// next tick (`ARCHITECTURE.md`, "Dispatcher").
+#[tokio::test]
+async fn a_task_event_wakes_the_dispatcher_before_its_next_tick() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    fixture
+        .auto_profile(&app, "auto-worker", &["ready"], 2)
+        .await;
+
+    // One task the startup tick can dispatch, so that the tick is observable
+    // and everything after it is provably not the timer.
+    let first = fixture
+        .task(&app, "Fix the login form", "ready", Priority::HIGH)
+        .await;
+    // And one the sweep must not touch yet: `backlog` is not served.
+    let later = fixture
+        .task(&app, "Fix the signup form", "backlog", Priority::HIGH)
+        .await;
+
+    let dispatcher = RunningDispatcher::start(&app);
+    let launched = wait_for_sessions(&app, &fixture, 1, PATIENCE).await;
+    assert_eq!(launched[0].task_id, Some(first.id));
+    wait_until_running(&app, launched[0].id).await;
+
+    // The next tick is 45 seconds away. Move the second task into the served
+    // state: the tracker's `pg_notify` is the only thing that can start it.
+    common::tracker::move_to(&app.pool, fixture.project_id, later.id, "ready").await;
+
+    let sessions = wait_for_sessions(&app, &fixture, 2, WAKE_PATIENCE).await;
+    assert_eq!(
+        sessions[1].task_id,
+        Some(later.id),
+        "the wake-up run dispatched something else",
+    );
+    assert_eq!(
+        sessions[1].launch_source,
+        SessionLaunchSource::Dispatcher,
+        "a wake-up run launches as the dispatcher, like any other run",
+    );
+
+    dispatcher.stop().await;
+}
+
+/// A burst of task events is one wake-up run, and that run launches up to the
+/// cap and no further: five tasks filed at once are not five sessions, and no
+/// task is claimed twice by two runs racing each other.
+#[tokio::test]
+async fn a_burst_of_task_events_launches_up_to_the_cap_and_no_further() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    fixture
+        .auto_profile(&app, "auto-worker", &["ready"], 2)
+        .await;
+
+    // Arranged where the sweep cannot see them, so the startup tick has
+    // nothing to do and every launch below is the burst's.
+    let mut queued = Vec::new();
+    for number in 0..5 {
+        queued.push(
+            fixture
+                .task(&app, &format!("Task {number}"), "backlog", Priority::HIGH)
+                .await,
+        );
+    }
+
+    let dispatcher = RunningDispatcher::start(&app);
+
+    // The planner files its work: five state changes in a row, five
+    // notifications, one debounced run.
+    for task in &queued {
+        common::tracker::move_to(&app.pool, fixture.project_id, task.id, "ready").await;
+    }
+
+    let sessions = wait_for_sessions(&app, &fixture, 2, WAKE_PATIENCE).await;
+    for session in &sessions {
+        wait_until_running(&app, session.id).await;
+    }
+
+    // The follow-up run that every launch's own `claimed` events wake finds
+    // the cap full, launches nothing, and the job goes quiet.
+    tokio::time::sleep(SETTLE).await;
+    let settled = fixture.sessions(&app).await;
+    assert_eq!(
+        settled.len(),
+        2,
+        "the burst launched past the profile cap: {settled:?}",
+    );
+
+    // Two sessions, two different tasks: no task was claimed twice, which two
+    // runs overlapping on one burst would have done.
+    let mut held: Vec<Uuid> = settled
+        .iter()
+        .filter_map(|session| session.task_id)
+        .collect();
+    held.sort();
+    held.dedup();
+    assert_eq!(held.len(), 2, "one task was dispatched twice: {settled:?}");
+
+    // And the three the cap held back were left claimable.
+    let mut still_free = 0;
+    for task in &queued {
+        if !held.contains(&task.id) {
+            assert_eq!(
+                fixture
+                    .read_task(&app, task.id)
+                    .await
+                    .lease_holder_session_id,
+                None,
+                "a task was claimed with no capacity to run it",
+            );
+            still_free += 1;
+        }
+    }
+    assert_eq!(still_free, 3);
+
+    dispatcher.stop().await;
 }

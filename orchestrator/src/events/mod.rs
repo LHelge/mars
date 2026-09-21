@@ -21,7 +21,7 @@ pub use agent_event::{
     AgentEvent, AgentEventBody, GitOp, McpServerStatus, SessionEvent, StopSignal,
     TOOL_RESULT_MAX_BYTES,
 };
-pub use fanout::{Channel, EventFanout, Notice, PayloadError, parse_payload};
+pub use fanout::{AnyNotice, Channel, EventFanout, Notice, PayloadError, parse_payload};
 pub use input::{
     CLIENT_ID_TOO_LONG, EMPTY_TEXT, LONG_TEXT, MAX_CLIENT_ID_BYTES, MAX_TEXT_BYTES, SessionInput,
     validate_client_id,

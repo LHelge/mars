@@ -206,6 +206,27 @@ describe("DashboardPage", () => {
     expect(within(human).getByText("operator")).toBeDefined();
   });
 
+  it("stretches a row's link over its own cell and not over the row", async () => {
+    // `<tr>` is not reliably a containing block: where a browser ignores
+    // `position: relative` on it, every row's `inset-0` resolves against some
+    // far ancestor and the last row drawn takes clicks across the page. The
+    // cell is what positions the link.
+    vi.mocked(listSessions).mockImplementation((params = {}) =>
+      Promise.resolve(params.state === "running" ? [session()] : []),
+    );
+
+    renderDashboard();
+
+    const running = await sectionTable("Running sessions");
+    const link = within(running).getByRole("link", {
+      name: "Wire the dashboard",
+    });
+
+    expect(link.className).toContain("after:absolute");
+    expect(link.closest("td")?.className).toContain("relative");
+    expect(link.closest("tr")?.className).not.toContain("relative");
+  });
+
   it("shows an empty state per section when every list is empty", async () => {
     renderDashboard();
 

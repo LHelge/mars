@@ -6,7 +6,10 @@
 // scope, and — for an administrator — another user's. `scope=user` with the
 // caller's own id is the same thing as "my secrets", so the URL is normalised
 // to drop the id (`SPEC.md`, "Secrets": a user scope with no `scope_id` is the
-// caller's own).
+// caller's own), as is another user's id in the hands of a non-administrator,
+// who has no such choice to make and would only be reading towards a 403. Both
+// are normalised while deriving what to show, before the first read, rather
+// than by an effect that corrects the URL a render too late.
 
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
@@ -45,25 +48,37 @@ export function SecretsPage() {
   const scope: SecretScope =
     rawScope === "project" || rawScope === "user" ? rawScope : "global";
   const rawScopeId = params.get("scope_id");
-  const scopeId = rawScopeId === null || rawScopeId === "" ? null : rawScopeId;
+  const linked = rawScopeId === null || rawScopeId === "" ? null : rawScopeId;
 
   // A user scope naming the caller is "my secrets": normalise it away so both
   // spellings share one URL and one query key.
-  const selfSelected = scope === "user" && user !== null && scopeId === user.id;
+  const selfSelected = scope === "user" && user !== null && linked === user.id;
+
+  // Somebody else's user scope is an administrator's view. A non-admin who
+  // arrives on that URL — a pasted link, a stale bookmark — would otherwise
+  // get a scope no radio is offered for, no picker, and a 403 list; they are
+  // shown their own secrets instead.
+  const forbidden = scope === "user" && linked !== null && !selfSelected && !isAdmin;
+
+  // The normalisation is done here and not only in the effect below: an effect
+  // runs after a render, and that render would already have read the URL's
+  // key — a request for a scope this page has just decided not to show.
+  const scopeId = selfSelected || forbidden ? null : linked;
+  const normalised = scopeId === linked;
 
   useEffect(() => {
-    if (!selfSelected) {
+    if (normalised) {
       return;
     }
     const next = new URLSearchParams(params);
     next.delete("scope_id");
     setParams(next, { replace: true });
-  }, [selfSelected, params, setParams]);
+  }, [normalised, params, setParams]);
 
   const choice: Choice =
     scope === "project"
       ? "project"
-      : scope === "user" && scopeId !== null && !selfSelected
+      : scope === "user" && scopeId !== null
         ? "user"
         : scope === "user"
           ? "mine"
@@ -214,7 +229,7 @@ export function SecretsPage() {
           ) : (
             <SecretsManager
               scope={scope}
-              {...(scopeId === null || selfSelected ? {} : { scopeId })}
+              {...(scopeId === null ? {} : { scopeId })}
               title={title}
               hideAgentCredentials
             />

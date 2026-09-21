@@ -4,10 +4,12 @@
 // live session.
 //
 // Emptying and removing are refused with 409 while any session is `running` or
-// `creating`. The tab pre-disables both when the sessions tab has already read
-// the list and it shows one — a courtesy, not a guard, because that list may
-// be absent or a moment old. The server's 409 is the real answer and is shown
-// on the row it was refused for.
+// `creating`, so the tab disables both while this project has one. A disabled
+// button is a guard and not a courtesy, so it has to be able to come back: the
+// tab subscribes to the project's session list itself and polls it, rather than
+// reading whatever the sessions tab happened to leave in the cache before it
+// was unmounted. Until that read answers nothing is disabled — the server's 409
+// is the authority either way, and it is shown on the row it was refused for.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -18,13 +20,14 @@ import { QueryErrorAlert } from "../../components/QueryErrorAlert";
 import { SectionHeader } from "../../components/SectionHeader";
 import { SubmitButton } from "../../components/SubmitButton";
 import { queryKeys } from "../../services/queryKeys";
+import { projectQueries } from "../../services/queryOptions";
 import {
   clearSharedDir,
   deleteSharedDir,
   listSharedDirs,
 } from "../../services/projects";
 import { errorMessage } from "../../services/errorMessage";
-import type { Session, SharedDir } from "../../types";
+import type { SharedDir } from "../../types";
 import { formatDateTime, formatRelative } from "../../utils/format";
 import { SharedDirForm } from "./SharedDirForm";
 import type { ProjectTabPanelProps } from "./tabs";
@@ -36,30 +39,35 @@ const MOUNT_HELP =
 /** The tooltip on an action the project's live sessions would have refused. */
 const RUNNING_HINT = "A session is running";
 
+/**
+ * How often the session list behind the two disabled buttons is re-read. A
+ * session ending is what re-enables them, and nothing else on this tab is
+ * watching for it, so the poll is this tab's own and stops with it.
+ */
+const SESSIONS_POLL_MS = 15_000;
+
 const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
 const CELL = "py-1.5 pr-3 align-middle";
 
 export function SharedDirsTab({ project }: ProjectTabPanelProps) {
-  const queryClient = useQueryClient();
-
   const dirs = useQuery({
     queryKey: queryKeys.projects.sharedDirs(project.id),
     queryFn: () => listSharedDirs(project.id),
   });
 
-  // Read from the cache, never fetched: the sessions tab owns that list, and
-  // whether it has been opened only decides whether the buttons are disabled
-  // before the request or after the 409. The key is matched by prefix because
-  // the sessions list may be cached under a state filter.
-  const live = queryClient
-    .getQueriesData<Session[]>({
-      queryKey: queryKeys.projects.sessions(project.id),
-    })
-    .some(([, sessions]) =>
-      (sessions ?? []).some(
-        (session) => session.state === "running" || session.state === "creating",
-      ),
-    );
+  // The unfiltered list, as `projectQueries.sessions` spells it, with the poll
+  // this tab needs of it; a hidden tab is not polled.
+  const sessions = useQuery({
+    ...projectQueries.sessions(project.id),
+    refetchInterval: SESSIONS_POLL_MS,
+    refetchIntervalInBackground: false,
+  });
+
+  // Only a list that arrived may disable anything: a pending or failed read
+  // leaves the 409 as the only answer (`SPEC.md`, "Frontend", Read failures).
+  const live = (sessions.data ?? []).some(
+    (session) => session.state === "running" || session.state === "creating",
+  );
 
   const rows = useMemo(
     () => [...(dirs.data ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
@@ -136,7 +144,7 @@ export function SharedDirsTab({ project }: ProjectTabPanelProps) {
 interface SharedDirRowProps {
   projectId: string;
   dir: SharedDir;
-  /** True when a cached sessions list shows a `running` or `creating` session. */
+  /** True when the polled session list shows a `running` or `creating` one. */
   live: boolean;
 }
 

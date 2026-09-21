@@ -46,6 +46,7 @@ import {
   mergeSecretOptions,
   MIN_IDLE_TIMEOUT_SECS,
   MIN_MAX_CONCURRENT,
+  partialMessagesDecided,
   partialMessagesDefault,
   prefillFromTemplate,
   PROFILE_BACKEND,
@@ -95,9 +96,13 @@ export function ProfileEditorPage({
         : toProfileInput(profile),
     ),
   );
-  // Until the user has decided about partial messages themselves, the kind
-  // decides: switching to `ephemeral` turns it off, switching back turns it on.
-  const [partialTouched, setPartialTouched] = useState(false);
+  // Until partial messages have been decided, the kind decides: switching to
+  // `ephemeral` turns it off, switching back turns it on. A stored profile
+  // whose flag already differs from its kind's default has decided, so editing
+  // it and moving the kind to and fro leaves that answer alone.
+  const [partialTouched, setPartialTouched] = useState(() =>
+    partialMessagesDecided(profile),
+  );
   const [newSecret, setNewSecret] = useState("");
   const [newSecretError, setNewSecretError] = useState<string | null>(null);
   // The server's refusal of `auto_launch`, shown at the toggle it is about.

@@ -8,18 +8,16 @@
 // of costs lines up. Sessions keep running when nobody watches them
 // (`SPEC.md`, "User-facing features"), so the list polls — quickly while
 // anything is still `creating` or `running`, slowly once the project has gone
-// quiet — and stops entirely while the browser tab is in the background.
+// quiet — and stops entirely while the browser tab is in the background. The
+// state filter narrows what has already arrived rather than asking the server
+// again, so switching it is instant and never shows one state's rows as
+// another's.
 //
 // Deleting is only offered for a session that has finished; the API refuses
 // any other (`DELETE /sessions/{id}`: must be `done` or `failed`), and the
 // refusal is shown on the row it belongs to rather than at the top of the page.
 
-import {
-  keepPreviousData,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { EmptyState } from "../../components/EmptyState";
@@ -73,12 +71,13 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
     message: string;
   } | null>(null);
 
+  // The whole list, always: the filter is a view of it and not a second read.
+  // A per-state key would mean a request per filter and, between the click and
+  // its answer, the previous filter's rows sitting under the new filter's
+  // heading — `Failed` briefly listing running sessions. The panel below reads
+  // the same unfiltered key, so this is also one polled request and not two.
   const sessions = useQuery({
-    ...projectQueries.sessions(
-      project.id,
-      filter === "all" ? undefined : filter,
-    ),
-    placeholderData: keepPreviousData,
+    ...projectQueries.sessions(project.id),
     refetchIntervalInBackground: false,
     refetchInterval: (query) =>
       (query.state.data ?? []).some(isBusy) ? BUSY_POLL_MS : IDLE_POLL_MS,
@@ -97,10 +96,10 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
 
   const rows = useMemo(
     () =>
-      [...(sessions.data ?? [])].sort((a, b) =>
-        b.created_at.localeCompare(a.created_at),
-      ),
-    [sessions.data],
+      (sessions.data ?? [])
+        .filter((session) => filter === "all" || session.state === filter)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at)),
+    [sessions.data, filter],
   );
 
   const remove = useMutation({

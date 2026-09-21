@@ -17,7 +17,7 @@ import {
   fetchProject,
   retryClone,
 } from "../../services/projects";
-import { queryKeys } from "../../services/queryKeys";
+import { adoptProject, forgetProject } from "../../services/projectCache";
 import type { Project } from "../../types";
 import { formatRelative } from "../../utils/format";
 import { ProjectStatusPill } from "../projects/ProjectStatusPill";
@@ -43,12 +43,12 @@ export function ProjectHeader({
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
-  const detailKey = queryKeys.projects.detail(project.id);
-
-  /** Both refreshing actions answer the project; take it as the new truth. */
+  /**
+   * Both refreshing actions answer the project; `adoptProject` is the one
+   * spelling of what that means for the cache, shared with the projects table.
+   */
   function adopt(updated: Project) {
-    queryClient.setQueryData(detailKey, updated);
-    void queryClient.invalidateQueries({ queryKey: queryKeys.projects.list() });
+    adoptProject(queryClient, updated);
     setError(null);
   }
 
@@ -75,7 +75,11 @@ export function ProjectHeader({
   const remove = useMutation({
     mutationFn: () => deleteProject(project.id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+      // This page is still mounted, and every tab of it reads something under
+      // `["projects", id]`. Those reads are removed rather than invalidated —
+      // an invalidation would refetch them against a project that is gone —
+      // and only the table is re-read (`services/projectCache.ts`).
+      forgetProject(queryClient, project.id);
       void navigate("/projects");
     },
     onError: (caught: unknown) => {

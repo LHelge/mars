@@ -154,6 +154,31 @@ describe("SecretsPage", () => {
     );
   });
 
+  it("shows a non-admin their own secrets, never reading another user's scope", async () => {
+    cleanup();
+    clearAuth();
+    installSession({
+      user: user({ admin: false }),
+      access_token: "test-access-token",
+    });
+
+    // A pasted link or a stale bookmark: the scope is one only an
+    // administrator may select, and one this page offers them no radio for.
+    renderPage(`/secrets?scope=user&scope_id=${OTHER_USER_ID}`);
+
+    await waitFor(() => {
+      expect(vi.mocked(listSecrets)).toHaveBeenCalledWith({ scope: "user" });
+    });
+    expect(screen.getByLabelText<HTMLInputElement>("My secrets").checked).toBe(
+      true,
+    );
+    // Not even once, before the URL was corrected.
+    expect(vi.mocked(listSecrets)).not.toHaveBeenCalledWith({
+      scope: "user",
+      scope_id: OTHER_USER_ID,
+    });
+  });
+
   it("switches scope through the radio group", async () => {
     renderPage();
     await screen.findByLabelText("My secrets");

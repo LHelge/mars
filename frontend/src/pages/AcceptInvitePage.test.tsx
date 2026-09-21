@@ -1,4 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   cleanup,
   fireEvent,
@@ -6,6 +10,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { useState, type ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../services/apiClient";
@@ -67,7 +72,10 @@ function Location() {
   return <span data-testid="path">{location.pathname}</span>;
 }
 
-function renderPage(path = `/invite/${TOKEN}`) {
+function renderPage(
+  path = `/invite/${TOKEN}`,
+  dashboard: ReactNode = <span>dashboard</span>,
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -77,12 +85,13 @@ function renderPage(path = `/invite/${TOKEN}`) {
         <Routes>
           <Route path="/invite/:token" element={<AcceptInvitePage />} />
           <Route path="/invite" element={<AcceptInvitePage />} />
-          <Route path="/" element={<span>dashboard</span>} />
+          <Route path="/" element={dashboard} />
         </Routes>
         <Location />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return client;
 }
 
 function fill(
@@ -302,6 +311,40 @@ describe("AcceptInvitePage", () => {
         ),
       ).toBeDefined();
     });
+  });
+
+  it("drops the previous account's reads on the way out, keeping the invite", async () => {
+    lookupMock.mockResolvedValue(invite());
+    acceptMock.mockResolvedValue(auth());
+
+    // The probe reads the cache in its first render, which is where the real
+    // dashboard's own observers mount: dropping the previous account's reads
+    // after the navigation instead would take those with them, leaving them
+    // unreachable by any later invalidation until a remount.
+    function Dashboard() {
+      const client = useQueryClient();
+      const [held] = useState(
+        () => client.getQueryState(["sessions", "list", "all"]) !== undefined,
+      );
+      return <span data-testid="dashboard">{held ? "stale" : "fresh"}</span>;
+    }
+
+    const client = renderPage(`/invite/${TOKEN}`, <Dashboard />);
+    await screen.findByLabelText("Username");
+
+    // A read belonging to the account the visitor arrived with.
+    client.setQueryData(["sessions", "list", "all"], []);
+
+    fill("newcomer");
+
+    expect((await screen.findByTestId("dashboard")).textContent).toBe("fresh");
+    expect(client.getQueryState(["sessions", "list", "all"])).toBeUndefined();
+
+    // This page's own lookup is untouched. Clearing the whole cache instead
+    // would take it too, and its still-mounted observer would immediately ask
+    // for the invite a second time — with a token that has just been used.
+    expect(client.getQueryState(["invite", TOKEN])).not.toBeUndefined();
+    expect(lookupMock).toHaveBeenCalledTimes(1);
   });
 
   it("never echoes the token into the document", async () => {

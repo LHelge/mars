@@ -30,12 +30,21 @@ export {
 // The session transcript store (`SPEC.md`, "Frontend", "Session state").
 
 export {
+  clearSessionStores,
   createSessionStore,
   disposeSessionStore,
   emptySessionState,
   foldEvent,
   getSessionStore,
+  isNewerSession,
+  MAX_RETAINED_SESSIONS,
+  onSessionStoreCleared,
   optimisticId,
+  peekSessionStore,
+  releaseSessionStore,
+  retainedSessionIds,
+  retainSessionStore,
+  sessionStoreGeneration,
   useSessionStore,
 } from "./sessionStore";
 export type {

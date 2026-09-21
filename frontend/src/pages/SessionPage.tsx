@@ -28,6 +28,7 @@ import { queryKeys } from "../services/queryKeys";
 import { getSession } from "../services/sessions";
 import {
   getSessionStore,
+  isNewerSession,
   SessionView,
   useSessionSocket,
   useSessionStore,
@@ -102,12 +103,18 @@ function SessionLive({ id, loaded }: { id: string; loaded: Session }) {
   const queryClient = useQueryClient();
   const socket = useSessionSocket(id);
   const stored = useSessionStore(id, (state) => state.session);
+  // A retained store is only ahead of this read while its connection is the
+  // one keeping it current. On a return visit it holds the session as the
+  // last visit left it — possibly parked or failed since, possibly minutes
+  // old — and the socket's first `session` frame may be seconds away or never
+  // arrive, so the fresher of the two is what the header shows and what the
+  // store is seeded with.
+  const session = stored === null || isNewerSession(loaded, stored) ? loaded : stored;
 
-  // Seed the store for the first render after a cold open; a store that
-  // already holds a session is ahead of this REST read and is left alone.
   useEffect(() => {
     const store = getSessionStore(id).getState();
-    if (store.session === null) store.setSession(loaded);
+    const held = store.session;
+    if (held === null || isNewerSession(loaded, held)) store.setSession(loaded);
   }, [id, loaded]);
 
   // Every `session` frame the socket folds is the freshest copy there is.
@@ -120,7 +127,7 @@ function SessionLive({ id, loaded }: { id: string; loaded: Session }) {
 
   return (
     <PageLayout>
-      <SessionView session={stored ?? loaded} socket={socket} />
+      <SessionView session={session} socket={socket} />
     </PageLayout>
   );
 }

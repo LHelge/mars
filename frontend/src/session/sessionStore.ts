@@ -11,6 +11,11 @@
 
 import { createStore, useStore, type StoreApi } from "zustand";
 
+import {
+  getCurrentUser,
+  onCredentialsReplaced,
+  onSignOut,
+} from "../services/auth";
 import type { AgentEvent, Session, SessionInput } from "../types";
 import type { SessionState as SessionLifecycleState } from "../types";
 
@@ -185,6 +190,12 @@ export interface SessionState {
 }
 
 export interface SessionActions {
+  /**
+   * Back to an empty transcript, connection status included. The registry's
+   * `clearSessionStores` is the production caller — a login that has ended
+   * takes its folded state, its cursors, its optimistic messages and its last
+   * rejection with it — and a test arranging a fresh store is the other.
+   */
   reset: () => void;
   setSession: (session: Session) => void;
   /**
@@ -251,6 +262,23 @@ export function emptySessionState(): SessionState {
     turnActive: false,
     lastRejection: null,
   };
+}
+
+/**
+ * Whether `candidate` is a later reading of the session than `current`.
+ *
+ * A retained store holds the session as the last connection left it, which a
+ * REST read on a return visit is usually ahead of: the session may have parked
+ * or failed in between, and the socket's first `session` frame can be seconds
+ * away or never come. `last_seq` is the session's own monotonic cursor and
+ * decides; `last_activity_at` settles a row whose state moved without an event
+ * of its own.
+ */
+export function isNewerSession(candidate: Session, current: Session): boolean {
+  if (candidate.last_seq !== current.last_seq) {
+    return candidate.last_seq > current.last_seq;
+  }
+  return candidate.last_activity_at > current.last_activity_at;
 }
 
 function scopeIds(state: SessionState, parent: string | undefined): string[] {
@@ -1177,22 +1205,200 @@ export function createSessionStore(): StoreApi<SessionStore> {
   }));
 }
 
-// One store per mounted session id, so navigating between sessions does not
-// leak folded state. `useSessionSocket` calls `reset()` when the id changes.
-const stores = new Map<string, StoreApi<SessionStore>>();
+// ---------------------------------------------------------------------------
+// The registry: one store per session id, and its lifecycle
+// (`SPEC.md`, "Frontend", "Session store lifecycle").
+//
+// A store outlives the page that opened it on purpose — that is what makes
+// returning to a session resume from what was already folded instead of
+// refetching it — so the registry, not the page, owns three questions: who is
+// using a store, how many unused ones are kept, and when everything held for
+// one login has to go.
+//
+//   * *Used* is counted, not guessed: `useSessionSocket` retains its store for
+//     the lifetime of the connection and releases it on dispose, and a store
+//     with an owner is never evicted, however long the transcript.
+//   * *Unused* is bounded: at most `MAX_RETAINED_SESSIONS` released stores are
+//     kept, the least recently released going first. A transcript is the one
+//     unbounded thing this application holds in memory, so visiting sessions
+//     all afternoon must not grow without limit.
+//   * *One login's* is enforced at the seam where the browser changes hands:
+//     `clearSessionStores` resets every store — so anything still subscribed
+//     redraws empty rather than showing the previous user's transcript
+//     (ADR 0027: transcripts are unredacted) — evicts the unused ones and
+//     bumps `sessionStoreGeneration`, which is how an in-flight history page
+//     or input rejection learns that its answer belongs to a login that has
+//     ended and must not be written anywhere.
+// ---------------------------------------------------------------------------
+
+/**
+ * How many stores with no owner are kept for a return visit. Three covers the
+ * way sessions are actually read — a session, the one before it, and the one
+ * being compared with them — while bounding what a long browse retains.
+ */
+export const MAX_RETAINED_SESSIONS = 3;
+
+interface StoreEntry {
+  store: StoreApi<SessionStore>;
+  /** Owners holding it open. An entry with one is never evicted. */
+  refs: number;
+  /** The tick it last had no owner at: the LRU order among the unused. */
+  touched: number;
+}
+
+const stores = new Map<string, StoreEntry>();
+/** Monotonic, so `touched` orders releases without reading the clock. */
+let clock = 0;
+/**
+ * Bumped by every clear. An asynchronous caller captures it before it awaits
+ * and compares on completion; a mismatch means the state it would write
+ * belongs to a login that is over.
+ */
+let generation = 0;
+/** The user id the stores were created for; `null` when it is unknown. */
+let principal: string | null = null;
+const clearedListeners = new Set<(sessionId: string) => void>();
+
+function currentPrincipal(): string | null {
+  return getCurrentUser()?.id ?? null;
+}
+
+/**
+ * The seam for per-session state held beside the transcript — the expanded
+ * rows of a transcript, say: a listener is told whenever a store is cleared,
+ * evicted or disposed, and drops whatever it holds for that session id.
+ */
+export function onSessionStoreCleared(
+  listener: (sessionId: string) => void,
+): () => void {
+  clearedListeners.add(listener);
+  return () => {
+    clearedListeners.delete(listener);
+  };
+}
+
+function announceCleared(sessionId: string): void {
+  for (const listener of [...clearedListeners]) listener(sessionId);
+}
+
+/** Drops unused stores beyond the bound, least recently released first. */
+function prune(): void {
+  const unused = [...stores.entries()].filter(([, entry]) => entry.refs === 0);
+  if (unused.length <= MAX_RETAINED_SESSIONS) return;
+  unused.sort(([, a], [, b]) => a.touched - b.touched);
+  for (const [sessionId] of unused.slice(0, unused.length - MAX_RETAINED_SESSIONS)) {
+    stores.delete(sessionId);
+    announceCleared(sessionId);
+  }
+}
 
 export function getSessionStore(sessionId: string): StoreApi<SessionStore> {
-  let store = stores.get(sessionId);
-  if (!store) {
-    store = createSessionStore();
-    stores.set(sessionId, store);
+  const existing = stores.get(sessionId);
+  if (existing !== undefined) {
+    // Reading an unused store is what keeps it: the LRU order is recency of
+    // use, not of release alone.
+    if (existing.refs === 0) existing.touched = ++clock;
+    return existing.store;
   }
+  const entry: StoreEntry = {
+    store: createSessionStore(),
+    refs: 0,
+    touched: ++clock,
+  };
+  stores.set(sessionId, entry);
+  principal = currentPrincipal();
+  prune();
+  return entry.store;
+}
+
+/** The store bound to `sessionId` if there is one; never creates. */
+export function peekSessionStore(
+  sessionId: string,
+): StoreApi<SessionStore> | undefined {
+  return stores.get(sessionId)?.store;
+}
+
+/**
+ * Holds the store open for as long as the caller is using it. Every retain is
+ * matched by exactly one `releaseSessionStore`.
+ */
+export function retainSessionStore(sessionId: string): StoreApi<SessionStore> {
+  const store = getSessionStore(sessionId);
+  const entry = stores.get(sessionId);
+  if (entry !== undefined) entry.refs += 1;
   return store;
 }
 
-export function disposeSessionStore(sessionId: string): void {
-  stores.delete(sessionId);
+/** Gives up one hold; the store becomes evictable when the last one goes. */
+export function releaseSessionStore(sessionId: string): void {
+  const entry = stores.get(sessionId);
+  if (entry === undefined || entry.refs === 0) return;
+  entry.refs -= 1;
+  if (entry.refs > 0) return;
+  entry.touched = ++clock;
+  prune();
 }
+
+/**
+ * Forgets one session's store outright: what a deleted session leaves behind
+ * is not worth resuming, and there is nothing to resume it from.
+ */
+export function disposeSessionStore(sessionId: string): void {
+  if (!stores.delete(sessionId)) return;
+  announceCleared(sessionId);
+}
+
+/**
+ * Ends every transcript this login folded. Stores that still have an owner —
+ * a session page that has not unmounted yet — are reset in place, so their
+ * subscribers keep a live store and redraw empty; the rest are dropped.
+ * Called on sign-out (`AuthBootstrap`) and whenever the browser changes hands
+ * without one (below).
+ */
+export function clearSessionStores(): void {
+  generation += 1;
+  for (const [sessionId, entry] of [...stores.entries()]) {
+    entry.store.getState().reset();
+    if (entry.refs === 0) stores.delete(sessionId);
+    announceCleared(sessionId);
+  }
+  principal = currentPrincipal();
+}
+
+/** The current generation; see `generation`. */
+export function sessionStoreGeneration(): number {
+  return generation;
+}
+
+/** The session ids a store is held for, for tests and diagnostics. */
+export function retainedSessionIds(): string[] {
+  return [...stores.keys()];
+}
+
+// The two seams where the browser changes hands, both registered here at
+// import rather than from a component: the registry is what they act on, a
+// registration beside it is ahead of every socket's own — so the transcripts
+// are gone before any of them reacts — and it keeps this module, and the fold
+// with it, out of the chunk every page loads. Nothing is lost by registering
+// only when the module is loaded: a login with no session module loaded has no
+// store to clear.
+//
+// Signing out is the rule of `SPEC.md`, "Frontend", Rules: "clears
+// authenticated query and stream stores, closes streams".
+onSignOut(() => {
+  clearSessionStores();
+});
+
+// A tab can also change principal without a sign-out and without a reload: a
+// login over an existing one, and a token another tab wrote for a *different*
+// account, which `services/auth` adopts and reports here. Only a replacement
+// that leaves the same user in place — a self-service password change — keeps
+// the transcripts, because that is the same person's session still running.
+onCredentialsReplaced(() => {
+  const next = currentPrincipal();
+  if (principal !== null && next !== null && next === principal) return;
+  clearSessionStores();
+});
 
 /** Subscribes to the store bound to `sessionId`. */
 export function useSessionStore<T>(

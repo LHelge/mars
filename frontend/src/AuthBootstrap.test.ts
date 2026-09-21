@@ -310,6 +310,63 @@ describe("AuthBootstrap sign-out destination", () => {
     expect(app.at()).toBe("/login|none");
   });
 
+  it("takes the folded transcripts with it, so the next login sees none", async () => {
+    vi.resetModules();
+    const { createElement } = await import("react");
+    const { act, cleanup, render } = await import("@testing-library/react");
+    const { MemoryRouter } = await import("react-router");
+    const { QueryClient, QueryClientProvider } = await import(
+      "@tanstack/react-query"
+    );
+    const auth = await import("./services/auth");
+    const { getSessionStore, retainedSessionIds } = await import(
+      "./session/sessionStore"
+    );
+    const { AuthBootstrap } = await import("./AuthBootstrap");
+    teardown = cleanup;
+
+    auth.installSession({ user, access_token: accessToken("user-1") });
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient() },
+        createElement(
+          MemoryRouter,
+          { initialEntries: ["/"] },
+          createElement(
+            AuthBootstrap,
+            null,
+            createElement("p", null, "application"),
+          ),
+        ),
+      ),
+    );
+
+    // One session read by the user who is about to leave, holding an
+    // unredacted transcript and a refused message of theirs (ADR 0027).
+    const sessionId = "00000000-0000-4000-8000-0000000000a2";
+    const store = getSessionStore(sessionId);
+    store.getState().applyEvent({
+      seq: 1,
+      ts: "2026-01-01T00:00:00Z",
+      kind: "text",
+      text: "the first user's transcript",
+    });
+    store.getState().inputRejected("client-1", "session is not running");
+
+    act(() => {
+      auth.signOut("user");
+    });
+
+    expect(retainedSessionIds()).not.toContain(sessionId);
+    // And what the next login opens for the same session starts empty.
+    const fresh = getSessionStore(sessionId).getState();
+    expect(fresh.order).toEqual([]);
+    expect(fresh.lastSeq).toBe(0);
+    expect(fresh.lastRejection).toBeNull();
+    expect(fresh.status).toBe("connecting");
+  });
+
   it("keeps an unsafe destination out of the router state", async () => {
     // `/login` itself would bounce the user straight back out again.
     const app = await mountAt("/login");

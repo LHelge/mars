@@ -15,9 +15,16 @@
 // shell owns — clearing the TanStack Query cache and navigating to `/login`,
 // with the current location as the return destination when the sign-out was a
 // failed refresh rather than a user's decision.
-// The session and board epics register their own store resets and stream closes
-// through `onSignOut` from their providers; nothing further is needed here for
-// the "clears stores, closes streams" part of the rule. Navigation is the last
+// The board's snapshot is reset here because this component already holds the
+// query client it belongs beside. The session transcripts are not: their
+// registry registers its own `onSignOut` — resetting every store, dropping the
+// unused ones and invalidating the requests still in flight (`SPEC.md`,
+// "Frontend", "Session store lifecycle") — which keeps that module, and the
+// fold with it, in the session route's chunk rather than in the one every page
+// loads. A registration made where the stores live is also ahead of each
+// socket's own, so the transcripts are gone before any of them reacts. Nothing
+// further is needed here for the "clears stores, closes streams" part of the
+// rule. Navigation is the last
 // thing this handler does, and React applies the resulting render only after
 // the whole handler chain has run, so every reset lands before the login page
 // mounts.

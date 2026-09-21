@@ -1,16 +1,17 @@
 ---
 id: "4x7jq"
 title: Show the server's words for a secret 409 and stop keeping a typed secret value after its panel closes
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:52:27.644527706Z"
-updated: "2026-09-21T10:52:27.644527706Z"
+updated: "2026-09-21T20:46:07.910228447Z"
 tags:
   - frontend
   - technical-review
   - bug
   - secrets
 parent: "579dz"
+attempts: 1
 ---
 
 Problem:

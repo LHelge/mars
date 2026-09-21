@@ -1,10 +1,10 @@
 ---
 id: "9c5rg"
 title: Unify form submission ownership and loading/error conventions
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:44:41.307126474Z"
-updated: "2026-09-21T10:54:55.304119617Z"
+updated: "2026-09-21T20:46:02.137142605Z"
 tags:
   - frontend
   - technical-review
@@ -16,6 +16,7 @@ depends_on:
   - s9rxc
   - wast2
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: forms mix useFormSubmit with TanStack mutations and independently maintained loading/error/success state. This creates multiple submission lifecycles and makes double-submit protection, API error handling and cache invalidation harder to reason about.

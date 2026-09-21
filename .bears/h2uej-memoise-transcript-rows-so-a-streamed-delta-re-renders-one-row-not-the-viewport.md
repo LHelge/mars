@@ -1,10 +1,10 @@
 ---
 id: h2uej
 title: Memoise transcript rows so a streamed delta re-renders one row, not the viewport
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:53:09.024281911Z"
-updated: "2026-09-21T10:53:09.024281911Z"
+updated: "2026-09-21T20:46:05.885776133Z"
 tags:
   - frontend
   - technical-review
@@ -12,6 +12,7 @@ tags:
   - session
   - react
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: the transcript's comments assume a React Compiler that is not installed (vite.config.ts uses plain react(); package.json has no compiler dependency), and the only memo() in the application is TaskCard. Transcript subscribes to tailLength, so every text_delta re-renders it and builds fresh <MessageRow> elements for the viewport plus 16 overscan rows (session/Transcript.tsx:38-55). Each of those rows re-parses its markdown because MarkdownBody is not memoised (components/Markdown.tsx:46), and each open Edit row recomputes the O(n*m) LCS lineDiff (session/tools/EditToolRenderer.tsx:35, which also runs the same four guards twice per render, :31-82 and :93-97). The store side is already right for this — every row subscribes to messages[id] / subagents[toolUseId] only and every selector returns a stable reference — so the work is wasted purely for want of memo. Plausible second cost: the inline getItemKey (Transcript.tsx:54) changes identity every render, which resets the virtualizer's measurement memo so each render rebuilds measurements for all rows.

@@ -32,6 +32,7 @@ import { LoadingState } from "../components/LoadingState";
 import { queryKeys } from "../services/queryKeys";
 import { listSessionTasks } from "../services/sessions";
 import { getTask } from "../services/tasks";
+import { taskPath } from "../tasks/taskLink";
 import type { Task } from "../types";
 import { getSessionStore } from "./sessionStore";
 import type { SessionPanelProps } from "./sidePanels";
@@ -79,8 +80,7 @@ export function TasksPanel({ session }: SessionPanelProps) {
   }, [projectId, queryClient, session.id, taskId]);
 
   const launchedTask = fromTouched ?? launched.data;
-  const rows =
-    taskId === null ? all : all.filter((task) => task.id !== taskId);
+  const rows = taskId === null ? all : all.filter((task) => task.id !== taskId);
   const empty = taskId === null && rows.length === 0;
 
   return (
@@ -147,7 +147,7 @@ interface TaskRowProps {
 function TaskRow({ task, held }: TaskRowProps) {
   return (
     <Link
-      to={`/projects/${task.project_id}/tasks/${String(task.number)}`}
+      to={taskPath(task.project_id, task.number)}
       className="border-console-border hover:border-console-accent block rounded border px-2 py-1.5"
     >
       <div className="flex items-baseline gap-2">
@@ -160,7 +160,9 @@ function TaskRow({ task, held }: TaskRowProps) {
       </div>
       <div className="text-console-muted mt-1 flex items-center gap-2 font-mono text-xs">
         <span>{task.state}</span>
-        {held && <span className="text-state-running">held by this session</span>}
+        {held && (
+          <span className="text-state-running">held by this session</span>
+        )}
       </div>
     </Link>
   );

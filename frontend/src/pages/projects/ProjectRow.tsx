@@ -19,10 +19,8 @@ import { retryClone } from "../../services/projects";
 import { queryKeys } from "../../services/queryKeys";
 import type { Project } from "../../types";
 import { formatRelative, PLACEHOLDER } from "../../utils/format";
+import { CELL_TOP as CELL, ROW } from "../../components/tableStyles";
 import { ProjectStatusPill } from "./ProjectStatusPill";
-
-const CELL = "py-2 pr-3 align-top";
-const ROW = "border-console-border/60 border-b last:border-b-0";
 
 export interface ProjectRowProps {
   project: Project;
@@ -41,7 +39,9 @@ export function ProjectRow({ project }: ProjectRowProps) {
     onError: (caught: unknown) => {
       logUnexpected(caught);
       // The project may have moved on since the list was read; find out.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.list() });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.list(),
+      });
     },
   });
 

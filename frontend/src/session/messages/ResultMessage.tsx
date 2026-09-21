@@ -1,10 +1,7 @@
 // The end of a turn: what it cost and how long it took.
 
 import type { ResultMessage as ResultMessageData } from "../sessionStore";
-import { formatUsd } from "../../utils/format";
-
-/** A turn costs cents, so the transcript asks `formatUsd` for four decimals. */
-const COST_DECIMALS = 4;
+import { COST_DECIMALS, formatUsd } from "../../utils/format";
 
 function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;

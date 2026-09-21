@@ -12,13 +12,23 @@
 // is the authority either way, and it is shown on the row it was refused for.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Alert } from "../../components/Alert";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingState } from "../../components/LoadingState";
 import { QueryErrorAlert } from "../../components/QueryErrorAlert";
 import { SectionHeader } from "../../components/SectionHeader";
+import { ConfirmPanel } from "../../components/ConfirmPanel";
 import { SubmitButton } from "../../components/SubmitButton";
+import { TableHead } from "../../components/TableHead";
+import {
+  CELL,
+  ROW,
+  SPAN_CELL,
+  TABLE,
+  X_SCROLLER,
+  type TableColumn,
+} from "../../components/tableStyles";
 import { queryKeys } from "../../services/queryKeys";
 import { projectQueries } from "../../services/queryOptions";
 import {
@@ -46,8 +56,12 @@ const RUNNING_HINT = "A session is running";
  */
 const SESSIONS_POLL_MS = 15_000;
 
-const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
-const CELL = "py-1.5 pr-3 align-middle";
+const COLUMNS: readonly TableColumn[] = [
+  { label: "Name" },
+  { label: "Container path" },
+  { label: "Added", className: "hidden md:table-cell" },
+  { label: "Actions", className: "pr-0 text-right" },
+];
 
 export function SharedDirsTab({ project }: ProjectTabPanelProps) {
   const dirs = useQuery({
@@ -79,10 +93,7 @@ export function SharedDirsTab({ project }: ProjectTabPanelProps) {
       <SectionHeader title="Shared directories" description={MOUNT_HELP} />
 
       {dirs.isError && (
-        <QueryErrorAlert
-          query={dirs}
-          message={errorMessage(dirs.error)}
-        />
+        <QueryErrorAlert query={dirs} message={errorMessage(dirs.error)} />
       )}
 
       {live && (
@@ -106,24 +117,9 @@ export function SharedDirsTab({ project }: ProjectTabPanelProps) {
           />
         )
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-console-border border-b">
-                <th scope="col" className={HEAD}>
-                  Name
-                </th>
-                <th scope="col" className={HEAD}>
-                  Container path
-                </th>
-                <th scope="col" className={`${HEAD} hidden md:table-cell`}>
-                  Added
-                </th>
-                <th scope="col" className={`${HEAD} pr-0 text-right`}>
-                  Actions
-                </th>
-              </tr>
-            </thead>
+        <div className={X_SCROLLER}>
+          <table className={TABLE}>
+            <TableHead columns={COLUMNS} />
             <tbody>
               {rows.map((dir) => (
                 <SharedDirRow
@@ -151,6 +147,8 @@ interface SharedDirRowProps {
 function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
   const queryClient = useQueryClient();
   const listKey = queryKeys.projects.sharedDirs(projectId);
+  /** Which of the two destructive actions is waiting to be confirmed. */
+  const [confirming, setConfirming] = useState<"clear" | "remove" | null>(null);
 
   const clear = useMutation({
     mutationFn: () => clearSharedDir(projectId, dir.name),
@@ -172,32 +170,20 @@ function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
   const failure = remove.error ?? clear.error;
 
   function onClear() {
-    if (
-      !window.confirm(
-        `Empty ${dir.name}? Everything under ${dir.container_path} is deleted; the next session starts it again from nothing.`,
-      )
-    ) {
-      return;
-    }
+    setConfirming(null);
     remove.reset();
     clear.mutate();
   }
 
   function onRemove() {
-    if (
-      !window.confirm(
-        `Remove ${dir.name}? Its contents are deleted and later sessions no longer mount ${dir.container_path}.`,
-      )
-    ) {
-      return;
-    }
+    setConfirming(null);
     clear.reset();
     remove.mutate();
   }
 
   return (
     <>
-      <tr className="border-console-border/60 border-b last:border-b-0">
+      <tr className={ROW}>
         <td className={`${CELL} text-console-text font-mono text-xs`}>
           {dir.name}
         </td>
@@ -223,7 +209,9 @@ function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
               variant="ghost"
               loading={clear.isPending}
               disabled={busy || live}
-              onClick={onClear}
+              onClick={() => {
+                setConfirming("clear");
+              }}
             >
               Clear
             </SubmitButton>
@@ -232,7 +220,9 @@ function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
               variant="danger"
               loading={remove.isPending}
               disabled={busy || live}
-              onClick={onRemove}
+              onClick={() => {
+                setConfirming("remove");
+              }}
             >
               Remove
             </SubmitButton>
@@ -240,9 +230,37 @@ function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
         </td>
       </tr>
 
+      {confirming !== null && (
+        <tr className={ROW}>
+          <td colSpan={COLUMNS.length} className={SPAN_CELL}>
+            {confirming === "clear" ? (
+              <ConfirmPanel
+                message={`Empty ${dir.name}? Everything under ${dir.container_path} is deleted; the next session starts it again from nothing.`}
+                confirmLabel={`Empty ${dir.name}`}
+                pending={clear.isPending}
+                onConfirm={onClear}
+                onCancel={() => {
+                  setConfirming(null);
+                }}
+              />
+            ) : (
+              <ConfirmPanel
+                message={`Remove ${dir.name}? Its contents are deleted and later sessions no longer mount ${dir.container_path}.`}
+                confirmLabel={`Remove ${dir.name}`}
+                pending={remove.isPending}
+                onConfirm={onRemove}
+                onCancel={() => {
+                  setConfirming(null);
+                }}
+              />
+            )}
+          </td>
+        </tr>
+      )}
+
       {failure !== null && (
-        <tr className="border-console-border/60 border-b last:border-b-0">
-          <td colSpan={4} className="bg-console-surface/60 px-3 py-2">
+        <tr className={ROW}>
+          <td colSpan={COLUMNS.length} className={SPAN_CELL}>
             <Alert kind="error">{errorMessage(failure)}</Alert>
           </td>
         </tr>

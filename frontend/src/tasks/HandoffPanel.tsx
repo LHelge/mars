@@ -26,11 +26,12 @@
 // commit's diff inside the section rather than navigating away from the
 // argument it belongs to.
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router";
 
 import { MarkdownBody } from "../components/Markdown";
 import { SubmitButton } from "../components/SubmitButton";
+import { useCopyToClipboard } from "../components/useClipboardCopy";
 import type { TaskComment, Handoff, TaskDetail } from "../types";
 import {
   formatDateTime,
@@ -389,38 +390,7 @@ function ViewDiffButton({
  * a selectable field rather than failing silently.
  */
 function CopyCommit({ commit }: { commit: string }) {
-  const [copied, setCopied] = useState(false);
-  const [manual, setManual] = useState(false);
-  const fieldRef = useRef<HTMLInputElement>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (timer.current !== null) clearTimeout(timer.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (manual) fieldRef.current?.select();
-  }, [manual]);
-
-  const copy = async (): Promise<void> => {
-    const clipboard = navigator.clipboard as Clipboard | undefined;
-    try {
-      if (clipboard === undefined) throw new Error("no clipboard");
-      await clipboard.writeText(commit);
-    } catch {
-      setCopied(false);
-      setManual(true);
-      return;
-    }
-    setManual(false);
-    setCopied(true);
-    if (timer.current !== null) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      setCopied(false);
-    }, 2000);
-  };
+  const { copied, manual, copy, fieldRef } = useCopyToClipboard(commit);
 
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -430,9 +400,7 @@ function CopyCommit({ commit }: { commit: string }) {
       <button
         type="button"
         aria-label="Copy commit id"
-        onClick={() => {
-          void copy();
-        }}
+        onClick={copy}
         className="text-console-muted hover:text-console-text border-console-border hover:bg-console-raised rounded border px-1.5 py-px font-mono text-[0.6875rem]"
       >
         {copied ? "Copied" : "Copy"}

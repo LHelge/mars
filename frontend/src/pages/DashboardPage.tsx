@@ -20,6 +20,14 @@ import { PageLayout } from "../components/PageLayout";
 import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { SectionHeader } from "../components/SectionHeader";
 import { StatusBadge } from "../components/StatusBadge";
+import { TableHead } from "../components/TableHead";
+import {
+  CELL,
+  ROW_HOVER as ROW,
+  SCROLLER,
+  TABLE,
+  type TableColumn,
+} from "../components/tableStyles";
 import { useAuth } from "../hooks/useAuth";
 import { listProjects } from "../services/projects";
 import { errorMessage } from "../services/errorMessage";
@@ -29,14 +37,31 @@ import { listHumanTasks } from "../services/tasks";
 import { listUsers } from "../services/users";
 import type { Project, Session, Task } from "../types";
 import { formatRelative, formatUsd, PLACEHOLDER } from "../utils/format";
+import { taskPath } from "../tasks/taskLink";
 
 /** `SPEC.md`, "Frontend", Dashboard: a 30-second refetch interval. */
 export const DASHBOARD_REFETCH_MS = 30_000;
 
-const CELL = "py-1.5 pr-3 align-middle";
-const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
-const ROW =
-  "border-console-border/60 hover:bg-console-raised/60 border-b last:border-b-0";
+const SESSION_COLUMNS: readonly TableColumn[] = [
+  { label: "State" },
+  { label: "Session" },
+  { label: "Project" },
+  { label: "Kind", className: "hidden sm:table-cell" },
+  { label: "Branch", className: "hidden md:table-cell" },
+  { label: "Activity", className: "hidden sm:table-cell" },
+  { label: "Cost", className: "pr-0 text-right" },
+];
+
+const TASK_COLUMNS: readonly TableColumn[] = [
+  { label: "Task" },
+  { label: "Title" },
+  { label: "Project" },
+  { label: "Priority" },
+  { label: "Waiting for", className: "hidden lg:table-cell" },
+  { label: "Assignee", className: "hidden sm:table-cell" },
+  { label: "Attempts", className: "hidden sm:table-cell text-right" },
+  { label: "Updated", className: "pr-0 text-right" },
+];
 // One link per row, stretched over its own cell — `LINK_CELL` is what
 // positions it. Stretching it over the whole row would mean positioning the
 // `<tr>`, and a table row is not reliably a containing block: where it is
@@ -102,8 +127,8 @@ function Section({
           <EmptyState title={emptyTitle} description={emptyDescription} />
         )
       ) : (
-        <div className="max-h-96 overflow-y-auto">
-          <table className="w-full border-collapse text-sm">{children}</table>
+        <div className={SCROLLER}>
+          <table className={TABLE}>{children}</table>
         </div>
       )}
     </section>
@@ -119,31 +144,7 @@ function SessionRows({
 }) {
   return (
     <>
-      <thead className="bg-console-bg sticky top-0 z-10">
-        <tr className="border-console-border border-b">
-          <th scope="col" className={HEAD}>
-            State
-          </th>
-          <th scope="col" className={HEAD}>
-            Session
-          </th>
-          <th scope="col" className={HEAD}>
-            Project
-          </th>
-          <th scope="col" className={`${HEAD} hidden sm:table-cell`}>
-            Kind
-          </th>
-          <th scope="col" className={`${HEAD} hidden md:table-cell`}>
-            Branch
-          </th>
-          <th scope="col" className={`${HEAD} hidden sm:table-cell`}>
-            Activity
-          </th>
-          <th scope="col" className={`${HEAD} pr-0 text-right`}>
-            Cost
-          </th>
-        </tr>
-      </thead>
+      <TableHead columns={SESSION_COLUMNS} sticky />
       <tbody>
         {sessions.map((session) => (
           <tr key={session.id} className={ROW}>
@@ -197,34 +198,7 @@ function TaskRows({
 }) {
   return (
     <>
-      <thead className="bg-console-bg sticky top-0 z-10">
-        <tr className="border-console-border border-b">
-          <th scope="col" className={HEAD}>
-            Task
-          </th>
-          <th scope="col" className={HEAD}>
-            Title
-          </th>
-          <th scope="col" className={HEAD}>
-            Project
-          </th>
-          <th scope="col" className={HEAD}>
-            Priority
-          </th>
-          <th scope="col" className={`${HEAD} hidden lg:table-cell`}>
-            Waiting for
-          </th>
-          <th scope="col" className={`${HEAD} hidden sm:table-cell`}>
-            Assignee
-          </th>
-          <th scope="col" className={`${HEAD} hidden sm:table-cell text-right`}>
-            Attempts
-          </th>
-          <th scope="col" className={`${HEAD} pr-0 text-right`}>
-            Updated
-          </th>
-        </tr>
-      </thead>
+      <TableHead columns={TASK_COLUMNS} sticky />
       <tbody>
         {tasks.map((task) => {
           const assignee =
@@ -239,7 +213,7 @@ function TaskRows({
               </td>
               <td className={LINK_CELL}>
                 <Link
-                  to={`/projects/${task.project_id}/tasks/${task.number}`}
+                  to={taskPath(task.project_id, task.number)}
                   className={ROW_LINK}
                 >
                   {task.title}

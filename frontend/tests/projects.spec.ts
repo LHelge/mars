@@ -74,11 +74,13 @@ function projectTab(page: Page, label: string) {
     .getByRole("link", { name: label, exact: true });
 }
 
-/** `window.confirm` is the gate on the destructive actions; say yes to it. */
-function acceptConfirms(page: Page): void {
-  page.on("dialog", (dialog) => {
-    void dialog.accept();
-  });
+/**
+ * Say yes to the inline `ConfirmPanel` a destructive action opens. Its button
+ * names what it is about to do — `Remove target`, not `Remove` — so the panel
+ * is addressed by that name and never confused with the row that opened it.
+ */
+function confirm(page: Page, label: string) {
+  return page.getByRole("button", { name: label, exact: true }).click();
 }
 
 test("the new-project form refuses a remote that is not https", async ({
@@ -263,7 +265,6 @@ test("the default profile is edited and an ephemeral one is created beside it", 
   project,
 }) => {
   await loginViaToken(context, user);
-  acceptConfirms(page);
 
   await page.goto(`/projects/${project.id}?tab=profiles`);
   // The seeded default profile (`SPEC.md`, "Role profile templates").
@@ -333,6 +334,7 @@ test("the default profile is edited and an ephemeral one is created beside it", 
   expect(refused.status).toBe(409);
 
   await oneshotRow.getByRole("button", { name: "Delete" }).click();
+  await confirm(page, "Delete oneshot");
   await expect(oneshotRow).toHaveCount(0);
   await expect(architectRow).toBeVisible();
 });
@@ -485,7 +487,6 @@ test("a shared directory is added, refused twice, cleared and removed", async ({
   project,
 }) => {
   await loginViaToken(context, user);
-  acceptConfirms(page);
 
   await page.goto(`/projects/${project.id}?tab=shared-dirs`);
   const form = page.getByRole("form", { name: "Add a shared directory" });
@@ -519,10 +520,12 @@ test("a shared directory is added, refused twice, cleared and removed", async ({
   await expect(page.getByRole("row")).toHaveCount(2); // header plus `target`
 
   await row.getByRole("button", { name: "Clear" }).click();
+  await confirm(page, "Empty target");
   await expect(row).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
 
   await row.getByRole("button", { name: "Remove" }).click();
+  await confirm(page, "Remove target");
   await expect(page.getByText("No shared directories yet")).toBeVisible();
   expect(
     await api.get<SharedDir[]>(`/projects/${project.id}/shared-dirs`),
@@ -540,7 +543,6 @@ test("clearing and removing a shared directory wait for the running session to e
   test.setTimeout(120_000);
 
   await loginViaToken(context, user);
-  acceptConfirms(page);
 
   await api.post<SharedDir>(`/projects/${project.id}/shared-dirs`, {
     name: "target",
@@ -574,6 +576,7 @@ test("clearing and removing a shared directory wait for the running session to e
   const remove = row.getByRole("button", { name: "Remove" });
   await expect(remove).toBeEnabled({ timeout: 60_000 });
   await remove.click();
+  await confirm(page, "Remove target");
   await expect(page.getByText("No shared directories yet")).toBeVisible();
 });
 
@@ -635,7 +638,7 @@ test("a project is deleted once its running session has ended", async ({
 
   await page.goto(`/projects/${project.id}`);
   await page.getByRole("button", { name: "Delete", exact: true }).click();
-  await page.getByRole("button", { name: "Delete project" }).click();
+  await confirm(page, `Delete project ${project.name}`);
 
   // 409 while a session is `running` or `creating` (`SPEC.md`, "Projects").
   await expect(page.getByRole("alert")).toBeVisible();
@@ -645,7 +648,7 @@ test("a project is deleted once its running session has ended", async ({
   await waitForSessionState(api, session.id, ["done", "failed"]);
 
   await page.getByRole("button", { name: "Delete", exact: true }).click();
-  await page.getByRole("button", { name: "Delete project" }).click();
+  await confirm(page, `Delete project ${project.name}`);
 
   await expect(page).toHaveURL(/\/projects$/);
   await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0);

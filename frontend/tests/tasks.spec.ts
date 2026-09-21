@@ -684,11 +684,6 @@ test("the states editor adds, renames and removes a column, and says why it cann
 }) => {
   await loginViaToken(context, user);
 
-  // The editor confirms a removal with `window.confirm`.
-  page.on("dialog", (dialog) => {
-    void dialog.accept();
-  });
-
   await page.goto(`/projects/${project.id}?tab=states`);
   const add = page.getByRole("form", { name: "Add a task state" });
   await expect(add).toBeVisible();
@@ -743,7 +738,13 @@ test("the states editor adds, renames and removes a column, and says why it cann
     row("verify").getByRole("button", { name: "Remove" }),
   ).toBeDisabled();
 
-  await row("cancelled").getByRole("button", { name: "Remove" }).click();
+  // The removal is confirmed in a panel under the row, named for the state.
+  await row("cancelled")
+    .getByRole("button", { name: "Remove", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Remove cancelled", exact: true })
+    .click();
   await expect(row("cancelled")).toHaveCount(0);
   await expect(row("done")).toContainText(
     "The last terminal state cannot be deleted",
@@ -755,7 +756,10 @@ test("the states editor adds, renames and removes a column, and says why it cann
   await expect(
     row("verify").getByRole("button", { name: "Remove" }),
   ).toBeEnabled();
-  await row("verify").getByRole("button", { name: "Remove" }).click();
+  await row("verify").getByRole("button", { name: "Remove", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Remove verify", exact: true })
+    .click();
   await expect(row("verify")).toHaveCount(0);
 
   await openBoard(page, project);

@@ -25,6 +25,7 @@ import { projectQueries } from "../services/queryOptions";
 import { updateSession } from "../services/sessions";
 import type { Session } from "../types";
 import {
+  COST_DECIMALS,
   formatRelative,
   formatTokens,
   formatUsd,
@@ -39,7 +40,6 @@ import { getSessionStore, useSessionStore } from "./sessionStore";
 import { useSyncSession } from "./useSyncSession";
 
 /** A session's spend is often a fraction of a cent. */
-const COST_DECIMALS = 4;
 
 const DOT: Record<ConnectionStatus, string> = {
   connecting: "bg-console-muted animate-pulse",

@@ -11,6 +11,20 @@ export function taskPath(projectId: string, number: number): string {
 }
 
 /**
+ * The board a task drawer opened over, keeping whatever the board was showing
+ * — the search field among it — rather than resetting the view.
+ *
+ * The drawer's `close` and the action bar's `backToBoard` are the same
+ * navigation and spell it here; they are not the same function, because
+ * closing the drawer also restores focus to where it came from.
+ */
+export function boardPath(projectId: string, search: URLSearchParams): string {
+  const params = new URLSearchParams(search);
+  params.set("tab", "board");
+  return `/projects/${projectId}?${params.toString()}`;
+}
+
+/**
  * The `:number` of the route as a task number. Task numbers start at 1 and are
  * plain integers, so anything else — a name, `#12`, `0`, a decimal — names no
  * task and is answered without asking the server.

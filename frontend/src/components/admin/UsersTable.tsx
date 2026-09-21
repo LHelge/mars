@@ -17,7 +17,9 @@ import { EmptyState } from "../EmptyState";
 import { LoadingState } from "../LoadingState";
 import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SectionHeader } from "../SectionHeader";
-import { HEAD, SCROLLER, TABLE, THEAD } from "./tableStyles";
+import { TableHead } from "../TableHead";
+import { SCROLLER, TABLE } from "../tableStyles";
+import { USER_COLUMNS } from "./columns";
 import { UserRow } from "./UserRow";
 
 export function UsersTable() {
@@ -65,31 +67,7 @@ export function UsersTable() {
       ) : (
         <div className={SCROLLER}>
           <table className={TABLE}>
-            <thead className={THEAD}>
-              <tr className="border-console-border border-b">
-                <th scope="col" className={HEAD}>
-                  Username
-                </th>
-                <th scope="col" className={HEAD}>
-                  Email
-                </th>
-                <th scope="col" className={HEAD}>
-                  Admin
-                </th>
-                <th scope="col" className={`${HEAD} hidden sm:table-cell`}>
-                  Must change password
-                </th>
-                <th scope="col" className={`${HEAD} hidden sm:table-cell`}>
-                  Email notices
-                </th>
-                <th scope="col" className={`${HEAD} hidden md:table-cell`}>
-                  Created
-                </th>
-                <th scope="col" className={`${HEAD} pr-0 text-right`}>
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
+            <TableHead columns={USER_COLUMNS} sticky />
             <tbody>
               {rows.map((user) => (
                 <UserRow

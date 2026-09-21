@@ -29,9 +29,13 @@ export function CommentList({ comments }: CommentListProps) {
     );
   }
 
-  // Oldest first, whatever order the payload arrived in.
-  const ordered = [...comments].sort((left, right) =>
-    left.created_at.localeCompare(right.created_at),
+  // Oldest first, whatever order the payload arrived in. By instant rather
+  // than by string: `created_at` is RFC 3339 with a fractional part of no
+  // fixed width, so two comments inside the same millisecond sort by how many
+  // digits they happen to carry — and ICU collation is a slow way to compare
+  // digits on every render besides.
+  const ordered = [...comments].sort(
+    (left, right) => Date.parse(left.created_at) - Date.parse(right.created_at),
   );
 
   return (

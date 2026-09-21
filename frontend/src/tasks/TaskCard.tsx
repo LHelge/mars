@@ -22,6 +22,7 @@ import { Link } from "react-router";
 
 import type { Task } from "../types";
 import { taskCardTestId } from "../utils/testIds";
+import { taskPath } from "./taskLink";
 import { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
 import { useTaskStore } from "./taskStore";
 import { selectTaskById } from "./taskStore";
@@ -53,7 +54,7 @@ function TaskCardView({ task, selected }: TaskCardProps) {
       className={`bg-console-surface hover:border-console-accent/60 rounded border transition-colors ${selected ? "border-console-accent" : "border-console-border"}`}
     >
       <Link
-        to={`/projects/${task.project_id}/tasks/${String(task.number)}`}
+        to={taskPath(task.project_id, task.number)}
         className="focus-visible:outline-console-accent block px-2.5 py-2 focus-visible:outline-2"
       >
         <div className="flex items-baseline gap-2">
@@ -66,9 +67,11 @@ function TaskCardView({ task, selected }: TaskCardProps) {
           >
             P{task.priority}
           </span>
-          <h3 className="text-console-text min-w-0 flex-1 text-sm">
+          {/* A card is a level under its column's heading, so an outline
+              reader can tell the board's columns from the cards in them. */}
+          <h4 className="text-console-text min-w-0 flex-1 text-sm">
             {task.title}
-          </h3>
+          </h4>
         </div>
 
         {task.needs_human_reason !== null && (

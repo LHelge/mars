@@ -20,9 +20,16 @@ import { logUnexpected } from "../../services/errorMessage";
 import { queryKeys } from "../../services/queryKeys";
 import { deleteSecret, patchSecret } from "../../services/secrets";
 import type { SecretMeta, SecretScope } from "../../types";
-import { formatDateTime, formatRelative, PLACEHOLDER } from "../../utils/format";
+import {
+  formatDateTime,
+  formatRelative,
+  PLACEHOLDER,
+} from "../../utils/format";
 import { Alert } from "../Alert";
+import { ConfirmPanel } from "../ConfirmPanel";
 import { SubmitButton } from "../SubmitButton";
+import { CELL, ROW, SPAN_CELL_ROOMY } from "../tableStyles";
+import { SECRET_COLUMNS } from "./columns";
 import { SecretRenameForm } from "./SecretRenameForm";
 import { SecretReplaceForm } from "./SecretReplaceForm";
 import { SecretUsesList } from "./SecretUsesList";
@@ -31,9 +38,7 @@ import { secretErrorMessage } from "./messages";
 /** The project credential of `SPEC.md`, "Projects". */
 const GIT_CREDENTIAL = "GIT_CREDENTIAL";
 
-const CELL = "py-1.5 pr-3 align-middle";
-
-type Panel = "replace" | "rename" | "uses";
+type Panel = "replace" | "rename" | "uses" | "delete";
 
 export interface SecretRowProps {
   secret: SecretMeta;
@@ -118,14 +123,8 @@ export function SecretRow({
   }
 
   function onDelete() {
-    if (
-      !window.confirm(
-        `Delete ${secret.name}? Sessions launched later will not receive it.`,
-      )
-    ) {
-      return;
-    }
     setError(null);
+    closePanel();
     remove.mutate();
   }
 
@@ -139,7 +138,7 @@ export function SecretRow({
 
   return (
     <>
-      <tr className="border-console-border/60 border-b last:border-b-0">
+      <tr className={ROW}>
         <td className={`${CELL} font-mono text-xs`}>
           <span className="text-console-text">{secret.name}</span>
           {isGitCredential && (
@@ -253,7 +252,10 @@ export function SecretRow({
               variant="danger"
               loading={remove.isPending}
               disabled={busy}
-              onClick={onDelete}
+              aria-expanded={panel === "delete"}
+              onClick={() => {
+                togglePanel("delete");
+              }}
             >
               Delete
             </SubmitButton>
@@ -262,8 +264,8 @@ export function SecretRow({
       </tr>
 
       {(panel !== null || error !== null) && (
-        <tr className="border-console-border/60 border-b last:border-b-0">
-          <td colSpan={8} className="bg-console-surface/60 px-3 py-3">
+        <tr className={ROW}>
+          <td colSpan={SECRET_COLUMNS.length} className={SPAN_CELL_ROOMY}>
             <div className="flex flex-col gap-3">
               {error !== null && <Alert kind="error">{error}</Alert>}
 
@@ -289,6 +291,16 @@ export function SecretRow({
 
               {panel === "uses" && (
                 <SecretUsesList secretId={secret.id} usernames={usernames} />
+              )}
+
+              {panel === "delete" && (
+                <ConfirmPanel
+                  message={`Delete ${secret.name}? Sessions launched later will not receive it; sessions already running keep the value they started with.`}
+                  confirmLabel={`Delete ${secret.name}`}
+                  pending={remove.isPending}
+                  onConfirm={onDelete}
+                  onCancel={closePanel}
+                />
               )}
             </div>
           </td>

@@ -31,8 +31,10 @@ import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SectionHeader } from "../SectionHeader";
 import { SubmitButton } from "../SubmitButton";
 import { errorMessage } from "../../services/errorMessage";
+import { TableHead } from "../TableHead";
+import { SCROLLER, TABLE } from "../tableStyles";
+import { INVITE_COLUMNS } from "./columns";
 import { InviteRow } from "./InviteRow";
-import { HEAD, SCROLLER, TABLE, THEAD } from "./tableStyles";
 
 const DUPLICATE = "That email already has an account or an open invitation.";
 
@@ -179,28 +181,7 @@ export function InvitesPanel() {
       ) : (
         <div className={SCROLLER}>
           <table className={TABLE}>
-            <thead className={THEAD}>
-              <tr className="border-console-border border-b">
-                <th scope="col" className={HEAD}>
-                  Email
-                </th>
-                <th scope="col" className={HEAD}>
-                  Admin
-                </th>
-                <th scope="col" className={`${HEAD} hidden sm:table-cell`}>
-                  Invited by
-                </th>
-                <th scope="col" className={HEAD}>
-                  Expires
-                </th>
-                <th scope="col" className={`${HEAD} hidden md:table-cell`}>
-                  Created
-                </th>
-                <th scope="col" className={`${HEAD} pr-0 text-right`}>
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
+            <TableHead columns={INVITE_COLUMNS} sticky />
             <tbody>
               {rows.map((invite) => (
                 <InviteRow

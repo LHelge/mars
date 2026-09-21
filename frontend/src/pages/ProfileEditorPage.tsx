@@ -17,6 +17,7 @@ import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Link } from "react-router";
 import { Alert } from "../components/Alert";
+import { ConfirmPanel } from "../components/ConfirmPanel";
 import { FieldShell } from "../components/FieldShell";
 import { FormField } from "../components/FormField";
 import { QueryErrorAlert } from "../components/QueryErrorAlert";
@@ -111,6 +112,8 @@ export function ProfileEditorPage({
 
   /** The template the form was last filled from; `""` is `Blank`. */
   const [templateName, setTemplateName] = useState(BLANK_TEMPLATE);
+  /** A template chosen over a form the user has edited, awaiting an answer. */
+  const [pendingTemplate, setPendingTemplate] = useState<string | null>(null);
   /** Served states of that template this project has no queue state for. */
   const [droppedStates, setDroppedStates] = useState<string[]>([]);
   // Whether a field has been typed since the last pre-fill, so switching
@@ -231,15 +234,19 @@ export function ProfileEditorPage({
     if (next === templateName) {
       return;
     }
-    if (
-      edited &&
-      !window.confirm(
-        "Replace what you have filled in? The template overwrites the name, served states, git tools and system prompt.",
-      )
-    ) {
-      // The select is controlled, so declining simply re-renders the old value.
+    if (edited) {
+      // Ask below the select rather than over the page. The select is
+      // controlled, so it goes on showing the template in force until the
+      // answer arrives — and declining simply drops the pending choice.
+      setPendingTemplate(next);
       return;
     }
+    applyTemplate(next);
+  }
+
+  /** The chosen template, once there is nothing left to ask about. */
+  function applyTemplate(next: string) {
+    setPendingTemplate(null);
 
     const chosen = (templates.data ?? []).find(
       (template) => template.name === next,
@@ -367,6 +374,20 @@ export function ProfileEditorPage({
                       </option>
                     ))}
                   </select>
+                  {pendingTemplate !== null && (
+                    <ConfirmPanel
+                      tone="caution"
+                      message={`Start from ${pendingTemplate === BLANK_TEMPLATE ? "a blank profile" : pendingTemplate}? It overwrites the name, served states, git tools and system prompt you have filled in.`}
+                      confirmLabel={`Start from ${pendingTemplate === BLANK_TEMPLATE ? "blank" : pendingTemplate}`}
+                      cancelLabel="Keep what I wrote"
+                      onConfirm={() => {
+                        applyTemplate(pendingTemplate);
+                      }}
+                      onCancel={() => {
+                        setPendingTemplate(null);
+                      }}
+                    />
+                  )}
                   {droppedStates.length > 0 && (
                     <p className="text-console-muted text-xs">
                       This project has no queue state called{" "}

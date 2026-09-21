@@ -19,6 +19,9 @@ import { EmptyState } from "../EmptyState";
 import { LoadingState } from "../LoadingState";
 import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SectionHeader } from "../SectionHeader";
+import { TableHead } from "../TableHead";
+import { TABLE, X_SCROLLER } from "../tableStyles";
+import { SECRET_COLUMNS } from "./columns";
 import { CreateSecretForm } from "./CreateSecretForm";
 import { SecretRow } from "./SecretRow";
 import {
@@ -27,8 +30,6 @@ import {
   PRECEDENCE_HELP,
   secretErrorMessage,
 } from "./messages";
-
-const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
 
 export interface SecretsManagerProps {
   scope: SecretScope;
@@ -116,36 +117,9 @@ export function SecretsManager({
           />
         )
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead className="bg-console-bg sticky top-0 z-10">
-              <tr className="border-console-border border-b">
-                <th scope="col" className={HEAD}>
-                  Name
-                </th>
-                <th scope="col" className={HEAD}>
-                  Orchestrator only
-                </th>
-                <th scope="col" className={HEAD}>
-                  Key
-                </th>
-                <th scope="col" className={`${HEAD} hidden lg:table-cell`}>
-                  Created by
-                </th>
-                <th scope="col" className={`${HEAD} hidden md:table-cell`}>
-                  Created
-                </th>
-                <th scope="col" className={`${HEAD} hidden md:table-cell`}>
-                  Updated
-                </th>
-                <th scope="col" className={HEAD}>
-                  Last used
-                </th>
-                <th scope="col" className={`${HEAD} pr-0 text-right`}>
-                  Actions
-                </th>
-              </tr>
-            </thead>
+        <div className={X_SCROLLER}>
+          <table className={TABLE}>
+            <TableHead columns={SECRET_COLUMNS} sticky />
             <tbody>
               {rows.map((secret) => (
                 <SecretRow

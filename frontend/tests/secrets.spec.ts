@@ -139,11 +139,6 @@ test("a global secret is created, replaced, renamed, flagged and deleted without
   // match on text, so one name must never be a substring of the other.
   const renamed = name.replace("API_TOKEN_", "API_TOKEN_2_");
 
-  // Every `window.confirm` in the manager is the delete confirmation.
-  page.on("dialog", (dialog) => {
-    void dialog.accept();
-  });
-
   await page.goto("/secrets");
   await expect(
     page.getByRole("heading", { name: "Global secrets" }),
@@ -243,7 +238,11 @@ test("a global secret is created, replaced, renamed, flagged and deleted without
 
   // --- delete ---------------------------------------------------------------
 
-  await renamedRow.getByRole("button", { name: "Delete" }).click();
+  await renamedRow.getByRole("button", { name: "Delete", exact: true }).click();
+  // The confirmation opens under the row and names the secret it is about.
+  await page
+    .getByRole("button", { name: `Delete ${renamed}`, exact: true })
+    .click();
   await expect(secretRow(page, renamed)).toHaveCount(0);
 
   const remaining = await api.get<SecretMeta[]>("/secrets?scope=global");
@@ -427,11 +426,6 @@ test("an agent credential is added under its label, and a second kind at that sc
 }) => {
   await loginViaToken(context, user);
 
-  // The delete confirmation at the end of the scenario.
-  page.on("dialog", (dialog) => {
-    void dialog.accept();
-  });
-
   await page.goto("/secrets");
 
   // Three fields and no name: the kind names the secret (`SPEC.md`,
@@ -497,7 +491,13 @@ test("an agent credential is added under its label, and a second kind at that sc
   // --- and deleting it takes the section back to its warning -----------------
 
   await secretRow(page, "Claude subscription token")
-    .getByRole("button", { name: "Delete" })
+    .getByRole("button", { name: "Delete", exact: true })
+    .click();
+  await page
+    .getByRole("button", {
+      name: "Delete the Claude subscription token that applies to You",
+      exact: true,
+    })
     .click();
   await expect(secretRow(page, "Claude subscription token")).toHaveCount(0);
   await expect(

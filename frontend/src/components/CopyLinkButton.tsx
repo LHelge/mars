@@ -5,12 +5,11 @@
 // The clipboard is a permission, not a certainty: `Link copied` appears only
 // after the write resolves, and a refusal (or a browser without the API, which
 // includes every insecure origin) falls back to the URL in a selectable field
-// so it can still be copied by hand. That rule lives in `useClipboardCopy`,
-// which `CodeBlock`'s `Copy` follows too.
+// so it can still be copied by hand. That rule lives in `useCopyToClipboard`,
+// which the hand-off panel's commit copy follows too, over the same
+// `useClipboardCopy` that `CodeBlock`'s `Copy` uses.
 
-import { useEffect, useRef, useState } from "react";
-
-import { useClipboardCopy } from "./useClipboardCopy";
+import { useCopyToClipboard } from "./useClipboardCopy";
 
 export interface CopyLinkButtonProps {
   /** An application path, already absolute within the origin: `/sessions/{id}`. */
@@ -20,31 +19,15 @@ export interface CopyLinkButtonProps {
 }
 
 export function CopyLinkButton({ path, label = "Link" }: CopyLinkButtonProps) {
-  const { copied, denied: manual, copy, reset } = useClipboardCopy();
-  const [shown, setShown] = useState(path);
-  const fieldRef = useRef<HTMLInputElement>(null);
-
   const url = `${window.location.origin}${path}`;
-
-  // A new resource is a new link: drop whatever the last one said, the React
-  // way of reacting to a changed prop without an effect.
-  if (path !== shown) {
-    setShown(path);
-    reset();
-  }
-
-  // Selecting the text is the whole point of the fallback, so do it for them.
-  useEffect(() => {
-    if (manual) fieldRef.current?.select();
-  }, [manual]);
+  // A new resource is a new link: the hook drops whatever the last one said.
+  const { copied, manual, copy, fieldRef } = useCopyToClipboard(url);
 
   return (
     <span className="inline-flex min-w-0 items-center gap-2">
       <button
         type="button"
-        onClick={() => {
-          void copy(url);
-        }}
+        onClick={copy}
         className="text-console-muted hover:text-console-text border-console-border hover:bg-console-raised rounded border px-2 py-0.5 font-mono text-xs"
       >
         {copied ? "Link copied" : "Copy link"}

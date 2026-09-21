@@ -8,6 +8,7 @@
 // selected in a fence.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 
 /** How long a confirmation stays before the caller goes back to its label. */
 export const COPIED_MS = 2000;
@@ -58,4 +59,48 @@ export function useClipboardCopy(): ClipboardCopy {
   }, []);
 
   return { copied, denied, copy, reset };
+}
+
+export interface CopyToClipboard {
+  /** The write resolved, and has not yet timed out. */
+  copied: boolean;
+  /** Fall back to the field: the clipboard refused, or there is none. */
+  manual: boolean;
+  /** Copy the text this hook was given. */
+  copy: () => void;
+  /** Put this on the fallback field; it is selected when `manual` turns on. */
+  fieldRef: RefObject<HTMLInputElement | null>;
+}
+
+/**
+ * One button's worth of copying: the state machine above, bound to one piece
+ * of text, with the fallback field's selection taken care of.
+ *
+ * Every copy button in the console is this hook and a field — the `Copy link`
+ * of a session, a task or a hand-off, and the commit id in the drawer's
+ * hand-off panel — which is what keeps them behaving the same way when the
+ * clipboard is not available. A caller whose text changes under it gets the
+ * confirmation dropped: a new subject has not been copied.
+ */
+export function useCopyToClipboard(text: string): CopyToClipboard {
+  const { copied, denied, copy, reset } = useClipboardCopy();
+  const fieldRef = useRef<HTMLInputElement>(null);
+  const [shown, setShown] = useState(text);
+
+  // The React way of reacting to a changed prop without an effect.
+  if (text !== shown) {
+    setShown(text);
+    reset();
+  }
+
+  // Selecting the text is the whole point of the fallback, so do it for them.
+  useEffect(() => {
+    if (denied) fieldRef.current?.select();
+  }, [denied]);
+
+  const run = useCallback(() => {
+    void copy(text);
+  }, [copy, text]);
+
+  return { copied, manual: denied, copy: run, fieldRef };
 }

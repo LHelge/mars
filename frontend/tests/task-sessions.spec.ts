@@ -143,8 +143,9 @@ function claimWithSession(
 
 /**
  * The side panel's `Tasks` tab, opened and returned as its `Launched for`
- * section — the task the session was launched holding, which the panel also
- * lists again under `Touched` (`session/TasksPanel.tsx`).
+ * section — the task the session was launched holding, which the panel takes
+ * out of the touched list and so lists exactly once (`SPEC.md`, "Frontend",
+ * "Tasks panel"; `session/TasksPanel.tsx`).
  */
 async function openLaunchedForPanel(page: Page): Promise<Locator> {
   await page.getByRole("tab", { name: "Tasks" }).click();
@@ -213,6 +214,11 @@ test("open in session claims the task and the card shows its session", async ({
     tasks.getByRole("link", { name: /Implement greeting/ }),
   ).toBeVisible();
   await expect(tasks.getByText("held by this session")).toBeVisible();
+  // Once, not twice: a claim writes the session link, so the launched task is
+  // in the touched list the panel reads, and it is shown from there.
+  await expect(
+    page.getByRole("tabpanel").getByRole("link", { name: /Implement greeting/ }),
+  ).toHaveCount(1);
 
   // The claim itself: the lease, the count and the card's link back.
   const claimed = await getTask(api, project.id, 1);

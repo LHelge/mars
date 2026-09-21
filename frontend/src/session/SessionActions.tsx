@@ -13,6 +13,9 @@
 // Every refusal is the server's own sentence: `SPEC.md` phrases why a sync on a
 // `creating` session or a delete of a running one cannot happen better than the
 // client could guess.
+//
+// `Stop` is the one action that is also offered elsewhere — the composer has
+// the same button — so its behaviour is `useStopSession` and not this file's.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -26,6 +29,7 @@ import type { Session } from "../types";
 import { shortSha } from "../utils/format";
 import { sessionActions } from "./sessionActionRules";
 import { getSessionStore } from "./sessionStore";
+import { useStopSession } from "./useStopSession";
 import { useSyncSession } from "./useSyncSession";
 
 export interface SessionActionsProps {
@@ -52,6 +56,10 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
 
   const id = session.id;
   const can = sessionActions(session);
+  // The header's `Stop` and the composer's are one button in two places: the
+  // same request, the same `Stopping…` while it is outstanding, the same way
+  // out if no state change arrives.
+  const stop = useStopSession(id, onStop);
 
   /** The authoritative session a lifecycle call returns, into both readers. */
   const adopt = (next: Session): void => {
@@ -124,12 +132,13 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
           <SubmitButton
             type="button"
             variant="danger"
+            disabled={stop.stopping}
             onClick={() => {
               begin();
-              onStop();
+              stop.requestStop();
             }}
           >
-            Stop
+            {stop.label}
           </SubmitButton>
         )}
 

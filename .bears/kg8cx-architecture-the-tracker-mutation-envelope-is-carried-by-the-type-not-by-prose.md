@@ -2,10 +2,10 @@
 id: kg8cx
 title: "Architecture: the tracker mutation envelope is carried by the type, not by prose"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-17T19:59:12.787736980Z"
-updated: "2026-09-17T19:59:12.787736980Z"
+updated: "2026-09-21T04:13:35.076622407Z"
 tags:
   - orchestrator
   - tracker

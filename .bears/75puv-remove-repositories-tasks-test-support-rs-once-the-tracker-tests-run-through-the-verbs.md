@@ -1,10 +1,10 @@
 ---
 id: "75puv"
 title: Remove repositories/tasks/test_support.rs once the tracker tests run through the verbs
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-19T13:44:22.859331846Z"
-updated: "2026-09-21T03:15:54.432692528Z"
+updated: "2026-09-21T04:13:33.532028857Z"
 tags:
   - orchestrator
   - tracker

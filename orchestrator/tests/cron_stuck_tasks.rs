@@ -41,7 +41,6 @@ use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{
     NewSession, NewTask, ProfileKind, SessionState, Task, TaskComment, User,
 };
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository, Transition};
 use mars_orchestrator::tracker::leases::claim_for_profile;
 use mars_orchestrator::tracker::{TaskDto, TrackerMutation};
@@ -224,24 +223,14 @@ async fn claim(app: &TestApp, fixture: &Fixture, task_id: Uuid, session_id: Uuid
 /// The same lease, but with `attempts` already at the limit, so that "this is
 /// the last attempt" is a precondition rather than three more sessions.
 async fn claim_at_the_limit(app: &TestApp, fixture: &Fixture, task_id: Uuid, session_id: Uuid) {
-    claim(app, fixture, task_id, session_id).await;
-
-    let mut mutation = TrackerMutation::begin(&app.pool, fixture.project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    TaskRepository::new(&app.pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            fixture.project_id,
-            task_id,
-            &StateFields {
-                attempts: Some(MAX_ATTEMPTS),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the counter writes");
-    mutation.commit().await.expect("the mutation commits");
+    common::tracker::hold_with_attempts(
+        &app.pool,
+        fixture.project_id,
+        task_id,
+        session_id,
+        MAX_ATTEMPTS,
+    )
+    .await;
 }
 
 /// Run the job with the clock the caller chose.
@@ -262,9 +251,22 @@ async fn read(app: &TestApp, project_id: Uuid, task_id: Uuid) -> TaskDto {
 }
 
 /// Every committed event of the project, oldest first.
-async fn events(app: &TestApp, project_id: Uuid) -> Vec<TaskEvent> {
+/// Where the stream stands right now.
+///
+/// The cursor an assertion about "what this call emitted" starts from: a
+/// lease is a claim's and `attempts` is what claims left behind
+/// (`common::tracker`), so an arrangement really writes `claimed` and
+/// `released` events of its own.
+async fn since(app: &TestApp, project_id: Uuid) -> i64 {
     TaskRepository::new(&app.pool)
-        .list_task_events_after(project_id, 0, 200)
+        .max_task_event_seq(project_id)
+        .await
+        .expect("the cursor reads")
+}
+
+async fn events(app: &TestApp, project_id: Uuid, after: i64) -> Vec<TaskEvent> {
+    TaskRepository::new(&app.pool)
+        .list_task_events_after(project_id, after, 200)
         .await
         .expect("the events read")
         .into_iter()
@@ -273,8 +275,8 @@ async fn events(app: &TestApp, project_id: Uuid) -> Vec<TaskEvent> {
 }
 
 /// The events about one task.
-async fn events_for(app: &TestApp, project_id: Uuid, task_id: Uuid) -> Vec<TaskEvent> {
-    events(app, project_id)
+async fn events_for(app: &TestApp, project_id: Uuid, task_id: Uuid, after: i64) -> Vec<TaskEvent> {
+    events(app, project_id, after)
         .await
         .into_iter()
         .filter(|event| event.task_id == Some(task_id))
@@ -346,7 +348,7 @@ async fn a_done_holders_lease_goes_back_to_its_queue() {
     assert_eq!(stored.state, "ready", "a release keeps the state");
     assert_eq!(stored.attempts, 1, "and the counter");
 
-    let written = events_for(&app, fixture.project_id, subject.id).await;
+    let written = events_for(&app, fixture.project_id, subject.id, 0).await;
     assert_eq!(
         kinds(&written),
         vec![
@@ -387,7 +389,7 @@ async fn a_stalled_holders_lease_says_stalled() {
     assert!(stored.lease_holder_session_id.is_none());
     assert_eq!(stored.state, "ready");
 
-    let written = events_for(&app, fixture.project_id, subject.id).await;
+    let written = events_for(&app, fixture.project_id, subject.id, 0).await;
     let released = written.last().expect("the stream is not empty");
     assert_eq!(released.kind, TaskEventKind::Released);
     assert_eq!(released.reason.as_deref(), Some("stalled"));
@@ -420,7 +422,7 @@ async fn a_live_holder_keeps_its_leases() {
         let stored = read(&app, fixture.project_id, task_id).await;
         assert_eq!(stored.lease_holder_session_id, Some(holder));
         assert_eq!(
-            kinds(&events_for(&app, fixture.project_id, task_id).await),
+            kinds(&events_for(&app, fixture.project_id, task_id, 0).await),
             vec![TaskEventKind::Claimed],
             "a live holder's task hears nothing",
         );
@@ -443,6 +445,9 @@ async fn a_task_at_the_attempt_limit_goes_to_its_assignee() {
     let subject = task(&app, &fixture, "nobody can build it", Some(&assignee)).await;
     let session_id = session_in(&app, &fixture, SessionState::Done, "").await;
     claim_at_the_limit(&app, &fixture, subject.id, session_id).await;
+    // The three claims that raised the counter are the arrangement; what
+    // follows is the reaper's own.
+    let after = since(&app, fixture.project_id).await;
 
     assert_eq!(reap(&app).await.items, 1);
 
@@ -455,11 +460,11 @@ async fn a_task_at_the_attempt_limit_goes_to_its_assignee() {
         Some(format!("attempt limit reached (3/3): session {session_id} ended").as_str()),
     );
 
-    let written = events_for(&app, fixture.project_id, subject.id).await;
+    // The reaper's own events, past the claims that raised the counter.
+    let written = events_for(&app, fixture.project_id, subject.id, after).await;
     assert_eq!(
         kinds(&written),
         vec![
-            TaskEventKind::Claimed,
             TaskEventKind::Commented,
             TaskEventKind::Commented,
             TaskEventKind::Escalated,
@@ -614,7 +619,7 @@ async fn the_sweep_counts_what_it_released_and_repeats_nothing() {
         "the live holder kept its task",
     );
 
-    let after_first = events(&app, fixture.project_id).await;
+    let after_first = events(&app, fixture.project_id, 0).await;
     let emails_after_first = app.mock_email().sent();
     assert_eq!(emails_after_first.len(), 2, "one per escalated task");
 
@@ -623,7 +628,7 @@ async fn the_sweep_counts_what_it_released_and_repeats_nothing() {
     assert_eq!(reap(&app).await, JobReport::default());
 
     assert_eq!(
-        events(&app, fixture.project_id).await,
+        events(&app, fixture.project_id, 0).await,
         after_first,
         "a second run writes no event",
     );

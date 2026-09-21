@@ -54,6 +54,13 @@ pub mod app;
 #[cfg(feature = "integration-tests")]
 pub mod mcp;
 
+/// Arranging leases, attempt counters, states, blocked flags and current
+/// hand-offs through the `tracker/` verbs, for every suite that needs one of
+/// them as a precondition (`CLAUDE.md`, "Testing expectations", "Tracker
+/// tests"). Only the crate's own public tracker API, so it stays ungated like
+/// `common::db`.
+pub mod tracker;
+
 /// The code hand-off suites' shared arrangement: a ready project with a real
 /// repository, sessions with real work clones and the tracker rows a hand-off
 /// needs. Built on `TestApp`, so it is gated the same way.

@@ -32,11 +32,8 @@ use std::time::Duration;
 
 use common::TestApp;
 use mars_orchestrator::events::{Notice, TaskActor};
-use mars_orchestrator::models::{
-    NewEvent, NewSession, NewTaskEvent, ProfileKind, SessionState, StateChange, task_event_kind,
-};
-use mars_orchestrator::repositories::tasks::test_support::TaskRepositoryTestExt;
-use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
+use mars_orchestrator::models::{NewEvent, NewSession, ProfileKind, SessionState, StateChange};
+use mars_orchestrator::repositories::SessionRepository;
 use mars_orchestrator::tracker::TrackerMutation;
 use serde_json::json;
 use tokio::sync::broadcast::Receiver;
@@ -227,29 +224,18 @@ async fn a_committed_task_event_batch_wakes_the_project_once() {
     let fixture = seed(&app).await;
     let mut rx = app.state.fanout.subscribe_project(fixture.project_id);
 
-    let repository = TaskRepository::new(&app.pool);
+    // Two project-wide events in one mutation: the batch every tracker writer
+    // appends on commit, with its single notification (ADR 0028).
     let mut mutation = TrackerMutation::begin(&app.pool, fixture.project_id, TaskActor::System)
         .await
         .expect("the mutation opens");
-    let sequences = repository
-        .append_task_events(
-            mutation.conn(),
-            fixture.project_id,
-            &[
-                NewTaskEvent::project_wide(
-                    task_event_kind::STATES_CHANGED,
-                    json!({ "states": [] }),
-                ),
-                NewTaskEvent::project_wide(
-                    task_event_kind::STATES_CHANGED,
-                    json!({ "states": [] }),
-                ),
-            ],
-        )
-        .await
-        .expect("the task events append");
-    mutation.commit().await.expect("the mutation commits");
-    assert_eq!(sequences, vec![1, 2]);
+    for _ in 0..2 {
+        mutation
+            .emit_states_changed(&[])
+            .expect("the event is emitted");
+    }
+    let outcome = mutation.commit().await.expect("the mutation commits");
+    assert_eq!(outcome.seqs, vec![1, 2]);
 
     assert_eq!(
         next_notice(&mut rx, "the task batch's notice").await,

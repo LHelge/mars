@@ -29,13 +29,15 @@ use std::time::Duration;
 
 use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::models::{
-    NewSession, NewTask, NewTaskComment, NewTaskHandoff, Priority, ProfileKind, ReviewStatus, Task,
-    TaskDependencyKind, TaskRef, TaskUpdate,
+    HandoffCaller, NewSession, NewTask, NewTaskComment, NewTaskHandoff, Priority, ProfileKind,
+    ReviewStatus, Task, TaskDependencyKind, TaskRef, TaskUpdate,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{SessionRepository, TaskFilter, TaskRepository};
-use mars_orchestrator::tracker::{Locked, TrackerMutation};
+use mars_orchestrator::tracker::state::{StateChangeOptions, change_state};
+use mars_orchestrator::tracker::{
+    CommentAuthor, Locked, ReviewCarry, TrackerMutation, add_comment,
+};
 use tokio::time::sleep;
 use uuid::Uuid;
 
@@ -253,36 +255,51 @@ async fn a_task_carries_the_handoff_its_column_names() {
 
     let task = insert_titled(&pool, project_id, "handed off").await;
 
-    let handoff_id = in_mutation(&pool, project_id, async |repository, mut tx| {
-        let comment = NewTaskComment::from_session(task.id, session_id, "have a look");
-        repository
+    // A record of this task that the column does not name. `handoff` is the
+    // pointer's, not the newest row's, so a task with history and no pointer
+    // carries none — which is also what the detail's `handoffs` list is for.
+    let historical = in_mutation(&pool, project_id, async |repository, mut tx| {
+        let comment = NewTaskComment::from_session(task.id, session_id, "an earlier look");
+        let comment = repository
             .insert_comment(tx.reborrow(), project_id, &comment)
             .await
             .expect("the comment inserts");
 
-        let mut handoff = NewTaskHandoff::new(task.id, "session/branch", COMMIT, comment.id);
+        let mut handoff = NewTaskHandoff::new(task.id, "session/earlier", COMMIT, comment.id);
         handoff.source_session_id = Some(session_id);
         handoff.created_by_session_id = Some(session_id);
-        let inserted = repository
-            .insert_handoff(tx.reborrow(), project_id, &handoff)
-            .await
-            .expect("the hand-off inserts");
-
         repository
-            .set_task_state_fields(
-                tx,
-                project_id,
-                task.id,
-                &StateFields {
-                    current_handoff_id: Some(Some(inserted.id)),
-                    ..StateFields::default()
-                },
-            )
+            .insert_handoff(tx, project_id, &handoff)
             .await
-            .expect("the current hand-off is set");
-
-        inserted.id
+            .expect("the hand-off inserts")
+            .id
     })
+    .await;
+
+    let dto = repository
+        .load_task_dto(project_id, task.id)
+        .await
+        .expect("the task loads")
+        .expect("the task is there");
+    assert!(dto.handoff.is_none(), "the column names nothing yet");
+
+    // Now a publication, which is the one thing that writes the column
+    // (`tracker::handoffs::publish_in_transaction`).
+    common::tracker::hold(&pool, project_id, task.id, session_id).await;
+    let (_, handoff_id) = common::tracker::handoff_in_place(
+        &pool,
+        project_id,
+        task.id,
+        common::tracker::Handoff {
+            source_session_id: Some(session_id),
+            source_branch: "session/branch",
+            commit: COMMIT,
+            comment: "have a look",
+            target_state: "",
+            caller: HandoffCaller::Session { session_id },
+            review: ReviewCarry::Fresh,
+        },
+    )
     .await;
 
     let dto = repository
@@ -299,38 +316,22 @@ async fn a_task_carries_the_handoff_its_column_names() {
     assert_eq!(handoff.review_status, ReviewStatus::Unreviewed);
     assert_eq!(handoff.source_session_id, Some(session_id));
 
-    // The record stays in history; the *current* one is the column's, so a
-    // cleared column is `null` even though the row is still there.
-    in_mutation(&pool, project_id, async |repository, tx| {
-        repository
-            .set_task_state_fields(
-                tx,
-                project_id,
-                task.id,
-                &StateFields {
-                    current_handoff_id: Some(None),
-                    ..StateFields::default()
-                },
-            )
-            .await
-            .expect("the current hand-off clears");
-    })
-    .await;
-
-    let dto = repository
-        .load_task_dto(project_id, task.id)
-        .await
-        .expect("the task loads")
-        .expect("the task is there");
-    assert!(dto.handoff.is_none());
-
+    // Both records are history; only one of them is current.
     let detail = repository
         .load_task_detail(project_id, TaskRef::Id(task.id))
         .await
         .expect("the detail loads")
         .expect("the task is there");
-    assert_eq!(detail.handoffs.len(), 1);
-    assert_eq!(detail.handoffs[0].id, handoff_id);
+    assert_eq!(
+        detail
+            .handoffs
+            .iter()
+            .map(|record| record.id)
+            .collect::<Vec<_>>(),
+        vec![historical, handoff_id],
+        "oldest first",
+    );
+    assert_eq!(detail.task.handoff.expect("the current one").id, handoff_id);
 }
 
 #[tokio::test]
@@ -366,11 +367,6 @@ async fn a_detail_carries_its_comments_children_and_sessions_in_order() {
                 .await
                 .expect("the child is re-parented");
         }
-
-        repository
-            .touch_task_session(tx, parent.id, session_id)
-            .await
-            .expect("the session link inserts");
     })
     .await;
 
@@ -378,15 +374,22 @@ async fn a_detail_carries_its_comments_children_and_sessions_in_order() {
     // transaction's `NOW()`, so two comments written in one transaction share
     // a timestamp and fall back to the id tie-break, which says nothing about
     // the order the loader produces.
+    //
+    // Written through `tracker::add_comment` as the session, which is also
+    // what puts the `task_sessions` link there: a session that comments has
+    // worked on the task (ADR 0030).
     for body in ["first word", "second word"] {
-        in_mutation(&pool, project_id, async |repository, tx| {
-            let comment = NewTaskComment::from_session(parent.id, session_id, body);
-            repository
-                .insert_comment(tx, project_id, &comment)
-                .await
-                .expect("the comment inserts");
-        })
-        .await;
+        common::tracker::in_mutation(
+            &pool,
+            project_id,
+            TaskActor::Session { session_id },
+            async |m| {
+                let locked = common::tracker::locked(m, parent.id).await?;
+                add_comment(m, &locked, CommentAuthor::Session(session_id), body).await
+            },
+        )
+        .await
+        .expect("the comment is written");
         sleep(BETWEEN_WRITES).await;
     }
 
@@ -418,10 +421,9 @@ async fn a_detail_carries_its_comments_children_and_sessions_in_order() {
     assert!(detail.children.iter().all(|child| child.state == "backlog"));
     assert_eq!(detail.sessions.len(), 1);
     assert_eq!(detail.sessions[0].session_id, session_id);
-    assert_eq!(
-        detail.sessions[0].first_touched_at,
-        detail.sessions[0].last_touched_at
-    );
+    // Two comments in two mutations: the first inserted the link, the second
+    // advanced `last_touched_at` and left `first_touched_at` alone.
+    assert!(detail.sessions[0].first_touched_at < detail.sessions[0].last_touched_at);
     assert!(detail.handoffs.is_empty());
 }
 
@@ -602,18 +604,17 @@ async fn the_in_transaction_loader_sees_the_uncommitted_change() {
     let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
         .await
         .expect("the mutation opens");
-    repository
-        .set_task_state_fields(
-            mutation.conn(),
-            project_id,
-            task.id,
-            &StateFields {
-                state_id: Some(review.id),
-                ..StateFields::default()
-            },
-        )
+    let locked = common::tracker::locked(&mut mutation, task.id)
         .await
-        .expect("the state moves");
+        .expect("the row reads");
+    change_state(
+        &mut mutation,
+        &locked,
+        &review,
+        StateChangeOptions::default(),
+    )
+    .await
+    .expect("the state moves");
 
     // What an event payload for this move would carry: the task as it is
     // inside the transaction.

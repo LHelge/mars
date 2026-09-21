@@ -98,25 +98,25 @@ pub struct TaskFilter {
 /// "set it to NULL", which is what a release, a reopen and a resolved
 /// escalation all need to do.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StateFields {
+pub(crate) struct StateFields {
     /// The state the task moves to; it must belong to the same project.
-    pub state_id: Option<Uuid>,
+    pub(crate) state_id: Option<Uuid>,
     /// The holder and the time it claimed. `Some(None)` releases.
     ///
     /// One field for two columns on purpose: `CHECK
     /// ((lease_holder_session_id IS NULL) = (lease_since IS NULL))` makes a
     /// half-set lease unrepresentable, so it is unrepresentable here too.
-    pub lease: Option<Option<(Uuid, DateTime<Utc>)>>,
+    pub(crate) lease: Option<Option<(Uuid, DateTime<Utc>)>>,
     /// Claims since the task last changed state; a state change resets it.
-    pub attempts: Option<i16>,
+    pub(crate) attempts: Option<i16>,
     /// Set on entering a terminal state, cleared on leaving one.
-    pub closed_at: Option<Option<DateTime<Utc>>>,
+    pub(crate) closed_at: Option<Option<DateTime<Utc>>>,
     /// Why the task was escalated; cleared when it leaves the human state.
-    pub needs_human_reason: Option<Option<String>>,
+    pub(crate) needs_human_reason: Option<Option<String>>,
     /// The current hand-off, which must belong to this task.
-    pub current_handoff_id: Option<Option<Uuid>>,
+    pub(crate) current_handoff_id: Option<Option<Uuid>>,
     /// The recomputed blocked flag.
-    pub blocked: Option<bool>,
+    pub(crate) blocked: Option<bool>,
 }
 
 /// One row of the claimable list, before the tracker turns it into a
@@ -1256,4 +1256,109 @@ async fn has_children(tx: &mut PgConnection, task_id: Uuid) -> Result<bool> {
     .await?;
 
     Ok(exists)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::TaskActor;
+    use crate::repositories::tasks::testfix::Fixture;
+    use crate::tracker::TrackerMutation;
+
+    /// The scope rules of [`TaskRepository::set_task_state_fields`] — the two
+    /// things `docs/data-model.md`, `tasks` calls a "repository check",
+    /// because no constraint can carry them — and its answer to a task that is
+    /// not there.
+    ///
+    /// Asserted here rather than in `tests/`, because the statement is
+    /// `pub(crate)`: the composition above it is the tracker's, and every
+    /// rule a composition owes is asserted through its verb
+    /// (`CLAUDE.md`, "Testing expectations", "Tracker tests"). What is left is
+    /// this — three branches of one statement, arranged the same way, so one
+    /// test rather than three databases.
+    #[tokio::test]
+    async fn the_state_write_refuses_a_foreign_state_a_foreign_handoff_and_an_unknown_task() {
+        let fixture = Fixture::create().await;
+        let task = fixture.task(fixture.project_id, "subject").await;
+
+        // A state of another project. Without this check a caller holding one
+        // project's lock could park a task in another project's column, and
+        // the board would never show it again.
+        let foreign_state = fixture.state_id(fixture.other_project_id, "review").await;
+        let refused = write(
+            &fixture,
+            task.id,
+            StateFields {
+                state_id: Some(foreign_state),
+                ..StateFields::default()
+            },
+        )
+        .await;
+        assert!(
+            matches!(&refused, Err(Error::BadRequest(message))
+                if message == "state must belong to this project"),
+            "a foreign state was accepted: {refused:?}",
+        );
+
+        // A hand-off of another task. The foreign key proves the row exists;
+        // only this proves it is a record of *this* task.
+        let other_task = fixture.task(fixture.project_id, "elsewhere").await;
+        let foreign_handoff = fixture.handoff(fixture.project_id, &other_task).await;
+        let refused = write(
+            &fixture,
+            task.id,
+            StateFields {
+                current_handoff_id: Some(Some(foreign_handoff.id)),
+                ..StateFields::default()
+            },
+        )
+        .await;
+        assert!(
+            matches!(&refused, Err(Error::BadRequest(message))
+                if message == "hand-off must belong to this task"),
+            "a foreign hand-off was accepted: {refused:?}",
+        );
+
+        // An unknown task is `NotFound` and never a silent no-op: the caller
+        // composing a state move already knows what it is changing.
+        let refused = write(
+            &fixture,
+            Uuid::new_v4(),
+            StateFields {
+                attempts: Some(1),
+                ..StateFields::default()
+            },
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(Error::NotFound)),
+            "an unknown task was accepted: {refused:?}",
+        );
+
+        // None of the three wrote anything: the task is as it was inserted.
+        let stored = TaskRepository::new(&fixture.pool)
+            .find_task(fixture.project_id, TaskRef::Id(task.id))
+            .await
+            .expect("the task reads")
+            .expect("the task is there");
+        assert_eq!(stored.state_id, task.state_id);
+        assert_eq!(stored.current_handoff_id, None);
+        assert_eq!(stored.attempts, 0);
+    }
+
+    /// One `set_task_state_fields` call in a mutation of its own, rolled back
+    /// whichever way it went, so a refusal cannot be confused with a write
+    /// that was undone.
+    async fn write(fixture: &Fixture, task_id: Uuid, fields: StateFields) -> Result<Task> {
+        let mut mutation =
+            TrackerMutation::begin(&fixture.pool, fixture.project_id, TaskActor::System)
+                .await
+                .expect("the mutation opens");
+        let written = TaskRepository::new(&fixture.pool)
+            .set_task_state_fields(mutation.conn(), fixture.project_id, task_id, &fields)
+            .await;
+        mutation.no_change().await.expect("the mutation rolls back");
+
+        written
+    }
 }

@@ -233,7 +233,13 @@ async fn a_revision_by_the_holding_session_publishes_everything_at_once() {
         .collect();
     assert_eq!(
         kinds,
-        vec![TaskEventKind::StateChanged, TaskEventKind::Commented],
+        // The `claimed` the arranging claim wrote, then the publication's own
+        // two, in the documented order.
+        vec![
+            TaskEventKind::Claimed,
+            TaskEventKind::StateChanged,
+            TaskEventKind::Commented,
+        ],
     );
 
     // The code's origin is linked to the task.

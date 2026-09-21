@@ -28,7 +28,6 @@ use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{NewTask, Task, TaskDependencyKind};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::TaskRepository;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::tracker::graph::{
     BlockedFlip, affected_by_state_change, capture_before_delete, check_no_cycle, dependants_of,
     recompute_blocked,
@@ -134,7 +133,15 @@ async fn edge(
     .await;
 }
 
-/// Move a task into the project's `done` state, the default terminal one.
+/// Put a task's row in the project's `done` state, the default terminal one.
+///
+/// One unchecked statement, and deliberately not `tracker::change_state`: the
+/// verb recomputes `blocked` itself and emits the flip, which is the very
+/// thing every scenario below asks [`recompute`] for afterwards. What these
+/// tests need of a closure is only the row-level fact that `state_id` now
+/// names a terminal state, with no event and no recomputation attached — the
+/// same reason this file seeds its project and its states with statements
+/// rather than through their interfaces.
 async fn close(pool: &PgPool, project_id: Uuid, task_id: Uuid) {
     let done = TaskRepository::new(pool)
         .find_state_by_name(project_id, "done")
@@ -143,21 +150,12 @@ async fn close(pool: &PgPool, project_id: Uuid, task_id: Uuid) {
         .expect("the project has a done state")
         .id;
 
-    in_mutation(pool, project_id, async |repository, tx| {
-        repository
-            .set_task_state_fields(
-                tx,
-                project_id,
-                task_id,
-                &StateFields {
-                    state_id: Some(done),
-                    ..StateFields::default()
-                },
-            )
-            .await
-            .expect("the task closes");
-    })
-    .await;
+    sqlx::query("UPDATE tasks SET state_id = $1, closed_at = NOW() WHERE id = $2")
+        .bind(done)
+        .bind(task_id)
+        .execute(pool)
+        .await
+        .expect("the task closes");
 }
 
 /// The stored flag, read back from the committed row.

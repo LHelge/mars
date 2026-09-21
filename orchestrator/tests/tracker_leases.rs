@@ -32,13 +32,11 @@ mod common;
 
 use std::time::Duration;
 
-use chrono::Utc;
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{
     NewSession, NewTask, Priority, ProfileKind, Task, TaskDependencyKind,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
 use mars_orchestrator::tracker::graph::recompute_blocked;
 use mars_orchestrator::tracker::leases::{
@@ -278,22 +276,7 @@ async fn finish(mutation: TrackerMutation<'_>, outcome: Result<TaskDto>) -> Resu
 /// Put a lease on a task without going through a claim, so that "already
 /// held" is a precondition rather than a second assertion.
 async fn hold(pool: &PgPool, project_id: Uuid, task_id: Uuid, session_id: Uuid) {
-    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    TaskRepository::new(pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            project_id,
-            task_id,
-            &StateFields {
-                lease: Some(Some((session_id, Utc::now()))),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the lease writes");
-    mutation.commit().await.expect("the mutation commits");
+    common::tracker::hold(pool, project_id, task_id, session_id).await;
 }
 
 /// Add one dependency edge of this kind and store the flag it implies.
@@ -330,6 +313,29 @@ async fn read(pool: &PgPool, project_id: Uuid, task_id: Uuid) -> TaskDto {
 async fn events(pool: &PgPool, project_id: Uuid) -> Vec<TaskEvent> {
     TaskRepository::new(pool)
         .list_task_events_after(project_id, 0, 100)
+        .await
+        .expect("the events read")
+        .into_iter()
+        .map(|row| TaskEvent::from_row(row).expect("the row is a documented event"))
+        .collect()
+}
+
+/// Where the stream stands right now.
+///
+/// The cursor an assertion about "what this call emitted" starts from, so that
+/// the claims an arrangement really makes — a lease is a claim's, and only a
+/// claim raises `attempts` — are behind it rather than in it.
+async fn since(pool: &PgPool, project_id: Uuid) -> i64 {
+    TaskRepository::new(pool)
+        .max_task_event_seq(project_id)
+        .await
+        .expect("the cursor reads")
+}
+
+/// The events written after `after`, oldest first.
+async fn events_after(pool: &PgPool, project_id: Uuid, after: i64) -> Vec<TaskEvent> {
+    TaskRepository::new(pool)
+        .list_task_events_after(project_id, after, 100)
         .await
         .expect("the events read")
         .into_iter()
@@ -586,12 +592,14 @@ async fn a_launch_cannot_claim_a_finished_or_held_task() {
 
     let taken = task(&pool, project_id, "somebody else has it", "ready").await;
     hold(&pool, project_id, taken.id, other).await;
+    // The arranging claim is all the stream holds so far.
+    let after = since(&pool, project_id).await;
     let held = claim_launch(&pool, project_id, taken.id, session_id, fixture.user_id)
         .await
         .expect_err("a held task is not claimable");
     assert_eq!(conflict(held), NOT_CLAIMABLE);
 
-    assert!(events(&pool, project_id).await.is_empty());
+    assert!(events_after(&pool, project_id, after).await.is_empty());
 }
 
 #[tokio::test]

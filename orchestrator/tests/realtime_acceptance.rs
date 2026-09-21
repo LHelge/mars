@@ -51,15 +51,11 @@ use std::time::Duration;
 
 use axum_test::{TestWebSocket, WsMessage};
 use bytes::Bytes;
-use chrono::Utc;
 use common::sse::{SseReader, collect_sse_ids};
 use common::{AuthenticatedUser, TEST_TIMINGS, TestApp, collect_ws_events};
 use futures_util::Stream;
-use mars_orchestrator::events::{
-    AgentEvent, AgentEventBody, TaskActor, TaskEvent, TaskEventKind, TaskEventPayload,
-};
-use mars_orchestrator::models::{NewEvent, NewSession, NewTaskEvent, ProfileKind, SessionState};
-use mars_orchestrator::repositories::tasks::test_support::TaskRepositoryTestExt;
+use mars_orchestrator::events::{AgentEvent, AgentEventBody, TaskActor};
+use mars_orchestrator::models::{NewEvent, NewSession, ProfileKind, SessionState};
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository, Transition};
 use mars_orchestrator::tracker::TrackerMutation;
 use serde_json::{Value, json};
@@ -203,21 +199,6 @@ async fn append_task_events(pool: &PgPool, project_id: Uuid, count: usize) -> Ve
     }
 
     mutation.commit().await.expect("the mutation commits").seqs
-}
-
-/// The `deleted` task event a combined transaction writes by hand, built the
-/// way `TrackerMutation::emit_deleted` builds it so the payload is exactly
-/// what the stream deserialises.
-fn deleted_task_event(task_id: Uuid) -> NewTaskEvent {
-    TaskEvent::new(
-        0,
-        Utc::now(),
-        Some(task_id),
-        TaskEventKind::Deleted,
-        TaskEventPayload::new(TaskActor::System),
-    )
-    .to_new_event()
-    .expect("the event is well formed")
 }
 
 /// The session frame the socket opens with, consumed so the scenario starts
@@ -481,18 +462,15 @@ async fn sse_and_ws_observe_one_combined_transaction() {
         .expect("the session event appends");
     assert_eq!(session_seq, 1);
 
-    let task_seqs = TaskRepository::new(&app.pool)
-        .append_task_events(
-            mutation.conn(),
-            fixture.project_id,
-            &[deleted_task_event(Uuid::new_v4())],
-        )
-        .await
-        .expect("the task event appends");
-    assert_eq!(task_seqs, vec![1]);
+    // The task event is queued on the same mutation; its row, its sequence and
+    // its notification are written on commit, inside this transaction
+    // (`TrackerMutation::commit`).
+    mutation
+        .emit_deleted(Uuid::new_v4())
+        .expect("the task event is emitted");
 
-    // Both rows are written and both `pg_notify` calls have run — inside the
-    // transaction, so PostgreSQL has delivered neither.
+    // The session row is written and its `pg_notify` has run — inside the
+    // transaction, so PostgreSQL has delivered nothing.
     tokio::join!(
         assert_ws_silent(
             &mut socket,
@@ -506,7 +484,8 @@ async fn sse_and_ws_observe_one_combined_transaction() {
         ),
     );
 
-    mutation.commit().await.expect("the mutation commits");
+    let outcome = mutation.commit().await.expect("the mutation commits");
+    assert_eq!(outcome.seqs, vec![1]);
 
     assert_eq!(
         collect_ws_events(&mut socket, 1, WITHIN).await,
@@ -552,17 +531,13 @@ async fn rollback_delivers_nothing_anywhere() {
             .await
             .expect("the session event appends");
 
-        TaskRepository::new(&app.pool)
-            .append_task_events(
-                mutation.conn(),
-                fixture.project_id,
-                &[deleted_task_event(Uuid::new_v4())],
-            )
-            .await
-            .expect("the task event appends");
+        mutation
+            .emit_deleted(Uuid::new_v4())
+            .expect("the task event is emitted");
 
-        // Dropped without `commit`: the transaction rolls back, and PostgreSQL
-        // discards both notifications with the rows.
+        // Ended without `commit`: the transaction rolls back, the task batch is
+        // never appended, and PostgreSQL discards the session notification with
+        // its row.
         mutation.no_change().await.expect("the mutation rolls back");
     }
 

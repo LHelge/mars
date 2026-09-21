@@ -47,12 +47,11 @@ use uuid::Uuid;
 use mars_orchestrator::email::EmailMessage;
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{
-    NewTask, NewTaskComment, NewTaskHandoff, SessionState, Task, TaskDependencyKind, User,
+    HandoffCaller, NewTask, SessionState, Task, TaskDependencyKind, User,
 };
 use mars_orchestrator::repositories::TaskRepository;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::tracker::graph::recompute_blocked;
-use mars_orchestrator::tracker::{TaskDto, TrackerMutation};
+use mars_orchestrator::tracker::{ReviewCarry, TaskDto, TrackerMutation};
 
 /// The project default the escalation scenarios count against (`SPEC.md`,
 /// "Projects").
@@ -163,88 +162,45 @@ async fn state_id(app: &TestApp, project_id: Uuid, name: &str) -> Uuid {
 
 /// A hand-off record pointed at by `tasks.current_handoff_id`, so a claim has
 /// something to carry back.
+///
+/// Published the way an agent publishes one: the session takes the lease,
+/// hands its work off, and the task comes back to the column it was in
+/// (`common::tracker::handoff_in_place`). The lease is gone again afterwards,
+/// because a publication ends the holder's hold.
 async fn with_handoff(app: &TestApp, fixture: &Fixture, task_id: Uuid, session_id: Uuid) -> Uuid {
-    let project_id = fixture.project_id;
-    let repository = TaskRepository::new(&app.pool);
+    common::tracker::hold(&app.pool, fixture.project_id, task_id, session_id).await;
 
-    let mut mutation = TrackerMutation::begin(&app.pool, project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
+    let (_, handoff_id) = common::tracker::handoff_in_place(
+        &app.pool,
+        fixture.project_id,
+        task_id,
+        common::tracker::Handoff {
+            source_session_id: Some(session_id),
+            source_branch: "session/one",
+            commit: HANDOFF_COMMIT,
+            comment: "the work so far",
+            target_state: "",
+            caller: HandoffCaller::Session { session_id },
+            review: ReviewCarry::Fresh,
+        },
+    )
+    .await;
 
-    let comment = NewTaskComment::from_session(task_id, session_id, "the work so far");
-    repository
-        .insert_comment(mutation.conn(), project_id, &comment)
-        .await
-        .expect("the comment inserts");
-
-    let mut handoff = NewTaskHandoff::new(task_id, "session/one", HANDOFF_COMMIT, comment.id);
-    handoff.source_session_id = Some(session_id);
-    handoff.created_by_session_id = Some(session_id);
-    let inserted = repository
-        .insert_handoff(mutation.conn(), project_id, &handoff)
-        .await
-        .expect("the hand-off inserts");
-
-    repository
-        .set_task_state_fields(
-            mutation.conn(),
-            project_id,
-            task_id,
-            &StateFields {
-                current_handoff_id: Some(Some(inserted.id)),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the current hand-off is set");
-    mutation.commit().await.expect("the mutation commits");
-
-    inserted.id
+    handoff_id
 }
 
 /// Put `attempts` where a release is the one that runs out of them.
 ///
-/// Three claim-and-release cycles would do the same thing and say less; the
-/// counter is a column and this is the test setting it to the value the rule
-/// is about.
-async fn set_attempts(app: &TestApp, project_id: Uuid, task_id: Uuid, attempts: i16) {
-    let mut mutation = TrackerMutation::begin(&app.pool, project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    TaskRepository::new(&app.pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            project_id,
-            task_id,
-            &StateFields {
-                attempts: Some(attempts),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the counter writes");
-    mutation.commit().await.expect("the mutation commits");
-}
-
-/// Hand the lease to a session without going through a claim, so that "held"
-/// is a precondition rather than a second assertion.
-async fn hold(app: &TestApp, project_id: Uuid, task_id: Uuid, session_id: Uuid) {
-    let mut mutation = TrackerMutation::begin(&app.pool, project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    TaskRepository::new(&app.pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            project_id,
-            task_id,
-            &StateFields {
-                lease: Some(Some((session_id, Utc::now()))),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the lease writes");
-    mutation.commit().await.expect("the mutation commits");
+/// A claim is the only thing that raises the counter, so the count is that
+/// many claims, each given back by a user (`common::tracker::with_attempts`).
+async fn set_attempts(
+    app: &TestApp,
+    project_id: Uuid,
+    task_id: Uuid,
+    session_id: Uuid,
+    attempts: i16,
+) {
+    common::tracker::with_attempts(&app.pool, project_id, task_id, session_id, attempts).await;
 }
 
 /// Make `dependant` wait for `prerequisite`, and store the flag that implies.
@@ -287,9 +243,22 @@ async fn read(app: &TestApp, project_id: Uuid, task_id: Uuid) -> TaskDto {
 }
 
 /// Every committed event of the project, oldest first.
-async fn events(app: &TestApp, project_id: Uuid) -> Vec<TaskEvent> {
+/// Where the stream stands right now.
+///
+/// The cursor an assertion about "what this call emitted" starts from: a
+/// lease is a claim's and `attempts` is what claims left behind
+/// (`common::tracker`), so an arrangement really writes `claimed` and
+/// `released` events of its own.
+async fn since(app: &TestApp, project_id: Uuid) -> i64 {
     TaskRepository::new(&app.pool)
-        .list_task_events_after(project_id, 0, 100)
+        .max_task_event_seq(project_id)
+        .await
+        .expect("the cursor reads")
+}
+
+async fn events(app: &TestApp, project_id: Uuid, after: i64) -> Vec<TaskEvent> {
+    TaskRepository::new(&app.pool)
+        .list_task_events_after(project_id, after, 100)
         .await
         .expect("the events read")
         .into_iter()
@@ -298,8 +267,8 @@ async fn events(app: &TestApp, project_id: Uuid) -> Vec<TaskEvent> {
 }
 
 /// The kinds of those events, which is usually the whole assertion.
-async fn event_kinds(app: &TestApp, project_id: Uuid) -> Vec<TaskEventKind> {
-    events(app, project_id)
+async fn event_kinds(app: &TestApp, project_id: Uuid, after: i64) -> Vec<TaskEventKind> {
+    events(app, project_id, after)
         .await
         .into_iter()
         .map(|event| event.kind)
@@ -322,7 +291,7 @@ async fn audit(app: &TestApp, project_id: Uuid, task_id: Uuid) -> Audit {
     let task = read(app, project_id, task_id).await;
 
     Audit {
-        events: events(app, project_id).await.len(),
+        events: events(app, project_id, 0).await.len(),
         links: count(
             app,
             "SELECT COUNT(*) FROM task_sessions WHERE task_id = $1",
@@ -369,7 +338,7 @@ async fn a_claim_takes_the_lease_links_the_session_and_carries_the_handoff() {
 
     let subject = task(&app, &fixture, "implement it", "ready").await;
     let handoff_id = with_handoff(&app, &fixture, subject.id, session_id).await;
-    let before = events(&app, fixture.project_id).await.len();
+    let before = events(&app, fixture.project_id, 0).await.len();
 
     let claimed = task_of(
         &client
@@ -387,7 +356,7 @@ async fn a_claim_takes_the_lease_links_the_session_and_carries_the_handoff() {
     assert_eq!(carried.id, handoff_id);
     assert_eq!(carried.commit, HANDOFF_COMMIT);
 
-    let written = events(&app, fixture.project_id).await;
+    let written = events(&app, fixture.project_id, 0).await;
     assert_eq!(written.len(), before + 1, "a claim emits exactly one event");
     let claimed_event = written.last().expect("the event is there");
     assert_eq!(claimed_event.kind, TaskEventKind::Claimed);
@@ -504,7 +473,7 @@ async fn two_concurrent_claims_leave_exactly_one_winner() {
     );
     assert_eq!(winner.attempts, 1);
 
-    let claims = event_kinds(&app, fixture.project_id)
+    let claims = event_kinds(&app, fixture.project_id, 0)
         .await
         .into_iter()
         .filter(|kind| *kind == TaskEventKind::Claimed)
@@ -582,7 +551,7 @@ async fn a_release_comments_clears_the_lease_and_keeps_the_state() {
     // `attempts` survives a release: only a state change resets it.
     assert_eq!(released.attempts, 1);
 
-    let kinds = event_kinds(&app, fixture.project_id).await;
+    let kinds = event_kinds(&app, fixture.project_id, 0).await;
     assert_eq!(
         kinds,
         [
@@ -591,7 +560,7 @@ async fn a_release_comments_clears_the_lease_and_keeps_the_state() {
             TaskEventKind::Released,
         ],
     );
-    let last = events(&app, fixture.project_id)
+    let last = events(&app, fixture.project_id, 0)
         .await
         .pop()
         .expect("the release is there");
@@ -614,7 +583,7 @@ async fn a_release_comments_clears_the_lease_and_keeps_the_state() {
 async fn a_release_at_the_attempt_limit_escalates_and_tells_the_assignee() {
     let app = TestApp::spawn().await;
     let fixture = seed(&app).await;
-    let (client, _) = session(&app, &fixture).await;
+    let (client, session_id) = session(&app, &fixture).await;
 
     let assignee = app
         .insert_user("assignee", "assignee@example.test", false, false)
@@ -625,7 +594,14 @@ async fn a_release_at_the_attempt_limit_escalates_and_tells_the_assignee() {
 
     let subject = task_for(&app, &fixture, "rotate the key", "ready", Some(&assignee)).await;
     // One short of the limit; the claim below is the attempt that reaches it.
-    set_attempts(&app, fixture.project_id, subject.id, MAX_ATTEMPTS - 1).await;
+    set_attempts(
+        &app,
+        fixture.project_id,
+        subject.id,
+        session_id,
+        MAX_ATTEMPTS - 1,
+    )
+    .await;
     client
         .call("claim", json!({ "task": subject.number }))
         .await
@@ -650,7 +626,7 @@ async fn a_release_at_the_attempt_limit_escalates_and_tells_the_assignee() {
         .expect("the reason is stored");
     assert!(reason.contains("I cannot get past the login"), "{reason}");
 
-    let kinds = event_kinds(&app, fixture.project_id).await;
+    let kinds = event_kinds(&app, fixture.project_id, 0).await;
     assert!(
         kinds.contains(&TaskEventKind::Escalated),
         "the move to a person is announced: {kinds:?}",
@@ -669,7 +645,7 @@ async fn a_release_at_the_attempt_limit_escalates_and_tells_the_assignee() {
 async fn an_unassigned_escalation_goes_to_the_admins_who_want_email() {
     let app = TestApp::spawn().await;
     let fixture = seed(&app).await;
-    let (client, _) = session(&app, &fixture).await;
+    let (client, session_id) = session(&app, &fixture).await;
 
     let told = app
         .insert_user("told", "told@example.test", true, false)
@@ -683,7 +659,14 @@ async fn an_unassigned_escalation_goes_to_the_admins_who_want_email() {
         .await;
 
     let subject = task(&app, &fixture, "decide the schema", "ready").await;
-    set_attempts(&app, fixture.project_id, subject.id, MAX_ATTEMPTS - 1).await;
+    set_attempts(
+        &app,
+        fixture.project_id,
+        subject.id,
+        session_id,
+        MAX_ATTEMPTS - 1,
+    )
+    .await;
     client
         .call("claim", json!({ "task": subject.number }))
         .await
@@ -762,7 +745,7 @@ async fn any_session_in_the_project_may_comment_and_is_linked_to_the_task() {
     assert_eq!(comment["system"], json!(false));
     assert_eq!(comment["body"], json!("the migration is already applied"));
 
-    let kinds = event_kinds(&app, fixture.project_id).await;
+    let kinds = event_kinds(&app, fixture.project_id, 0).await;
     assert_eq!(kinds, [TaskEventKind::Claimed, TaskEventKind::Commented]);
 
     // Both sessions worked on it: the holder by claiming, this one by saying
@@ -837,6 +820,7 @@ async fn needs_human_on_an_unheld_task_hands_it_over_and_sends_one_email() {
     let app = TestApp::spawn().await;
     let fixture = seed(&app).await;
     let (client, session_id) = session(&app, &fixture).await;
+    let (_earlier, earlier_session) = session(&app, &fixture).await;
 
     let assignee = app
         .insert_user("assignee", "assignee@example.test", false, false)
@@ -849,8 +833,11 @@ async fn needs_human_on_an_unheld_task_hands_it_over_and_sends_one_email() {
         Some(&assignee),
     )
     .await;
-    // Never claimed by this session: an unheld task may still be handed over.
-    set_attempts(&app, fixture.project_id, subject.id, 2).await;
+    // Two earlier attempts, by somebody else: this session never claimed the
+    // task, and an unheld task may still be handed over.
+    set_attempts(&app, fixture.project_id, subject.id, earlier_session, 2).await;
+    // Those claims are the arrangement; the stream is read from here on.
+    let after = since(&app, fixture.project_id).await;
     app.mock_email().clear();
 
     let handed = task_of(
@@ -872,13 +859,13 @@ async fn needs_human_on_an_unheld_task_hands_it_over_and_sends_one_email() {
     // "releases the lease and resets `attempts`".
     assert_eq!(handed.attempts, 0);
 
-    let kinds = event_kinds(&app, fixture.project_id).await;
+    let kinds = event_kinds(&app, fixture.project_id, after).await;
     assert_eq!(
         kinds,
         [TaskEventKind::Commented, TaskEventKind::Escalated],
         "the reason is recorded and the move announced",
     );
-    let escalated = events(&app, fixture.project_id)
+    let escalated = events(&app, fixture.project_id, after)
         .await
         .pop()
         .expect("the escalation is there");
@@ -889,14 +876,19 @@ async fn needs_human_on_an_unheld_task_hands_it_over_and_sends_one_email() {
     let message = only_message(&app);
     assert_eq!(message.to, assignee.email.as_str());
 
+    // The row-level fact no interface answers: the calling session is linked
+    // to the task although it never held it, beside the session whose two
+    // earlier attempts arranged the counter.
+    let linked: Vec<Uuid> =
+        sqlx::query_scalar("SELECT session_id FROM task_sessions WHERE task_id = $1 ORDER BY 1")
+            .bind(subject.id)
+            .fetch_all(&app.pool)
+            .await
+            .expect("the links read");
+    let mut expected = vec![session_id, earlier_session];
+    expected.sort();
     assert_eq!(
-        count(
-            &app,
-            "SELECT COUNT(*) FROM task_sessions WHERE task_id = $1",
-            subject.id,
-        )
-        .await,
-        1,
+        linked, expected,
         "the session worked on the task it handed over",
     );
 }
@@ -913,8 +905,10 @@ async fn needs_human_on_a_task_already_with_a_person_records_the_reason_only() {
     // A task a person was already asked about, which a user then launched this
     // session on: it holds the lease in the human state.
     let subject = task(&app, &fixture, "approve the migration", "needs_human").await;
-    set_attempts(&app, fixture.project_id, subject.id, 2).await;
-    hold(&app, fixture.project_id, subject.id, session_id).await;
+    common::tracker::hold_with_attempts(&app.pool, fixture.project_id, subject.id, session_id, 2)
+        .await;
+    // Those claims are the arrangement; the stream is read from here on.
+    let after = since(&app, fixture.project_id).await;
     app.mock_email().clear();
 
     let handed = task_of(
@@ -936,7 +930,7 @@ async fn needs_human_on_a_task_already_with_a_person_records_the_reason_only() {
     // Preserved: this was not a state change, so nothing reset the counter.
     assert_eq!(handed.attempts, 2);
 
-    let kinds = event_kinds(&app, fixture.project_id).await;
+    let kinds = event_kinds(&app, fixture.project_id, after).await;
     assert_eq!(
         kinds,
         [
@@ -946,7 +940,7 @@ async fn needs_human_on_a_task_already_with_a_person_records_the_reason_only() {
         ],
         "no second escalation",
     );
-    let released = events(&app, fixture.project_id)
+    let released = events(&app, fixture.project_id, after)
         .await
         .pop()
         .expect("the release is there");

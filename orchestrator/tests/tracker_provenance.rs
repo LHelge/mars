@@ -28,13 +28,11 @@
 
 mod common;
 
-use chrono::Utc;
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{
     NewSession, NewTask, ProfileKind, Task, TaskDependencyKind, TaskRef,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
 use mars_orchestrator::tracker::provenance::{AMBIGUOUS_ORIGIN, ORIGIN_NOT_HELD};
 use mars_orchestrator::tracker::{
@@ -148,22 +146,7 @@ async fn task(pool: &PgPool, project_id: Uuid, title: &str) -> Task {
 /// Put a lease on a task, so that "the session holds it" is a precondition
 /// rather than a second assertion.
 async fn hold(pool: &PgPool, project_id: Uuid, task_id: Uuid, session_id: Uuid) {
-    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    TaskRepository::new(pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            project_id,
-            task_id,
-            &StateFields {
-                lease: Some(Some((session_id, Utc::now()))),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the lease writes");
-    mutation.commit().await.expect("the mutation commits");
+    common::tracker::hold(pool, project_id, task_id, session_id).await;
 }
 
 /// The input an MCP `create_task` maps onto, with only the fields a provenance
@@ -223,10 +206,22 @@ async fn edges(pool: &PgPool, project_id: Uuid, task_id: Uuid) -> Vec<(Uuid, Tas
         .collect()
 }
 
-/// The project's events, oldest first.
-async fn events(pool: &PgPool, project_id: Uuid) -> Vec<TaskEvent> {
+/// Where the stream stands right now.
+///
+/// The cursor an assertion about "what this call emitted" starts from, so that
+/// the claims an arrangement really makes — a lease is a claim's, and only a
+/// claim raises `attempts` — are behind it rather than in it.
+async fn since(pool: &PgPool, project_id: Uuid) -> i64 {
     TaskRepository::new(pool)
-        .list_task_events_after(project_id, 0, 100)
+        .max_task_event_seq(project_id)
+        .await
+        .expect("the cursor reads")
+}
+
+/// The events written after `after`, oldest first.
+async fn events_after(pool: &PgPool, project_id: Uuid, after: i64) -> Vec<TaskEvent> {
+    TaskRepository::new(pool)
+        .list_task_events_after(project_id, after, 100)
         .await
         .expect("the events read")
         .into_iter()
@@ -281,6 +276,9 @@ async fn holding_one_task_infers_the_origin_and_records_the_edge() {
 
     let origin = task(&pool, project_id, "the task being worked").await;
     hold(&pool, project_id, origin.id, session_id).await;
+    // The arranging claim is behind the cursor; what follows is the
+    // creation's own.
+    let after = since(&pool, project_id).await;
 
     let created = create_as_session(
         &pool,
@@ -309,7 +307,7 @@ async fn holding_one_task_infers_the_origin_and_records_the_edge() {
     assert_eq!(linked_sessions(&pool, created.id).await, vec![session_id]);
 
     // The origin is not modified: no event about it, and it keeps its lease.
-    let written = events(&pool, project_id).await;
+    let written = events_after(&pool, project_id, after).await;
     let kinds: Vec<_> = written.iter().map(|event| event.kind).collect();
     assert_eq!(
         kinds,
@@ -355,6 +353,9 @@ async fn holding_several_tasks_without_an_origin_creates_nothing() {
     let second = task(&pool, project_id, "two").await;
     hold(&pool, project_id, first.id, session_id).await;
     hold(&pool, project_id, second.id, session_id).await;
+    // The arranging claims are behind the cursor; what follows is the
+    // creation's own.
+    let after = since(&pool, project_id).await;
 
     let before = task_count(&pool, project_id).await;
     let error = create_as_session(
@@ -372,7 +373,7 @@ async fn holding_several_tasks_without_an_origin_creates_nothing() {
         before,
         "a refused creation inserts no task",
     );
-    assert!(events(&pool, project_id).await.is_empty());
+    assert!(events_after(&pool, project_id, after).await.is_empty());
 }
 
 #[tokio::test]
@@ -522,7 +523,7 @@ async fn holding_nothing_records_no_provenance() {
 
     assert!(edges(&pool, project_id, created.id).await.is_empty());
 
-    let kinds: Vec<_> = events(&pool, project_id)
+    let kinds: Vec<_> = events_after(&pool, project_id, 0)
         .await
         .iter()
         .map(|event| event.kind)
@@ -539,6 +540,9 @@ async fn an_origin_that_is_the_parent_adds_no_second_edge() {
 
     let epic = task(&pool, project_id, "the plan being worked").await;
     hold(&pool, project_id, epic.id, session_id).await;
+    // The arranging claims are behind the cursor; what follows is the
+    // creation's own.
+    let after = since(&pool, project_id).await;
 
     let created = create_as_session(
         &pool,
@@ -564,7 +568,7 @@ async fn an_origin_that_is_the_parent_adds_no_second_edge() {
     // `created`, and the flag the new open child flips on its parent — which
     // is the parent rule, not provenance (`ARCHITECTURE.md`, "Task tracker" →
     // "Parents"). No `dependency_added`, because no edge was recorded.
-    let written = events(&pool, project_id).await;
+    let written = events_after(&pool, project_id, after).await;
     let kinds: Vec<_> = written.iter().map(|event| event.kind).collect();
     assert_eq!(
         kinds,
@@ -583,6 +587,9 @@ async fn the_inferred_origin_also_named_in_depends_on_carries_both_kinds() {
 
     let origin = task(&pool, project_id, "the task being worked").await;
     hold(&pool, project_id, origin.id, session_id).await;
+    // The arranging claim is behind the cursor; what follows is the
+    // creation's own.
+    let after = since(&pool, project_id).await;
 
     let created = create_as_session(
         &pool,
@@ -611,7 +618,7 @@ async fn the_inferred_origin_also_named_in_depends_on_carries_both_kinds() {
 
     // `created`, the `blocks` edge, the provenance edge, and the flag the open
     // prerequisite flips — in that order.
-    let kinds: Vec<_> = events(&pool, project_id)
+    let kinds: Vec<_> = events_after(&pool, project_id, after)
         .await
         .iter()
         .map(|event| event.kind)

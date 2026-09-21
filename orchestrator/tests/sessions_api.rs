@@ -47,14 +47,13 @@ use mars_orchestrator::events::{TaskActor, TaskEvent};
 use mars_orchestrator::git::DataPaths;
 use mars_orchestrator::git::testutil::{TestUpstream, run_git};
 use mars_orchestrator::models::{
-    NewEvent, NewSession, NewTask, NewTaskComment, NewTaskHandoff, ProfileKind, ProjectStatus,
-    Session, SessionState, StateChange, Task, TaskRef,
+    HandoffCaller, NewEvent, NewSession, NewTask, ProfileKind, ProjectStatus, Session,
+    SessionState, StateChange, Task, TaskRef,
 };
 use mars_orchestrator::projects::clone_job;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
 use mars_orchestrator::session::{McpToken, Phase, SessionDirs};
-use mars_orchestrator::tracker::{TaskDto, TrackerMutation, claim_for_launch};
+use mars_orchestrator::tracker::{ReviewCarry, TaskDto, TrackerMutation, claim_for_launch};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -809,30 +808,18 @@ async fn hold(app: &TestApp, fixture: &Fixture, task_id: Uuid, session_id: Uuid)
     mutation.commit().await.expect("the mutation commits");
 }
 
-/// Mark the task blocked, the way an open `blocks` prerequisite does.
+/// Mark the task blocked, the way an open `blocks` prerequisite does: with
+/// one (`common::tracker::block`).
 async fn block(app: &TestApp, fixture: &Fixture, task_id: Uuid) {
-    let mut mutation = TrackerMutation::begin(&app.pool, fixture.project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    TaskRepository::new(&app.pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            fixture.project_id,
-            task_id,
-            &StateFields {
-                blocked: Some(true),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the task is blocked");
-    mutation.commit().await.expect("the mutation commits");
+    common::tracker::block(&app.pool, fixture.project_id, task_id).await;
 }
 
 /// Publish a hand-off of `commit` on this task and make it the current one.
 ///
-/// What the code hand-offs epic will write through its own endpoint; here it
-/// is arranged directly, because this suite only ever reads it.
+/// Through the verb that publishes one in production: the source session takes
+/// the lease, hands its work off and the task comes back to the column it was
+/// in (`common::tracker::handoff_in_place`). The lease is gone again
+/// afterwards, which is what a task waiting for the next worker looks like.
 async fn publish_handoff(
     app: &TestApp,
     fixture: &Fixture,
@@ -841,42 +828,27 @@ async fn publish_handoff(
     commit: &str,
     body: &str,
 ) -> Uuid {
-    let tasks = TaskRepository::new(&app.pool);
-    let pid = fixture.project_id;
+    common::tracker::hold(&app.pool, fixture.project_id, task.id, source_session_id).await;
 
-    let mut mutation = TrackerMutation::begin(&app.pool, pid, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-
-    let comment = NewTaskComment::from_session(task.id, source_session_id, body);
-    tasks
-        .insert_comment(mutation.conn(), pid, &comment)
-        .await
-        .expect("the hand-off comment inserts");
-
-    let mut handoff = NewTaskHandoff::new(task.id, "session/source", commit, comment.id);
-    handoff.source_session_id = Some(source_session_id);
-    handoff.created_by_session_id = Some(source_session_id);
-    let inserted = tasks
-        .insert_handoff(mutation.conn(), pid, &handoff)
-        .await
-        .expect("the hand-off inserts");
-
-    tasks
-        .set_task_state_fields(
-            mutation.conn(),
-            pid,
-            task.id,
-            &StateFields {
-                current_handoff_id: Some(Some(inserted.id)),
-                ..StateFields::default()
+    let (_, handoff_id) = common::tracker::handoff_in_place(
+        &app.pool,
+        fixture.project_id,
+        task.id,
+        common::tracker::Handoff {
+            source_session_id: Some(source_session_id),
+            source_branch: "session/source",
+            commit,
+            comment: body,
+            target_state: "",
+            caller: HandoffCaller::Session {
+                session_id: source_session_id,
             },
-        )
-        .await
-        .expect("the current hand-off is set");
-    mutation.commit().await.expect("the mutation commits");
+            review: ReviewCarry::Fresh,
+        },
+    )
+    .await;
 
-    inserted.id
+    handoff_id
 }
 
 /// The first paragraph of the generated message, for `task`.

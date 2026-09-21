@@ -1,10 +1,10 @@
 ---
 id: "6sbzz"
 title: "Session transcript: tool calls and subagents start collapsed, with a one-line summary in the header"
-status: review
+status: done
 priority: P2
 created: "2026-09-20T22:43:49.089530992Z"
-updated: "2026-09-20T22:46:35.364713627Z"
+updated: "2026-09-21T12:45:00.000000000Z"
 tags:
   - frontend
   - session

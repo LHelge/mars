@@ -1,8 +1,8 @@
 //! Creating a project against a real Postgres: the row, the seven default
-//! task states, the `default` profile serving `ready`, the `GIT_CREDENTIAL`
-//! secret, and the rollback that leaves none of them behind (`SPEC.md`,
-//! "Projects"; `docs/data-model.md`, `task_states`, `profile_states`,
-//! `agent_profiles`, `secrets`).
+//! task states, the four seeded role profiles, the `GIT_CREDENTIAL` secret,
+//! and the rollback that leaves none of them behind (`SPEC.md`, "Projects"
+//! and "Role profile templates"; `docs/data-model.md`, `task_states`,
+//! `profile_states`, `agent_profiles`, `secrets`).
 //!
 //! `projects::create_project` is called directly rather than through a route:
 //! the endpoint is the next task's, and what is asserted here is the
@@ -23,7 +23,7 @@ use mars_orchestrator::models::{
     TaskStateKind,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::projects::{NewProjectRequest, create_project};
+use mars_orchestrator::projects::{NewProjectRequest, create_project, profile_templates};
 use mars_orchestrator::repositories::{ProjectRepository, SecretRepository, TaskRepository};
 use mars_orchestrator::secrets::{GIT_CREDENTIAL_NAME, GitUseContext, project_git_credential};
 use uuid::Uuid;
@@ -142,7 +142,7 @@ async fn the_default_task_states_are_seeded_in_board_order() {
 }
 
 #[tokio::test]
-async fn the_seeded_profile_is_the_default_one_and_serves_ready() {
+async fn the_seeded_profiles_are_the_four_role_templates() {
     let app = TestApp::spawn().await;
     let user = app
         .insert_user("creator", "creator@example.com", false, false)
@@ -157,34 +157,48 @@ async fn the_seeded_profile_is_the_default_one_and_serves_ready() {
         .list_profiles(project.id)
         .await
         .expect("the profiles are read");
-    assert_eq!(profiles.len(), 1, "exactly one profile is seeded");
 
-    let profile = &profiles[0];
-    assert_eq!(profile.name, "default");
-    assert_eq!(profile.kind, ProfileKind::Conversational);
-    assert_eq!(profile.backend, AgentBackend::Claude);
-    assert_eq!(profile.permission_mode, "bypass");
-    // The configured image, not a literal of this test's own: the value comes
-    // from `SESSION_IMAGE_DEFAULT` (`README.md`, "Configuration").
-    assert_eq!(profile.image, app.state.config.session_image_default);
-    assert_eq!(profile.image, TEST_IMAGE);
-    assert_eq!(profile.model, None);
-    assert_eq!(profile.system_prompt, None);
-    assert_eq!(profile.runtime, None);
-    assert!(profile.mcp_tools.is_empty());
-    assert!(profile.secrets.is_empty());
-    assert!(profile.partial_messages);
-    assert_eq!(profile.idle_timeout_secs, 1800);
-    assert!(profile.is_default);
-    assert_eq!(profile.serves_states, vec!["ready".to_string()]);
+    // Oldest first, which for the seeded four is the order a task travels
+    // through them (`SPEC.md`, "Role profile templates").
+    let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["planner", "implementer", "reviewer", "merger"]);
 
-    // The same row through the default-profile lookup every launch makes.
+    for (profile, template) in profiles.iter().zip(profile_templates()) {
+        assert_eq!(profile.name, template.name);
+        let serves: Vec<&str> = profile.serves_states.iter().map(String::as_str).collect();
+        let tools: Vec<&str> = profile.mcp_tools.iter().map(String::as_str).collect();
+        assert_eq!(serves, template.serves_states);
+        assert_eq!(tools, template.mcp_tools);
+        assert_eq!(profile.is_default, template.is_default);
+        assert_eq!(
+            profile.system_prompt.as_deref(),
+            Some(template.system_prompt)
+        );
+
+        // Everything else is the documented default of "Agent profiles".
+        assert_eq!(profile.kind, ProfileKind::Conversational);
+        assert_eq!(profile.backend, AgentBackend::Claude);
+        assert_eq!(profile.permission_mode, "bypass");
+        // The configured image, not a literal of this test's own: the value
+        // comes from `SESSION_IMAGE_DEFAULT` (`README.md`, "Configuration").
+        assert_eq!(profile.image, app.state.config.session_image_default);
+        assert_eq!(profile.image, TEST_IMAGE);
+        assert_eq!(profile.model, None);
+        assert_eq!(profile.runtime, None);
+        assert!(profile.secrets.is_empty());
+        assert!(profile.partial_messages);
+        assert_eq!(profile.idle_timeout_secs, 1800);
+    }
+
+    // The implementer is the row the default-profile lookup every launch makes
+    // finds.
     let default = projects
         .find_default_profile(project.id)
         .await
         .expect("the lookup runs")
         .expect("the project has a default profile");
-    assert_eq!(default.id, profile.id);
+    assert_eq!(default.name, "implementer");
+    assert_eq!(default.serves_states, vec!["ready".to_string()]);
 }
 
 #[tokio::test]
@@ -363,11 +377,11 @@ async fn a_duplicate_name_rolls_back_the_states_the_profile_and_the_secret() {
     assert_eq!(error.to_string(), "project name already taken");
 
     // Only the first project's rows survive: no orphan states, no orphan
-    // profile, and — although the credential is written before the project row
+    // profiles, and — although the credential is written before the project row
     // — no orphan secret.
     assert_eq!(count(&app.pool, COUNT_PROJECTS).await, 1);
     assert_eq!(count(&app.pool, COUNT_TASK_STATES).await, 7);
-    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 1);
+    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 4);
     assert_eq!(count(&app.pool, COUNT_SECRETS).await, 0);
 }
 
@@ -397,7 +411,7 @@ async fn two_projects_are_created_independently() {
     assert!(second.has_credential);
 
     assert_eq!(count(&app.pool, COUNT_TASK_STATES).await, 14);
-    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 2);
+    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 8);
     assert_eq!(count(&app.pool, COUNT_SECRETS).await, 1);
 
     // Each project's default profile serves its own `ready` state.

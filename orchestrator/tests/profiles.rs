@@ -88,8 +88,8 @@ fn password_change_required() -> Value {
 }
 
 /// A project to hang profiles on, created through its own endpoint so it is
-/// seeded exactly as a real one is: the seven default states and the `default`
-/// profile.
+/// seeded exactly as a real one is: the seven default states and the four role
+/// profiles of `SPEC.md`, "Role profile templates".
 async fn project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> Uuid {
     let response = app
         .post_as(user, "/api/projects")
@@ -168,6 +168,32 @@ fn names(profiles: &[Value]) -> Vec<&str> {
         .collect()
 }
 
+/// The four role profiles `POST /api/projects` seeds, in listing order
+/// (`SPEC.md`, "Role profile templates"). This suite's own profiles are named
+/// so that they never collide with these.
+const SEEDED: [&str; 4] = ["planner", "implementer", "reviewer", "merger"];
+
+/// The seeded profile that carries `is_default`.
+const SEEDED_DEFAULT: &str = "implementer";
+
+/// `SEEDED` followed by `extra`: the listing is oldest first, and anything
+/// this suite creates is newer than the four the project was seeded with.
+fn seeded_and(extra: &[&'static str]) -> Vec<&'static str> {
+    SEEDED
+        .iter()
+        .copied()
+        .chain(extra.iter().copied())
+        .collect()
+}
+
+/// The project's default profile as the listing shows it.
+fn default_profile(profiles: &[Value]) -> &Value {
+    profiles
+        .iter()
+        .find(|profile| profile["is_default"] == json!(true))
+        .expect("a project always has a default profile")
+}
+
 /// Assert the documented `{ status, error }` body of a failure.
 fn assert_error(response: &TestResponse, status: StatusCode, message: &str) {
     response.assert_status(status);
@@ -225,7 +251,7 @@ async fn every_endpoint_requires_a_token() {
     let app = TestApp::spawn().await;
     let pid = Uuid::new_v4();
     let id = Uuid::new_v4();
-    let body = json!({ "name": "planner" });
+    let body = json!({ "name": "scout" });
 
     let responses = [
         app.server.get(&profiles_path(pid)).await,
@@ -247,7 +273,7 @@ async fn every_endpoint_is_refused_while_a_password_change_is_pending() {
     let gated = app.create_gated_user("gated", "gated@example.test").await;
     let pid = Uuid::new_v4();
     let id = Uuid::new_v4();
-    let body = json!({ "name": "planner" });
+    let body = json!({ "name": "scout" });
 
     let responses = [
         app.get_as(&gated, &profiles_path(pid)).await,
@@ -266,20 +292,23 @@ async fn every_endpoint_is_refused_while_a_password_change_is_pending() {
 // ---- list ----
 
 #[tokio::test]
-async fn listing_shows_the_seeded_default_profile_in_the_documented_shape() {
+async fn listing_shows_the_four_seeded_profiles_in_the_documented_shape() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
 
     let profiles = list(&app, &user, pid).await;
 
-    assert_eq!(names(&profiles), ["default"]);
-    let default = &profiles[0];
+    // The four role templates, oldest first, in the order a task travels
+    // through them (`SPEC.md`, "Role profile templates").
+    assert_eq!(names(&profiles), SEEDED);
+
+    let default = default_profile(&profiles);
+    assert_eq!(default["name"], json!(SEEDED_DEFAULT));
     assert_eq!(default["project_id"], json!(pid.to_string()));
     assert_eq!(default["kind"], json!("conversational"));
     assert_eq!(default["backend"], json!("claude"));
     assert_eq!(default["model"], Value::Null);
-    assert_eq!(default["system_prompt"], Value::Null);
     assert_eq!(default["permission_mode"], json!("bypass"));
     assert_eq!(default["image"], json!(TEST_IMAGE));
     assert_eq!(default["runtime"], Value::Null);
@@ -291,6 +320,15 @@ async fn listing_shows_the_seeded_default_profile_in_the_documented_shape() {
     assert_eq!(default["is_default"], json!(true));
     assert!(default["created_at"].is_string());
     assert!(default["updated_at"].is_string());
+
+    // Every seeded profile carries its role prompt; the texts themselves are
+    // `tests/profile_templates.rs`.
+    for profile in &profiles {
+        let prompt = profile["system_prompt"]
+            .as_str()
+            .expect("a seeded profile carries its role prompt");
+        assert!(!prompt.trim().is_empty());
+    }
 
     // Exactly the documented eighteen fields, and nothing the row might add.
     let mut keys: Vec<&str> = default
@@ -321,56 +359,56 @@ async fn the_listing_is_oldest_first() {
 
     // Deliberately in reverse alphabetical order, so name order and creation
     // order disagree.
-    created(&app, &user, pid, &json!({ "name": "reviewer" })).await;
-    created(&app, &user, pid, &json!({ "name": "planner" })).await;
+    created(&app, &user, pid, &json!({ "name": "scribe" })).await;
+    created(&app, &user, pid, &json!({ "name": "scout" })).await;
     created(&app, &user, pid, &json!({ "name": "archivist" })).await;
 
     assert_eq!(
         names(&list(&app, &user, pid).await),
-        ["default", "reviewer", "planner", "archivist"]
+        seeded_and(&["scribe", "scout", "archivist"])
     );
 }
 
 // ---- create ----
 
 #[tokio::test]
-async fn creating_a_planner_stores_it_with_the_states_it_serves() {
+async fn creating_a_profile_stores_it_with_the_states_it_serves() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
 
-    let planner = created(
+    let scout = created(
         &app,
         &user,
         pid,
         &json!({
-            "name": "planner",
+            "name": "scout",
             "serves_states": ["backlog"],
             "system_prompt": "Break the request down into tasks.",
         }),
     )
     .await;
 
-    assert_eq!(planner["name"], json!("planner"));
-    assert_eq!(planner["kind"], json!("conversational"));
-    assert_eq!(planner["serves_states"], json!(["backlog"]));
+    assert_eq!(scout["name"], json!("scout"));
+    assert_eq!(scout["kind"], json!("conversational"));
+    assert_eq!(scout["serves_states"], json!(["backlog"]));
     assert_eq!(
-        planner["system_prompt"],
+        scout["system_prompt"],
         json!("Break the request down into tasks.")
     );
     // Conversational, and nothing was said, so streaming is on.
-    assert_eq!(planner["partial_messages"], json!(true));
+    assert_eq!(scout["partial_messages"], json!(true));
     // The seeded profile keeps the flag.
-    assert_eq!(planner["is_default"], json!(false));
-    assert_eq!(planner["image"], json!(TEST_IMAGE));
-    assert_eq!(planner["idle_timeout_secs"], json!(1800));
+    assert_eq!(scout["is_default"], json!(false));
+    assert_eq!(scout["image"], json!(TEST_IMAGE));
+    assert_eq!(scout["idle_timeout_secs"], json!(1800));
 
     // The link rows are in the same transaction as the row itself.
-    assert_eq!(served_row_count(&app, id_of(&planner)).await, 1);
+    assert_eq!(served_row_count(&app, id_of(&scout)).await, 1);
     // And the board was never touched.
     assert_eq!(task_event_count(&app, pid).await, 0);
 
-    assert_eq!(names(&list(&app, &user, pid).await), ["default", "planner"]);
+    assert_eq!(names(&list(&app, &user, pid).await), seeded_and(&["scout"]));
 }
 
 #[tokio::test]
@@ -379,18 +417,18 @@ async fn an_ephemeral_profile_defaults_to_no_partial_messages() {
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
 
-    let implementer = created(
+    let one_shot = created(
         &app,
         &user,
         pid,
-        &json!({ "name": "implementer", "kind": "ephemeral" }),
+        &json!({ "name": "one-shot", "kind": "ephemeral" }),
     )
     .await;
 
-    assert_eq!(implementer["kind"], json!("ephemeral"));
-    assert_eq!(implementer["partial_messages"], json!(false));
+    assert_eq!(one_shot["kind"], json!("ephemeral"));
+    assert_eq!(one_shot["partial_messages"], json!(false));
     // No `serves_states` either, so it takes the documented default.
-    assert_eq!(implementer["serves_states"], json!(["ready"]));
+    assert_eq!(one_shot["serves_states"], json!(["ready"]));
 
     // An explicit value wins over the kind's default.
     let streaming = created(
@@ -416,19 +454,19 @@ async fn every_invalid_field_is_a_bad_request() {
 
     for (body, message) in [
         (
-            json!({ "name": "planner", "permission_mode": "plan" }),
+            json!({ "name": "scout", "permission_mode": "plan" }),
             "permission mode must be bypass",
         ),
         (
-            json!({ "name": "planner", "mcp_tools": ["push", "delete_repo"] }),
+            json!({ "name": "scout", "mcp_tools": ["push", "delete_repo"] }),
             "unknown MCP tool \"delete_repo\"",
         ),
         (
-            json!({ "name": "planner", "secrets": ["bad-name"] }),
+            json!({ "name": "scout", "secrets": ["bad-name"] }),
             "secret names must be 1-128 characters matching [A-Z][A-Z0-9_]*",
         ),
         (
-            json!({ "name": "planner", "idle_timeout_secs": 0 }),
+            json!({ "name": "scout", "idle_timeout_secs": 0 }),
             "idle timeout must be at least 1 second",
         ),
         (
@@ -442,7 +480,7 @@ async fn every_invalid_field_is_a_bad_request() {
     }
 
     // Nothing was stored by any of them.
-    assert_eq!(names(&list(&app, &user, pid).await), ["default"]);
+    assert_eq!(names(&list(&app, &user, pid).await), SEEDED);
 }
 
 #[tokio::test]
@@ -460,7 +498,7 @@ async fn an_agent_credential_name_in_secrets_is_a_bad_request_on_create_and_repl
             &app,
             &user,
             pid,
-            &json!({ "name": "planner", "secrets": ["NPM_TOKEN", name] }),
+            &json!({ "name": "scout", "secrets": ["NPM_TOKEN", name] }),
         )
         .await;
 
@@ -472,23 +510,23 @@ async fn an_agent_credential_name_in_secrets_is_a_bad_request_on_create_and_repl
     }
 
     // Nothing was stored by either of them, and an ordinary list still is.
-    assert_eq!(names(&list(&app, &user, pid).await), ["default"]);
-    let planner = created(
+    assert_eq!(names(&list(&app, &user, pid).await), SEEDED);
+    let scout = created(
         &app,
         &user,
         pid,
-        &json!({ "name": "planner", "secrets": ["NPM_TOKEN", "DEPLOY_TOKEN"] }),
+        &json!({ "name": "scout", "secrets": ["NPM_TOKEN", "DEPLOY_TOKEN"] }),
     )
     .await;
-    assert_eq!(planner["secrets"], json!(["NPM_TOKEN", "DEPLOY_TOKEN"]));
+    assert_eq!(scout["secrets"], json!(["NPM_TOKEN", "DEPLOY_TOKEN"]));
 
     // The replacement runs the same rule, and the profile keeps what it had.
     let replaced = put(
         &app,
         &user,
         pid,
-        id_of(&planner),
-        &json!({ "name": "planner", "secrets": ["CLAUDE_CODE_OAUTH_TOKEN"] }),
+        id_of(&scout),
+        &json!({ "name": "scout", "secrets": ["CLAUDE_CODE_OAUTH_TOKEN"] }),
     )
     .await;
 
@@ -500,8 +538,8 @@ async fn an_agent_credential_name_in_secrets_is_a_bad_request_on_create_and_repl
     let stored = list(&app, &user, pid).await;
     let stored = stored
         .iter()
-        .find(|profile| profile["name"] == json!("planner"))
-        .expect("the planner is still there");
+        .find(|profile| profile["name"] == json!("scout"))
+        .expect("the scout is still there");
     assert_eq!(stored["secrets"], json!(["NPM_TOKEN", "DEPLOY_TOKEN"]));
 }
 
@@ -546,7 +584,7 @@ async fn a_served_state_that_is_not_a_queue_state_lists_the_ones_that_are() {
             .contains("backlog, ready, review, merge")
     );
 
-    assert_eq!(names(&list(&app, &user, pid).await), ["default"]);
+    assert_eq!(names(&list(&app, &user, pid).await), SEEDED);
 }
 
 #[tokio::test]
@@ -555,17 +593,17 @@ async fn a_duplicate_name_is_a_conflict_on_create_and_on_update() {
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
 
-    created(&app, &user, pid, &json!({ "name": "planner" })).await;
-    let taken = post(&app, &user, pid, &json!({ "name": "planner" })).await;
+    created(&app, &user, pid, &json!({ "name": "scout" })).await;
+    let taken = post(&app, &user, pid, &json!({ "name": "scout" })).await;
     assert_error(&taken, StatusCode::CONFLICT, "profile name already taken");
 
-    let reviewer = created(&app, &user, pid, &json!({ "name": "reviewer" })).await;
+    let scribe = created(&app, &user, pid, &json!({ "name": "scribe" })).await;
     let renamed = put(
         &app,
         &user,
         pid,
-        id_of(&reviewer),
-        &json!({ "name": "planner" }),
+        id_of(&scribe),
+        &json!({ "name": "scout" }),
     )
     .await;
     assert_error(&renamed, StatusCode::CONFLICT, "profile name already taken");
@@ -576,8 +614,8 @@ async fn a_duplicate_name_is_a_conflict_on_create_and_on_update() {
         &app,
         &user,
         pid,
-        id_of(&reviewer),
-        &json!({ "name": "reviewer" }),
+        id_of(&scribe),
+        &json!({ "name": "scribe" }),
     )
     .await;
     unchanged.assert_status_ok();
@@ -592,7 +630,7 @@ async fn creating_a_profile_in_an_unknown_project_is_not_found() {
         &app,
         &user,
         Uuid::new_v4(),
-        &json!({ "name": "planner", "serves_states": ["backlog"] }),
+        &json!({ "name": "scout", "serves_states": ["backlog"] }),
     )
     .await;
 
@@ -606,19 +644,19 @@ async fn a_profile_is_read_back_by_id() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
-    let planner = created(
+    let scout = created(
         &app,
         &user,
         pid,
-        &json!({ "name": "planner", "serves_states": ["backlog", "review"] }),
+        &json!({ "name": "scout", "serves_states": ["backlog", "review"] }),
     )
     .await;
 
-    let response = app.get_as(&user, &profile_path(pid, id_of(&planner))).await;
+    let response = app.get_as(&user, &profile_path(pid, id_of(&scout))).await;
 
     response.assert_status_ok();
     let read = response.json::<Value>();
-    assert_eq!(read, planner);
+    assert_eq!(read, scout);
     // Board order, not the order the caller listed them in.
     assert_eq!(read["serves_states"], json!(["backlog", "review"]));
 }
@@ -632,7 +670,7 @@ async fn an_unknown_profile_is_not_found_on_every_endpoint_that_takes_one() {
 
     let responses = [
         app.get_as(&user, &profile_path(pid, unknown)).await,
-        put(&app, &user, pid, unknown, &json!({ "name": "planner" })).await,
+        put(&app, &user, pid, unknown, &json!({ "name": "scout" })).await,
         app.delete_as(&user, &profile_path(pid, unknown)).await,
     ];
 
@@ -647,12 +685,12 @@ async fn a_profile_of_another_project_is_not_found_never_forbidden() {
     let user = signed_in(&app, "ada").await;
     let mine = project(&app, &user, "mars").await;
     let theirs = project(&app, &user, "phobos").await;
-    let planner = created(&app, &user, mine, &json!({ "name": "planner" })).await;
-    let id = id_of(&planner);
+    let scout = created(&app, &user, mine, &json!({ "name": "scout" })).await;
+    let id = id_of(&scout);
 
     let responses = [
         app.get_as(&user, &profile_path(theirs, id)).await,
-        put(&app, &user, theirs, id, &json!({ "name": "planner" })).await,
+        put(&app, &user, theirs, id, &json!({ "name": "scout" })).await,
         app.delete_as(&user, &profile_path(theirs, id)).await,
         // The foreign profile is decided before the state names are resolved,
         // so an unknown state name does not turn this into a 400.
@@ -661,7 +699,7 @@ async fn a_profile_of_another_project_is_not_found_never_forbidden() {
             &user,
             theirs,
             id,
-            &json!({ "name": "planner", "serves_states": ["nope"] }),
+            &json!({ "name": "scout", "serves_states": ["nope"] }),
         )
         .await,
     ];
@@ -673,7 +711,7 @@ async fn a_profile_of_another_project_is_not_found_never_forbidden() {
     // And the profile is untouched in the project it does belong to.
     assert_eq!(
         names(&list(&app, &user, mine).await),
-        ["default", "planner"]
+        seeded_and(&["scout"])
     );
 }
 
@@ -684,12 +722,12 @@ async fn an_update_is_a_full_replacement() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
-    let planner = created(
+    let scout = created(
         &app,
         &user,
         pid,
         &json!({
-            "name": "planner",
+            "name": "scout",
             "kind": "conversational",
             "model": "fake-model-id",
             "runtime": "runsc",
@@ -701,16 +739,16 @@ async fn an_update_is_a_full_replacement() {
         }),
     )
     .await;
-    let id = id_of(&planner);
+    let id = id_of(&scout);
     assert_eq!(served_row_count(&app, id).await, 2);
 
     // Everything but the name omitted: every one of those fields takes its
     // documented default again.
-    let response = put(&app, &user, pid, id, &json!({ "name": "planner" })).await;
+    let response = put(&app, &user, pid, id, &json!({ "name": "scout" })).await;
 
     response.assert_status_ok();
     let replaced = response.json::<Value>();
-    assert_eq!(replaced["id"], planner["id"]);
+    assert_eq!(replaced["id"], scout["id"]);
     assert_eq!(replaced["model"], Value::Null);
     assert_eq!(replaced["runtime"], Value::Null);
     assert_eq!(replaced["mcp_tools"], json!([]));
@@ -765,16 +803,16 @@ async fn the_default_flag_transfers_and_cannot_be_cleared() {
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
     let seeded = list(&app, &user, pid).await;
-    let default_id = id_of(&seeded[0]);
-    let planner = created(&app, &user, pid, &json!({ "name": "planner" })).await;
-    let planner_id = id_of(&planner);
+    let default_id = id_of(default_profile(&seeded));
+    let scout = created(&app, &user, pid, &json!({ "name": "scout" })).await;
+    let scout_id = id_of(&scout);
 
     let promoted = put(
         &app,
         &user,
         pid,
-        planner_id,
-        &json!({ "name": "planner", "is_default": true }),
+        scout_id,
+        &json!({ "name": "scout", "is_default": true }),
     )
     .await;
 
@@ -788,7 +826,7 @@ async fn the_default_flag_transfers_and_cannot_be_cleared() {
         .filter(|profile| profile["is_default"] == json!(true))
         .map(|profile| profile["name"].as_str().expect("a name"))
         .collect();
-    assert_eq!(defaults, ["planner"]);
+    assert_eq!(defaults, ["scout"]);
 
     // The old default may now be edited without the flag coming back.
     let demoted = put(
@@ -796,7 +834,7 @@ async fn the_default_flag_transfers_and_cannot_be_cleared() {
         &user,
         pid,
         default_id,
-        &json!({ "name": "default", "is_default": false }),
+        &json!({ "name": SEEDED_DEFAULT, "is_default": false }),
     )
     .await;
     demoted.assert_status_ok();
@@ -808,8 +846,8 @@ async fn the_default_flag_transfers_and_cannot_be_cleared() {
         &app,
         &user,
         pid,
-        planner_id,
-        &json!({ "name": "planner", "is_default": false }),
+        scout_id,
+        &json!({ "name": "scout", "is_default": false }),
     )
     .await;
     assert_error(
@@ -819,7 +857,7 @@ async fn the_default_flag_transfers_and_cannot_be_cleared() {
     );
 
     // And the refusal rolled back: the flag is still there.
-    let response = app.get_as(&user, &profile_path(pid, planner_id)).await;
+    let response = app.get_as(&user, &profile_path(pid, scout_id)).await;
     response.assert_status_ok();
     assert_eq!(response.json::<Value>()["is_default"], json!(true));
 }
@@ -830,7 +868,7 @@ async fn an_update_that_sends_the_whole_profile_back_keeps_the_default() {
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
     let seeded = list(&app, &user, pid).await;
-    let default = seeded[0].clone();
+    let default = default_profile(&seeded).clone();
     let id = id_of(&default);
 
     // A client that round-trips the `Profile` it read, `is_default: true` and
@@ -841,10 +879,10 @@ async fn an_update_that_sends_the_whole_profile_back_keeps_the_default() {
     let updated = response.json::<Value>();
     assert_eq!(updated["is_default"], json!(true));
     assert_eq!(updated["serves_states"], json!(["ready"]));
-    assert_eq!(updated["name"], json!("default"));
+    assert_eq!(updated["name"], json!(SEEDED_DEFAULT));
 
     // And so is a `PUT` that simply omits the flag.
-    let omitted = put(&app, &user, pid, id, &json!({ "name": "default" })).await;
+    let omitted = put(&app, &user, pid, id, &json!({ "name": SEEDED_DEFAULT })).await;
     omitted.assert_status_ok();
     assert_eq!(omitted.json::<Value>()["is_default"], json!(true));
 }
@@ -856,20 +894,20 @@ async fn deleting_a_profile_removes_it_and_the_states_it_served() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
-    let planner = created(
+    let scout = created(
         &app,
         &user,
         pid,
-        &json!({ "name": "planner", "serves_states": ["backlog"] }),
+        &json!({ "name": "scout", "serves_states": ["backlog"] }),
     )
     .await;
-    let id = id_of(&planner);
+    let id = id_of(&scout);
 
     let response = app.delete_as(&user, &profile_path(pid, id)).await;
 
     response.assert_status(StatusCode::NO_CONTENT);
     assert_eq!(served_row_count(&app, id).await, 0);
-    assert_eq!(names(&list(&app, &user, pid).await), ["default"]);
+    assert_eq!(names(&list(&app, &user, pid).await), SEEDED);
     assert_eq!(task_event_count(&app, pid).await, 0);
 
     // Deleting it again is a 404, not a second 204.
@@ -882,7 +920,7 @@ async fn the_default_profile_and_a_profile_with_sessions_cannot_be_deleted() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
-    let default_id = id_of(&list(&app, &user, pid).await[0]);
+    let default_id = id_of(default_profile(&list(&app, &user, pid).await));
 
     let default = app.delete_as(&user, &profile_path(pid, default_id)).await;
     assert_error(
@@ -892,15 +930,15 @@ async fn the_default_profile_and_a_profile_with_sessions_cannot_be_deleted() {
     );
 
     // A profile that has ever run a session keeps the transcript alive.
-    let planner = created(&app, &user, pid, &json!({ "name": "planner" })).await;
-    let planner_id = id_of(&planner);
-    seed_session(&app, pid, planner_id).await;
+    let scout = created(&app, &user, pid, &json!({ "name": "scout" })).await;
+    let scout_id = id_of(&scout);
+    seed_session(&app, pid, scout_id).await;
 
-    let used = app.delete_as(&user, &profile_path(pid, planner_id)).await;
+    let used = app.delete_as(&user, &profile_path(pid, scout_id)).await;
     assert_error(&used, StatusCode::CONFLICT, "profile has sessions");
 
     // Neither refusal removed anything.
-    assert_eq!(names(&list(&app, &user, pid).await), ["default", "planner"]);
+    assert_eq!(names(&list(&app, &user, pid).await), seeded_and(&["scout"]));
 }
 
 #[tokio::test]

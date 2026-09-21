@@ -294,6 +294,19 @@ pub struct NewAgentProfile {
     pub partial_messages: Option<bool>,
     pub idle_timeout_secs: i32,
     pub is_default: bool,
+    /// When this profile was created, for the one caller that cannot let the
+    /// column default decide: project creation.
+    ///
+    /// `created_at` defaults to `now()`, which in Postgres is the
+    /// *transaction's* start, so several profiles inserted by one transaction
+    /// share it to the microsecond and `ORDER BY created_at` — the documented
+    /// "oldest first" of `GET /projects/{pid}/profiles` — would fall through
+    /// to the name. The four seeded role profiles are listed in the order a
+    /// task travels through them, not alphabetically, so
+    /// [`crate::projects::create_project`] spaces their timestamps by hand
+    /// (`SPEC.md`, "Role profile templates"). Every other caller leaves this
+    /// `None` and takes the column default.
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 impl NewAgentProfile {
@@ -322,6 +335,7 @@ impl NewAgentProfile {
             partial_messages: None,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             is_default: false,
+            created_at: None,
         };
         profile.validate()?;
 
@@ -440,6 +454,7 @@ impl ProfileUpdate {
             partial_messages: self.partial_messages,
             idle_timeout_secs: self.idle_timeout_secs,
             is_default: self.is_default.unwrap_or(false),
+            created_at: None,
         }
     }
 }

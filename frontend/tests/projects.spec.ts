@@ -147,12 +147,19 @@ test("a project created from a bare repository reaches ready without a reload", 
   await expect(page.getByText("No sessions yet")).toBeVisible();
 
   await projectTab(page, "Profiles").click();
+  // The four role profiles a project is seeded with (`SPEC.md`, "Role profile
+  // templates"), the implementer carrying the `default` badge.
+  for (const role of ["planner", "implementer", "reviewer", "merger"]) {
+    await expect(
+      page
+        .getByRole("row")
+        .filter({ has: page.getByText(role, { exact: true }) }),
+    ).toBeVisible();
+  }
   const defaultRow = page
     .getByRole("row")
-    .filter({ hasText: "default" })
-    .first();
-  await expect(defaultRow).toBeVisible();
-  await expect(defaultRow.getByText("default", { exact: true })).toHaveCount(2);
+    .filter({ has: page.getByText("implementer", { exact: true }) });
+  await expect(defaultRow.getByText("default", { exact: true })).toHaveCount(1);
 
   await projectTab(page, "Shared directories").click();
   await expect(page.getByText("No shared directories yet")).toBeVisible();
@@ -259,17 +266,17 @@ test("the default profile is edited and an ephemeral one is created beside it", 
   acceptConfirms(page);
 
   await page.goto(`/projects/${project.id}?tab=profiles`);
+  // The seeded default profile (`SPEC.md`, "Role profile templates").
   await page
     .getByRole("row")
-    .filter({ hasText: "default" })
-    .first()
+    .filter({ has: page.getByText("implementer", { exact: true }) })
     .getByRole("button", { name: "Edit" })
     .click();
 
   // The editor's own fields are addressed by id: it also carries a free-text
   // "Secret name to declare" box, which a label lookup for "Name" would match.
-  const editor = page.getByRole("form", { name: "Edit default" });
-  await editor.locator("#profile-name").fill("planner");
+  const editor = page.getByRole("form", { name: "Edit implementer" });
+  await editor.locator("#profile-name").fill("architect");
   await editor
     .locator("#profile-system-prompt")
     .fill("Plan the work; never write code.");
@@ -281,18 +288,18 @@ test("the default profile is edited and an ephemeral one is created beside it", 
   await editor.locator("#profile-idle-timeout").fill("300");
   await editor.getByRole("button", { name: "Save profile" }).click();
 
-  const plannerRow = page
+  const architectRow = page
     .getByRole("row")
-    .filter({ has: page.getByText("planner", { exact: true }) });
-  await expect(plannerRow).toBeVisible();
+    .filter({ has: page.getByText("architect", { exact: true }) });
+  await expect(architectRow).toBeVisible();
 
   // A reload is the real check that the PUT replaced the stored profile
   // rather than only the screen.
   await page.reload();
-  await expect(plannerRow.getByText("backlog", { exact: true })).toBeVisible();
-  await expect(plannerRow.getByText("300s", { exact: true })).toBeVisible();
+  await expect(architectRow.getByText("backlog", { exact: true })).toBeVisible();
+  await expect(architectRow.getByText("300s", { exact: true })).toBeVisible();
   const stored = await defaultProfile(api, project.id);
-  expect(stored.name).toBe("planner");
+  expect(stored.name).toBe("architect");
   expect(stored.serves_states).toEqual(["backlog"]);
   expect(stored.partial_messages).toBe(false);
   expect(stored.idle_timeout_secs).toBe(300);
@@ -309,13 +316,13 @@ test("the default profile is edited and an ephemeral one is created beside it", 
     .filter({ has: page.getByText("oneshot", { exact: true }) });
   await expect(oneshotRow).toBeVisible();
   await expect(oneshotRow.getByText("ephemeral", { exact: true })).toBeVisible();
-  await expect(plannerRow).toBeVisible();
+  await expect(architectRow).toBeVisible();
 
   // A project always keeps one default profile. The API answers 409
   // (`SPEC.md`, "Agent profiles") and the tab does not offer the button at
   // all, which is the same refusal one step earlier.
   await expect(
-    plannerRow.getByRole("button", { name: "Delete" }),
+    architectRow.getByRole("button", { name: "Delete" }),
   ).toBeDisabled();
   const refused = await api.send(
     "DELETE",
@@ -327,7 +334,7 @@ test("the default profile is edited and an ephemeral one is created beside it", 
 
   await oneshotRow.getByRole("button", { name: "Delete" }).click();
   await expect(oneshotRow).toHaveCount(0);
-  await expect(plannerRow).toBeVisible();
+  await expect(architectRow).toBeVisible();
 });
 
 test("an unknown served state or tool is a 400 the editor cannot produce", async ({

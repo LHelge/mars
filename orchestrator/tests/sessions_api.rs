@@ -166,7 +166,7 @@ impl Fixture {
                 &self.user,
                 &format!("/api/projects/{}/profiles", self.project_id),
             )
-            .json(&json!({ "name": "implementer", "kind": "ephemeral" }))
+            .json(&json!({ "name": "one-shot", "kind": "ephemeral" }))
             .await;
         response.assert_status(StatusCode::CREATED);
 

@@ -8,7 +8,7 @@ This is the contract for the first release: what a user can do, every endpoint a
 
 **Projects.** A user creates a project from a remote URL and, for a private repository, a personal access token. Creation returns immediately with `status: cloning`; the project list shows progress and turns `ready` or `error`. A ready project shows its default branch, last fetch time, its profiles, sessions, shared directories, task states and task board. Shared directories are named directories that every session of the project gets mounted read-write at a container path of the user's choice, typically a build directory such as Cargo's `target` (ADR 0015); the project page lists them, adds and removes them, and can empty one while no session is running. Deleting a project deletes its sessions, tasks, secrets, shared directories, CLI state directory and mirror.
 
-**Agent profiles.** Every project starts with a `default` conversational profile using the built-in Claude image and serving the `ready` task state. Users can edit a profile's name, model, system prompt, image, runtime, MCP tool allow-list, declared secrets (extra ones the agent's job needs; the agent's own credential is never declared), served task states, partial-message flag (default on for conversational, off for ephemeral) and idle timeout, and create further conversational profiles. A profile's served states and its system prompt together define its role: a planner serves `backlog` and hands tasks to `ready`, a reviewer serves `review` and hands them to `merge` or back to `ready`. An ephemeral profile runs one prompt and ends: a user launches it from a task's detail view ("run once") or from the project page with a message, and its session shows the transcript, result and cost but has no composer.
+**Agent profiles.** Every project starts with four conversational profiles on the built-in Claude image — `planner` over `backlog`, `implementer` over `ready` (the default one), `reviewer` over `review` and `merger` over `merge` — each with a system prompt for its role, copied into the project at creation ("Role profile templates"). Users can edit a profile's name, model, system prompt, image, runtime, MCP tool allow-list, declared secrets (extra ones the agent's job needs; the agent's own credential is never declared), served task states, partial-message flag (default on for conversational, off for ephemeral) and idle timeout, and create further conversational profiles. A profile's served states and its system prompt together define its role: a planner serves `backlog` and hands tasks to `ready`, a reviewer serves `review` and hands them to `merge` or back to `ready`. An ephemeral profile runs one prompt and ends: a user launches it from a task's detail view ("run once") or from the project page with a message, and its session shows the transcript, result and cost but has no composer.
 
 **Sessions.** A user launches a session from a profile and a base ref (default: the task's current hand-off commit when present, otherwise the project's default branch), optionally with a first message, and optionally for one task: the session then starts holding that task, and the task card links to the session. From a task's detail view the same launch is one click. The session view shows the full transcript with per-tool rendering and nested subagents, a composer for sending messages (including mid-turn), a stop button, and session metadata (state, branch, container, CLI session id). Sessions keep running when nobody is watching; anyone opening a session later sees everything that happened. A parked session looks like a running one that is waiting; sending a message relaunches it. A session's title defaults to the task's title when launched for a task, otherwise to the first line of the first message (at most 80 characters). The session view also shows cost and token usage so far and a "Changes" panel with the diff of the session branch against its base. Users can end a session, sync its branch into the mirror, and open a terminal into a running session's container.
 
@@ -128,7 +128,7 @@ Directories under `/data/projects/{pid}/shared/<name>` that are bind-mounted rea
 | PUT | `/projects/{pid}/profiles/{id}` | JWT | `ProfileInput` → `Profile` |
 | DELETE | `/projects/{pid}/profiles/{id}` | JWT | → 204 (409 if default or has sessions) |
 
-`Profile = { id, project_id, name, kind, backend, model, system_prompt, permission_mode, image, runtime, mcp_tools, secrets, serves_states, partial_messages, idle_timeout_secs, is_default, created_at, updated_at }`. `ProfileInput` is the same without ids and timestamps; `permission_mode` must be `bypass`; `mcp_tools` entries must be known tool names; `secrets` entries must be secret names and must not be an agent credential name of any backend (400 `<NAME> is an agent credential and is injected automatically`; "Secrets"); `serves_states` entries must be names of the project's `queue` states (400 otherwise) and default to `["ready"]`. Only `name` is required: `kind` defaults to `conversational`, `backend` to `claude`, `permission_mode` to `bypass`, `image` to `SESSION_IMAGE_DEFAULT` (`README.md`, "Configuration"), `idle_timeout_secs` to 1800, `partial_messages` to the kind's default and `is_default` to `false` on `POST` and to the stored value on `PUT`; `name` is 1–64 characters, `model` at most 100, `image` at most 255, `system_prompt` at most 64 KiB, `idle_timeout_secs` at least 1, and `model` and `runtime` must not be blank when given. Repeated `mcp_tools`, `secrets` and `serves_states` entries are stored once. `is_default: true` moves the flag from the project's current default; a project always keeps one, so clearing it on the default is 409. `PUT` replaces the whole profile rather than patching it, so every field the body omits takes its default again — `serves_states` back to `["ready"]`, `mcp_tools` and `secrets` back to empty, `model` and `runtime` back to null — with `is_default` the one exception.
+`Profile = { id, project_id, name, kind, backend, model, system_prompt, permission_mode, image, runtime, mcp_tools, secrets, serves_states, partial_messages, idle_timeout_secs, is_default, created_at, updated_at }`. `ProfileInput` is the same without ids and timestamps; `permission_mode` must be `bypass`; `mcp_tools` entries must be known tool names; `secrets` entries must be secret names and must not be an agent credential name of any backend (400 `<NAME> is an agent credential and is injected automatically`; "Secrets"); `serves_states` entries must be names of the project's `queue` states (400 otherwise) and default to `["ready"]`. Only `name` is required: `kind` defaults to `conversational`, `backend` to `claude`, `permission_mode` to `bypass`, `image` to `SESSION_IMAGE_DEFAULT` (`README.md`, "Configuration"), `idle_timeout_secs` to 1800, `partial_messages` to the kind's default and `is_default` to `false` on `POST` and to the stored value on `PUT`; `name` is 1–64 characters, `model` at most 100, `image` at most 255, `system_prompt` at most 64 KiB, `idle_timeout_secs` at least 1, and `model` and `runtime` must not be blank when given. Repeated `mcp_tools`, `secrets` and `serves_states` entries are stored once. A new project already has four of these, one per queue state, with the role prompts of "Role profile templates"; `GET` returns them in the order that section's table lists them. `is_default: true` moves the flag from the project's current default; a project always keeps one, so clearing it on the default is 409. `PUT` replaces the whole profile rather than patching it, so every field the body omits takes its default again — `serves_states` back to `["ready"]`, `mcp_tools` and `secrets` back to empty, `model` and `runtime` back to null — with `is_default` the one exception.
 
 ### Sessions (`/api/projects/{pid}/sessions`, `/api/sessions/{id}`)
 
@@ -507,6 +507,73 @@ Error codes used across tools: `unauthorized` (bad token), `forbidden` (tool not
 | `internal` | -32603 |
 
 `data.code` is always present; `data.conflicts` (a list of paths, in git's order) is present only on a `merge` or `rebase` that stopped on conflicting paths. Every `internal` failure is logged with its detail and answered with the message `internal error` and no other `data` keys, so no internal detail, credential or git stderr reaches the agent.
+
+## Role profile templates
+
+Creating a project seeds four conversational profiles instead of one blank agent, so a board has someone for each of its queues from the first minute (ADR 0038). They are ordinary profiles: everything under "Agent profiles" applies to them, they can be edited, renamed and — apart from the default — deleted, and nothing reads the templates again after creation.
+
+| Profile | `serves_states` | `mcp_tools` | `is_default` |
+| --- | --- | --- | --- |
+| `planner` | `backlog` | — | no |
+| `implementer` | `ready` | — | yes |
+| `reviewer` | `review` | `list_session_branches` | no |
+| `merger` | `merge` | `list_session_branches`, `merge` | no |
+
+Every other field is the documented default of "Agent profiles": `conversational`, `claude`, `bypass`, `SESSION_IMAGE_DEFAULT`, no model, no runtime, no secrets, 1800 seconds, partial messages on. `GET /projects/{pid}/profiles` of a new project returns exactly these four, oldest first, in the order of the table, which is the order a task travels through them.
+
+`push` is granted to nobody: only the orchestrator reaches the upstream remote (ADR 0007). `rebase` is granted to nobody either. The merger must not have it, because an approval is bound to the commit that was reviewed (ADR 0018) and a rebase would produce a commit nobody reviewed — a merge that conflicts goes back to `ready` instead. The implementer does not need it, because its work clone's `origin` is the project repository and it can fetch and rebase there itself (`ARCHITECTURE.md`, "Git model").
+
+The prompts are **copied** into the project's own rows, not referenced: editing one changes that project only, and upgrading Mars never changes an existing project's agents. They name the seeded task states (`backlog`, `ready`, `review`, `merge`, `done`), which a project may later rename or delete. Renaming a state keeps the profile serving it, since `profile_states` links by id, but the prompt then names a state that no longer exists and needs a manual edit; deleting a state follows "Task states" — it is refused while any task is in it, and otherwise the link goes with it and the profile simply serves one state fewer.
+
+The four texts below are the templates verbatim; `orchestrator/src/projects/templates/<name>.md` holds each one and a test compares the two, as it does for the tool descriptions above.
+
+### `planner`
+
+```text
+You are the planner of this project. You turn a request into tasks that another agent can implement without asking questions. You do not write or change code.
+
+Start by understanding the request. If you were launched for a task, read it with `get_task`, comments included; otherwise the person you are talking to will describe what they want. Read the code and documents the work touches before proposing anything, and ask when the scope or a trade-off is genuinely theirs to decide.
+
+Then write the plan into the task tracker with `create_task`. One parent task describes the outcome; its sub-tasks, linked with `parent`, are each one reviewable change, ordered with `depends_on`. A task's description says what to do and why, how to tell that it is done, which files or modules are involved, and the edge cases you noticed. Put a task in `ready` only when an implementer could start it now; leave anything still unclear in `backlog` and say with `comment` what is missing.
+
+The repository's own instructions (CLAUDE.md and the documents it points to) decide how work is done here, and the tasks you write should cite them. Where they name a task tracker or a planning tool, use the task tools of this session instead, and do not write task files into the repository. If you are blocked on a decision that is not yours, hand the task to a human with `needs_human` and say exactly what you need.
+```
+
+### `implementer`
+
+```text
+You are an implementer of this project. You take one task from the ready queue and deliver it as a commit for review.
+
+If you were launched for a task you already hold it: read it with `get_task`. Otherwise call `ready`, pick the highest-priority task you can do, and take it with `claim` before doing anything else. Read the whole task, its comments and its parent first; earlier agents and people left context there.
+
+Do the work the task describes and nothing beyond it. Follow the repository's own instructions (CLAUDE.md and the documents it points to) for conventions, tests and checks, and run the checks they require before you hand off. Where those instructions name a task tracker, use the task tools of this session instead. Work you discover outside your task becomes a new task with `create_task`, not part of this change.
+
+Your clone's `origin` is the project repository, so bringing your branch up to date is yours to do: fetch from `origin` and rebase there. Commit everything you want reviewed — uncommitted work is never handed off — and do not rewrite a commit that has already been reviewed.
+
+When the work is done, hand off with `update`: move the task to `review` with a revision hand-off naming the exact commit you want reviewed and a comment saying what changed, what you checked and what the reviewer should look at. If the task came back from review, the reviewer's comment says why: address it and hand off a new commit. If you cannot make progress, give the task back with `release` and the reason; if you need a decision or a credential, call `needs_human` and say exactly what you need.
+```
+
+### `reviewer`
+
+```text
+You are a reviewer of this project. You review one handed-over commit and decide whether it goes on to merge or back to an implementer. You do not fix the code yourself.
+
+If you were launched for a task you already hold it, and your working tree starts at the handed-over commit. Otherwise call `ready`, take a task with `claim`, and fetch the commit its hand-off names from `origin` as `refs/handoffs/<hand-off id>` before you read anything: claiming inside a running session does not move your checkout. Read the task, its comments and the hand-off; that commit, not a branch tip, is what you review.
+
+Check the change against the task's description and its acceptance criteria, against the repository's own instructions (CLAUDE.md and the documents it points to), and for correctness: run the checks those instructions require, read the diff against the default branch, and look for what is missing as much as for what is wrong.
+
+Decide with `update`. To approve, move the task to `merge`, forwarding the hand-off you reviewed by its id with the decision `approved` and a comment summarising what you verified. To send it back, forward that same hand-off to `ready` with the decision `changes_requested` and a comment listing each problem concretely enough to act on: the file, what is wrong, what you expected. Never substitute a branch of your own. Approve only what you would merge as it is; a small follow-up that should not block becomes a new task with `create_task`. When the decision is not yours, call `needs_human`.
+```
+
+### `merger`
+
+```text
+You are the merger of this project. You put approved work onto the default branch and close the task. You do not change code.
+
+If you were launched for a task you already hold it; otherwise call `ready` and take a task with `claim`. Read the task and the approved hand-off it carries. Merge exactly that with `merge`, passing the task and the hand-off id so that the approved commit is what lands, with the project's default branch as the target unless the task says otherwise. `list_session_branches` tells you how far a session branch is ahead or behind, but the hand-off, not a branch tip, is what you merge.
+
+When the merge succeeds, move the task to `done` with `update` and a comment naming the merge commit. When it fails with conflicting paths, do not resolve them and do not rewrite the branch: an approval belongs to the commit that was reviewed. Move the task back to `ready` with a comment listing the conflicting paths, so that an implementer brings the branch up to date and it is reviewed again. Anything else you cannot decide goes to a human with `needs_human`.
+```
 
 ## Frontend
 

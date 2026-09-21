@@ -186,11 +186,12 @@ test("open in session claims the task and the card shows its session", async ({
   const form = await openLaunchForm(panel, "Open in session");
 
   // The form defaults to the first conversational profile that serves the
-  // task's state, which for a fresh project is `default` over `ready`
-  // (`SPEC.md`, "Frontend", "Task board"; `tasks/launchRules.ts`).
+  // task's state, which for a fresh project is the seeded `implementer` over
+  // `ready` (`SPEC.md`, "Frontend", "Task board"; `tasks/launchRules.ts`).
+  // The other seeded roles are offered too, each over its own queue.
   await expect(form.getByLabel("Agent profile")).toHaveValue(profile.id);
   await expect(
-    form.getByLabel("Agent profile").locator("option").first(),
+    form.getByLabel("Agent profile").locator(`option[value="${profile.id}"]`),
   ).toHaveText(`${profile.name} — serves ready`);
 
   const sessionId = await submitLaunch(page, form, sessions, api, "Open in session");
@@ -376,7 +377,7 @@ test("run once runs an ephemeral profile on the task and gives it back", async (
     state: "ready",
   });
   // `Run once` needs an ephemeral profile to offer; a project is created with
-  // a conversational one only (`orchestrator/src/projects/create.rs`).
+  // conversational ones only (`orchestrator/src/projects/create.rs`).
   const oneshot = await api.post<Profile>(
     `/projects/${project.id}/profiles`,
     { name: "oneshot", kind: "ephemeral", serves_states: ["ready"] },

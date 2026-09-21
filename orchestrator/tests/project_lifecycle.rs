@@ -534,7 +534,7 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
     let pool = &app.state.pool;
 
     app.post_as(user, &format!("/api/projects/{project_id}/profiles"))
-        .json(&json!({ "name": "reviewer" }))
+        .json(&json!({ "name": "archivist" }))
         .await
         .assert_status(StatusCode::CREATED);
 

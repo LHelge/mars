@@ -645,6 +645,11 @@ impl<'a> ProjectRepository<'a> {
     /// [`crate::repositories::TaskRepository::set_profile_states_by_name`] in
     /// the same transaction, so the returned row's `serves_states` is empty
     /// until it is.
+    ///
+    /// The timestamps take the column default `now()` unless
+    /// [`NewAgentProfile::created_at`] is set, which is project creation
+    /// asking for a listing order its four seeded profiles cannot get from a
+    /// transaction-wide `now()` (`docs/data-model.md`, `agent_profiles`).
     pub async fn insert_profile(
         &self,
         tx: &mut PgConnection,
@@ -660,9 +665,10 @@ impl<'a> ProjectRepository<'a> {
             INSERT INTO agent_profiles (
                 id, project_id, name, kind, backend, model, system_prompt, permission_mode,
                 image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,
-                is_default
+                is_default, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                    COALESCE($16::timestamptz, now()), COALESCE($16::timestamptz, now()))
             RETURNING id, project_id, name, kind as "kind: ProfileKind",
                       backend as "backend: AgentBackend", model, system_prompt, permission_mode,
                       image, runtime, mcp_tools, secrets,
@@ -684,6 +690,7 @@ impl<'a> ProjectRepository<'a> {
             profile.partial_messages(),
             profile.idle_timeout_secs,
             profile.is_default,
+            profile.created_at,
         )
         .fetch_one(&mut *tx)
         .await

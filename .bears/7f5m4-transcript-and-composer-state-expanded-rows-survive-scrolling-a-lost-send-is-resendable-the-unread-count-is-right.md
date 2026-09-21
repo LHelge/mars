@@ -1,10 +1,10 @@
 ---
 id: "7f5m4"
 title: "Transcript and composer state: expanded rows survive scrolling, a lost send is resendable, the unread count is right"
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:53:37.547254558Z"
-updated: "2026-09-21T10:56:45.961027175Z"
+updated: "2026-09-21T23:08:40.833394114Z"
 tags:
   - frontend
   - technical-review
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - "3rgt7"
 parent: "579dz"
+attempts: 1
 ---
 
 Problem:

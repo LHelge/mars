@@ -1,10 +1,10 @@
 ---
 id: g2dcy
 title: "Let the drawer's other sub-forms claim Escape: hand-off, review, merge, move and launch forms"
-status: open
+status: done
 priority: P3
 created: "2026-09-21T19:04:39.103423743Z"
-updated: "2026-09-21T19:04:39.103423743Z"
+updated: "2026-09-21T23:08:45.496455157Z"
 tags:
   - frontend
   - technical-review
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - kzvp9
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: kzvp9 made the task drawer a modal `<dialog>` and gave it one Escape rule (frontend/src/tasks/drawerEscape.ts): Escape closes the innermost registered sub-form before the drawer, and asks once over unsaved text. The seam is `useDrawerEscape(close, open)`, one line in the module that owns a sub-form's open state. Only TaskBody's edit form uses it, because the other forms belonged to a sibling task in that round. Until they opt in, Escape over an open review, revision, merge, launch or delete-confirmation form falls through to the dirty-text question and then closes the whole drawer instead of just that form.

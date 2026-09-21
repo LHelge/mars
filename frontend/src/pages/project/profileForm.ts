@@ -12,6 +12,7 @@
 // (`react-refresh/only-export-components`).
 
 import type {
+  AgentCredential,
   Profile,
   ProfileInput,
   ProfileKind,
@@ -24,6 +25,9 @@ export const DEFAULT_IDLE_TIMEOUT_SECS = 1800;
 
 /** The shortest idle timeout the editor offers; the API's own floor is 1. */
 export const MIN_IDLE_TIMEOUT_SECS = 60;
+
+/** `SPEC.md`: `max_concurrent` defaults to 1, and 1 is also its floor. */
+export const MIN_MAX_CONCURRENT = 1;
 
 /** `SPEC.md`: `serves_states` defaults to `["ready"]`. */
 export const DEFAULT_SERVES_STATES = ["ready"];
@@ -61,6 +65,8 @@ export function defaultInputForKind(
     serves_states: [...DEFAULT_SERVES_STATES],
     partial_messages: partialMessagesDefault(kind),
     idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+    auto_launch: false,
+    max_concurrent: MIN_MAX_CONCURRENT,
   };
 }
 
@@ -84,6 +90,8 @@ export function toProfileInput(profile: Profile): ProfileInput {
     serves_states: [...profile.serves_states],
     partial_messages: profile.partial_messages,
     idle_timeout_secs: profile.idle_timeout_secs,
+    auto_launch: profile.auto_launch,
+    max_concurrent: profile.max_concurrent,
   };
 }
 
@@ -105,6 +113,9 @@ export interface ProfileFormState {
   serves_states: string[];
   partial_messages: boolean;
   idle_timeout_secs: string;
+  auto_launch: boolean;
+  /** Raw text of its number field, like the timeout above. */
+  max_concurrent: string;
 }
 
 export function toFormState(input: ProfileInput): ProfileFormState {
@@ -120,6 +131,8 @@ export function toFormState(input: ProfileInput): ProfileFormState {
     serves_states: [...(input.serves_states ?? DEFAULT_SERVES_STATES)],
     partial_messages: input.partial_messages ?? partialMessagesDefault(input.kind ?? "conversational"),
     idle_timeout_secs: String(input.idle_timeout_secs ?? DEFAULT_IDLE_TIMEOUT_SECS),
+    auto_launch: input.auto_launch ?? false,
+    max_concurrent: String(input.max_concurrent ?? MIN_MAX_CONCURRENT),
   };
 }
 
@@ -145,7 +158,52 @@ export function toInput(state: ProfileFormState): ProfileInput {
     serves_states: [...state.serves_states],
     partial_messages: state.partial_messages,
     idle_timeout_secs: Number(state.idle_timeout_secs),
+    // Only an ephemeral profile may launch itself, and the controls are hidden
+    // for the other kind, so the kind — not a stale checkbox — decides what is
+    // sent. The flag is kept in the form state so switching back to ephemeral
+    // restores what was ticked; what leaves the form is what the kind allows.
+    auto_launch: state.kind === "ephemeral" && state.auto_launch,
+    // Always sent, on any kind: `PUT` replaces the whole profile, and an
+    // omitted cap would silently fall back to 1.
+    max_concurrent: Number(state.max_concurrent),
   };
+}
+
+/** The message for a cap that cannot be stored, or `null` when it can. */
+export function maxConcurrentError(raw: string): string | null {
+  const parsed = Number(raw);
+  if (raw.trim() === "" || !Number.isInteger(parsed)) {
+    return "A whole number.";
+  }
+  if (parsed < MIN_MAX_CONCURRENT) {
+    return `At least ${String(MIN_MAX_CONCURRENT)}.`;
+  }
+  return null;
+}
+
+/**
+ * Whether the backend's agent credential resolves for a launch with no user
+ * behind it (`SPEC.md`, "Agent profiles"; ADR 0036). The editor already reads
+ * this answer for the notice beside the secrets field, so ticking auto-launch
+ * can say what the server would say instead of waiting for its 400.
+ *
+ * `unknown` is the answer that has not arrived, failed, or is for a backend
+ * this server does not report: nothing is claimed, and the save decides.
+ */
+export type UnattendedCredential = "resolves" | "user_only" | "missing" | "unknown";
+
+export function unattendedCredential(
+  credential: AgentCredential | null | undefined,
+): UnattendedCredential {
+  if (credential === undefined) {
+    return "unknown";
+  }
+  if (credential === null) {
+    return "missing";
+  }
+  // A `user`-scope credential belongs to whoever stored it; an unattended
+  // launch has no user to resolve one for.
+  return credential.scope === "user" ? "user_only" : "resolves";
 }
 
 /** The message for a timeout that cannot be stored, or `null` when it can. */

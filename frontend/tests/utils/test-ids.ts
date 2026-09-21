@@ -10,6 +10,7 @@
 // `src/utils/testIds.ts` and re-exported below.
 
 export {
+  LAUNCH_SOURCE,
   STREAMING_CURSOR,
   SUBAGENT_CHILDREN,
   TASK_COLUMN_PREFIX,

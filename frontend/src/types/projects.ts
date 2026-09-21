@@ -12,6 +12,15 @@ export interface Project {
   status_message: string | null;
   last_fetched_at: string | null;
   max_attempts: number;
+  /**
+   * How many live sessions the project may have before an unattended launch
+   * is held back; `null` is no cap. Binds automation only — a launch by a
+   * person is never refused by it (`ARCHITECTURE.md`, "Task tracker" →
+   * "Unattended launches").
+   */
+  max_concurrent_sessions: number | null;
+  /** While set, no unattended launch happens in this project. */
+  automation_paused: boolean;
   created_at: string;
   has_credential: boolean;
 }
@@ -33,6 +42,12 @@ export interface ProjectUpdateInput {
   default_branch?: string;
   /** 1–20; how many claims in one state escalate a task. */
   max_attempts?: number;
+  /**
+   * At least 1 when set. An explicit `null` removes the cap; omitting the key
+   * leaves the stored one alone (`SPEC.md`, "Projects").
+   */
+  max_concurrent_sessions?: number | null;
+  automation_paused?: boolean;
 }
 
 /**

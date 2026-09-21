@@ -77,6 +77,7 @@ function fakeSession(): Session {
     profile_id: "00000000-0000-0000-0000-0000000000cc",
     kind: "conversational",
     created_by: null,
+    launch_source: "user",
     title: "Fake session",
     task_id: null,
     handoff_id: null,

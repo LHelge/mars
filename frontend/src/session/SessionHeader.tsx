@@ -34,6 +34,7 @@ import {
   shortId,
   shortSha,
 } from "../utils/format";
+import { LaunchSourceTag } from "./LaunchSourceTag";
 import { SessionActions } from "./SessionActions";
 import type { ConnectionStatus, SessionStore } from "./sessionStore";
 import { getSessionStore, useSessionStore } from "./sessionStore";
@@ -77,6 +78,9 @@ export function SessionHeader({ session, status, onStop }: SessionHeaderProps) {
             <span className="text-console-muted font-mono text-xs">
               {session.kind}
             </span>
+            {/* Nothing here for a session a person launched: that is what a
+                session on this page normally is (`SPEC.md`, "Sessions"). */}
+            <LaunchSourceTag source={session.launch_source} />
             <span
               role="status"
               aria-label={`Connection ${status}`}

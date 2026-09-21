@@ -44,6 +44,7 @@ export type {
 export { PROFILE_GATED_TOOLS } from "./profiles";
 export type {
   EventsPage,
+  LaunchSource,
   Session,
   SessionCreateInput,
   SessionInput,

@@ -1,17 +1,25 @@
 import { describe, expect, it } from "vitest";
-import type { Profile, ProfileTemplate, SecretMeta } from "../../types";
+import type {
+  AgentCredential,
+  Profile,
+  ProfileTemplate,
+  SecretMeta,
+} from "../../types";
 import {
   DEFAULT_IDLE_TIMEOUT_SECS,
   defaultInputForKind,
   idleTimeoutError,
+  maxConcurrentError,
   mergeSecretOptions,
   MIN_IDLE_TIMEOUT_SECS,
+  MIN_MAX_CONCURRENT,
   nextFreeName,
   prefillFromTemplate,
   toFormState,
   toggleMember,
   toInput,
   toProfileInput,
+  unattendedCredential,
 } from "./profileForm";
 
 const STORED: Profile = {
@@ -31,6 +39,8 @@ const STORED: Profile = {
   partial_messages: true,
   idle_timeout_secs: 600,
   is_default: true,
+  auto_launch: true,
+  max_concurrent: 3,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",
 };
@@ -89,6 +99,8 @@ describe("toProfileInput", () => {
       serves_states: ["review"],
       partial_messages: true,
       idle_timeout_secs: 600,
+      auto_launch: true,
+      max_concurrent: 3,
     });
   });
 
@@ -354,5 +366,76 @@ describe("prefillFromTemplate", () => {
     });
 
     expect(form).not.toHaveProperty("is_default");
+  });
+});
+
+describe("auto-launch and the concurrency cap", () => {
+  it("sends both on every save, so a PUT cannot reset them", () => {
+    const input = toInput(
+      toFormState({
+        name: "one",
+        kind: "ephemeral",
+        auto_launch: true,
+        max_concurrent: 4,
+      }),
+    );
+
+    expect(input.auto_launch).toBe(true);
+    expect(input.max_concurrent).toBe(4);
+  });
+
+  it("defaults to off and one when the input leaves them out", () => {
+    const state = toFormState({ name: "one", kind: "ephemeral" });
+
+    expect(state.auto_launch).toBe(false);
+    expect(state.max_concurrent).toBe(String(MIN_MAX_CONCURRENT));
+  });
+
+  it("clears auto-launch for a conversational profile before submit", () => {
+    const ephemeral = toFormState({
+      name: "one",
+      kind: "ephemeral",
+      auto_launch: true,
+    });
+
+    expect(toInput({ ...ephemeral, kind: "conversational" }).auto_launch).toBe(
+      false,
+    );
+    // The intent stays in the form, so switching back restores it.
+    expect(toInput(ephemeral).auto_launch).toBe(true);
+  });
+
+  it("still sends the cap for a conversational profile", () => {
+    expect(toInput(toFormState({ name: "one", max_concurrent: 2 })).max_concurrent).toBe(2);
+  });
+
+  it("refuses a cap below one, a blank one and a fraction", () => {
+    expect(maxConcurrentError("0")).toBe("At least 1.");
+    expect(maxConcurrentError("")).toBe("A whole number.");
+    expect(maxConcurrentError("1.5")).toBe("A whole number.");
+    expect(maxConcurrentError("1")).toBeNull();
+    expect(maxConcurrentError("12")).toBeNull();
+  });
+});
+
+describe("unattendedCredential", () => {
+  const at = (scope: AgentCredential["scope"]): AgentCredential => ({
+    secret_id: "33333333-3333-4333-8333-333333333333",
+    name: "CLAUDE_CODE_OAUTH_TOKEN",
+    scope,
+  });
+
+  it("resolves for a credential that needs no user", () => {
+    expect(unattendedCredential(at("global"))).toBe("resolves");
+    expect(unattendedCredential(at("project"))).toBe("resolves");
+  });
+
+  it("does not resolve for one that belongs to a user", () => {
+    expect(unattendedCredential(at("user"))).toBe("user_only");
+  });
+
+  it("separates no credential from no answer yet", () => {
+    expect(unattendedCredential(null)).toBe("missing");
+    expect(unattendedCredential(undefined)).toBe("unknown");
   });
 });

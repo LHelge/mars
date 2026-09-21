@@ -34,6 +34,13 @@ export function taskColumnTestId(state: string): string {
   return `${TASK_COLUMN_PREFIX}${state}`;
 }
 
+/**
+ * The tag saying a session came from automation
+ * (`src/session/LaunchSourceTag.tsx`). One per session row and one in the
+ * session header, so the name is never unique on the page.
+ */
+export const LAUNCH_SOURCE = "launch-source";
+
 /** One card on the board, by its per-project task number. */
 export function taskCardTestId(taskNumber: number): string {
   return `task-card-${String(taskNumber)}`;

@@ -9,12 +9,24 @@ export type SessionState = "creating" | "running" | "parked" | "done" | "failed"
 /** The profile's kind at launch, not a separate enum. */
 export type SessionKind = "conversational" | "ephemeral";
 
+/**
+ * Who launched the session: a person over the sessions endpoint, the
+ * dispatcher, or a schedule (`SPEC.md`, "Sessions"; `ARCHITECTURE.md`, "Task
+ * tracker" → "Unattended launches").
+ *
+ * It is the only record of that. `created_by` cannot stand in for it: deleting
+ * a user nulls that field on the sessions they launched, so a null there means
+ * "the user is gone", never "nobody launched it".
+ */
+export type LaunchSource = "user" | "dispatcher" | "schedule";
+
 export interface Session {
   id: string;
   project_id: string;
   profile_id: string;
   kind: SessionKind;
   created_by: string | null;
+  launch_source: LaunchSource;
   title: string | null;
   task_id: string | null;
   handoff_id: string | null;

@@ -23,6 +23,15 @@
 //! `done`) and the MCP tools of `SPEC.md`, "MCP tool contracts", and nothing
 //! else: no product name of any task tracker, because the tracker an agent is
 //! told to use is the one its session is connected to.
+//!
+//! The three roles that build or check code — implementer, reviewer, merger —
+//! also carry one paragraph about the session container: it is disposable and
+//! the agent's own, a missing toolchain is installed rather than reported as a
+//! blocker, and there is no root, so an install is user-level and anything
+//! needing root belongs in the image (`ARCHITECTURE.md`, "Session container
+//! specification"). It names no image and no tool as present, because a
+//! profile's image is editable; tools appear only as examples of how to
+//! install.
 
 use uuid::Uuid;
 

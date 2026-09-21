@@ -36,8 +36,9 @@ async fn run_once_dispatches_every_job() {
             .await
             .unwrap_or_else(|err| panic!("{job} runs: {err}"));
 
-        // Every body is still a stub in this task, so an empty report is the
-        // whole contract: the dispatch arrived and returned `Ok`.
+        // A fresh app has no projects, no sessions and no expired rows, so
+        // every job finds nothing: an empty report is the whole contract
+        // here — the dispatch arrived and returned `Ok`.
         assert_eq!(report, JobReport::default(), "{job} reported work");
     }
 }
@@ -57,6 +58,15 @@ async fn every_job_has_the_documented_name_and_interval() {
         "the test configuration no longer overrides MIRROR_FETCH_INTERVAL_SECS",
     );
 
+    // And the same for the dispatcher's, which is the other configurable one
+    // (`DISPATCHER_INTERVAL_SECS`, documented default 60).
+    let dispatcher = Duration::from_secs(config.dispatcher_interval_secs);
+    assert_ne!(
+        dispatcher,
+        Duration::from_secs(60),
+        "the test configuration no longer overrides DISPATCHER_INTERVAL_SECS",
+    );
+
     let expected = [
         (JobName::MirrorFetch, "mirror_fetch", mirror_fetch),
         (JobName::IdleReaper, "idle_reaper", Duration::from_secs(60)),
@@ -65,6 +75,7 @@ async fn every_job_has_the_documented_name_and_interval() {
             "stuck_task_reaper",
             Duration::from_secs(60),
         ),
+        (JobName::Dispatcher, "dispatcher", dispatcher),
         (
             JobName::TokenCleanup,
             "token_cleanup",

@@ -13,6 +13,8 @@
 //! - `cron/mirror_fetch.rs` — `git fetch --prune` on every `ready` mirror;
 //! - `cron/idle_reaper.rs` — delegating to `session/idle_reaper.rs`;
 //! - `cron/stuck_tasks.rs` — release tasks held by ended sessions;
+//! - `cron/dispatcher.rs` — launch an ephemeral session for the best
+//!   claimable task of each `auto_launch` profile;
 //! - `cron/token_cleanup.rs` — expired credentials and orphaned secret rows;
 //! - `cron/secret_rotation.rs` — re-wrap rows behind the newest master key;
 //! - `cron/orphan_cleanup.rs` — leftover containers, `/data/tmp` and refs.
@@ -33,6 +35,7 @@ use uuid::Uuid;
 
 use crate::prelude::*;
 
+mod dispatcher;
 pub mod idle_reaper;
 mod mirror_fetch;
 pub mod orphan_cleanup;
@@ -61,6 +64,7 @@ pub enum JobName {
     MirrorFetch,
     IdleReaper,
     StuckTaskReaper,
+    Dispatcher,
     TokenCleanup,
     SecretRotation,
     OrphanCleanup,
@@ -69,10 +73,11 @@ pub enum JobName {
 impl JobName {
     /// Every job, in the table's order. [`CronService::start`] spawns one loop
     /// per entry, so a variant added here is a variant that runs.
-    pub const ALL: [JobName; 6] = [
+    pub const ALL: [JobName; 7] = [
         JobName::MirrorFetch,
         JobName::IdleReaper,
         JobName::StuckTaskReaper,
+        JobName::Dispatcher,
         JobName::TokenCleanup,
         JobName::SecretRotation,
         JobName::OrphanCleanup,
@@ -85,6 +90,7 @@ impl JobName {
             JobName::MirrorFetch => "mirror_fetch",
             JobName::IdleReaper => "idle_reaper",
             JobName::StuckTaskReaper => "stuck_task_reaper",
+            JobName::Dispatcher => "dispatcher",
             JobName::TokenCleanup => "token_cleanup",
             JobName::SecretRotation => "secret_rotation",
             JobName::OrphanCleanup => "orphan_cleanup",
@@ -93,12 +99,15 @@ impl JobName {
 
     /// This job's interval (`ARCHITECTURE.md`, "Background jobs").
     ///
-    /// Only the mirror fetch is configurable, because only it is about a
-    /// remote an operator may want to be gentler with
-    /// (`MIRROR_FETCH_INTERVAL_SECS`, `README.md`, "Configuration").
+    /// Two are configurable: the mirror fetch, because it is about a remote an
+    /// operator may want to be gentler with (`MIRROR_FETCH_INTERVAL_SECS`),
+    /// and the dispatcher, whose timer is the fallback behind its `task_events`
+    /// wake-up and therefore the one knob over how long a missed wake-up can go
+    /// unnoticed (`DISPATCHER_INTERVAL_SECS`; `README.md`, "Configuration").
     pub fn period(&self, config: &Config) -> Duration {
         match self {
             JobName::MirrorFetch => Duration::from_secs(config.mirror_fetch_interval_secs),
+            JobName::Dispatcher => Duration::from_secs(config.dispatcher_interval_secs),
             JobName::IdleReaper | JobName::StuckTaskReaper => REAPER_PERIOD,
             JobName::TokenCleanup | JobName::SecretRotation | JobName::OrphanCleanup => {
                 HOURLY_PERIOD
@@ -169,6 +178,7 @@ impl CronService {
             JobName::MirrorFetch => self.mirror_fetch(now).await,
             JobName::IdleReaper => self.idle_reaper(now).await,
             JobName::StuckTaskReaper => self.stuck_task_reaper(now).await,
+            JobName::Dispatcher => self.dispatcher(now).await,
             JobName::TokenCleanup => self.token_cleanup(now).await,
             JobName::SecretRotation => self.secret_rotation(now).await,
             JobName::OrphanCleanup => self.orphan_cleanup(now).await,

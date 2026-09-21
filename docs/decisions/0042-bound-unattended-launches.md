@@ -1,6 +1,6 @@
 # 0042. Unattended launches are bounded by three caps, paused per project, and recorded as their own launch source
 
-Status: accepted. Not yet implemented; it is the contract the dispatcher (Bears `qabvt`) and the scheduled agents (`tup8z`) are built to.
+Status: accepted and implemented by the dispatcher (Bears `qabvt`); it is also the contract the scheduled agents (`tup8z`) will be built to.
 
 ## Context
 

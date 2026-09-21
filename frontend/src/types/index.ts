@@ -16,6 +16,8 @@ export type {
 } from "./users";
 export type {
   AgentBackend,
+  AgentCredential,
+  AgentCredentialStatus,
   CreateSecretRequest,
   PatchSecretRequest,
   ReplaceSecretRequest,

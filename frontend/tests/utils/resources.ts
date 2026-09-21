@@ -137,6 +137,29 @@ export async function setProfileSecrets(
   });
 }
 
+/**
+ * The agent credential every test user is given, obviously fake (`CLAUDE.md`,
+ * rule 3). The name is the CLI's — `agentCredentials.ts` on the other side
+ * spells the same one — and the value authenticates nothing: the stub image
+ * never calls a model.
+ */
+export const FAKE_AGENT_CREDENTIAL = "fake-oauth-token-for-tests";
+
+/**
+ * Gives `client`'s own user scope a Claude credential, so a launch form shows
+ * the ordinary `Authenticates with your …` line and its button still says
+ * `Launch session` (`SPEC.md`, "Frontend", Agent credentials). Every scenario
+ * gets one through the `api` fixture; a spec that is *about* the empty state
+ * opts out with `test.use({ agentCredential: false })`.
+ */
+export function seedAgentCredential(client: Api): Promise<SecretMeta> {
+  return client.post<SecretMeta>("/secrets", {
+    scope: "user",
+    name: "CLAUDE_CODE_OAUTH_TOKEN",
+    value: FAKE_AGENT_CREDENTIAL,
+  });
+}
+
 /** A project-scoped secret (`SPEC.md`, "Secrets"); the value never comes back. */
 export function setProjectSecret(
   client: Api,

@@ -22,16 +22,19 @@ import {
   SubmitButton,
 } from "../components";
 import { useFormSubmit } from "../hooks";
+import { AgentCredentialNotice } from "../secrets/AgentCredentialNotice";
+import { ApiError } from "../services/apiClient";
 import { createProfile, updateProfile } from "../services/profiles";
 import { queryKeys } from "../services/queryKeys";
 import { listSecrets } from "../services/secrets";
 import { listTaskStates } from "../services/taskStates";
-import type { Profile, ProfileKind, SecretMeta } from "../types";
+import type { Profile, ProfileKind } from "../types";
 import { PROFILE_GATED_TOOLS } from "../types";
 import { SECRET_NAME_RE, validateSecretName } from "../utils/secretName";
 import {
   defaultInputForKind,
   idleTimeoutError,
+  mergeSecretOptions,
   MIN_IDLE_TIMEOUT_SECS,
   partialMessagesDefault,
   PROFILE_BACKEND,
@@ -112,10 +115,23 @@ export function ProfileEditorPage({
 
   const save = useFormSubmit(async () => {
     const input = toInput(form);
-    if (profile === null) {
-      await createProfile(projectId, input);
-    } else {
-      await updateProfile(projectId, profile.id, input);
+    try {
+      if (profile === null) {
+        await createProfile(projectId, input);
+      } else {
+        await updateProfile(projectId, profile.id, input);
+      }
+    } catch (caught) {
+      // A declared name that turns out to be an agent credential is a 400
+      // about one field, not about the form (`SPEC.md`, "Agent profiles":
+      // `<NAME> is an agent credential and is injected automatically`). Shown
+      // where the name was typed, and swallowed so the page does not say the
+      // same thing twice.
+      if (isCredentialNameError(caught)) {
+        setNewSecretError(caught.error);
+        return;
+      }
+      throw caught;
     }
     await queryClient.invalidateQueries({
       queryKey: queryKeys.projects.profiles(projectId),
@@ -500,8 +516,19 @@ export function ProfileEditorPage({
             <legend className="text-console-muted px-1 text-xs">Secrets</legend>
             <p className="text-console-muted pb-2 text-xs">
               Names injected into the session container as environment
-              variables, from the global, project and your own scope.
+              variables, from the global, project and your own scope. The
+              agent&rsquo;s own credential is not one of them: it is resolved
+              per launch and never declared.
             </p>
+
+            {/* Read-only, and per caller: what *you* would launch this profile
+                with (`SPEC.md`, "Frontend", Agent credentials). */}
+            <div className="border-console-border/60 mb-2 border-b pb-2">
+              <AgentCredentialNotice
+                projectId={projectId}
+                backend={profile?.backend ?? PROFILE_BACKEND}
+              />
+            </div>
 
             <div className="flex flex-col gap-1.5">
               {secretOptions.map((option) => {
@@ -612,6 +639,20 @@ export function ProfileEditorPage({
   );
 }
 
+/**
+ * The 400 that `secrets` entries have of their own (`SPEC.md`, "Agent
+ * profiles"). Matched on the sentence the API states, so any other 400 — an
+ * unknown tool, a state that is not a queue state — still reaches the form's
+ * own alert.
+ */
+function isCredentialNameError(caught: unknown): caught is ApiError {
+  return (
+    caught instanceof ApiError &&
+    caught.status === 400 &&
+    caught.error.includes("is an agent credential")
+  );
+}
+
 /** One scope's names; a scope the caller may not read contributes none. */
 function useSecretNames(scope: "global" | "project" | "user", scopeId?: string) {
   return useQuery({
@@ -623,29 +664,4 @@ function useSecretNames(scope: "global" | "project" | "user", scopeId?: string) 
       }),
     retry: false,
   });
-}
-
-interface SecretOption {
-  name: string;
-  orchestrator_only: boolean;
-}
-
-/**
- * The three scopes as one list of names, sorted. A name defined in more than
- * one scope appears once; the later scope wins, which is the order sessions
- * resolve them in (`docs/data-model.md`, `secret_scope`).
- */
-function mergeSecretOptions(
-  lists: (SecretMeta[] | undefined)[],
-): SecretOption[] {
-  const byName = new Map<string, SecretOption>();
-  for (const list of lists) {
-    for (const meta of list ?? []) {
-      byName.set(meta.name, {
-        name: meta.name,
-        orchestrator_only: meta.orchestrator_only,
-      });
-    }
-  }
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }

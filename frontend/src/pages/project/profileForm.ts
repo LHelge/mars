@@ -11,7 +11,12 @@
 // that renders a component exports nothing else
 // (`react-refresh/only-export-components`).
 
-import type { Profile, ProfileInput, ProfileKind } from "../../types";
+import type {
+  Profile,
+  ProfileInput,
+  ProfileKind,
+  SecretMeta,
+} from "../../types";
 
 /** `docs/data-model.md`, `agent_profiles`: the column default. */
 export const DEFAULT_IDLE_TIMEOUT_SECS = 1800;
@@ -159,4 +164,38 @@ export function toggleMember(list: string[], value: string): string[] {
   return list.includes(value)
     ? list.filter((entry) => entry !== value)
     : [...list, value];
+}
+
+/** One offer of the editor's secrets picker. */
+export interface SecretOption {
+  name: string;
+  orchestrator_only: boolean;
+}
+
+/**
+ * The scopes a session resolves over, as one sorted list of names. A name
+ * defined in more than one scope appears once; the later scope wins, which is
+ * the order sessions resolve them in (`docs/data-model.md`, `secret_scope`).
+ *
+ * An agent credential is not offered: it is injected into every session of its
+ * backend without being declared, and a profile that lists one is a 400
+ * (`SPEC.md`, "Agent profiles"; ADR 0036). `credential_for` is the server's own
+ * answer to "is this name a credential", so the picker needs no name table.
+ */
+export function mergeSecretOptions(
+  lists: (SecretMeta[] | undefined)[],
+): SecretOption[] {
+  const byName = new Map<string, SecretOption>();
+  for (const list of lists) {
+    for (const meta of list ?? []) {
+      if (meta.credential_for !== null) {
+        continue;
+      }
+      byName.set(meta.name, {
+        name: meta.name,
+        orchestrator_only: meta.orchestrator_only,
+      });
+    }
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }

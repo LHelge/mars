@@ -33,7 +33,12 @@ import type { Api, TestUser } from "./api";
 import { uniqueName } from "./env";
 import { createBareRepo } from "./git";
 import type { BareRepo } from "./git";
-import { createProject, endSession, launchSession } from "./resources";
+import {
+  createProject,
+  endSession,
+  launchSession,
+  seedAgentCredential,
+} from "./resources";
 import type { LaunchSessionOptions } from "./resources";
 
 export { apiClient };
@@ -63,6 +68,17 @@ export interface E2EOptions {
    * `README.md` every one of them carries. Set per spec file with `test.use`.
    */
   repoFiles: Record<string, string>;
+  /**
+   * Whether [`api`] gives its user a fake agent credential (default: yes).
+   *
+   * The launch forms say which credential a session would authenticate with
+   * and offer `Add credential` when there is none (`SPEC.md`, "Frontend",
+   * Agent credentials), so the common path — a user who *has* one — is what
+   * every scenario exercises. A spec that is about the empty state, or about
+   * creating the credential itself, sets `test.use({ agentCredential: false })`
+   * at the top of the file.
+   */
+  agentCredential: boolean;
 }
 
 export interface E2EFixtures {
@@ -90,13 +106,20 @@ function specPrefix(testInfo: TestInfo): string {
 
 export const test = base.extend<E2EOptions & E2EFixtures>({
   repoFiles: [{}, { option: true }],
+  agentCredential: [true, { option: true }],
 
   user: async ({ request }, use, testInfo) => {
     await use(await createTestUser(request, { prefix: specPrefix(testInfo) }));
   },
 
-  api: async ({ request, user }, use) => {
-    await use(apiClient(request, user.access_token));
+  api: async ({ request, user, agentCredential }, use) => {
+    const client = apiClient(request, user.access_token);
+    // The user's own scope, so it is gone with the user and no other
+    // scenario's page can see it.
+    if (agentCredential) {
+      await seedAgentCredential(client);
+    }
+    await use(client);
   },
 
   repo: async ({ repoFiles }, use, testInfo) => {

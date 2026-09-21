@@ -74,6 +74,7 @@ import {
   mirrorPath,
   newLoggedInPage,
   reveal,
+  seedAgentCredential,
   transcript,
   waitFor,
   waitForSessionState,
@@ -302,9 +303,14 @@ async function reviewer(
   request: APIRequestContext,
 ): Promise<{ user: TestUser; client: Api; page: Page }> {
   const user = await createTestUser(request, { prefix: "reviewer" });
+  const client = apiClient(request, user.access_token);
+  // A second user is not the `api` fixture's, so it needs its own credential:
+  // this one launches from the drawer, whose button would otherwise read
+  // `Launch anyway` (`SPEC.md`, "Frontend", Agent credentials).
+  await seedAgentCredential(client);
   return {
     user,
-    client: apiClient(request, user.access_token),
+    client,
     page: await newLoggedInPage(browser, user),
   };
 }

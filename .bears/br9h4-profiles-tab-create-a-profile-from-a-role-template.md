@@ -1,16 +1,17 @@
 ---
 id: br9h4
 title: "Profiles tab: create a profile from a role template"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-20T22:41:21.018579583Z"
-updated: "2026-09-20T22:41:21.018579583Z"
+updated: "2026-09-21T09:16:24.985329112Z"
 tags:
   - frontend
   - profiles
 depends_on:
   - "7sq7f"
 parent: pekcb
+attempts: 1
 ---
 
 ## Summary

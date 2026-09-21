@@ -9,6 +9,8 @@ export {
 export { githubCompareUrl } from "./github";
 export { debounce } from "./debounce";
 export type { Debounced } from "./debounce";
+export { coalesce } from "./coalesce";
+export type { Coalesced } from "./coalesce";
 
 export { parseTaskRef } from "./taskRef";
 export type { TaskRef } from "./taskRef";

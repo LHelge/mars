@@ -4,12 +4,16 @@
 //
 // A `TaskEvent` is a refresh signal and nothing else: its `task`, `states` and
 // `comment` payloads are never written into the snapshot, and no raw event
-// array is kept. At most one refresh runs at a time; a response dirtied by a
-// later event, or belonging to a view that has moved on, is discarded and
-// coalesced into exactly one follow-up refresh. A failed read keeps the
-// previous snapshot — an empty board is never installed.
+// array is kept. At most one refresh runs at a time, and its reads therefore
+// begin after the previous refresh installed its snapshot — which is what lets
+// a response dirtied by an event that arrived mid-flight be *installed* and
+// then followed up, rather than thrown away: it is older than the event, but
+// strictly newer than what is on screen. A response belonging to a view that
+// has moved on is still discarded, and a failed read keeps the previous
+// snapshot — an empty board is never installed.
 
 import { create, type UseBoundStore, type StoreApi } from "zustand";
+import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
 import { queryClient } from "../queryClient";
 import { listTasks } from "../services/tasks";
@@ -35,6 +39,15 @@ export interface TaskBoardState {
   states: TaskState[];
   /** The project's tasks in the API's order (priority, then number). */
   tasks: Task[];
+  /**
+   * The same tasks by UUID and by per-project `number`, built once per
+   * snapshot. A card resolving its parent, and a dependency row resolving the
+   * task it points at, are one lookup each: over a board of a few hundred
+   * tasks, a `find` per row per store write — including every keystroke in the
+   * search field — is the board's own work, not the API's.
+   */
+  byId: ReadonlyMap<string, Task>;
+  byNumber: ReadonlyMap<number, Task>;
   /** Highest `seq` seen on the task stream; the stream's `?after=`. */
   lastSeq: number;
   /** A first successful load has installed a snapshot. */
@@ -82,6 +95,8 @@ export function emptyTaskBoardState(): TaskBoardState {
     projectId: null,
     states: [],
     tasks: [],
+    byId: new Map(),
+    byNumber: new Map(),
     lastSeq: 0,
     loaded: false,
     loading: false,
@@ -96,6 +111,25 @@ export function emptyTaskBoardState(): TaskBoardState {
 
 function byPosition(states: TaskState[]): TaskState[] {
   return [...states].sort((a, b) => a.position - b.position);
+}
+
+/**
+ * The snapshot fields one settled pair of reads replaces, indexes included.
+ *
+ * Exported so nothing — a refresh, a bind, a test arranging a loaded board —
+ * can install `tasks` and leave the two indexes describing the previous ones.
+ */
+export function taskSnapshot(
+  states: TaskState[],
+  tasks: Task[],
+): Pick<TaskBoardState, "states" | "tasks" | "byId" | "byNumber"> {
+  const byId = new Map<string, Task>();
+  const byNumber = new Map<number, Task>();
+  for (const task of tasks) {
+    byId.set(task.id, task);
+    byNumber.set(task.number, task);
+  }
+  return { states: byPosition(states), tasks, byId, byNumber };
 }
 
 function messageOf(error: unknown): string {
@@ -121,8 +155,7 @@ export function createTaskStore(deps: TaskStoreDeps): TaskStoreHook {
       if (get().projectId === projectId) return;
       set((state) => ({
         projectId,
-        states: [],
-        tasks: [],
+        ...taskSnapshot([], []),
         query: "",
         lastSeq: 0,
         loaded: false,
@@ -212,20 +245,28 @@ export function createTaskStore(deps: TaskStoreDeps): TaskStoreHook {
         return;
       }
 
-      if (get().eventGeneration !== events) {
-        // Dirtied while in flight: discard and coalesce into one follow-up.
-        set({ loading: false });
-        void get().refresh();
-        return;
-      }
+      const dirtied = get().eventGeneration !== events;
 
+      // Installed either way (`SPEC.md`, "Frontend", "Board refresh
+      // ordering"): only one refresh runs at a time and each one starts its
+      // reads with `cancelQueries`, so a settling response is never older than
+      // the snapshot it replaces, whatever arrived while it was in flight.
+      // Discarding it instead is what made a board under events faster than a
+      // round trip install nothing at all and sit at "Refreshing" for as long
+      // as the agents worked.
       set({
-        states: byPosition(states),
-        tasks,
+        ...taskSnapshot(states, tasks),
         loaded: true,
         error: null,
         loading: false,
       });
+
+      if (dirtied) {
+        // An event knows something this response does not; it is owed exactly
+        // one follow-up, which `refresh` coalesces with anything else pending.
+        void get().refresh();
+        return;
+      }
       followUp();
     },
 
@@ -240,26 +281,46 @@ export function createTaskStore(deps: TaskStoreDeps): TaskStoreHook {
 }
 
 /**
- * The reads of the app singleton go through TanStack Query, so its retry and
- * backoff apply before a failure reaches the board, and the keys the states
- * editor and the task drawer hold are freshened by the same request.
+ * One read of a refresh, through TanStack Query so its retry and backoff apply
+ * before a failure reaches the board and the keys the states editor and the
+ * task drawer hold are freshened by the same request.
+ *
+ * Two things the bare `fetchQuery` did not do:
+ *
+ * - **Cancel first.** `fetchQuery` joins a request already in flight for the
+ *   same key. A refresh that joined a read started before it would install an
+ *   answer older than itself — and, under the install-when-dirtied rule above,
+ *   older than what is on screen. Cancelling makes the read this refresh's
+ *   own. `exact`, because `taskKeys.all` is the prefix of every open drawer's
+ *   detail key and those reads are not this one's to cancel.
+ * - **Read the cache back.** `fetchQuery` resolves with the response; the
+ *   cache holds the structurally shared copy, in which a row that did not
+ *   change is the very object the last snapshot installed. That identity is
+ *   what makes `memo(TaskCard)` worth anything across a refresh.
  */
-const appDeps: TaskStoreDeps = {
-  listTasks: (projectId) =>
-    queryClient.fetchQuery({
-      queryKey: taskKeys.all(projectId),
-      queryFn: () => listTasks(projectId),
-      staleTime: 0,
-    }),
-  listTaskStates: (projectId) =>
-    queryClient.fetchQuery({
-      queryKey: taskStateKeys.list(projectId),
-      queryFn: () => listTaskStates(projectId),
-      staleTime: 0,
-    }),
-};
+async function read<T>(
+  client: QueryClient,
+  queryKey: QueryKey,
+  queryFn: () => Promise<T>,
+): Promise<T> {
+  await client.cancelQueries({ queryKey, exact: true });
+  const response = await client.fetchQuery({ queryKey, queryFn, staleTime: 0 });
+  return client.getQueryData<T>(queryKey) ?? response;
+}
 
-export const useTaskStore = createTaskStore(appDeps);
+/** The board's two reads over one query client; the app's is the singleton. */
+export function createQueryDeps(client: QueryClient): TaskStoreDeps {
+  return {
+    listTasks: (projectId) =>
+      read(client, taskKeys.all(projectId), () => listTasks(projectId)),
+    listTaskStates: (projectId) =>
+      read(client, taskStateKeys.list(projectId), () =>
+        listTaskStates(projectId),
+      ),
+  };
+}
+
+export const useTaskStore = createTaskStore(createQueryDeps(queryClient));
 
 /** The heading of the trailing bucket, and its React key. */
 export const UNKNOWN_COLUMN = "unknown";
@@ -343,16 +404,23 @@ export function selectVisibleColumns(
   }));
 }
 
-/** The task carrying a per-project `number` (the drawer's route parameter). */
+/**
+ * The task carrying a per-project `number` (the drawer's route parameter).
+ *
+ * The lookup is the index the snapshot was installed with, so it costs the
+ * same on a board of five tasks and one of five hundred, and returns the very
+ * object the last snapshot held: a subscriber to this selector re-renders when
+ * *this* task changed, not whenever any of them did.
+ */
 export function selectTaskByNumber(
   number: number,
 ): (state: TaskBoardState) => Task | undefined {
-  return (state) => state.tasks.find((task) => task.number === number);
+  return (state) => state.byNumber.get(number);
 }
 
 /** The task with this UUID: parent badges and dependency links resolve by id. */
 export function selectTaskById(
   id: string,
 ): (state: TaskBoardState) => Task | undefined {
-  return (state) => state.tasks.find((task) => task.id === id);
+  return (state) => state.byId.get(id);
 }

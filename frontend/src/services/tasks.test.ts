@@ -5,13 +5,16 @@ import { taskStreamUrl } from "./tasks";
 describe("taskStreamUrl", () => {
   const pid = "11111111-1111-4111-8111-111111111111";
 
-  it("builds the first connection's URL with after=0", () => {
+  it("opens a board with no cursor at the stream's current end", () => {
+    // Not `after=0`: that replays a project's whole history into a client
+    // that is about to read a REST snapshot anyway (`SPEC.md`, "SSE: task
+    // stream").
     expect(taskStreamUrl(pid, "abc", 0)).toBe(
-      `/api/projects/${pid}/tasks/stream?token=abc&after=0`,
+      `/api/projects/${pid}/tasks/stream?token=abc&after=latest`,
     );
   });
 
-  it("defaults after to 0", () => {
+  it("defaults after to no cursor", () => {
     expect(taskStreamUrl(pid, "abc")).toBe(taskStreamUrl(pid, "abc", 0));
   });
 

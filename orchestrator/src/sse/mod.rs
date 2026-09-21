@@ -20,7 +20,13 @@
 //!
 //! The cursor is `Last-Event-ID` when the browser reconnects with one and
 //! `?after=` on a first connection, in that order of precedence (`SPEC.md`,
-//! "SSE: task stream").
+//! "SSE: task stream"). `?after=latest` is the third form: a client that has
+//! no cursor at all — a board opening this project for the first time — asks
+//! to start at the stream's current end instead of replaying a project's whole
+//! history for nothing. It is resolved after the subscription, so an event
+//! committed between the two is either counted by the resolved cursor, and
+//! then is in the REST snapshot the board reads once this stream is open
+//! (`SPEC.md`, "Frontend", "Board refresh ordering"), or arrives live.
 //!
 //! The keepalive is written here rather than with `Sse::keep_alive`, and that
 //! is the whole reason this handler owns its own `select!` loop:
@@ -78,6 +84,9 @@ const PROJECT_NOT_FOUND: &str = "project not found";
 /// places it came from is visible in the request the caller made.
 const BAD_CURSOR: &str = "invalid cursor";
 
+/// The `?after=` value that means "start at the stream's current end".
+const LATEST: &str = "latest";
+
 /// The SSE `event:` name every task frame carries (`SPEC.md`, "SSE: task
 /// stream").
 const TASK_EVENT: &str = "task";
@@ -123,10 +132,21 @@ pub fn routes() -> Router<AppState> {
 ///
 /// A `String` rather than an `i64` for the reason `ws` keeps it one: a typed
 /// field would answer serde's own message about an invalid digit, and the
-/// documented answer is [`BAD_CURSOR`].
+/// documented answer is [`BAD_CURSOR`]. It also carries [`LATEST`], which is
+/// not a number at all.
 #[derive(Debug, Deserialize)]
 struct AfterQuery {
     after: Option<String>,
+}
+
+/// What the client asked to replay from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cursor {
+    /// Every event after this sequence, `0` for the whole history.
+    Seq(i64),
+    /// Nothing: whatever the highest committed sequence is when the stream
+    /// resolves it ([`LATEST`]).
+    Latest,
 }
 
 /// The cursor this stream replays from: `Last-Event-ID`, else `?after=`,
@@ -135,7 +155,12 @@ struct AfterQuery {
 /// The header wins when both are there, because it is the browser's own
 /// record of the last frame it processed and `?after=` is only the value the
 /// application remembered when it built the URL.
-fn cursor(headers: &HeaderMap, query: &AfterQuery) -> Result<i64> {
+///
+/// [`LATEST`] is a `?after=` value only. `Last-Event-ID` is written by
+/// `EventSource` from the `id:` of a frame it has processed, so it is always a
+/// sequence; a request that puts `latest` there is as much a malformed cursor
+/// as any other non-number.
+fn cursor(headers: &HeaderMap, query: &AfterQuery) -> Result<Cursor> {
     let from_header = headers
         .get(LAST_EVENT_ID)
         .map(|value| value.to_str().unwrap_or("").to_string());
@@ -143,13 +168,14 @@ fn cursor(headers: &HeaderMap, query: &AfterQuery) -> Result<i64> {
     let raw = match from_header {
         Some(header) => header,
         None => match query.after.clone() {
+            Some(after) if after.trim() == LATEST => return Ok(Cursor::Latest),
             Some(after) => after,
-            None => return Ok(0),
+            None => return Ok(Cursor::Seq(0)),
         },
     };
 
     match raw.trim().parse::<i64>() {
-        Ok(cursor) if cursor >= 0 => Ok(cursor),
+        Ok(cursor) if cursor >= 0 => Ok(Cursor::Seq(cursor)),
         _ => Err(Error::BadRequest(BAD_CURSOR.to_string())),
     }
 }
@@ -183,6 +209,19 @@ async fn task_stream(
     // the replay's last page and the first `recv` is the one thing this order
     // exists to keep (`ARCHITECTURE.md`, "Event delivery").
     let rx = state.fanout.subscribe_project(pid);
+
+    // After the subscription, for the reason the module comment gives: a row
+    // this read counts but does not deliver is already in the snapshot the
+    // board loads once the stream is open, and a row committed after it wakes
+    // the live loop.
+    let cursor = match cursor {
+        Cursor::Seq(seq) => seq,
+        Cursor::Latest => {
+            TaskRepository::new(&state.pool)
+                .max_task_event_seq(pid)
+                .await?
+        }
+    };
 
     debug!(project_id = %pid, user_id = %user.id, "task stream opening");
 
@@ -442,7 +481,7 @@ mod tests {
     fn no_cursor_at_all_replays_from_the_beginning() {
         assert_eq!(
             cursor(&headers(None), &query(None)).expect("no cursor is zero"),
-            0
+            Cursor::Seq(0)
         );
     }
 
@@ -450,23 +489,49 @@ mod tests {
     fn after_is_the_cursor_on_a_first_connection() {
         assert_eq!(
             cursor(&headers(None), &query(Some("41"))).expect("a sequence parses"),
-            41
+            Cursor::Seq(41)
         );
         assert_eq!(
             cursor(&headers(None), &query(Some("0"))).expect("zero parses"),
-            0
+            Cursor::Seq(0)
         );
+    }
+
+    #[test]
+    fn after_latest_asks_for_the_current_end() {
+        assert_eq!(
+            cursor(&headers(None), &query(Some("latest"))).expect("`latest` is a cursor"),
+            Cursor::Latest
+        );
+        assert_eq!(
+            cursor(&headers(None), &query(Some(" latest "))).expect("trimmed like a sequence is"),
+            Cursor::Latest
+        );
+    }
+
+    #[test]
+    fn latest_is_a_query_value_and_never_a_header_one() {
+        // `EventSource` writes `Last-Event-ID` from a frame's `id:`, which is
+        // always a sequence; `latest` there is a malformed cursor.
+        let error = cursor(&headers(Some("latest")), &query(None))
+            .expect_err("the header carries sequences only");
+
+        assert!(matches!(error, Error::BadRequest(_)));
     }
 
     #[test]
     fn last_event_id_is_the_cursor_and_wins_over_after() {
         assert_eq!(
             cursor(&headers(Some("7")), &query(None)).expect("a header sequence parses"),
-            7
+            Cursor::Seq(7)
         );
         assert_eq!(
             cursor(&headers(Some("7")), &query(Some("41"))).expect("the header wins"),
-            7,
+            Cursor::Seq(7),
+        );
+        assert_eq!(
+            cursor(&headers(Some("7")), &query(Some("latest"))).expect("the header wins"),
+            Cursor::Seq(7),
         );
     }
 

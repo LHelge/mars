@@ -138,10 +138,18 @@ export function releaseTask(pid: string, ref: TaskRef): Promise<Task> {
 
 /**
  * The SSE URL of `SPEC.md`, "SSE: task stream". `EventSource` cannot send an
- * `Authorization` header, so the access token travels as `?token=`; `after` is
- * the last sequence the board received, 0 on a first connection. A pure
- * function so the stream hook and its test build the same URL.
+ * `Authorization` header, so the access token travels as `?token=`.
+ *
+ * `after` is the last sequence the board received. A board that has received
+ * none — a first connection, and a reconnect before the first event — has no
+ * cursor to resume from, and asks for `after=latest` rather than 0: the whole
+ * of a project's history would be replayed into a client that is about to read
+ * an authoritative REST snapshot anyway (`SPEC.md`, "Frontend", "Board refresh
+ * ordering"), at one `JSON.parse`, one store write and one invalidation each.
+ *
+ * A pure function so the stream hook and its test build the same URL.
  */
 export function taskStreamUrl(pid: string, token: string, after = 0): string {
-  return `/api/projects/${pid}/tasks/stream?token=${encodeURIComponent(token)}&after=${after}`;
+  const from = after > 0 ? String(after) : "latest";
+  return `/api/projects/${pid}/tasks/stream?token=${encodeURIComponent(token)}&after=${from}`;
 }

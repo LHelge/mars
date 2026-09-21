@@ -18,6 +18,11 @@
 //!   than against a parsed field, so a value smuggled into an unexpected key
 //!   would still fail it.
 //!
+//! The agent-credential rules are the exception to "not repeated here": what
+//! they promise is a status and an exact message a client is shown (`SPEC.md`,
+//! "Secrets", Agent credentials), and `credential_for` exists only in a
+//! response, so both are asserted over HTTP.
+//!
 //! Every value here is an obviously fake credential and no test prints one
 //! (`CLAUDE.md`, rule 3).
 //!
@@ -26,6 +31,8 @@
 #![cfg(feature = "integration-tests")]
 
 mod common;
+
+use std::future::IntoFuture;
 
 use axum::http::StatusCode;
 use axum_test::TestResponse;
@@ -44,8 +51,12 @@ const FAKE_VALUE: &str = "fake-value-not-a-credential";
 /// Not a real credential either: the replacement `PUT` writes (rule 3).
 const OTHER_FAKE_VALUE: &str = "another-fake-value-not-a-credential";
 
-/// The ten fields `SPEC.md`, "Secrets" gives `SecretMeta`, and no others.
-const META_FIELDS: [&str; 10] = [
+/// The eleven fields `SPEC.md`, "Secrets" gives `SecretMeta`, and no others.
+///
+/// `credential_for` is the derived one: it is no column, so a response that
+/// left it out would be a `SecretMeta` the frontend cannot group by backend
+/// (ADR 0036).
+const META_FIELDS: [&str; 11] = [
     "id",
     "scope",
     "scope_id",
@@ -56,6 +67,7 @@ const META_FIELDS: [&str; 10] = [
     "created_at",
     "updated_at",
     "last_used_at",
+    "credential_for",
 ];
 
 /// The four fields one `/uses` row carries.
@@ -124,8 +136,8 @@ fn id_of(meta: &Value) -> Uuid {
         .expect("the id is a uuid")
 }
 
-/// Assert `meta` is a `SecretMeta` as documented: the ten fields, no more, and
-/// timestamps that parse as RFC 3339.
+/// Assert `meta` is a `SecretMeta` as documented: the eleven fields, no more,
+/// and timestamps that parse as RFC 3339.
 #[track_caller]
 fn assert_meta_shape(meta: &Value) {
     let object = meta.as_object().expect("the metadata is an object");
@@ -149,6 +161,11 @@ fn assert_meta_shape(meta: &Value) {
     assert!(object["scope_id"].is_null() || object["scope_id"].is_string());
     assert!(object["created_by"].is_null() || object["created_by"].is_string());
     assert!(object["last_used_at"].is_null() || object["last_used_at"].is_string());
+    assert!(
+        object["credential_for"].is_null() || object["credential_for"].is_string(),
+        "credential_for is a backend or null, got {}",
+        object["credential_for"]
+    );
 }
 
 /// Assert a 400 in the documented `{ status, error }` shape.
@@ -565,4 +582,238 @@ async fn no_success_response_of_any_endpoint_carries_the_value() {
             "{endpoint} carries a value key: {text}"
         );
     }
+}
+
+// ---- agent credentials ----
+//
+// The three write rules of `SPEC.md`, "Secrets", Agent credentials, over HTTP,
+// because their whole point is the status and the message a client is given
+// (ADR 0036). Every value here is an obviously fake credential (rule 3).
+
+/// The Claude backend's two credential names, in the adapter's order.
+const OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+const API_KEY: &str = "ANTHROPIC_API_KEY";
+
+/// Assert a response is the documented `{ status, error }` with this status,
+/// and answer the message.
+#[track_caller]
+fn error_message(response: &TestResponse, status: StatusCode, about: &str) -> String {
+    assert_eq!(
+        response.status_code(),
+        status,
+        "{about}: {}",
+        response.text()
+    );
+
+    let body = response.json::<Value>();
+    assert_eq!(body["status"], json!(status.as_u16()), "{about}: {body}");
+
+    body["error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{about}: no error message in {body}"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_credential_reports_the_backend_it_authenticates() {
+    let app = TestApp::spawn().await;
+    let ada = user(&app, "ada").await;
+
+    let credential = seed_secret(&app, &ada, "user", None, OAUTH_TOKEN).await;
+    assert_meta_shape(&credential);
+    assert_eq!(credential["credential_for"], json!("claude"));
+
+    let ordinary = seed_secret(&app, &ada, "global", None, "DEPLOY_TOKEN").await;
+    assert_eq!(ordinary["credential_for"], Value::Null);
+
+    // And on every other response that carries a `SecretMeta`.
+    let id = id_of(&credential);
+    let listing = app.get_as(&ada, SECRETS).await.json::<Vec<Value>>();
+    for meta in &listing {
+        assert_meta_shape(meta);
+    }
+    let renamed = app
+        .patch_as(&ada, &format!("{SECRETS}/{id}"))
+        .json(&json!({ "name": API_KEY }))
+        .await;
+    renamed.assert_status(StatusCode::OK);
+    assert_eq!(renamed.json::<Value>()["credential_for"], json!("claude"));
+}
+
+#[tokio::test]
+async fn a_second_credential_at_one_scope_is_refused_and_names_the_first() {
+    let app = TestApp::spawn().await;
+    let ada = user(&app, "ada").await;
+
+    seed_secret(&app, &ada, "user", None, OAUTH_TOKEN).await;
+
+    let response = app
+        .post_as(&ada, SECRETS)
+        .json(&create_body("user", None, API_KEY))
+        .await;
+    let message = error_message(&response, StatusCode::CONFLICT, "the other credential name");
+    assert_eq!(
+        message,
+        format!(
+            "this scope already has an agent credential ({OAUTH_TOKEN}); replace or delete it first"
+        ),
+    );
+
+    // The same name at the same scope is the plain "already exists" 409 the
+    // endpoint has always answered.
+    let response = app
+        .post_as(&ada, SECRETS)
+        .json(&create_body("user", None, OAUTH_TOKEN))
+        .await;
+    let message = error_message(&response, StatusCode::CONFLICT, "the same credential name");
+    assert_eq!(message, "secret already exists");
+
+    // A different scope is the whole resolution model and is not a conflict.
+    let response = app
+        .post_as(&ada, SECRETS)
+        .json(&create_body("global", None, API_KEY))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn a_rename_into_an_occupied_scope_is_refused_and_the_row_is_untouched() {
+    let app = TestApp::spawn().await;
+    let ada = user(&app, "ada").await;
+
+    seed_secret(&app, &ada, "user", None, OAUTH_TOKEN).await;
+    let ordinary = seed_secret(&app, &ada, "user", None, "DEPLOY_TOKEN").await;
+    let id = id_of(&ordinary);
+
+    let response = app
+        .patch_as(&ada, &format!("{SECRETS}/{id}"))
+        .json(&json!({ "name": API_KEY }))
+        .await;
+    let message = error_message(&response, StatusCode::CONFLICT, "renamed into the slot");
+    assert!(message.contains(OAUTH_TOKEN), "{message}");
+
+    // Nothing was written, so the secret is still the one it was.
+    let listing = app.get_as(&ada, SECRETS).await.json::<Vec<Value>>();
+    let mut names: Vec<&str> = listing
+        .iter()
+        .map(|meta| meta["name"].as_str().expect("a name"))
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, vec![OAUTH_TOKEN, "DEPLOY_TOKEN"]);
+
+    // Renaming a credential to the other name at its own scope is allowed:
+    // the row it would collide with is itself.
+    let credential = listing
+        .iter()
+        .find(|meta| meta["name"] == json!(OAUTH_TOKEN))
+        .expect("the credential is listed");
+    let response = app
+        .patch_as(&ada, &format!("{SECRETS}/{}", id_of(credential)))
+        .json(&json!({ "name": API_KEY }))
+        .await;
+    response.assert_status(StatusCode::OK);
+    assert_eq!(response.json::<Value>()["name"], json!(API_KEY));
+}
+
+#[tokio::test]
+async fn a_credential_cannot_be_orchestrator_only_on_create_or_on_patch() {
+    let app = TestApp::spawn().await;
+    let ada = user(&app, "ada").await;
+
+    const REFUSED: &str = "an agent credential cannot be orchestrator-only";
+
+    // On create.
+    let response = app
+        .post_as(&ada, SECRETS)
+        .json(&json!({
+            "scope": "user",
+            "name": API_KEY,
+            "value": FAKE_VALUE,
+            "orchestrator_only": true,
+        }))
+        .await;
+    assert_eq!(
+        error_message(&response, StatusCode::BAD_REQUEST, "on create"),
+        REFUSED
+    );
+
+    // On patch, by flagging a credential.
+    let credential = seed_secret(&app, &ada, "user", None, API_KEY).await;
+    let response = app
+        .patch_as(&ada, &format!("{SECRETS}/{}", id_of(&credential)))
+        .json(&json!({ "orchestrator_only": true }))
+        .await;
+    assert_eq!(
+        error_message(&response, StatusCode::BAD_REQUEST, "flagging a credential"),
+        REFUSED
+    );
+
+    // And on patch, by renaming an orchestrator-only secret into one.
+    let hidden = app
+        .post_as(&ada, SECRETS)
+        .json(&json!({
+            "scope": "global",
+            "name": "DEPLOY_TOKEN",
+            "value": FAKE_VALUE,
+            "orchestrator_only": true,
+        }))
+        .await;
+    hidden.assert_status(StatusCode::CREATED);
+    let response = app
+        .patch_as(
+            &ada,
+            &format!("{SECRETS}/{}", id_of(&hidden.json::<Value>())),
+        )
+        .json(&json!({ "name": OAUTH_TOKEN }))
+        .await;
+    assert_eq!(
+        error_message(&response, StatusCode::BAD_REQUEST, "renamed into one"),
+        REFUSED
+    );
+}
+
+#[tokio::test]
+async fn two_simultaneous_credentials_at_one_scope_leave_exactly_one_row() {
+    let app = TestApp::spawn().await;
+    let ada = user(&app, "ada").await;
+
+    // The check and the insert are one transaction, but two of them can still
+    // interleave; `secrets_claude_credential_idx` is what settles it, and the
+    // loser is the same 409 rather than a 500 (`docs/data-model.md`).
+    let (first, second) = tokio::join!(
+        app.post_as(&ada, SECRETS)
+            .json(&create_body("user", None, OAUTH_TOKEN))
+            .into_future(),
+        app.post_as(&ada, SECRETS)
+            .json(&create_body("user", None, API_KEY))
+            .into_future(),
+    );
+
+    let mut statuses = [first.status_code(), second.status_code()];
+    statuses.sort_unstable_by_key(StatusCode::as_u16);
+    assert_eq!(
+        statuses,
+        [StatusCode::CREATED, StatusCode::CONFLICT],
+        "one create wins and the other is a conflict: {} / {}",
+        first.text(),
+        second.text()
+    );
+
+    let loser = if first.status_code() == StatusCode::CONFLICT {
+        &first
+    } else {
+        &second
+    };
+    assert!(
+        loser.json::<Value>()["error"]
+            .as_str()
+            .expect("an error message")
+            .contains("already has an agent credential"),
+        "{}",
+        loser.text()
+    );
+
+    let listing = app.get_as(&ada, SECRETS).await.json::<Vec<Value>>();
+    assert_eq!(listing.len(), 1, "{listing:?}");
+    assert_eq!(listing[0]["credential_for"], json!("claude"));
 }

@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT name\n            FROM secrets\n            WHERE scope = $1\n              AND scope_id IS NOT DISTINCT FROM $2\n              AND name = ANY($3)\n              AND ($4::uuid IS NULL OR id <> $4)\n            ORDER BY name\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "secrets",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "secret_scope",
+            "kind": {
+              "Enum": [
+                "global",
+                "user",
+                "project"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "TextArray",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a560d918fabe5927353102dd8d336cb674149811c3565d04bb100e43bc06402d"
+}

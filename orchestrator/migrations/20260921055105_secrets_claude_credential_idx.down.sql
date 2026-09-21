@@ -1,0 +1,1 @@
+DROP INDEX secrets_claude_credential_idx;

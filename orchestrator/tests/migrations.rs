@@ -775,3 +775,107 @@ fn reversible_migration_count() -> i64 {
 
     i64::try_from(ups.len()).expect("the migration count fits in an i64")
 }
+
+/// The version of the `secrets` migration, which is the one the
+/// `secrets_claude_credential_idx` migration sits directly on top of.
+const SECRETS_MIGRATION_VERSION: i64 = 20260917071417;
+
+/// A `secrets` row written by raw SQL, for the test that needs rows the write
+/// rules would now refuse.
+///
+/// The encrypted columns are one obviously fake byte each (`CLAUDE.md`, rule
+/// 3): nothing here ever decrypts them, and the migration under test reads
+/// `scope`, `scope_id` and `name` only.
+async fn insert_raw_secret(pool: &PgPool, scope: &str, name: &str) {
+    sqlx::query(
+        "INSERT INTO secrets (id, scope, scope_id, name, ciphertext, nonce, \
+                              data_key_wrapped, data_key_nonce, key_version) \
+         VALUES (gen_random_uuid(), $1::secret_scope, NULL, $2, \
+                 '\\x00', '\\x00', '\\x00', '\\x00', 1)",
+    )
+    .bind(scope)
+    .bind(name)
+    .execute(pool)
+    .await
+    .expect("the raw secret inserts");
+}
+
+/// The literal names in `secrets_claude_credential_idx` are the Claude
+/// backend's `credential_names` (ADR 0036; `docs/data-model.md`, `secrets`).
+///
+/// An index predicate cannot call into Rust, so the two names are written out
+/// in the migration and this is what stops them drifting from the adapter that
+/// really owns them: a backend that renames or adds a credential fails here
+/// until its migration follows.
+#[tokio::test]
+async fn the_credential_index_predicate_is_the_claude_backends_credential_names() {
+    let (_postgres, pool) = common::db::test_pool().await;
+
+    let (unique, predicate) = partial_index(&pool, "secrets_claude_credential_idx").await;
+    assert!(unique, "the credential index must be unique");
+    let predicate = predicate.expect("the credential index is partial");
+
+    // The predicate comes back as `name = ANY (ARRAY['A'::text, 'B'::text])`,
+    // so the quoted halves are the literals.
+    let mut in_the_index: Vec<String> = predicate
+        .split('\'')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect();
+    in_the_index.sort();
+
+    let mut declared: Vec<String> =
+        mars_orchestrator::agent::backend_for(mars_orchestrator::models::AgentBackend::Claude)
+            .credential_names()
+            .iter()
+            .map(|name| name.as_str().to_string())
+            .collect();
+    declared.sort();
+
+    assert_eq!(
+        in_the_index, declared,
+        "the index predicate and AgentBackend::credential_names have drifted: {predicate}"
+    );
+
+    // The scope pair is what is unique, and a `global` row's NULL `scope_id`
+    // has to collide with another `global` row's.
+    let definition = index_definition(&pool, "secrets_claude_credential_idx").await;
+    assert!(
+        definition.contains("NULLS NOT DISTINCT"),
+        "the credential index must treat NULL scope_ids as equal: {definition}"
+    );
+}
+
+/// A database that already holds both credentials at one scope fails the
+/// migration with a message naming the scope and what to do about it.
+///
+/// Without the `DO` block the operator would see a bare unique violation on an
+/// index name, with no way to tell which of their scopes is the problem
+/// (`docs/data-model.md`, "Migration list for v1").
+#[tokio::test]
+async fn the_credential_index_migration_names_the_scope_that_holds_both() {
+    let (_postgres, pool) = common::db::raw_pool().await;
+
+    MIGRATOR.run(&pool).await.expect("every migration applies");
+    MIGRATOR
+        .undo(&pool, SECRETS_MIGRATION_VERSION)
+        .await
+        .expect("the credential index reverts");
+
+    // Two credentials at one scope: impossible once the index exists, which is
+    // exactly the database this migration has to refuse readably.
+    insert_raw_secret(&pool, "global", "ANTHROPIC_API_KEY").await;
+    insert_raw_secret(&pool, "global", "CLAUDE_CODE_OAUTH_TOKEN").await;
+
+    let error = MIGRATOR
+        .run(&pool)
+        .await
+        .expect_err("the migration refuses a scope holding both credentials");
+    let message = error.to_string();
+
+    assert!(message.contains("global"), "{message}");
+    assert!(message.contains("ANTHROPIC_API_KEY"), "{message}");
+    assert!(message.contains("CLAUDE_CODE_OAUTH_TOKEN"), "{message}");
+    assert!(message.contains("delete"), "{message}");
+}

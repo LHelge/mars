@@ -9,6 +9,17 @@
 //! authenticated data (`docs/data-model.md`, `secrets`). The route module is a
 //! thin adapter over this one.
 //!
+//! **Agent credentials.** The names a backend's CLI authenticates with are
+//! ordinary secrets under two write-time rules, and both are enforced here
+//! because this is where the conflict would be created (`SPEC.md`, "Secrets",
+//! Agent credentials; ADR 0036): a scope holds at most one credential per
+//! backend, which needs the database and so runs inside the writing
+//! transaction, and a credential is never `orchestrator_only`, which needs
+//! only the name and the flag and so lives in the model
+//! ([`validate_credential_flag`]). Which names are credentials is never
+//! written down here: it is asked of the backends through
+//! [`credential_backend_of`].
+//!
 //! **Ownership.** "User-scoped secrets are listed, changed and deleted only by
 //! their owner or an admin (403 otherwise); global and project secrets by any
 //! user" (`SPEC.md`, "Secrets") is [`authorize`], and it is the same check for
@@ -38,9 +49,10 @@ use zeroize::Zeroizing;
 
 use super::envelope::{SealedSecret, SecretIdentity};
 use super::keyring::{SecretsError, SecretsKeyring};
+use crate::agent::{backend_for, credential_backend_of};
 use crate::models::{
-    NewSecret, ScopeRef, Secret, SecretMeta, SecretName, SecretScope, SecretUse,
-    validate_secret_value,
+    AgentBackend, NewSecret, ScopeRef, Secret, SecretMeta, SecretName, SecretScope, SecretUse,
+    validate_credential_flag, validate_secret_value,
 };
 use crate::prelude::*;
 use crate::repositories::{SecretListFilter, SecretRepository, UserFilter};
@@ -175,6 +187,13 @@ impl<'a> SecretsService<'a> {
     ///    (`docs/data-model.md`, `secrets`),
     /// 6. seal under the row's own identity and insert, in one transaction.
     ///
+    /// The two agent-credential rules sit in that order for the same reason
+    /// (`SPEC.md`, "Secrets", Agent credentials; ADR 0036): `orchestrator_only`
+    /// on a credential name needs nothing but the request and is refused with
+    /// the other 400s, and the one-credential-per-scope rule needs the database
+    /// and runs inside the inserting transaction, so the check and the write
+    /// are one decision.
+    ///
     /// `created_by` is the caller. The value is sealed under a fresh data key
     /// and the plaintext is dropped here.
     #[instrument(skip_all, fields(scope = %request.scope, secret_name = %request.name))]
@@ -192,6 +211,7 @@ impl<'a> SecretsService<'a> {
         let scope = ScopeRef::new(request.scope, scope_id)?;
         let name = SecretName::parse(&request.name)?;
         validate_secret_value(&request.value)?;
+        validate_credential_flag(name.as_str(), request.orchestrator_only)?;
 
         let repository = SecretRepository::new(self.pool);
         if !repository.scope_exists(&scope).await? {
@@ -205,6 +225,7 @@ impl<'a> SecretsService<'a> {
         )?;
 
         let mut tx = self.pool.begin().await?;
+        refuse_second_credential(&repository, &mut tx, &scope, name.as_str(), None).await?;
         let inserted = repository
             .insert(
                 &mut tx,
@@ -279,6 +300,13 @@ impl<'a> SecretsService<'a> {
     /// create, because the value would have to be re-encrypted under an
     /// identity that may already be taken — so the only part of the AAD that
     /// this can change is the name.
+    ///
+    /// Both agent-credential rules apply to the row the patch leaves behind
+    /// (`SPEC.md`, "Secrets", Agent credentials): a rename into a credential
+    /// name at a scope that already holds one of the same backend is the 409
+    /// a create would be, and a resulting row that is a credential *and*
+    /// `orchestrator_only` is the 400 — whether the flag or the name is what
+    /// moved.
     #[instrument(skip_all, fields(secret_id = %id))]
     pub async fn patch(&self, actor: &Actor, id: Uuid, request: PatchSecret) -> Result<SecretMeta> {
         let repository = SecretRepository::new(self.pool);
@@ -309,6 +337,29 @@ impl<'a> SecretsService<'a> {
             // returned by a statement, because no statement ran.
             drop(tx);
             return repository.find_meta(id).await?.ok_or(Error::NotFound);
+        }
+
+        // Both agent-credential rules are about the row this patch *leaves
+        // behind*, so they are decided against the resulting name and flag
+        // rather than against the fields the request happens to carry
+        // (`SPEC.md`, "Secrets", Agent credentials): renaming an
+        // orchestrator-only secret into a credential name is refused by the
+        // same 400 as flagging a credential. Both run before the re-seal, so a
+        // refused patch has decrypted nothing.
+        let resulting_name = rename
+            .as_ref()
+            .map_or(row.name.as_str(), |name| name.as_str());
+        let resulting_flag = reflag.unwrap_or(row.orchestrator_only);
+        validate_credential_flag(resulting_name, resulting_flag)?;
+        if rename.is_some() {
+            refuse_second_credential(
+                &repository,
+                &mut tx,
+                &row.scope_ref(),
+                resulting_name,
+                Some(id),
+            )
+            .await?;
         }
 
         // Each write answers the row it wrote, so the last one to run is the
@@ -464,6 +515,73 @@ impl<'a> SecretsService<'a> {
         authorize(actor, meta.scope, meta.scope_id)?;
 
         repository.list_uses(id, limit).await
+    }
+}
+
+/// The 409 of the one-agent-credential-per-scope rule (`SPEC.md`, "Secrets",
+/// Agent credentials).
+///
+/// `existing` is the name of the credential the scope already holds, which is
+/// what the caller has to replace or delete; `None` is the same sentence
+/// without it, for the concurrent write that loses the race to the partial
+/// unique index and has no row to read back cheaply
+/// (`crate::repositories::SecretRepository`). A name is identity and never a
+/// value, so naming it in a response carries nothing secret (rule 3).
+pub fn credential_conflict(existing: Option<&str>) -> Error {
+    match existing {
+        Some(name) => Error::Conflict(format!(
+            "this scope already has an agent credential ({name}); replace or delete it first"
+        )),
+        None => Error::Conflict(
+            "this scope already has an agent credential; replace or delete it first".into(),
+        ),
+    }
+}
+
+/// One backend's credential names, as the repository's `name = ANY($1)` takes
+/// them.
+///
+/// The names come from the adapter through [`backend_for`] rather than from a
+/// list here, so a second backend's rule is its own `credential_names` and
+/// nothing in this module (ADR 0036).
+fn credential_names_of(backend: AgentBackend) -> Vec<String> {
+    backend_for(backend)
+        .credential_names()
+        .iter()
+        .map(|name| name.as_str().to_string())
+        .collect()
+}
+
+/// Refuse a write that would give `scope` a second agent credential of the
+/// same backend.
+///
+/// Does nothing for an ordinary name, which is every name no backend declares.
+/// `exclude` is the row being patched — a credential is not its own conflict —
+/// and a row of the *same* name is left to the plain "secret already exists"
+/// 409 of the name unique index, because that is the answer `SPEC.md` gives a
+/// caller who creates a secret that is already there.
+///
+/// Runs on the caller's connection, inside the transaction that then writes:
+/// the check and the write are one decision, and the partial unique index is
+/// what settles two of them arriving at once.
+async fn refuse_second_credential(
+    repository: &SecretRepository<'_>,
+    tx: &mut sqlx::PgConnection,
+    scope: &ScopeRef,
+    name: &str,
+    exclude: Option<Uuid>,
+) -> Result<()> {
+    let Some(backend) = credential_backend_of(name) else {
+        return Ok(());
+    };
+
+    let existing = repository
+        .find_credential_at_scope(tx, scope, &credential_names_of(backend), exclude)
+        .await?;
+
+    match existing {
+        Some(taken) if taken != name => Err(credential_conflict(Some(&taken))),
+        _ => Ok(()),
     }
 }
 

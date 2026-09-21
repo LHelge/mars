@@ -67,6 +67,15 @@ pub enum SecretError {
     /// 3).
     #[error("secret value must be between 1 and {MAX_SECRET_VALUE_BYTES} bytes")]
     InvalidValue,
+    /// A secret named after a backend's agent credential was asked to be
+    /// `orchestrator_only`.
+    ///
+    /// A credential that is never injected authenticates nothing, so the
+    /// combination is refused at the moment it is created rather than at the
+    /// launch it would silently break (`SPEC.md`, "Secrets", Agent
+    /// credentials; ADR 0036).
+    #[error("an agent credential cannot be orchestrator-only")]
+    CredentialOrchestratorOnly,
 }
 
 /// Longest accepted secret name, in characters (`docs/data-model.md`,
@@ -105,6 +114,28 @@ pub const MAX_SECRET_VALUE_BYTES: usize = 65_536;
 pub fn validate_secret_value(value: &str) -> SecretResult<()> {
     if value.is_empty() || value.len() > MAX_SECRET_VALUE_BYTES {
         return Err(SecretError::InvalidValue);
+    }
+
+    Ok(())
+}
+
+/// Refuse `orchestrator_only` on a secret whose name is an agent credential.
+///
+/// The one agent-credential rule that needs nothing but the name and the flag,
+/// which is why it lives here and not in the service: a create and a patch each
+/// call it with the row they are about to write, and neither can reach the
+/// database to decide it (`ARCHITECTURE.md`, "Secrets", Agent credentials).
+/// Which names are credentials is the backends' own knowledge
+/// ([`crate::agent::credential_backend_of`]), so this function asks rather than
+/// repeating a list.
+///
+/// The name arrives as a `&str` rather than a [`SecretName`] because the two
+/// callers have different halves of one: a create has just parsed the request's
+/// and a patch has the stored one of the row it is about to leave behind, which
+/// is valid by construction and not worth re-parsing to ask this question.
+pub fn validate_credential_flag(name: &str, orchestrator_only: bool) -> SecretResult<()> {
+    if orchestrator_only && crate::agent::credential_backend_of(name).is_some() {
+        return Err(SecretError::CredentialOrchestratorOnly);
     }
 
     Ok(())
@@ -386,7 +417,13 @@ impl NewSecret {
 /// adding a column to the row cannot accidentally widen the response, and so
 /// that `last_used_at` — which is an aggregate over `secret_uses`, not a
 /// column — has somewhere to live.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// The fields are exactly the columns every `query_as!` projection selects,
+/// which is why `credential_for` is *not* one of them: it is derived from the
+/// name by [`SecretMeta::credential_for`] and written by the hand-rolled
+/// `Serialize` below, so no statement has to compute it and no migration has
+/// to store it (`SPEC.md`, "Secrets"; ADR 0036).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretMeta {
     pub id: Uuid,
     pub scope: SecretScope,
@@ -400,6 +437,49 @@ pub struct SecretMeta {
     /// The newest `secret_uses.at` for this secret, or `None` if it has never
     /// been used.
     pub last_used_at: Option<DateTime<Utc>>,
+}
+
+impl SecretMeta {
+    /// The backend whose agent credential this secret's name is, or `None`.
+    ///
+    /// Derived rather than stored: what makes a row a credential is the exact
+    /// spelling its CLI reads, so the answer is whatever the adapters declare
+    /// today and a backend added tomorrow needs no backfill (ADR 0036). It is
+    /// serialised as `credential_for` on every response that carries a
+    /// [`SecretMeta`] (`SPEC.md`, "Secrets").
+    pub fn credential_for(&self) -> Option<crate::models::AgentBackend> {
+        crate::agent::credential_backend_of(&self.name)
+    }
+}
+
+/// The documented shape, which is the struct's fields plus the derived
+/// `credential_for` (`SPEC.md`, "Secrets").
+///
+/// Hand-rolled rather than derived because the extra field is a method: doing
+/// it here rather than in a route DTO means every response that answers a
+/// [`SecretMeta`] carries it, including the ones the updating statements
+/// return, and a new endpoint cannot forget it.
+impl Serialize for SecretMeta {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut meta = serializer.serialize_struct("SecretMeta", 11)?;
+        meta.serialize_field("id", &self.id)?;
+        meta.serialize_field("scope", &self.scope)?;
+        meta.serialize_field("scope_id", &self.scope_id)?;
+        meta.serialize_field("name", &self.name)?;
+        meta.serialize_field("orchestrator_only", &self.orchestrator_only)?;
+        meta.serialize_field("key_version", &self.key_version)?;
+        meta.serialize_field("created_by", &self.created_by)?;
+        meta.serialize_field("created_at", &self.created_at)?;
+        meta.serialize_field("updated_at", &self.updated_at)?;
+        meta.serialize_field("last_used_at", &self.last_used_at)?;
+        meta.serialize_field("credential_for", &self.credential_for())?;
+        meta.end()
+    }
 }
 
 impl From<&Secret> for SecretMeta {
@@ -522,6 +602,7 @@ mod tests {
             SecretError::InvalidScope,
             SecretError::InvalidPurpose,
             SecretError::InvalidValue,
+            SecretError::CredentialOrchestratorOnly,
         ] {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
             assert!(!error.to_string().is_empty(), "{error:?} has no message");
@@ -822,6 +903,77 @@ mod tests {
 
         let json = serde_json::to_value(&meta).unwrap();
         assert!(json.get("ciphertext").is_none(), "{json}");
+    }
+
+    #[test]
+    fn the_metadata_reports_the_backend_a_credential_name_belongs_to() {
+        let mut meta = SecretMeta::from(&fake_row());
+
+        meta.name = "ANTHROPIC_API_KEY".into();
+        assert_eq!(
+            meta.credential_for(),
+            Some(crate::models::AgentBackend::Claude)
+        );
+        meta.name = "CLAUDE_CODE_OAUTH_TOKEN".into();
+        assert_eq!(
+            meta.credential_for(),
+            Some(crate::models::AgentBackend::Claude)
+        );
+
+        // An ordinary secret, and the `GIT_CREDENTIAL` of `fake_row`, are no
+        // backend's credential.
+        meta.name = "DEPLOY_TOKEN".into();
+        assert_eq!(meta.credential_for(), None);
+        assert_eq!(SecretMeta::from(&fake_row()).credential_for(), None);
+    }
+
+    #[test]
+    fn the_metadata_serialises_the_documented_eleven_fields() {
+        let mut meta = SecretMeta::from(&fake_row());
+        meta.name = "ANTHROPIC_API_KEY".into();
+
+        let json = serde_json::to_value(&meta).unwrap();
+        let object = json.as_object().expect("an object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "created_at",
+                "created_by",
+                "credential_for",
+                "id",
+                "key_version",
+                "last_used_at",
+                "name",
+                "orchestrator_only",
+                "scope",
+                "scope_id",
+                "updated_at",
+            ]
+        );
+        assert_eq!(json["credential_for"], "claude");
+
+        meta.name = "DEPLOY_TOKEN".into();
+        let json = serde_json::to_value(&meta).unwrap();
+        assert_eq!(json["credential_for"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn only_a_credential_name_refuses_the_orchestrator_only_flag() {
+        for credential in ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"] {
+            assert_eq!(
+                validate_credential_flag(credential, true),
+                Err(SecretError::CredentialOrchestratorOnly),
+                "{credential}"
+            );
+            assert_eq!(validate_credential_flag(credential, false), Ok(()));
+        }
+
+        // `GIT_CREDENTIAL` is orchestrator-only by design and no backend's
+        // credential (`ARCHITECTURE.md`, "Secrets").
+        assert_eq!(validate_credential_flag("GIT_CREDENTIAL", true), Ok(()));
+        assert_eq!(validate_credential_flag("DEPLOY_TOKEN", true), Ok(()));
     }
 
     #[test]

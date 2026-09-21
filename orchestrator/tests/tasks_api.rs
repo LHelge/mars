@@ -43,13 +43,13 @@ use chrono::Utc;
 use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::models::{
-    NewSession, NewTaskComment, NewTaskHandoff, ProfileKind, ReviewStatus, TaskRef,
+    HandoffCaller, NewSession, NewTaskComment, NewTaskHandoff, ProfileKind, ReviewDecision,
+    ReviewStatus, TaskRef,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::projects::{NewProjectRequest, create_project};
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{ProjectRepository, SessionRepository, TaskRepository};
-use mars_orchestrator::tracker::{TrackerMutation, claim_for_launch};
+use mars_orchestrator::tracker::{ReviewCarry, TrackerMutation, claim_for_launch};
 use serde_json::{Value, json};
 use tokio::time::sleep;
 use uuid::Uuid;
@@ -1739,12 +1739,14 @@ const HANDOFF_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 /// short enough not to drag the suite out.
 const BETWEEN_HANDOFFS: Duration = Duration::from_millis(50);
 
-/// Publish one hand-off record on `task_id`, with its comment, in one
-/// mutation — the shape the hand-off path itself writes.
+/// One hand-off record on `task_id`, with its comment, in one mutation — a
+/// row of the task's history that the pointer does not name.
 ///
-/// `reviewed_by` makes it an approved record attributed to that user, which is
-/// what a forward carrying a decision leaves behind.
-async fn publish_handoff(
+/// The insert is the repository's, because the cross-table scope rules of a
+/// hand-off insert are all there is to it and no verb wraps them
+/// (`CLAUDE.md`, "Testing expectations"). The record that *is* current is
+/// published through the verb instead ([`publish_current_handoff`]).
+async fn handoff_record(
     app: &TestApp,
     pid: Uuid,
     task_id: Uuid,
@@ -1781,25 +1783,43 @@ async fn publish_handoff(
     inserted.id
 }
 
-/// Point `tasks.current_handoff_id` at this record.
-async fn set_current_handoff(app: &TestApp, pid: Uuid, task_id: Uuid, handoff_id: Uuid) {
-    let mut mutation = TrackerMutation::begin(&app.pool, pid, TaskActor::System)
-        .await
-        .expect("the mutation opens");
+/// Publish a hand-off on `task_id` and leave it the current one.
+///
+/// `tracker::handoffs::publish_in_transaction` is the only writer of
+/// `tasks.current_handoff_id`, and a publication always moves the task, so the
+/// fixture moves it back (`common::tracker::handoff_in_place`). `review` is
+/// what the record's review fields say: a revision is unreviewed, a forward
+/// carries its reviewer's verdict.
+async fn publish_current_handoff(
+    app: &TestApp,
+    pid: Uuid,
+    task_id: Uuid,
+    source_session_id: Uuid,
+    branch: &str,
+    caller: HandoffCaller,
+    review: ReviewCarry,
+) -> Uuid {
+    if let HandoffCaller::Session { session_id } = caller {
+        common::tracker::hold(&app.pool, pid, task_id, session_id).await;
+    }
 
-    TaskRepository::new(&app.pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            pid,
-            task_id,
-            &StateFields {
-                current_handoff_id: Some(Some(handoff_id)),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the current hand-off is set");
-    mutation.commit().await.expect("the mutation commits");
+    let (_, handoff_id) = common::tracker::handoff_in_place(
+        &app.pool,
+        pid,
+        task_id,
+        common::tracker::Handoff {
+            source_session_id: Some(source_session_id),
+            source_branch: branch,
+            commit: HANDOFF_COMMIT,
+            comment: "on the branch",
+            target_state: "",
+            caller,
+            review,
+        },
+    )
+    .await;
+
+    handoff_id
 }
 
 #[tokio::test]
@@ -1812,16 +1832,24 @@ async fn the_detail_lists_hand_offs_oldest_first_beside_the_one_the_column_names
     let id = id_of(&task);
     let session_id = session(&app, pid).await;
 
-    let mut published = Vec::new();
-    for branch in ["session/one", "session/two", "session/three"] {
-        published.push(publish_handoff(&app, pid, id, session_id, branch, None).await);
-        sleep(BETWEEN_HANDOFFS).await;
-    }
-
     // The *current* record is the pointer's, "never by timestamp"
-    // (`docs/data-model.md`): here the middle one, as a forward onto an older
-    // revision would leave it.
-    set_current_handoff(&app, pid, id, published[1]).await;
+    // (`docs/data-model.md`): the middle one here, with an older and a newer
+    // record of the same task around it.
+    let first = handoff_record(&app, pid, id, session_id, "session/one", None).await;
+    sleep(BETWEEN_HANDOFFS).await;
+    let current = publish_current_handoff(
+        &app,
+        pid,
+        id,
+        session_id,
+        "session/two",
+        HandoffCaller::Session { session_id },
+        ReviewCarry::Fresh,
+    )
+    .await;
+    sleep(BETWEEN_HANDOFFS).await;
+    let last = handoff_record(&app, pid, id, session_id, "session/three", None).await;
+    let published = [first, current, last];
 
     let detail = read_task(&app, &user, pid, id).await;
 
@@ -1874,16 +1902,16 @@ async fn the_project_list_embeds_the_current_hand_off_on_every_task_that_has_one
     let plain = create_task(&app, &user, pid, json!({ "title": "Plain" })).await;
     let session_id = session(&app, pid).await;
 
-    let handoff_id = publish_handoff(
+    let handoff_id = publish_current_handoff(
         &app,
         pid,
         id_of(&handed_off),
         session_id,
         "session/one",
-        None,
+        HandoffCaller::Session { session_id },
+        ReviewCarry::Fresh,
     )
     .await;
-    set_current_handoff(&app, pid, id_of(&handed_off), handoff_id).await;
 
     let response = app.get_as(&user, &tasks_path(pid)).await;
     response.assert_status_ok();
@@ -1908,16 +1936,18 @@ async fn a_hand_off_keeps_its_branch_commit_and_review_when_its_actors_are_delet
     let id = id_of(&task);
     let session_id = session(&app, pid).await;
 
-    let handoff_id = publish_handoff(
+    let handoff_id = publish_current_handoff(
         &app,
         pid,
         id,
         session_id,
         "session/one",
-        Some(approver.user.id),
+        HandoffCaller::User {
+            user_id: approver.user.id,
+        },
+        ReviewCarry::Decision(ReviewDecision::Approved),
     )
     .await;
-    set_current_handoff(&app, pid, id, handoff_id).await;
 
     let before = read_task(&app, &user, pid, id).await;
     assert_eq!(before["handoff"]["review_status"], json!("approved"));

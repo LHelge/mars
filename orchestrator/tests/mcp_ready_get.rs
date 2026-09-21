@@ -40,7 +40,6 @@ use mars_orchestrator::models::{
     NewSession, NewTaskComment, NewTaskHandoff, ProfileKind, SessionState, TaskRef,
 };
 use mars_orchestrator::projects::{NewProjectRequest, create_project};
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{ProjectRepository, SessionRepository, TaskRepository};
 use mars_orchestrator::tracker::{TrackerMutation, claim_for_launch};
 use rmcp::model::ErrorData;
@@ -175,22 +174,7 @@ fn number(task: &Value) -> i64 {
 /// Put a lease on a task without claiming it, so "held" is a precondition
 /// rather than a second assertion.
 async fn hold(app: &TestApp, pid: Uuid, task_id: Uuid, session_id: Uuid) {
-    let mut mutation = TrackerMutation::begin(&app.pool, pid, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    TaskRepository::new(&app.pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            pid,
-            task_id,
-            &StateFields {
-                lease: Some(Some((session_id, Utc::now()))),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the lease writes");
-    mutation.commit().await.expect("the mutation commits");
+    common::tracker::hold(&app.pool, pid, task_id, session_id).await;
 }
 
 /// A second session of the project, for a lease or a link to point at.
@@ -664,23 +648,7 @@ async fn publish_handoff(app: &TestApp, pid: Uuid, task_id: Uuid, session_id: Uu
 /// touch are the real ones.
 async fn link_session(app: &TestApp, pid: Uuid, task_id: Uuid, session_id: Uuid, user_id: Uuid) {
     claim(app, pid, task_id, session_id, user_id).await;
-
-    let mut mutation = TrackerMutation::begin(&app.pool, pid, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    TaskRepository::new(&app.pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            pid,
-            task_id,
-            &StateFields {
-                lease: Some(None),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the lease clears");
-    mutation.commit().await.expect("the mutation commits");
+    common::tracker::release(&app.pool, pid, task_id).await;
 }
 
 /// Claim as the session launcher does: lease, `attempts`, event and link.

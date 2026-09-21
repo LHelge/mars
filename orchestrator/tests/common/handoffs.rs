@@ -13,7 +13,6 @@
 //! return, and a panic naming the failed step is what a test author needs to
 //! see. Every identity here is obviously fake (rule 3).
 
-use chrono::Utc;
 use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::git::testutil::{TestUpstream, run_git, test_identity};
 use mars_orchestrator::git::{
@@ -21,12 +20,11 @@ use mars_orchestrator::git::{
     resolve_base,
 };
 use mars_orchestrator::models::{
-    BranchName, HandoffCaller, NewAgentProfile, NewProject, NewSession, NewTask, NewTaskComment,
-    NewTaskHandoff, ProfileKind, Project, ProjectStatus, RemoteUrl, Task, TaskState, User,
+    BranchName, HandoffCaller, NewAgentProfile, NewProject, NewSession, NewTask, ProfileKind,
+    Project, ProjectStatus, RemoteUrl, Task, TaskRef, TaskState, User,
 };
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{ProjectRepository, SessionRepository, TaskRepository};
-use mars_orchestrator::tracker::TrackerMutation;
+use mars_orchestrator::tracker::{ReviewCarry, TrackerMutation};
 use uuid::Uuid;
 
 use super::{AuthenticatedUser, TestApp};
@@ -266,33 +264,29 @@ impl Fixture {
             .expect("the project has this state")
     }
 
-    /// Put a lease on a task, the way a claim would.
+    /// Put a lease on a task, the way launching a session for it does.
     pub async fn claim(&self, task_id: Uuid, session_id: Uuid) -> Task {
-        self.set_fields(
-            task_id,
-            StateFields {
-                lease: Some(Some((session_id, Utc::now()))),
-                ..StateFields::default()
-            },
-        )
-        .await
+        super::tracker::hold(&self.app.pool, self.project.id, task_id, session_id).await;
+
+        self.task_row(task_id).await
     }
 
-    pub async fn set_fields(&self, task_id: Uuid, fields: StateFields) -> Task {
-        let mut mutation =
-            TrackerMutation::begin(&self.app.pool, self.project.id, TaskActor::System)
-                .await
-                .expect("the mutation opens");
-        let task = TaskRepository::new(&self.app.pool)
-            .set_task_state_fields(mutation.conn(), self.project.id, task_id, &fields)
+    /// The task row as it stands now.
+    pub async fn task_row(&self, task_id: Uuid) -> Task {
+        TaskRepository::new(&self.app.pool)
+            .find_task(self.project.id, TaskRef::Id(task_id))
             .await
-            .expect("the fields write");
-        mutation.commit().await.expect("the mutation commits");
-
-        task
+            .expect("the task reads")
+            .expect("the task is there")
     }
 
     /// An existing hand-off on `task`, made current: what a forward forwards.
+    ///
+    /// Published through `tracker::handoffs::publish_in_transaction` — the one
+    /// writer of `tasks.current_handoff_id` — and moved back into the state
+    /// the task was in, because a publication always moves the task
+    /// (`super::tracker::handoff_in_place`). The comment the record owes is
+    /// the publication's own, authored by this fixture's user.
     pub async fn current_handoff(
         &self,
         task: &Task,
@@ -300,38 +294,25 @@ impl Fixture {
         source_branch: &str,
         commit: &str,
     ) -> (Task, Uuid) {
-        let mut mutation =
-            TrackerMutation::begin(&self.app.pool, self.project.id, TaskActor::System)
-                .await
-                .expect("the mutation opens");
-        let repository = TaskRepository::new(&self.app.pool);
+        let (_, handoff_id) = super::tracker::handoff_in_place(
+            &self.app.pool,
+            self.project.id,
+            task.id,
+            super::tracker::Handoff {
+                source_session_id,
+                source_branch,
+                commit,
+                comment: "the first revision",
+                // Replaced by `handoff_in_place`, which publishes into a
+                // neighbouring column and moves the task home again.
+                target_state: "",
+                caller: self.user_caller(),
+                review: ReviewCarry::Fresh,
+            },
+        )
+        .await;
 
-        let comment = NewTaskComment::from_user(task.id, self.user.id, "the first revision");
-        let comment = repository
-            .insert_comment(mutation.conn(), self.project.id, &comment)
-            .await
-            .expect("the comment inserts");
-
-        let mut handoff = NewTaskHandoff::new(task.id, source_branch, commit, comment.id);
-        handoff.source_session_id = source_session_id;
-        handoff.created_by_user_id = Some(self.user.id);
-        let handoff = repository
-            .insert_handoff(mutation.conn(), self.project.id, &handoff)
-            .await
-            .expect("the hand-off inserts");
-        mutation.commit().await.expect("the mutation commits");
-
-        let task = self
-            .set_fields(
-                task.id,
-                StateFields {
-                    current_handoff_id: Some(Some(handoff.id)),
-                    ..StateFields::default()
-                },
-            )
-            .await;
-
-        (task, handoff.id)
+        (self.task_row(task.id).await, handoff_id)
     }
 
     /// Every retained hand-off ref in the project repository.

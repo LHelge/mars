@@ -26,13 +26,11 @@
 mod common;
 
 use axum::http::StatusCode;
-use chrono::Utc;
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{
     NewSession, NewTask, ProfileKind, Task, TaskDependencyKind, TaskRef,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
 use mars_orchestrator::tracker::graph::recompute_blocked;
 use mars_orchestrator::tracker::state::{
@@ -175,24 +173,7 @@ async fn state_id(pool: &PgPool, project_id: Uuid, name: &str) -> Uuid {
 
 /// Put a lease and an attempt count on a task, the way a claim would.
 async fn claim(pool: &PgPool, project_id: Uuid, task_id: Uuid, session_id: Uuid, attempts: i16) {
-    let repository = TaskRepository::new(pool);
-    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    repository
-        .set_task_state_fields(
-            mutation.conn(),
-            project_id,
-            task_id,
-            &StateFields {
-                lease: Some(Some((session_id, Utc::now()))),
-                attempts: Some(attempts),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the claim writes");
-    mutation.commit().await.expect("the mutation commits");
+    common::tracker::hold_with_attempts(pool, project_id, task_id, session_id, attempts).await;
 }
 
 /// Add one `blocks` edge and store the flag it implies.
@@ -321,6 +302,9 @@ async fn a_hand_off_clears_the_lease_and_resets_the_attempts() {
 
     let subject = task(&pool, project_id, "implement it", "ready").await;
     claim(&pool, project_id, subject.id, session_id, 2).await;
+    // The arranging claims are behind the cursor; what follows is the move's
+    // own.
+    let seq = last_seq(&pool, project_id).await;
 
     // A user is not bound by anybody's lease: the hand-off clears it even
     // though the user is not the holder (`SPEC.md`, "Tasks").
@@ -341,7 +325,7 @@ async fn a_hand_off_clears_the_lease_and_resets_the_attempts() {
     let stored = read(&pool, project_id, subject.id).await;
     assert_eq!(stored, moved.task);
 
-    let written = events(&pool, project_id).await;
+    let written = events_after(&pool, project_id, seq).await;
     assert_eq!(written.len(), 1);
     assert_eq!(written[0].kind, TaskEventKind::StateChanged);
     assert_eq!(written[0].task_id, Some(subject.id));
@@ -365,6 +349,9 @@ async fn assigning_the_current_state_changes_nothing_at_all() {
 
     let subject = task(&pool, project_id, "still mine", "ready").await;
     claim(&pool, project_id, subject.id, session_id, 2).await;
+    // The arranging claims are behind the cursor; what follows is the move's
+    // own.
+    let seq = last_seq(&pool, project_id).await;
     let before = read(&pool, project_id, subject.id).await;
 
     let actor = TaskActor::Session { session_id };
@@ -381,7 +368,7 @@ async fn assigning_the_current_state_changes_nothing_at_all() {
     assert_eq!(after.lease_holder_session_id, Some(session_id));
     assert_eq!(after.attempts, 2);
 
-    assert!(events(&pool, project_id).await.is_empty());
+    assert!(events_after(&pool, project_id, seq).await.is_empty());
 }
 
 #[tokio::test]
@@ -484,14 +471,16 @@ async fn the_last_open_child_closes_its_parent_as_the_system() {
         user_id: fixture.user_id,
     };
 
+    // A parent may be held; its closure clears the lease like any hand-off.
+    // The claim comes before the children, because a blocked task is not
+    // claimable and an open child is what blocks one.
     let parent = task(&pool, project_id, "the epic", "ready").await;
+    claim(&pool, project_id, parent.id, session_id, 1).await;
+
     let first = task_under(&pool, project_id, "one", "ready", Some(parent.id)).await;
     let second = task_under(&pool, project_id, "two", "ready", Some(parent.id)).await;
     recompute(&pool, project_id, &[parent.id]).await;
     assert!(read(&pool, project_id, parent.id).await.blocked);
-
-    // A parent may be held; its closure clears the lease like any hand-off.
-    claim(&pool, project_id, parent.id, session_id, 1).await;
 
     // One child of two: the parent has an open child left, so nothing about
     // it changes — not its state and not its flag.
@@ -629,6 +618,9 @@ async fn an_escalation_carries_its_reason_and_an_ordinary_move_does_not() {
     let session_id = seed_session(&pool, project_id, fixture.profile_id).await;
     let subject = task(&pool, project_id, "stuck", "ready").await;
     claim(&pool, project_id, subject.id, session_id, 3).await;
+    // The arranging claims are behind the cursor; what follows is the
+    // escalation's own.
+    let seq = last_seq(&pool, project_id).await;
 
     let escalated = change(
         &pool,
@@ -653,7 +645,7 @@ async fn an_escalation_carries_its_reason_and_an_ordinary_move_does_not() {
     );
     assert_eq!(escalated.task.attempts, 0);
 
-    let written = events(&pool, project_id).await;
+    let written = events_after(&pool, project_id, seq).await;
     assert_eq!(written.len(), 1);
     assert_eq!(written[0].kind, TaskEventKind::Escalated);
     assert_eq!(written[0].to.as_deref(), Some("needs_human"));
@@ -723,5 +715,5 @@ async fn an_unknown_state_name_lists_the_states_that_exist() {
         .expect("a known state resolves");
     assert_eq!(state.id, state_id(&pool, project_id, "review").await);
 
-    assert!(events(&pool, project_id).await.is_empty());
+    assert!(events_after(&pool, project_id, 0).await.is_empty());
 }

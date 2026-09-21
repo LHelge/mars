@@ -17,9 +17,11 @@
 //! own (ADR 0037). A server per process would therefore be a server per test,
 //! so the processes of a run share one.
 //!
-//! What they share is a state directory under `CARGO_TARGET_TMPDIR`, which is
-//! inside the build directory and so belongs to this checkout and this build
-//! alone. It holds a `lock` file every process takes `flock(LOCK_EX)` on
+//! What they share is a state directory under the build directory's `tmp/`
+//! (see [`state_directory`]), which belongs to this checkout and this build
+//! alone — and which the library's own test process resolves to the same
+//! place, so the row-level repository tests inside the crate join the same
+//! server rather than starting a second one. It holds a `lock` file every process takes `flock(LOCK_EX)` on
 //! before it reads or writes anything else, a `server` file naming the URL,
 //! the container id and a fingerprint of the embedded migrations, and one
 //! empty file per live process under `pids/`. A process finding a `server`
@@ -536,12 +538,33 @@ async fn connect(database: &TestDatabase, max_connections: u32) -> PgPool {
 
 /// The run's state directory, inside this build directory's `tmp/`.
 ///
-/// `CARGO_TARGET_TMPDIR` is set for integration test binaries only, which is
-/// all of this module's callers, and it follows `CARGO_TARGET_DIR`: two
-/// worktrees building into two directories therefore share no server, which is
-/// what a parallel agent needs (`CLAUDE.md`, "Git workflow").
+/// `CARGO_TARGET_TMPDIR` follows `CARGO_TARGET_DIR`, so two worktrees building
+/// into two directories share no server, which is what a parallel agent needs
+/// (`CLAUDE.md`, "Git workflow").
+///
+/// Cargo sets it for *integration test* binaries only, and this module is
+/// compiled into the library's own test binary as well (`repositories::testdb`,
+/// for the row-level guards whose helpers are `pub(crate)`). `option_env!`
+/// rather than `env!` for that reason, with the same directory derived from
+/// the running executable when it is unset: a test binary is
+/// `<target>/<profile>/deps/<name>`, so `tmp/` beside the profile directory is
+/// `<target>/tmp`, which is exactly what Cargo would have named. A lib test
+/// process and an integration test process of one run therefore agree on the
+/// directory, and so share one server.
 fn state_directory() -> PathBuf {
-    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("mars-test-postgres")
+    let target_tmp = match option_env!("CARGO_TARGET_TMPDIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => {
+            let exe = std::env::current_exe().expect("the test binary has a path");
+            exe.parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .expect("a test binary lives in <target>/<profile>/deps")
+                .join("tmp")
+        }
+    };
+
+    target_tmp.join("mars-test-postgres")
 }
 
 /// What the `server` file records: the one line each of fingerprint, URL and

@@ -274,12 +274,69 @@ fn map_sequence_collision(err: sqlx::Error, project_id: Uuid) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+    use crate::events::TaskActor;
+    use crate::models::task_event_kind;
+    use crate::repositories::TaskRepository;
+    use crate::repositories::tasks::testfix::Fixture;
+    use crate::tracker::TrackerMutation;
 
     #[test]
     fn the_replay_page_is_the_session_stream_bound() {
         // The same bound as `SessionRepository::MAX_EVENT_PAGE`; a client
         // further behind than one page reads again from its last `seq`.
         assert_eq!(MAX_TASK_EVENT_PAGE, 500);
+    }
+
+    /// A batch naming another project's task is refused whole.
+    ///
+    /// The one rule of [`TaskRepository::append_task_events`] that no verb can
+    /// express: `TrackerMutation`'s typed `emit_*` methods only ever carry a
+    /// task the mutation just changed, so a batch that is out of scope cannot
+    /// be built above the repository — and the check exists precisely for the
+    /// writer that gets it wrong. Asserted here because the statement is
+    /// `pub(crate)`, `TrackerMutation::commit` being its only caller.
+    ///
+    /// The `deleted` exception — the one kind whose task row is expected to be
+    /// gone (ADR 0022) — is covered through `delete_task` in
+    /// `tests/tasks_api.rs`.
+    #[tokio::test]
+    async fn an_event_about_another_project_s_task_is_refused_and_writes_nothing() {
+        let fixture = Fixture::create().await;
+        let repository = TaskRepository::new(&fixture.pool);
+
+        let mine = fixture.task(fixture.project_id, "mine").await;
+        let theirs = fixture.task(fixture.other_project_id, "theirs").await;
+
+        let batch = [
+            NewTaskEvent::about(mine.id, task_event_kind::UPDATED, json!({})),
+            NewTaskEvent::about(theirs.id, task_event_kind::UPDATED, json!({})),
+        ];
+
+        let mut mutation =
+            TrackerMutation::begin(&fixture.pool, fixture.project_id, TaskActor::System)
+                .await
+                .expect("the mutation opens");
+        let refused = repository
+            .append_task_events(mutation.conn(), fixture.project_id, &batch)
+            .await;
+        mutation.no_change().await.expect("the mutation rolls back");
+
+        assert!(
+            matches!(refused, Err(Error::NotFound)),
+            "a foreign task's event was accepted: {refused:?}",
+        );
+
+        // Whole batch or none: the first event is in scope and is still not
+        // written, because the check runs over every event before any row.
+        assert_eq!(
+            repository
+                .max_task_event_seq(fixture.project_id)
+                .await
+                .expect("the cursor reads"),
+            0,
+        );
     }
 }

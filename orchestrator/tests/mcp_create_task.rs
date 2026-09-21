@@ -39,7 +39,6 @@
 
 mod common;
 
-use chrono::Utc;
 use common::TestApp;
 use common::mcp::{McpClient, code, refused, task_of};
 use serde_json::json;
@@ -48,7 +47,6 @@ use uuid::Uuid;
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{NewTask, SessionState, Task, TaskDependencyKind};
 use mars_orchestrator::repositories::TaskRepository;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::tracker::{TaskDetailDto, TaskDto, TrackerMutation};
 
 /// The project's default state: the first `queue` state of the documented
@@ -133,31 +131,31 @@ async fn state_id(app: &TestApp, project_id: Uuid, name: &str) -> Uuid {
         .id
 }
 
-/// Hand the lease to a session without going through a claim, so that "held"
-/// is a precondition rather than a second assertion.
-async fn hold(app: &TestApp, project_id: Uuid, task_id: Uuid, session_id: Uuid) {
-    let mut mutation = TrackerMutation::begin(&app.pool, project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    TaskRepository::new(&app.pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            project_id,
-            task_id,
-            &StateFields {
-                lease: Some(Some((session_id, Utc::now()))),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the lease writes");
-    mutation.commit().await.expect("the mutation commits");
+/// Hand the lease to a session, so that "held" is a precondition rather than a
+/// second assertion, and answer with the cursor the scenario reads from.
+async fn hold(app: &TestApp, project_id: Uuid, task_id: Uuid, session_id: Uuid) -> i64 {
+    common::tracker::hold(&app.pool, project_id, task_id, session_id).await;
+
+    since(app, project_id).await
 }
 
 /// Every committed event of the project, oldest first.
-async fn events(app: &TestApp, project_id: Uuid) -> Vec<TaskEvent> {
+/// Where the stream stands right now.
+///
+/// The cursor an assertion about "what this call emitted" starts from: a
+/// lease is a claim's and `attempts` is what claims left behind
+/// (`common::tracker`), so an arrangement really writes `claimed` and
+/// `released` events of its own.
+async fn since(app: &TestApp, project_id: Uuid) -> i64 {
     TaskRepository::new(&app.pool)
-        .list_task_events_after(project_id, 0, 100)
+        .max_task_event_seq(project_id)
+        .await
+        .expect("the cursor reads")
+}
+
+async fn events(app: &TestApp, project_id: Uuid, after: i64) -> Vec<TaskEvent> {
+    TaskRepository::new(&app.pool)
+        .list_task_events_after(project_id, after, 100)
         .await
         .expect("the events read")
         .into_iter()
@@ -166,8 +164,8 @@ async fn events(app: &TestApp, project_id: Uuid) -> Vec<TaskEvent> {
 }
 
 /// The kinds of those events, which is usually the whole assertion.
-async fn event_kinds(app: &TestApp, project_id: Uuid) -> Vec<TaskEventKind> {
-    events(app, project_id)
+async fn event_kinds(app: &TestApp, project_id: Uuid, after: i64) -> Vec<TaskEventKind> {
+    events(app, project_id, after)
         .await
         .into_iter()
         .map(|event| event.kind)
@@ -267,7 +265,7 @@ async fn a_minimal_creation_lands_in_the_default_state_and_names_the_session() {
         "exactly one creator column, and it is the calling session",
     );
 
-    let written = events(&app, fixture.project_id).await;
+    let written = events(&app, fixture.project_id, 0).await;
     assert_eq!(written.len(), 1, "a plain creation emits one event");
     let event = written.last().expect("the event is there");
     assert_eq!(event.kind, TaskEventKind::Created);
@@ -348,7 +346,7 @@ async fn a_bad_priority_or_title_is_refused_before_anything_is_written() {
 
     assert_eq!(task_count(&app, fixture.project_id).await, 0);
     assert_eq!(next_number(&app, fixture.project_id).await, before);
-    assert!(events(&app, fixture.project_id).await.is_empty());
+    assert!(events(&app, fixture.project_id, 0).await.is_empty());
 }
 
 // ---- parents ----
@@ -465,7 +463,7 @@ async fn depends_on_creates_one_blocks_edge_per_entry_and_blocks_the_task() {
     assert!(created.blocked, "both prerequisites are open");
 
     assert_eq!(
-        event_kinds(&app, fixture.project_id).await,
+        event_kinds(&app, fixture.project_id, 0).await,
         [
             TaskEventKind::Created,
             TaskEventKind::DependencyAdded,
@@ -500,7 +498,7 @@ async fn a_depends_on_entry_naming_no_task_creates_neither_task_nor_number() {
         "only the prerequisite that was there before",
     );
     assert_eq!(next_number(&app, fixture.project_id).await, before);
-    assert!(events(&app, fixture.project_id).await.is_empty());
+    assert!(events(&app, fixture.project_id, 0).await.is_empty());
 }
 
 // ---- discovery provenance ----
@@ -512,7 +510,7 @@ async fn the_sole_held_task_is_the_origin_when_none_is_named() {
     let (client, session_id) = session(&app, &fixture).await;
 
     let held = task(&app, &fixture, "implement it").await;
-    hold(&app, fixture.project_id, held.id, session_id).await;
+    let after = hold(&app, fixture.project_id, held.id, session_id).await;
 
     let created = task_of(
         &client
@@ -527,7 +525,7 @@ async fn the_sole_held_task_is_the_origin_when_none_is_named() {
     );
     assert!(!created.blocked, "provenance does not block");
     assert_eq!(
-        event_kinds(&app, fixture.project_id).await,
+        event_kinds(&app, fixture.project_id, after).await,
         [TaskEventKind::Created, TaskEventKind::DependencyAdded],
     );
 }
@@ -549,7 +547,7 @@ async fn a_session_holding_nothing_records_no_provenance() {
 
     assert!(created.depends_on.is_empty());
     assert_eq!(
-        event_kinds(&app, fixture.project_id).await,
+        event_kinds(&app, fixture.project_id, 0).await,
         [TaskEventKind::Created],
     );
 }
@@ -562,8 +560,8 @@ async fn a_session_holding_several_tasks_must_name_the_origin() {
 
     let first = task(&app, &fixture, "implement it").await;
     let second = task(&app, &fixture, "document it").await;
-    hold(&app, fixture.project_id, first.id, session_id).await;
-    hold(&app, fixture.project_id, second.id, session_id).await;
+    let _ = hold(&app, fixture.project_id, first.id, session_id).await;
+    let after = hold(&app, fixture.project_id, second.id, session_id).await;
     let before = next_number(&app, fixture.project_id).await;
 
     let err = refused(
@@ -580,7 +578,7 @@ async fn a_session_holding_several_tasks_must_name_the_origin() {
     );
     assert_eq!(task_count(&app, fixture.project_id).await, 2);
     assert_eq!(next_number(&app, fixture.project_id).await, before);
-    assert!(events(&app, fixture.project_id).await.is_empty());
+    assert!(events(&app, fixture.project_id, after).await.is_empty());
 
     // Naming one of them is the way through.
     let created = task_of(
@@ -606,7 +604,7 @@ async fn an_origin_another_session_holds_is_refused() {
     let (_other, other_session) = session(&app, &fixture).await;
 
     let theirs = task(&app, &fixture, "implement it").await;
-    hold(&app, fixture.project_id, theirs.id, other_session).await;
+    let after = hold(&app, fixture.project_id, theirs.id, other_session).await;
 
     let err = refused(
         client
@@ -624,7 +622,7 @@ async fn an_origin_another_session_holds_is_refused() {
         err.message,
     );
     assert_eq!(task_count(&app, fixture.project_id).await, 1);
-    assert!(events(&app, fixture.project_id).await.is_empty());
+    assert!(events(&app, fixture.project_id, after).await.is_empty());
 }
 
 #[tokio::test]
@@ -634,7 +632,7 @@ async fn an_origin_that_is_the_parent_records_no_second_edge() {
     let (client, session_id) = session(&app, &fixture).await;
 
     let held = task(&app, &fixture, "the plan").await;
-    hold(&app, fixture.project_id, held.id, session_id).await;
+    let after = hold(&app, fixture.project_id, held.id, session_id).await;
 
     let created = task_of(
         &client
@@ -654,7 +652,7 @@ async fn an_origin_that_is_the_parent_records_no_second_edge() {
     // Two events, and neither is a `dependency_added`: the second is the
     // *parent* becoming blocked by the open child it just gained
     // (`ARCHITECTURE.md`, "Task tracker" → "Parents").
-    let written = events(&app, fixture.project_id).await;
+    let written = events(&app, fixture.project_id, after).await;
     assert_eq!(
         written
             .iter()
@@ -674,7 +672,7 @@ async fn a_blocks_edge_to_the_origin_coexists_with_the_provenance_edge() {
     let (client, session_id) = session(&app, &fixture).await;
 
     let held = task(&app, &fixture, "implement it").await;
-    hold(&app, fixture.project_id, held.id, session_id).await;
+    let after = hold(&app, fixture.project_id, held.id, session_id).await;
 
     let created = task_of(
         &client
@@ -695,7 +693,7 @@ async fn a_blocks_edge_to_the_origin_coexists_with_the_provenance_edge() {
     assert!(created.blocked, "only the `blocks` edge blocks");
 
     assert_eq!(
-        event_kinds(&app, fixture.project_id).await,
+        event_kinds(&app, fixture.project_id, after).await,
         [
             TaskEventKind::Created,
             TaskEventKind::DependencyAdded,

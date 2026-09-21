@@ -35,7 +35,10 @@
 
 mod common;
 
-use chrono::Utc;
+use std::cell::Cell;
+
+use chrono::{DateTime, Utc};
+
 use common::TestApp;
 use common::handoffs::Fixture as GitFixture;
 use common::mcp::{McpClient, code, task_of};
@@ -50,7 +53,6 @@ use mars_orchestrator::models::{
     NewTask, ReviewStatus, SessionState, Task, TaskDependencyKind, TaskHandoff,
 };
 use mars_orchestrator::repositories::TaskRepository;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::tracker::graph::recompute_blocked;
 use mars_orchestrator::tracker::{TaskDto, TrackerMutation};
 
@@ -75,6 +77,13 @@ struct Board {
     profile_id: Uuid,
     client: McpClient,
     caller: Uuid,
+    /// Where [`Board::events`] starts reading.
+    ///
+    /// A lease is a claim's and `attempts` is what claims left behind
+    /// (`common::tracker`), so arranging either really emits `claimed` and
+    /// `released`. A scenario about what the *tool* wrote counts from after
+    /// its arrangement, which is what [`Board::arranged`] records.
+    cursor: Cell<i64>,
 }
 
 impl Board {
@@ -104,6 +113,7 @@ impl Board {
             profile_id,
             client,
             caller: seeded.session_id,
+            cursor: Cell::new(0),
         }
     }
 
@@ -169,29 +179,25 @@ impl Board {
             .id
     }
 
-    /// Put the lease on a session without going through a claim, so that
-    /// "held" is a precondition rather than a second assertion.
+    /// Put the lease on a session, so that "held" is a precondition rather
+    /// than a second assertion.
     async fn hold(&self, task_id: Uuid, session_id: Uuid) {
-        self.set_fields(
-            task_id,
-            StateFields {
-                lease: Some(Some((session_id, Utc::now()))),
-                ..StateFields::default()
-            },
-        )
-        .await;
+        common::tracker::hold(&self.app.pool, self.project_id, task_id, session_id).await;
+        self.arranged().await;
     }
 
-    async fn set_fields(&self, task_id: Uuid, fields: StateFields) {
-        let mut mutation =
-            TrackerMutation::begin(&self.app.pool, self.project_id, TaskActor::System)
-                .await
-                .expect("the mutation opens");
-        TaskRepository::new(&self.app.pool)
-            .set_task_state_fields(mutation.conn(), self.project_id, task_id, &fields)
-            .await
-            .expect("the fields write");
-        mutation.commit().await.expect("the mutation commits");
+    /// The same, with the attempt counter already at `attempts`: that many
+    /// claims, the last of them still standing.
+    async fn hold_with_attempts(&self, task_id: Uuid, session_id: Uuid, attempts: i16) {
+        common::tracker::hold_with_attempts(
+            &self.app.pool,
+            self.project_id,
+            task_id,
+            session_id,
+            attempts,
+        )
+        .await;
+        self.arranged().await;
     }
 
     /// One edge of a kind, with the `blocked` flag it implies.
@@ -221,7 +227,17 @@ impl Board {
     }
 
     async fn events(&self) -> Vec<TaskEvent> {
-        events(&self.app, self.project_id).await
+        events(&self.app, self.project_id, self.cursor.get()).await
+    }
+
+    /// Everything written so far was arrangement: read from here on.
+    async fn arranged(&self) {
+        self.cursor.set(
+            TaskRepository::new(&self.app.pool)
+                .max_task_event_seq(self.project_id)
+                .await
+                .expect("the cursor reads"),
+        );
     }
 
     async fn event_kinds(&self) -> Vec<TaskEventKind> {
@@ -249,6 +265,22 @@ impl Board {
             .await
             .expect("the count reads")
     }
+
+    /// Every session linked to this task and when it last touched it.
+    ///
+    /// What a refused or no-op call must leave exactly as it found it: the
+    /// arranging claim's link is there, and nothing may add to it or advance
+    /// its timestamp (ADR 0030). The row-level fact no interface answers.
+    async fn link_touches(&self, task_id: Uuid) -> Vec<(Uuid, DateTime<Utc>)> {
+        sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+            "SELECT session_id, last_touched_at FROM task_sessions
+             WHERE task_id = $1 ORDER BY session_id",
+        )
+        .bind(task_id)
+        .fetch_all(&self.app.pool)
+        .await
+        .expect("the links read")
+    }
 }
 
 // ---- shared assertions ----
@@ -261,9 +293,9 @@ async fn read(app: &TestApp, project_id: Uuid, task_id: Uuid) -> TaskDto {
         .expect("the task is in this project")
 }
 
-async fn events(app: &TestApp, project_id: Uuid) -> Vec<TaskEvent> {
+async fn events(app: &TestApp, project_id: Uuid, after: i64) -> Vec<TaskEvent> {
     TaskRepository::new(&app.pool)
-        .list_task_events_after(project_id, 0, 200)
+        .list_task_events_after(project_id, after, 200)
         .await
         .expect("the events read")
         .into_iter()
@@ -310,6 +342,7 @@ async fn a_session_that_neither_holds_nor_created_the_task_is_refused() {
     board.hold(task.id, other).await;
 
     let before = board.read(task.id).await;
+    let links_before = board.link_touches(task.id).await;
     let err = board
         .update(json!({ "task": task.number, "title": "mine now" }))
         .await
@@ -318,7 +351,7 @@ async fn a_session_that_neither_holds_nor_created_the_task_is_refused() {
     assert_eq!(code(&err), "conflict");
     assert_eq!(err.message, NOT_HELD_BY_SESSION);
     assert_eq!(board.events().await.len(), 0);
-    assert_eq!(board.links(task.id).await, 0);
+    assert_eq!(board.link_touches(task.id).await, links_before);
     assert_eq!(board.read(task.id).await, before);
 }
 
@@ -424,16 +457,7 @@ async fn an_unknown_state_lists_the_projects_states_in_position_order() {
 async fn a_different_state_releases_the_lease_and_resets_the_attempts() {
     let board = Board::create().await;
     let task = board.task("Wire the tracker", "ready").await;
-    board.hold(task.id, board.caller).await;
-    board
-        .set_fields(
-            task.id,
-            StateFields {
-                attempts: Some(2),
-                ..StateFields::default()
-            },
-        )
-        .await;
+    board.hold_with_attempts(task.id, board.caller, 2).await;
 
     let output = board
         .update(json!({ "task": task.number, "state": "review" }))
@@ -463,7 +487,6 @@ async fn a_terminal_state_closes_the_task_and_unblocks_what_waited_on_it() {
         .edge(dependant.id, prerequisite.id, TaskDependencyKind::Blocks)
         .await;
     assert!(board.read(dependant.id).await.blocked);
-    let arranged = board.events().await.len();
 
     board.hold(prerequisite.id, board.caller).await;
 
@@ -475,45 +498,44 @@ async fn a_terminal_state_closes_the_task_and_unblocks_what_waited_on_it() {
     assert!(task_of(&output).closed_at.is_some());
     assert!(!board.read(dependant.id).await.blocked);
     assert_eq!(
-        board.event_kinds_after(arranged).await,
+        board.event_kinds().await,
         vec![TaskEventKind::StateChanged, TaskEventKind::Unblocked],
     );
 }
 
 #[tokio::test]
-async fn reopening_a_closed_task_clears_closed_at() {
+async fn an_agent_cannot_reopen_the_task_it_just_closed() {
     let board = Board::create().await;
-    let task = board.task("Done too soon", "ready").await;
+    let task = board
+        .task_created_by("Done too soon", "ready", board.caller)
+        .await;
     board.hold(task.id, board.caller).await;
     board
         .update(json!({ "task": task.number, "state": "done" }))
         .await
         .expect("the holder closes the task");
     assert!(board.read(task.id).await.closed_at.is_some());
-    board.hold(task.id, board.caller).await;
 
-    let output = board
+    // The close ended the lease and a terminal task is not claimable, so the
+    // agent has no way back in: the creator exception covers the five fields
+    // the contract names and not the state (`SPEC.md`, `update`). Reopening
+    // is a person's, over REST, and `tests/tracker_state.rs` is where the
+    // reopening itself — `closed_at` cleared, dependants blocked again — is
+    // asserted.
+    let err = board
         .update(json!({ "task": task.number, "state": "ready" }))
         .await
-        .expect("a terminal task can be reopened");
-
-    assert_eq!(task_of(&output).closed_at, None);
+        .expect_err("an agent may not reopen what it closed");
+    assert_eq!(code(&err), "conflict");
+    assert_eq!(err.message, NOT_HELD_BY_SESSION);
+    assert!(board.read(task.id).await.closed_at.is_some());
 }
 
 #[tokio::test]
 async fn the_current_state_is_a_no_op_that_keeps_the_lease_and_the_counters() {
     let board = Board::create().await;
     let task = board.task("Wire the tracker", "ready").await;
-    board.hold(task.id, board.caller).await;
-    board
-        .set_fields(
-            task.id,
-            StateFields {
-                attempts: Some(2),
-                ..StateFields::default()
-            },
-        )
-        .await;
+    board.hold_with_attempts(task.id, board.caller, 2).await;
 
     let output = board
         .update(json!({
@@ -648,6 +670,9 @@ async fn removing_a_prerequisite_takes_the_blocks_edge_and_leaves_the_provenance
     let board = Board::create().await;
     let origin = board.task("Where it came from", "ready").await;
     let task = board.task("What came of it", "ready").await;
+    // The lease first: a blocked task is not claimable, and the edge below is
+    // what blocks it.
+    board.hold(task.id, board.caller).await;
     board
         .edge(task.id, origin.id, TaskDependencyKind::Blocks)
         .await;
@@ -655,7 +680,6 @@ async fn removing_a_prerequisite_takes_the_blocks_edge_and_leaves_the_provenance
         .edge(task.id, origin.id, TaskDependencyKind::DiscoveredFrom)
         .await;
     let arranged = board.events().await.len();
-    board.hold(task.id, board.caller).await;
 
     let output = board
         .update(json!({ "task": task.number, "remove_depends_on": [origin.number] }))
@@ -689,6 +713,7 @@ async fn an_update_with_no_effective_change_writes_nothing() {
     let task = board.task("Wire the tracker", "ready").await;
     board.hold(task.id, board.caller).await;
     let before = board.read(task.id).await;
+    let links_before = board.link_touches(task.id).await;
 
     let output = board
         .update(json!({
@@ -704,7 +729,7 @@ async fn an_update_with_no_effective_change_writes_nothing() {
     assert_eq!(task_of(&output).updated_at, before.updated_at);
     assert_eq!(board.read(task.id).await, before);
     assert_eq!(board.events().await.len(), 0);
-    assert_eq!(board.links(task.id).await, 0);
+    assert_eq!(board.link_touches(task.id).await, links_before);
 }
 
 #[tokio::test]
@@ -764,6 +789,9 @@ async fn an_update_that_names_no_field_and_one_with_a_bad_priority_are_refused()
 /// and a reviewer session to forward with.
 struct Handoffs {
     fixture: GitFixture,
+    /// Where [`Handoffs::event_kinds`] starts reading, past the claim that
+    /// arranged the lease every publication needs.
+    cursor: Cell<i64>,
     client: McpClient,
     caller: Uuid,
 }
@@ -791,6 +819,7 @@ impl Handoffs {
             fixture,
             client,
             caller: seeded.session_id,
+            cursor: Cell::new(0),
         }
     }
 
@@ -826,8 +855,16 @@ impl Handoffs {
     /// A task of this project in `state`, held by the caller.
     async fn held_task(&self, title: &str, state: &str) -> Task {
         let task = self.fixture.task(title, state).await;
+        let held = self.fixture.claim(task.id, self.caller).await;
+        // The claim is arrangement; the stream is read from here on.
+        self.cursor.set(
+            TaskRepository::new(&self.fixture.app.pool)
+                .max_task_event_seq(self.fixture.project.id)
+                .await
+                .expect("the cursor reads"),
+        );
 
-        self.fixture.claim(task.id, self.caller).await
+        held
     }
 
     async fn commit(&self, file: &str, content: &str) -> String {
@@ -841,11 +878,15 @@ impl Handoffs {
     }
 
     async fn event_kinds(&self) -> Vec<TaskEventKind> {
-        events(&self.fixture.app, self.fixture.project.id)
-            .await
-            .into_iter()
-            .map(|event| event.kind)
-            .collect()
+        events(
+            &self.fixture.app,
+            self.fixture.project.id,
+            self.cursor.get(),
+        )
+        .await
+        .into_iter()
+        .map(|event| event.kind)
+        .collect()
     }
 
     async fn handoff(&self, id: Uuid) -> TaskHandoff {

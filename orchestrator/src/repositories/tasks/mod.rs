@@ -67,7 +67,9 @@ mod graph;
 mod handoffs;
 mod rows;
 mod states;
-pub mod test_support;
+
+#[cfg(test)]
+pub(crate) mod testfix;
 
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -77,7 +79,8 @@ pub use graph::BlockedState;
 pub use handoffs::HandoffMergeCandidate;
 /// The state-column write `tracker/` composes its state moves out of. Crate-
 /// private like the helper that takes it: `rows` is a private module, so this
-/// re-export is how the tracker names the type at all.
+/// re-export is how the tracker names the type at all, and nothing outside the
+/// crate can name it at all.
 pub(crate) use rows::StateFields;
 pub use rows::{DeadHolder, TaskFilter, TaskSummaryRow};
 // The one refusal the tracker words for the repository: a parent reference

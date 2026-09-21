@@ -1,6 +1,29 @@
 //! All SQL, through `sqlx::query!` / `query_as!`. One `XRepository<'a>` per
 //! aggregate, borrowing the `PgPool`, with the scope in the `WHERE` clause.
 
+/// The integration suites' Postgres harness, compiled into the library's own
+/// test binary too.
+///
+/// A few rules of `tasks` have no verb above them and no constraint under
+/// them — the state must belong to the project, the hand-off to the task, the
+/// event to a task of the project — so they are asserted against the statement
+/// itself, and the statement is `pub(crate)` because `tracker/` is its only
+/// caller (`ARCHITECTURE.md`, "Task tracker" → "One mutation at a time per
+/// project"). `tests/` is a separate crate and cannot reach it; a
+/// `#[cfg(test)]` module inside the crate can, and it needs the same
+/// throw-away database every other database test uses.
+///
+/// So the harness file is shared rather than copied: one server per *run*,
+/// joined by the library's test process and every integration test process
+/// alike (`tests/common/db.rs`, "One server for the whole run"). Like those
+/// tests it needs a container engine; without one its tests fail exactly as
+/// `tests/health.rs` does, and the crate's many database-free unit tests are
+/// untouched because nothing else in the library references it.
+#[cfg(test)]
+#[path = "../../tests/common/db.rs"]
+#[allow(dead_code)]
+pub(crate) mod testdb;
+
 pub mod password_reset_tokens;
 pub mod projects;
 pub mod refresh_tokens;

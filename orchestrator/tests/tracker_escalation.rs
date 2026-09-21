@@ -29,11 +29,9 @@
 
 mod common;
 
-use chrono::Utc;
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{NewSession, NewTask, ProfileKind, Task, TaskComment};
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
 use mars_orchestrator::tracker::leases::{
     ReleaseReason, claim_for_profile, needs_human, release_by_agent, release_leases_for_session,
@@ -249,23 +247,7 @@ async fn hold_with_attempts(
     session_id: Uuid,
     attempts: i16,
 ) {
-    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    TaskRepository::new(pool)
-        .set_task_state_fields(
-            mutation.conn(),
-            project_id,
-            task_id,
-            &StateFields {
-                lease: Some(Some((session_id, Utc::now()))),
-                attempts: Some(attempts),
-                ..StateFields::default()
-            },
-        )
-        .await
-        .expect("the lease writes");
-    mutation.commit().await.expect("the mutation commits");
+    common::tracker::hold_with_attempts(pool, project_id, task_id, session_id, attempts).await;
 }
 
 /// The task as it is committed.
@@ -278,9 +260,9 @@ async fn read(pool: &PgPool, project_id: Uuid, task_id: Uuid) -> TaskDto {
 }
 
 /// Every committed event of the project, oldest first.
-async fn events(pool: &PgPool, project_id: Uuid) -> Vec<TaskEvent> {
+async fn events(pool: &PgPool, project_id: Uuid, after: i64) -> Vec<TaskEvent> {
     TaskRepository::new(pool)
-        .list_task_events_after(project_id, 0, 100)
+        .list_task_events_after(project_id, after, 100)
         .await
         .expect("the events read")
         .into_iter()
@@ -289,12 +271,24 @@ async fn events(pool: &PgPool, project_id: Uuid) -> Vec<TaskEvent> {
 }
 
 /// The events about one task, which is what a two-task mutation is read by.
-async fn events_for(pool: &PgPool, project_id: Uuid, task_id: Uuid) -> Vec<TaskEvent> {
-    events(pool, project_id)
+async fn events_for(pool: &PgPool, project_id: Uuid, task_id: Uuid, after: i64) -> Vec<TaskEvent> {
+    events(pool, project_id, after)
         .await
         .into_iter()
         .filter(|event| event.task_id == Some(task_id))
         .collect()
+}
+
+/// Where the stream stands right now.
+///
+/// The cursor an assertion about "what this call emitted" starts from, so that
+/// the claims and releases an arrangement really makes — `attempts` is a
+/// counter only a claim raises — are behind it rather than in it.
+async fn since(pool: &PgPool, project_id: Uuid) -> i64 {
+    TaskRepository::new(pool)
+        .max_task_event_seq(project_id)
+        .await
+        .expect("the cursor reads")
 }
 
 /// The kinds of a stream, which is most of what these tests assert.
@@ -408,7 +402,7 @@ async fn three_agent_releases_hand_the_task_to_a_person() {
         system_comment.body,
     );
 
-    let written = events_for(&pool, project_id, subject.id).await;
+    let written = events_for(&pool, project_id, subject.id, 0).await;
     assert_eq!(
         kinds(&written),
         vec![
@@ -461,7 +455,7 @@ async fn a_release_by_a_session_that_does_not_hold_the_task_writes_nothing() {
 
     let subject = task(&pool, project_id, "implement it", "ready").await;
     claim(&pool, project_id, subject.id, holder).await;
-    let before = events(&pool, project_id).await.len();
+    let before = events(&pool, project_id, 0).await.len();
 
     let (refused, escalations) =
         agent_release(&pool, project_id, subject.id, other, "not mine").await;
@@ -475,7 +469,7 @@ async fn a_release_by_a_session_that_does_not_hold_the_task_writes_nothing() {
     let stored = read(&pool, project_id, subject.id).await;
     assert_eq!(stored.lease_holder_session_id, Some(holder));
     assert!(comments(&pool, project_id, subject.id).await.is_empty());
-    assert_eq!(events(&pool, project_id).await.len(), before);
+    assert_eq!(events(&pool, project_id, 0).await.len(), before);
 }
 
 #[tokio::test]
@@ -489,6 +483,9 @@ async fn a_dead_session_releases_what_it_held_and_escalates_what_ran_out() {
     let exhausted = task(&pool, project_id, "out of attempts", "ready").await;
     hold_with_attempts(&pool, project_id, ongoing.id, session_id, 1).await;
     hold_with_attempts(&pool, project_id, exhausted.id, session_id, MAX_ATTEMPTS).await;
+    // Those claims are the arrangement, not the scenario: the stream is read
+    // from here on.
+    let after = since(&pool, project_id).await;
 
     let escalations = release_leases_for_session(&pool, session_id, ReleaseReason::SessionEnded)
         .await
@@ -500,7 +497,7 @@ async fn a_dead_session_releases_what_it_held_and_escalates_what_ran_out() {
     assert_eq!(stored.attempts, 1);
     assert!(stored.lease_holder_session_id.is_none());
 
-    let written = events_for(&pool, project_id, ongoing.id).await;
+    let written = events_for(&pool, project_id, ongoing.id, after).await;
     assert_eq!(
         kinds(&written),
         vec![TaskEventKind::Commented, TaskEventKind::Released],
@@ -530,7 +527,7 @@ async fn a_dead_session_releases_what_it_held_and_escalates_what_ran_out() {
         format!("attempt limit reached (3/3): session {session_id} ended"),
     );
 
-    let written = events_for(&pool, project_id, exhausted.id).await;
+    let written = events_for(&pool, project_id, exhausted.id, after).await;
     assert_eq!(
         kinds(&written),
         vec![
@@ -552,10 +549,11 @@ async fn a_dead_session_releases_what_it_held_and_escalates_what_ran_out() {
     assert_eq!(escalations[0].reason, reason);
 
     // The orchestrator releasing a lease is not a session having worked on
-    // the task (ADR 0030): the claim would have written the link, and these
-    // leases were never claimed.
-    assert_eq!(link_count(&pool, ongoing.id).await, 0);
-    assert_eq!(link_count(&pool, exhausted.id).await, 0);
+    // the task (ADR 0030): the arranging claims wrote one link each, and the
+    // release added none — neither for the task that went back to its queue
+    // nor for the one that was escalated.
+    assert_eq!(link_count(&pool, ongoing.id).await, 1);
+    assert_eq!(link_count(&pool, exhausted.id).await, 1);
 }
 
 #[tokio::test]
@@ -567,13 +565,16 @@ async fn a_stalled_holder_says_stalled() {
 
     let subject = task(&pool, project_id, "implement it", "ready").await;
     hold_with_attempts(&pool, project_id, subject.id, session_id, 1).await;
+    // Those claims are the arrangement, not the scenario: the stream is read
+    // from here on.
+    let after = since(&pool, project_id).await;
 
     let escalations = release_leases_for_session(&pool, session_id, ReleaseReason::Stalled)
         .await
         .expect("the release runs");
     assert!(escalations.is_empty());
 
-    let written = events_for(&pool, project_id, subject.id).await;
+    let written = events_for(&pool, project_id, subject.id, after).await;
     assert_eq!(
         kinds(&written),
         vec![TaskEventKind::Commented, TaskEventKind::Released],
@@ -595,14 +596,14 @@ async fn a_session_holding_nothing_writes_nothing() {
     let session_id = seed_session(&pool, project_id, fixture.profile_id).await;
 
     let subject = task(&pool, project_id, "nobody holds it", "ready").await;
-    let before = events(&pool, project_id).await.len();
+    let before = events(&pool, project_id, 0).await.len();
 
     let escalations = release_leases_for_session(&pool, session_id, ReleaseReason::SessionEnded)
         .await
         .expect("the release runs");
 
     assert!(escalations.is_empty());
-    assert_eq!(events(&pool, project_id).await.len(), before);
+    assert_eq!(events(&pool, project_id, 0).await.len(), before);
     assert!(comments(&pool, project_id, subject.id).await.is_empty());
 }
 
@@ -634,7 +635,7 @@ async fn needs_human_escalates_whatever_the_counter_says() {
         Some("the spec contradicts itself"),
     );
 
-    let written = events_for(&pool, project_id, subject.id).await;
+    let written = events_for(&pool, project_id, subject.id, 0).await;
     assert_eq!(
         kinds(&written),
         vec![
@@ -668,6 +669,9 @@ async fn needs_human_on_a_task_already_waiting_records_the_reason_and_releases()
 
     let subject = task(&pool, project_id, "already waiting", "needs_human").await;
     hold_with_attempts(&pool, project_id, subject.id, session_id, 2).await;
+    // Those claims are the arrangement, not the scenario: the stream is read
+    // from here on.
+    let after = since(&pool, project_id).await;
 
     let (handed, escalations) = hand_to_human(
         &pool,
@@ -688,7 +692,7 @@ async fn needs_human_on_a_task_already_waiting_records_the_reason_and_releases()
     );
     assert_eq!(read(&pool, project_id, subject.id).await, handed);
 
-    let written = events_for(&pool, project_id, subject.id).await;
+    let written = events_for(&pool, project_id, subject.id, after).await;
     assert_eq!(
         kinds(&written),
         vec![
@@ -718,7 +722,7 @@ async fn needs_human_takes_an_unheld_task_and_links_the_session() {
     assert_eq!(handed.state, "needs_human");
     assert_eq!(handed.needs_human_reason.as_deref(), Some("needs a person"));
 
-    let written = events_for(&pool, project_id, subject.id).await;
+    let written = events_for(&pool, project_id, subject.id, 0).await;
     assert_eq!(
         kinds(&written),
         vec![TaskEventKind::Commented, TaskEventKind::Escalated],
@@ -739,7 +743,7 @@ async fn needs_human_on_somebody_elses_task_writes_nothing() {
 
     let subject = task(&pool, project_id, "implement it", "ready").await;
     claim(&pool, project_id, subject.id, holder).await;
-    let before = events(&pool, project_id).await.len();
+    let before = events(&pool, project_id, 0).await.len();
 
     let (refused, escalations) =
         hand_to_human(&pool, project_id, subject.id, other, "not mine").await;
@@ -756,7 +760,7 @@ async fn needs_human_on_somebody_elses_task_writes_nothing() {
         Some(holder),
     );
     assert!(comments(&pool, project_id, subject.id).await.is_empty());
-    assert_eq!(events(&pool, project_id).await.len(), before);
+    assert_eq!(events(&pool, project_id, 0).await.len(), before);
 }
 
 #[tokio::test]
@@ -769,6 +773,9 @@ async fn a_release_at_the_limit_on_a_task_already_waiting_does_not_escalate_twic
     // A user launched an agent on an escalated task and it failed again.
     let subject = task(&pool, project_id, "already waiting", "needs_human").await;
     hold_with_attempts(&pool, project_id, subject.id, session_id, MAX_ATTEMPTS).await;
+    // Those claims are the arrangement, not the scenario: the stream is read
+    // from here on.
+    let after = since(&pool, project_id).await;
 
     let (released, escalations) =
         agent_release(&pool, project_id, subject.id, session_id, "failed again").await;
@@ -783,7 +790,7 @@ async fn a_release_at_the_limit_on_a_task_already_waiting_does_not_escalate_twic
         .expect("the reason is recorded");
     assert_eq!(reason, "attempt limit reached (3/3): failed again");
 
-    let written = events_for(&pool, project_id, subject.id).await;
+    let written = events_for(&pool, project_id, subject.id, after).await;
     assert_eq!(
         kinds(&written),
         vec![

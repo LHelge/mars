@@ -27,14 +27,12 @@
 mod common;
 
 use axum::http::StatusCode;
-use chrono::Utc;
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{
-    HandoffCaller, NewSession, NewTask, NewTaskComment, NewTaskHandoff, ProfileKind,
-    ReviewDecision, ReviewStatus, Task, TaskComment, TaskDependencyKind, TaskHandoff, TaskRef,
+    HandoffCaller, NewSession, NewTask, ProfileKind, ReviewDecision, ReviewStatus, Task,
+    TaskComment, TaskDependencyKind, TaskHandoff, TaskRef,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::tasks::test_support::{StateFields, TaskRepositoryTestExt};
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
 use mars_orchestrator::tracker::graph::recompute_blocked;
 use mars_orchestrator::tracker::handoffs::{
@@ -171,38 +169,30 @@ async fn state_id(pool: &PgPool, project_id: Uuid, name: &str) -> Uuid {
         .id
 }
 
-/// Put a lease and an attempt count on a task, the way a claim would.
+/// Put a lease and an attempt count on a task, the way two claims would.
 async fn claim(pool: &PgPool, project_id: Uuid, task_id: Uuid, session_id: Uuid) -> Task {
-    set_fields(
-        pool,
-        project_id,
-        task_id,
-        StateFields {
-            lease: Some(Some((session_id, Utc::now()))),
-            attempts: Some(2),
-            ..StateFields::default()
-        },
-    )
-    .await
+    common::tracker::hold_with_attempts(pool, project_id, task_id, session_id, 2).await;
+
+    reload(pool, project_id, task_id).await
 }
 
-async fn set_fields(pool: &PgPool, project_id: Uuid, task_id: Uuid, fields: StateFields) -> Task {
-    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
+/// The task row as it stands now.
+async fn reload(pool: &PgPool, project_id: Uuid, task_id: Uuid) -> Task {
+    TaskRepository::new(pool)
+        .find_task(project_id, TaskRef::Id(task_id))
         .await
-        .expect("the mutation opens");
-    let task = TaskRepository::new(pool)
-        .set_task_state_fields(mutation.conn(), project_id, task_id, &fields)
-        .await
-        .expect("the fields write");
-    mutation.commit().await.expect("the mutation commits");
-
-    task
+        .expect("the task reads")
+        .expect("the task is there")
 }
 
 /// An existing hand-off on `task`, made current: what a forward forwards.
 ///
-/// `reviewed_by` records an approval by that user, the way a reviewing forward
-/// before this one would have.
+/// Published through the very function this file is about, so the row the
+/// forwards below carry is one a publication really left behind
+/// (`common::tracker::handoff_in_place` moves the task home again, because a
+/// publication always moves it). `reviewed_by` publishes it as that user's
+/// approving forward instead, the way a reviewing forward before this one
+/// would have.
 async fn current_handoff(
     pool: &PgPool,
     project_id: Uuid,
@@ -211,48 +201,36 @@ async fn current_handoff(
     created_by_user_id: Uuid,
     reviewed_by: Option<Uuid>,
 ) -> (Task, TaskHandoff) {
-    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    let repository = TaskRepository::new(pool);
+    // A decision is the caller's verdict, so the reviewer is the publisher.
+    let (user_id, review) = match reviewed_by {
+        Some(reviewer) => (reviewer, ReviewCarry::Decision(ReviewDecision::Approved)),
+        None => (created_by_user_id, ReviewCarry::Fresh),
+    };
 
-    let comment = NewTaskComment::from_user(task.id, created_by_user_id, "the first revision");
-    let comment = repository
-        .insert_comment(mutation.conn(), project_id, &comment)
-        .await
-        .expect("the comment inserts");
-
-    let mut handoff = NewTaskHandoff::new(
-        task.id,
-        format!("session/{}", source_session_id.unwrap_or_else(Uuid::new_v4)),
-        COMMIT,
-        comment.id,
-    );
-    handoff.source_session_id = source_session_id;
-    handoff.created_by_user_id = Some(created_by_user_id);
-    if let Some(reviewer) = reviewed_by {
-        handoff.review_status = ReviewStatus::Approved;
-        handoff.reviewed_by_user_id = Some(reviewer);
-        handoff.reviewed_at = Some(Utc::now());
-    }
-    let handoff = repository
-        .insert_handoff(mutation.conn(), project_id, &handoff)
-        .await
-        .expect("the hand-off inserts");
-    mutation.commit().await.expect("the mutation commits");
-
-    let task = set_fields(
+    let branch = format!("session/{}", source_session_id.unwrap_or_else(Uuid::new_v4));
+    let (_, handoff_id) = common::tracker::handoff_in_place(
         pool,
         project_id,
         task.id,
-        StateFields {
-            current_handoff_id: Some(Some(handoff.id)),
-            ..StateFields::default()
+        common::tracker::Handoff {
+            source_session_id,
+            source_branch: &branch,
+            commit: COMMIT,
+            comment: "the first revision",
+            target_state: "",
+            caller: HandoffCaller::User { user_id },
+            review,
         },
     )
     .await;
 
-    (task, handoff)
+    let handoff = TaskRepository::new(pool)
+        .find_handoff(project_id, handoff_id)
+        .await
+        .expect("the record reads")
+        .expect("the record is this project's");
+
+    (reload(pool, project_id, task.id).await, handoff)
 }
 
 /// What [`prepare`](mars_orchestrator::tracker::handoffs::prepare) would have
@@ -778,16 +756,7 @@ async fn a_task_that_moved_since_preparation_is_a_conflict_that_writes_nothing()
     let prepared = prepared(&subject, Some(session_id), COMMIT, ReviewCarry::Fresh);
 
     // Somebody else moved it between the git half and this one.
-    set_fields(
-        &pool,
-        project_id,
-        subject.id,
-        StateFields {
-            state_id: Some(state_id(&pool, project_id, "needs_human").await),
-            ..StateFields::default()
-        },
-    )
-    .await;
+    common::tracker::move_to(&pool, project_id, subject.id, "needs_human").await;
     let seq = last_seq(&pool, project_id).await;
 
     let error = publish(
@@ -824,6 +793,7 @@ async fn a_session_that_lost_the_lease_may_not_publish() {
     let prepared = prepared(&subject, Some(session_id), COMMIT, ReviewCarry::Fresh);
 
     // The reaper released it and another session claimed it.
+    common::tracker::release(&pool, project_id, subject.id).await;
     claim(&pool, project_id, subject.id, other_session_id).await;
 
     let error = publish(

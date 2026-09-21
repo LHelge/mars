@@ -18,9 +18,19 @@
 // top of the body. It lives there rather than in the header because every one
 // of those actions needs the loaded task, and because the panels they open —
 // a confirmation, the edit form — need the width of the body.
+//
+// It is a native modal `<dialog>`, opened with `showModal()`, which is what
+// makes it a modal rather than a panel that merely says it is one: the browser
+// moves focus into it, keeps Tab and Shift+Tab inside it, makes the board
+// behind it inert to pointer and keyboard alike, and gives focus back to the
+// card that opened it when it closes. What the browser does not decide is
+// where focus lands *inside* the drawer — the heading, so the task is
+// announced and Tab walks the panel from the top, including after a link to
+// another task has remounted the body under it — and when Escape may close
+// anything: `drawerEscape.ts`.
 
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
@@ -33,9 +43,17 @@ import { errorMessage, isNotFound } from "../services/errorMessage";
 import { getTask } from "../services/tasks";
 import type { Task, TaskDetail as TaskDetailData } from "../types";
 import { formatDateTime, formatRelative, shortId } from "../utils/format";
+import { taskCardTestId } from "../utils/testIds";
 import { CommentForm } from "./CommentForm";
 import { CommentList } from "./CommentList";
 import { DependencyEditor } from "./DependencyEditor";
+import type { DrawerEscapeRegistry } from "./drawerEscape";
+import {
+  DrawerEscapeContext,
+  escapeAction,
+  hasDraftText,
+  useDrawerEscape,
+} from "./drawerEscape";
 import { HandoffPanel } from "./HandoffPanel";
 import { taskKeys } from "./queryKeys";
 import { TaskActions } from "./TaskActions";
@@ -58,6 +76,21 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
   const navigate = useNavigate();
   const [search] = useSearchParams();
 
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  /** Has anyone typed inside the drawer? A pre-filled field is not a draft. */
+  const typed = useRef(false);
+  /** The task the drawer is showing, readable from an unmount cleanup. */
+  const shown = useRef(number);
+  /** A sub-form's `close`, innermost last (`drawerEscape.ts`). */
+  const subforms = useRef<(() => void)[]>([]);
+  /** An Escape over unsaved text has asked; a second one discards it. */
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    shown.current = number;
+  }, [number]);
+
   // Back to the board this drawer opened over, keeping whatever the board was
   // showing — the search field among it — rather than resetting the view.
   const close = useCallback(() => {
@@ -66,17 +99,86 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
     void navigate(`/projects/${projectId}?${params.toString()}`);
   }, [navigate, projectId, search]);
 
+  // Modal for as long as the drawer is mounted. Closing it is a navigation,
+  // so the close happens here, in the unmount, where the element is still in
+  // the document and the browser can hand focus back.
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog === null) return;
+    if (!dialog.open) dialog.showModal();
+    return () => {
+      if (!dialog.open) return;
+      dialog.close();
+      restoreFocus(dialog, shown.current);
+    };
+  }, []);
+
+  // Focus goes to the heading when the drawer opens and again whenever it
+  // shows another task: a click on a child or parent link replaces the body
+  // under the cursor, and the link that was focused goes with it.
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, [number]);
+
+  const escapeRegistry = useMemo<DrawerEscapeRegistry>(
+    () => ({
+      register(handler) {
+        subforms.current = [...subforms.current, handler];
+        return () => {
+          subforms.current = subforms.current.filter(
+            (other) => other !== handler,
+          );
+        };
+      },
+    }),
+    [],
+  );
+
+  // Escape is read from the document rather than from the dialog element: the
+  // drawer is modal, so every key press belongs to it, including the ones that
+  // arrive with nothing focused because the control that had focus — a
+  // confirmation's button, a form that just saved — removed itself.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        close();
+      if (event.key !== "Escape") {
+        // Any other key is the user carrying on: the question lapses.
+        if (armed) setArmed(false);
+        return;
       }
+
+      const dialog = dialogRef.current;
+      const action = escapeAction({
+        defaultPrevented: event.defaultPrevented,
+        composing: event.isComposing,
+        dirty: typed.current && dialog !== null && hasDraftText(dialog),
+        armed,
+      });
+      if (action === "ignore") return;
+
+      // Ours from here on, so the browser's own close request never fires.
+      event.preventDefault();
+      if (action === "confirm") {
+        setArmed(true);
+        return;
+      }
+
+      setArmed(false);
+      const innermost = subforms.current.at(-1);
+      if (innermost === undefined) {
+        close();
+        return;
+      }
+      // The form is about to take its fields — and whatever is focused among
+      // them — out of the document, so focus goes back to the heading first.
+      headingRef.current?.focus();
+      innermost();
     };
+
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
     };
-  }, [close]);
+  }, [armed, close]);
 
   const detail = useQuery({
     // `number ?? 0` is never requested: the query is disabled without one.
@@ -88,26 +190,41 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
   const task = detail.data;
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
+    // The dialog fills the viewport, with the panel at its right edge and the
+    // dimming overlay — which is what a click outside the panel lands on —
+    // filling the rest. The overlay is an element rather than `::backdrop`
+    // because a pseudo-element does not inherit the theme's custom properties
+    // everywhere, and this one has to close the drawer anyway.
+    <dialog
+      ref={dialogRef}
+      aria-label={task === undefined ? "Task" : `Task #${String(task.number)}`}
+      onCancel={(event) => {
+        // Escape is decided by the keydown handler above; the browser's own
+        // close request never gets to skip the unsaved-text question.
+        event.preventDefault();
+      }}
+      onInput={() => {
+        typed.current = true;
+        if (armed) setArmed(false);
+      }}
+      className="fixed inset-0 z-40 m-0 flex h-full max-h-none w-full max-w-none justify-end border-0 bg-transparent p-0 text-inherit"
+    >
       <div
         aria-hidden="true"
         onClick={close}
         className="bg-console-bg/70 absolute inset-0"
       />
 
-      <aside
-        role="dialog"
-        aria-modal="true"
-        aria-label={
-          task === undefined ? "Task" : `Task #${String(task.number)}`
-        }
-        className="border-console-border bg-console-surface relative flex h-full w-full max-w-2xl flex-col overflow-y-auto border-l"
-      >
+      <aside className="border-console-border bg-console-surface relative flex h-full w-full max-w-2xl flex-col overflow-y-auto border-l">
         <header className="border-console-border bg-console-surface sticky top-0 z-10 flex flex-wrap items-baseline gap-x-3 gap-y-2 border-b px-4 py-3">
           <span className="text-console-muted font-mono text-sm">
             #{number === null ? "?" : number}
           </span>
-          <h2 className="text-console-text min-w-0 flex-1 text-base">
+          <h2
+            ref={headingRef}
+            tabIndex={-1}
+            className="text-console-text min-w-0 flex-1 text-base outline-none"
+          >
             {task?.title ?? "Task"}
           </h2>
           <div className="flex shrink-0 items-center gap-2">
@@ -125,6 +242,11 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
               Close
             </SubmitButton>
           </div>
+          {armed && (
+            <p role="status" className="text-state-human w-full text-xs">
+              Unsaved text here. Press Escape again to discard it.
+            </p>
+          )}
         </header>
 
         <div className="flex-1 px-4 py-4">
@@ -157,13 +279,46 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
                   `task.id` makes "another task" a remount and "the same task,
                   refetched" — which every task event causes — leave the draft
                   alone (`SPEC.md`, "Frontend", "Task board"). */}
-              <TaskBody key={task.id} projectId={projectId} task={task} />
+              <DrawerEscapeContext.Provider value={escapeRegistry}>
+                <TaskBody key={task.id} projectId={projectId} task={task} />
+              </DrawerEscapeContext.Provider>
             </div>
           )}
         </div>
       </aside>
-    </div>
+    </dialog>
   );
+}
+
+/**
+ * Where focus goes once the drawer is gone.
+ *
+ * Closing the dialog is the browser's cue to give focus back to whatever had
+ * it when `showModal()` ran, which for a card click is that card's own link —
+ * the one place a user expects to carry on from. Two cases have no such
+ * element: a drawer opened from a pasted link, where focus was on nothing, and
+ * one whose opener has since been deleted or replaced. Then the board's own
+ * card for the task is the next best thing, and the page's main region the one
+ * after that; landing on `<body>` would drop a keyboard user at the top of the
+ * document.
+ */
+function restoreFocus(dialog: HTMLDialogElement, number: number | null): void {
+  const active = document.activeElement;
+  if (
+    active instanceof HTMLElement &&
+    active !== document.body &&
+    !dialog.contains(active)
+  ) {
+    return;
+  }
+
+  const card =
+    number === null
+      ? null
+      : document.querySelector<HTMLElement>(
+          `[data-testid="${taskCardTestId(number)}"] a`,
+        );
+  (card ?? document.querySelector<HTMLElement>("main"))?.focus();
 }
 
 /**
@@ -196,6 +351,14 @@ function TaskBody({
   // Edit mode replaces the fields it edits rather than sitting beside them, so
   // the drawer never shows a title twice with two different values in it.
   const [editing, setEditing] = useState(false);
+
+  // Escape shuts the form before it shuts the drawer; over a draft it asks
+  // first, so the form is never emptied by one key press (`drawerEscape.ts`).
+  // Every other sub-form under here claims Escape the same way, in the module
+  // that owns its open state.
+  useDrawerEscape(() => {
+    setEditing(false);
+  }, editing);
 
   return (
     <div className="space-y-6">

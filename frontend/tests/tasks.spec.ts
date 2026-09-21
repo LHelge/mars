@@ -94,6 +94,35 @@ function columnNames(page: Page): Promise<string[]> {
     );
 }
 
+/**
+ * Where focus is: inside the drawer's modal dialog, on the document itself —
+ * the step Chromium passes through when Tab wraps around the end of a modal's
+ * controls — or on something else, which is the leak this asks about and
+ * which comes back named.
+ */
+function focusRegion(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || active === document.body) {
+      return "document";
+    }
+    if (active.closest("dialog") !== null) return "drawer";
+    const name = [
+      active.tagName.toLowerCase(),
+      active.getAttribute("aria-label") ?? active.textContent?.trim() ?? "",
+    ]
+      .join(" ")
+      .slice(0, 60)
+      .trim();
+    return `outside: ${name}`;
+  });
+}
+
+/** The drawer's "you have unsaved text" question, by its second sentence. */
+function discardQuestion(panel: Locator): Locator {
+  return panel.getByText("Press Escape again to discard it.");
+}
+
 /** Moves the open task through the drawer's `Move to` control. */
 async function moveFromDrawer(panel: Locator, to: string): Promise<void> {
   await panel.getByLabel("Move to").selectOption(to);
@@ -266,6 +295,137 @@ test("a draft in the drawer survives a refresh of the same task", async ({
     panel.getByRole("heading", { name: "Alpha plan, revised" }),
   ).toBeVisible();
   expect((await getTask(api, project.id, 1)).title).toBe("Alpha plan, revised");
+});
+
+test("the drawer takes focus, keeps Tab inside it and gives focus back to the card", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+}) => {
+  await createTask(api, project.id, { title: "Ship the thing" });
+  await loginViaToken(context, user);
+  await openBoard(page, project);
+
+  const opener = card(page, 1).getByRole("link").first();
+  await opener.click();
+  const panel = drawer(page);
+  await expect(panel).toHaveAttribute("aria-label", "Task #1");
+
+  // Focus lands on the task itself, so a screen reader says which task this
+  // is and Tab walks the panel from its top.
+  await expect(
+    panel.getByRole("heading", { name: "Ship the thing" }),
+  ).toBeFocused();
+
+  // Tab and Shift+Tab stay inside: nothing on the board behind the overlay is
+  // reachable from the keyboard, in either direction.
+  const visited: string[] = [];
+  for (let step = 0; step < 20; step += 1) {
+    await page.keyboard.press("Tab");
+    visited.push(await focusRegion(page));
+  }
+  for (let step = 0; step < 5; step += 1) {
+    await page.keyboard.press("Shift+Tab");
+    visited.push(await focusRegion(page));
+  }
+  expect(visited.filter((where) => where.startsWith("outside"))).toEqual([]);
+  expect(visited).toContain("drawer");
+
+  // Nothing is half-written, so one Escape closes — and the card that opened
+  // the drawer has focus again, not the top of the document.
+  await page.keyboard.press("Escape");
+  await expect(drawer(page)).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
+
+test("Escape asks before discarding a draft and shuts an open form first", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+}) => {
+  await createTask(api, project.id, { title: "Draft the plan" });
+  await loginViaToken(context, user);
+  await openBoard(page, project);
+
+  const panel = await openCard(page, 1);
+
+  // Eight lines into a comment, Escape asks instead of throwing them away.
+  const comment = panel.getByLabel("Add a comment");
+  await comment.fill("Half a thought, and the other half coming.");
+  await page.keyboard.press("Escape");
+  await expect(discardQuestion(panel)).toBeVisible();
+  await expect(comment).toHaveValue("Half a thought, and the other half coming.");
+
+  // Carrying on withdraws the question; it is asked again from scratch.
+  await comment.pressSequentially(" More.");
+  await expect(discardQuestion(panel)).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(discardQuestion(panel)).toBeVisible();
+
+  // The second press, with nothing typed in between, is the answer.
+  await page.keyboard.press("Escape");
+  await expect(drawer(page)).toHaveCount(0);
+
+  // With a form open, the same second press shuts the form and leaves the
+  // drawer standing.
+  const reopened = await openCard(page, 1);
+  await reopened.getByRole("button", { name: "Edit" }).click();
+  const form = reopened.getByRole("form", { name: "Edit task #1" });
+  await form.getByLabel("Title").fill("Draft the migration plan");
+
+  await page.keyboard.press("Escape");
+  await expect(discardQuestion(reopened)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(form).toHaveCount(0);
+  await expect(
+    reopened.getByRole("heading", { name: "Draft the plan" }),
+  ).toBeVisible();
+  // The form took its focused field with it, so focus is back on the heading
+  // and Escape still reaches the drawer.
+  expect(await focusRegion(page)).toBe("drawer");
+  await page.keyboard.press("Escape");
+  await expect(drawer(page)).toHaveCount(0);
+
+  // Nothing typed into the form was ever sent.
+  expect((await getTask(api, project.id, 1)).title).toBe("Draft the plan");
+});
+
+test("a drawer opened by link falls back to the board, and a child link moves focus", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+}) => {
+  const parent = await createTask(api, project.id, { title: "The epic" });
+  await createTask(api, project.id, {
+    title: "First child",
+    parent_id: parent.id,
+  });
+  await loginViaToken(context, user);
+
+  await page.goto(`/projects/${project.id}/tasks/1`);
+  const panel = drawer(page);
+  await expect(panel).toHaveAttribute("aria-label", "Task #1");
+  await expect(panel.getByRole("heading", { name: "The epic" })).toBeFocused();
+
+  // A link to another task remounts the body under the cursor: focus follows
+  // the drawer to the task it now shows.
+  await panel.getByRole("link", { name: /First child/ }).click();
+  await expect(panel).toHaveAttribute("aria-label", "Task #2");
+  await expect(
+    panel.getByRole("heading", { name: "First child" }),
+  ).toBeFocused();
+
+  // Nothing on this page opened the drawer, so there is nothing to give focus
+  // back to: it goes to the card of the task that was on display.
+  await page.keyboard.press("Escape");
+  await expect(drawer(page)).toHaveCount(0);
+  await expect(card(page, 2).getByRole("link").first()).toBeFocused();
 });
 
 test("the drawer moves a card across columns and closes and reopens it", async ({

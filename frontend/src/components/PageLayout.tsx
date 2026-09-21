@@ -90,7 +90,13 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-5">
+      {/* Focusable by script only: it is where focus lands when something
+          modal closes and the element that opened it is gone (`src/tasks/
+          TaskDetail.tsx`), rather than at the top of the document. */}
+      <main
+        tabIndex={-1}
+        className="mx-auto w-full max-w-7xl flex-1 px-4 py-5 outline-none"
+      >
         {(title !== undefined || actions !== undefined) && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
             {title && (

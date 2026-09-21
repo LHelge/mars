@@ -1,10 +1,10 @@
 ---
 id: u9fvv
 title: User and profile deletion can deadlock with a live session's writer the way tracker mutations did (kb48s)
-status: open
+status: done
 priority: P3
 created: "2026-09-21T17:35:09.418102714Z"
-updated: "2026-09-21T17:35:09.418102714Z"
+updated: "2026-09-21T18:14:56.758700112Z"
 tags:
   - orchestrator
   - sessions
@@ -12,6 +12,7 @@ tags:
   - projects
 depends_on:
   - kb48s
+attempts: 1
 ---
 
 ## Summary

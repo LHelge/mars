@@ -1,10 +1,10 @@
 ---
 id: hy6c8
 title: "Secrets page: Agent credentials section with a guided form that never asks for the name"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-20T22:22:58.800817242Z"
-updated: "2026-09-21T06:32:39.448463818Z"
+updated: "2026-09-21T06:55:39.043198852Z"
 tags:
   - frontend
   - secrets

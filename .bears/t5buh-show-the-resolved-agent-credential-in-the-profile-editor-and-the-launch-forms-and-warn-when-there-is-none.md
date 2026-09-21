@@ -1,10 +1,10 @@
 ---
 id: t5buh
 title: Show the resolved agent credential in the profile editor and the launch forms, and warn when there is none
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-20T22:23:20.477123027Z"
-updated: "2026-09-20T22:23:20.477123027Z"
+updated: "2026-09-21T06:55:40.341042082Z"
 tags:
   - frontend
   - secrets
@@ -14,6 +14,7 @@ depends_on:
   - vgp23
   - hy6c8
 parent: rdkmk
+attempts: 1
 ---
 
 ## Summary

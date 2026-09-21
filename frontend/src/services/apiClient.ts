@@ -12,6 +12,14 @@
 // The single in-flight refresh lives in `./auth`, shared with the session
 // WebSocket and the task SSE stream; this module only asks for it.
 //
+// Every function takes an optional `init`, and the one part of it that matters
+// is `signal`: it is how a caller bounds a request that must not hang — the
+// sign-out's cookie revocation — and how TanStack Query's cancellation reaches
+// the network, so a changed session head abandons the megabyte of diff it no
+// longer wants. The signal survives the 401 retry, which reuses the same
+// `init`, and an abort rejects with the runtime's `AbortError` untouched, like
+// any other network failure.
+//
 // This module and `./auth` import each other (refresh uses the client, the
 // client reads the token). Neither calls across the cycle at module load.
 

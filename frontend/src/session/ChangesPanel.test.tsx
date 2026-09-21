@@ -101,6 +101,9 @@ describe("ChangesPanel", () => {
       PROJECT_ID,
       { head: SESSION_ID },
       undefined,
+      // TanStack's cancellation signal: a diff the panel no longer wants is
+      // abandoned rather than downloaded.
+      expect.any(AbortSignal),
     );
     // The merge base identifies what the patch is measured from.
     expect(screen.getByText(/1111111 →/)).toBeDefined();

@@ -21,11 +21,16 @@ export function listSessionBranches(pid: string): Promise<SessionBranch[]> {
 /**
  * Exactly one of `head` or `handoff_id` (400 otherwise); `base` defaults to
  * the project's default branch. A session `head` is synced first.
+ *
+ * `signal` is TanStack Query's: a diff is up to a megabyte and syncs the
+ * session head server-side before answering, so a panel whose head moved — or
+ * that the user closed — abandons the read instead of paying for it twice.
  */
 export function getDiff(
   pid: string,
   target: DiffTarget,
   base?: string,
+  signal?: AbortSignal,
 ): Promise<Diff> {
   const query = new URLSearchParams(
     "head" in target ? { head: target.head } : { handoff_id: target.handoff_id },
@@ -33,7 +38,9 @@ export function getDiff(
   if (base !== undefined) {
     query.set("base", base);
   }
-  return apiGet<Diff>(`/projects/${pid}/git/diff?${query.toString()}`);
+  return apiGet<Diff>(`/projects/${pid}/git/diff?${query.toString()}`, {
+    signal,
+  });
 }
 
 export function merge(pid: string, input: MergeInput): Promise<CommitResult> {

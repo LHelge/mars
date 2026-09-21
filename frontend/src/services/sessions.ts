@@ -68,10 +68,15 @@ export interface ListEventsParams {
   limit?: number;
 }
 
-/** A page of history, newest-last, ending just before `before`. */
+/**
+ * A page of history, newest-last, ending just before `before`. `signal`
+ * abandons a page whose reader has gone — a closed session view, or a query
+ * TanStack cancelled — rather than parsing up to 500 events into nothing.
+ */
 export function listEvents(
   id: string,
   params: ListEventsParams = {},
+  signal?: AbortSignal,
 ): Promise<EventsPage> {
   const query = new URLSearchParams();
   if (params.before !== undefined) {
@@ -83,6 +88,7 @@ export function listEvents(
   const search = query.toString();
   return apiGet<EventsPage>(
     `/sessions/${id}/events${search === "" ? "" : `?${search}`}`,
+    { signal },
   );
 }
 

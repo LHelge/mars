@@ -10,8 +10,28 @@
 // `createElement`, so the tree never mixes two copies of React.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { User } from "./types";
 
 const TOKEN_KEY = "mars.access_token";
+
+// Obviously fake fixture values (CLAUDE.md, rule 3).
+const user: User = {
+  id: "00000000-0000-0000-0000-000000000001",
+  username: "tester",
+  email: "tester@example.invalid",
+  admin: false,
+  must_change_password: false,
+  notify_email: true,
+  created_at: "2026-01-01T00:00:00Z",
+};
+
+const TASK_PATH = "/projects/00000000-0000-4000-8000-0000000000a1/tasks/7";
+
+/** An access token shaped like the orchestrator's, with a readable `sub`. */
+function accessToken(sub: string): string {
+  const payload = globalThis.btoa(JSON.stringify({ sub })).replace(/=+$/, "");
+  return `fake-header.${payload}.not-a-signature`;
+}
 
 function unauthorized(): Response {
   return {
@@ -192,5 +212,176 @@ describe("AuthBootstrap", () => {
     });
     expect(screen.queryByText("application")).toBeNull();
     expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBe("fake-access-token");
+  });
+});
+
+/**
+ * Where a sign-out leaves the user (`SPEC.md`, "Frontend", Rules and "Copy
+ * links"). An access token lives fifteen minutes, so a session expiring under
+ * a reader is ordinary; sending them back to the top of the application
+ * afterwards loses the task or session they had open.
+ */
+describe("AuthBootstrap sign-out destination", () => {
+  /**
+   * A signed-in application at `entry`, whose every route renders the current
+   * path and the `from` the router carries.
+   */
+  async function mountAt(entry: string) {
+    vi.resetModules();
+    const { createElement } = await import("react");
+    const { act, cleanup, render, screen } = await import(
+      "@testing-library/react"
+    );
+    const { MemoryRouter, Route, Routes, useLocation } = await import(
+      "react-router"
+    );
+    const { QueryClient, QueryClientProvider } = await import(
+      "@tanstack/react-query"
+    );
+    const auth = await import("./services/auth");
+    const { AuthBootstrap } = await import("./AuthBootstrap");
+    teardown = cleanup;
+
+    auth.installSession({ user, access_token: accessToken("user-1") });
+
+    function Probe() {
+      const location = useLocation();
+      // Router state is untyped by construction; narrow it before use.
+      const state: unknown = location.state;
+      const from =
+        typeof state === "object" &&
+        state !== null &&
+        "from" in state &&
+        typeof state.from === "string"
+          ? state.from
+          : "none";
+      return createElement(
+        "span",
+        { "data-testid": "probe" },
+        `${location.pathname}${location.search}|${from}`,
+      );
+    }
+
+    const probe = createElement(Probe);
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient() },
+        createElement(
+          MemoryRouter,
+          { initialEntries: [entry] },
+          createElement(
+            AuthBootstrap,
+            null,
+            createElement(
+              Routes,
+              null,
+              createElement(Route, { path: "/login", element: probe }),
+              createElement(Route, { path: "*", element: probe }),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    return {
+      at: () => screen.getByTestId("probe").textContent,
+      signOut: (reason: "user" | "refresh_failed") => {
+        act(() => {
+          auth.signOut(reason);
+        });
+      },
+    };
+  }
+
+  it("returns an expired session to where it was", async () => {
+    const app = await mountAt(`${TASK_PATH}?state=review`);
+
+    app.signOut("refresh_failed");
+
+    expect(app.at()).toBe(`/login|${TASK_PATH}?state=review`);
+  });
+
+  it("carries nothing when the user signed out deliberately", async () => {
+    const app = await mountAt(TASK_PATH);
+
+    app.signOut("user");
+
+    expect(app.at()).toBe("/login|none");
+  });
+
+  it("keeps an unsafe destination out of the router state", async () => {
+    // `/login` itself would bounce the user straight back out again.
+    const app = await mountAt("/login");
+
+    app.signOut("refresh_failed");
+
+    expect(app.at()).toBe("/login|none");
+  });
+
+  it("loads the user of an account another tab signed in", async () => {
+    const other: User = {
+      ...user,
+      id: "00000000-0000-0000-0000-000000000002",
+      username: "other",
+    };
+    const getMe = vi.fn(() => Promise.resolve(other));
+    vi.resetModules();
+    vi.doMock("./services/users", () => ({ getMe }));
+    const { createElement } = await import("react");
+    const { act, cleanup, render, screen, waitFor } = await import(
+      "@testing-library/react"
+    );
+    const { MemoryRouter } = await import("react-router");
+    const { QueryClient, QueryClientProvider } = await import(
+      "@tanstack/react-query"
+    );
+    const auth = await import("./services/auth");
+    const { AuthBootstrap } = await import("./AuthBootstrap");
+    teardown = () => {
+      cleanup();
+      vi.doUnmock("./services/users");
+    };
+
+    auth.installSession({ user, access_token: accessToken("user-1") });
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient() },
+        createElement(
+          MemoryRouter,
+          { initialEntries: ["/"] },
+          createElement(
+            AuthBootstrap,
+            null,
+            createElement("p", null, "application"),
+          ),
+        ),
+      ),
+    );
+    expect(screen.getByText("application")).toBeDefined();
+
+    // The other tab wrote its own token; this one adopts it and is left
+    // holding a token with nobody attached to it, which nothing else would
+    // resolve — the bootstrap's own load ran on mount.
+    const theirs = accessToken("user-2");
+    act(() => {
+      globalThis.localStorage.setItem(TOKEN_KEY, theirs);
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: TOKEN_KEY,
+          newValue: theirs,
+          storageArea: globalThis.localStorage,
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(getMe).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(auth.getCurrentUser()).toEqual(other);
+    });
+    expect(screen.getByText("application")).toBeDefined();
   });
 });

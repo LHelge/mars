@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   acceptInvite,
   clearAuth,
@@ -81,12 +81,62 @@ function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
+/**
+ * An access token shaped like the JWT the orchestrator issues — three
+ * dot-separated parts, an unverified `sub` in the middle one — so the cross-tab
+ * rules can tell one account's rotation from another account's sign-in. The
+ * signature is the obviously fake word it says it is (CLAUDE.md, rule 3).
+ */
+function accessToken(sub: string, nonce: string): string {
+  const payload = globalThis
+    .btoa(JSON.stringify({ sub, nonce }))
+    .replace(/=+$/, "");
+  return `fake-header.${payload}.not-a-signature`;
+}
+
+/**
+ * The notification a tab gets when another tab writes the key — the only
+ * cross-tab signal there is. A browser fires it *after* the value has changed,
+ * so the test writes storage first where the value is being set.
+ */
+function otherTabWrote(value: string | null): void {
+  if (value === null) {
+    globalThis.localStorage.removeItem(TOKEN_KEY);
+  } else {
+    globalThis.localStorage.setItem(TOKEN_KEY, value);
+  }
+  globalThis.dispatchEvent(
+    new StorageEvent("storage", {
+      key: TOKEN_KEY,
+      newValue: value,
+      storageArea: globalThis.localStorage,
+    }),
+  );
+}
+
+/**
+ * jsdom has no Web Locks API, which is exactly the fallback path the
+ * production code keeps; a test that wants the lock installs one.
+ */
+function installLockManager(
+  request: (name: string, callback: () => Promise<unknown>) => Promise<unknown>,
+): void {
+  Object.defineProperty(globalThis.navigator, "locks", {
+    value: { request },
+    configurable: true,
+  });
+}
+
 const fetchMock = vi.fn<typeof fetch>();
 
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock;
   clearAuth();
+});
+
+afterEach(() => {
+  Reflect.deleteProperty(globalThis.navigator, "locks");
 });
 
 describe("auth state", () => {
@@ -421,6 +471,55 @@ describe("refreshAccessToken coordination", () => {
     unregister();
   });
 
+  it("adopts the token another tab rotated instead of submitting the cookie again", async () => {
+    const mine = accessToken("user-1", "a");
+    const theirs = accessToken("user-1", "b");
+    installSession({ user, access_token: mine });
+    const replaced = vi.fn();
+    const unregister = onCredentialsReplaced(replaced);
+    const gate = deferred<void>();
+    // Tab A holds the lock; this tab waits for it, as the real lock manager
+    // makes it.
+    installLockManager(async (_name, callback) => {
+      await gate.promise;
+      return callback();
+    });
+    fetchMock.mockResolvedValue(jsonResponse(200, authResponse("token-lost")));
+
+    const pending = refreshAccessToken();
+    // Tab A rotates and writes its pair while this tab is still queued.
+    globalThis.localStorage.setItem(TOKEN_KEY, theirs);
+    gate.resolve();
+
+    await expect(pending).resolves.toEqual({ user, access_token: theirs });
+    // The cookie was never submitted a second time, and the streams of this
+    // tab — same account, same session — were left alone.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getAccessToken()).toBe(theirs);
+    expect(getCurrentUser()).toEqual(user);
+    expect(replaced).not.toHaveBeenCalled();
+    unregister();
+  });
+
+  it("rotates under the lock when storage still holds this tab's token", async () => {
+    const mine = accessToken("user-1", "a");
+    installSession({ user, access_token: mine });
+    const names: string[] = [];
+    installLockManager((name, callback) => {
+      names.push(name);
+      return callback();
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, authResponse("token-b")));
+
+    await expect(refreshAccessToken()).resolves.toEqual(
+      authResponse("token-b"),
+    );
+
+    expect(names).toEqual(["mars.auth.refresh"]);
+    expect(urlOf(fetchMock.mock.calls[0][0])).toBe("/api/auth/refresh");
+    expect(getAccessToken()).toBe("token-b");
+  });
+
   it("keeps the token on a transient failure and rotates again next time", async () => {
     installSession(authResponse("token-a"));
     const signedOut = vi.fn();
@@ -438,6 +537,120 @@ describe("refreshAccessToken coordination", () => {
       authResponse("token-b"),
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    unregister();
+  });
+});
+
+// Two tabs of one browser share the `localStorage` token and the one refresh
+// cookie behind it, and a `storage` event is the only notification either gets
+// that the other moved (`SPEC.md`, "Frontend", Rules).
+describe("cross-tab authentication", () => {
+  it("signs this tab out when another tab removes the token", () => {
+    installSession(authResponse("token-a"));
+    const signedOut = vi.fn();
+    const unregister = onSignOut(signedOut);
+
+    otherTabWrote(null);
+
+    expect(signedOut).toHaveBeenCalledTimes(1);
+    expect(signedOut).toHaveBeenCalledWith("user");
+    expect(getAccessToken()).toBeNull();
+    expect(isAuthenticated()).toBe(false);
+    // The other tab's logout already revoked the one refresh cookie this
+    // browser has; a second revocation would be a request for nothing.
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // A tab that is already signed out has nothing to do.
+    otherTabWrote(null);
+    expect(signedOut).toHaveBeenCalledTimes(1);
+    unregister();
+  });
+
+  it("adopts another tab's rotation without touching open streams", () => {
+    const mine = accessToken("user-1", "a");
+    const rotated = accessToken("user-1", "b");
+    installSession({ user, access_token: mine });
+    const replaced = vi.fn();
+    const signedOut = vi.fn();
+    const unregisterReplaced = onCredentialsReplaced(replaced);
+    const unregisterSignOut = onSignOut(signedOut);
+
+    otherTabWrote(rotated);
+
+    expect(getAccessToken()).toBe(rotated);
+    // Same account, same session: the socket, its terminal and the task
+    // stream keep their connections and read the new token at their next
+    // connect.
+    expect(replaced).not.toHaveBeenCalled();
+    expect(signedOut).not.toHaveBeenCalled();
+    expect(getCurrentUser()).toEqual(user);
+    unregisterReplaced();
+    unregisterSignOut();
+  });
+
+  it("treats another account's sign-in as a replacement of credentials", () => {
+    installSession({ user, access_token: accessToken("user-1", "a") });
+    const theirs = accessToken("user-2", "a");
+    const replaced = vi.fn();
+    const unregister = onCredentialsReplaced(replaced);
+
+    otherTabWrote(theirs);
+
+    expect(getAccessToken()).toBe(theirs);
+    expect(replaced).toHaveBeenCalledTimes(1);
+    expect(replaced).toHaveBeenCalledWith(theirs);
+    // Whoever this browser is now, it is not the user held in memory; the
+    // bootstrap loads `GET /users/me` again.
+    expect(getCurrentUser()).toBeNull();
+    unregister();
+  });
+
+  it("adopts a token installed while this tab was signed out", () => {
+    const replaced = vi.fn();
+    const unregister = onCredentialsReplaced(replaced);
+
+    otherTabWrote(accessToken("user-2", "a"));
+
+    expect(isAuthenticated()).toBe(true);
+    expect(getCurrentUser()).toBeNull();
+    // Nothing was open to replace.
+    expect(replaced).not.toHaveBeenCalled();
+    unregister();
+  });
+
+  it("ignores a storage event for another key", () => {
+    installSession(authResponse("token-a"));
+
+    globalThis.dispatchEvent(
+      new StorageEvent("storage", {
+        key: "something.else",
+        newValue: null,
+        storageArea: globalThis.localStorage,
+      }),
+    );
+
+    expect(getAccessToken()).toBe("token-a");
+  });
+
+  it("drops the local session before the logout request answers", async () => {
+    installSession(authResponse("token-a"));
+    const signedOut = vi.fn();
+    const unregister = onSignOut(signedOut);
+    const gate = deferred<Response>();
+    fetchMock.mockImplementation(() => gate.promise);
+
+    const pending = logout();
+
+    // The blackholed orchestrator is still holding the request; the user is
+    // out regardless, here and — through the storage key — in every other tab.
+    expect(getAccessToken()).toBeNull();
+    expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBeNull();
+    expect(signedOut).toHaveBeenCalledWith("user");
+    // And the request itself cannot hang forever.
+    expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+
+    gate.resolve(fakeResponse(204));
+    await pending;
     unregister();
   });
 });

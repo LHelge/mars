@@ -11,6 +11,13 @@
 // HTTP client, the session WebSocket and the task SSE stream all go through
 // `refreshAccessToken()`, so a burst never submits the same rotating cookie
 // twice (`SPEC.md`, "Authentication", stream rules).
+//
+// That mirror to `localStorage` is also how the *tabs* of one browser stay one
+// session: a `storage` event is the only notification a tab gets that another
+// one signed out or installed a different token, and the same key carries the
+// cross-tab half of the single rotation — the Web Locks API serialises the
+// rotation itself, and a tab that finds a newer token in storage adopts it
+// instead of submitting the single-use cookie a second time.
 
 import type {
   AcceptInviteRequest,
@@ -199,6 +206,91 @@ export function setCurrentUser(user: User): void {
   setState({ user, accessToken: state.accessToken });
 }
 
+/**
+ * The `sub` claim of an access token, read without verifying anything — the
+ * signature, the expiry and `auth_version` are the orchestrator's business and
+ * are checked on every request (`SPEC.md`, "Authentication"). The one question
+ * answered here is a UI one: is the token another tab just wrote a rotation of
+ * *this* session, or somebody else's sign-in? Anything unreadable answers
+ * `null`, which the caller treats as "not this session" — the conservative
+ * side, where streams reconnect rather than keep running for another account.
+ */
+function tokenSubject(token: string | null): string | null {
+  if (token === null) {
+    return null;
+  }
+  const payload = token.split(".")[1];
+  if (payload === undefined || payload.length === 0) {
+    return null;
+  }
+  try {
+    const json = globalThis.atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    const claims: unknown = JSON.parse(json);
+    if (typeof claims !== "object" || claims === null || !("sub" in claims)) {
+      return null;
+    }
+    const sub: unknown = claims.sub;
+    return typeof sub === "string" ? sub : null;
+  } catch {
+    // Not a JWT, not base64, not JSON: unknowable, and treated as such.
+    return null;
+  }
+}
+
+/**
+ * Takes over a token this tab did not issue — one another tab wrote to
+ * `localStorage`, seen through a `storage` event or read again inside the
+ * refresh lock. Storage is not written back: the value is already there, and
+ * writing it would only re-notify the tab that wrote it.
+ *
+ * Whether this is a replacement of credentials follows the `sub` claim
+ * (`SPEC.md`, "Frontend", Rules): the same subject is the other tab's ordinary
+ * rotation, which leaves this tab's session socket, its exec terminal and the
+ * task stream exactly where they are, while a different or unreadable subject
+ * is another account taking the browser over — the credentials-replaced
+ * handlers run and the cached user is dropped, so `GET /users/me` is loaded
+ * again for whoever this is now.
+ */
+function adoptToken(token: string): void {
+  if (token === state.accessToken) {
+    return;
+  }
+  const wasSignedIn = state.accessToken !== null;
+  const subject = tokenSubject(token);
+  const sameSession =
+    wasSignedIn &&
+    subject !== null &&
+    subject === tokenSubject(state.accessToken);
+  authGeneration += 1;
+  setState({ user: sameSession ? state.user : null, accessToken: token });
+  if (wasSignedIn && !sameSession) {
+    for (const handler of [...credentialsReplacedHandlers]) {
+      handler(token);
+    }
+  }
+}
+
+function handleStorageEvent(event: StorageEvent): void {
+  // `key === null` is a `clear()`, which takes the token with it.
+  if (event.key !== null && event.key !== TOKEN_STORAGE_KEY) {
+    return;
+  }
+  const stored = event.key === null ? readStoredToken() : event.newValue;
+  if (stored === null) {
+    // Another tab signed out. Locally only: its `POST /auth/logout` revoked
+    // the one refresh cookie this browser has.
+    if (state.accessToken !== null) {
+      signOut("user");
+    }
+    return;
+  }
+  adoptToken(stored);
+}
+
+if (typeof globalThis.addEventListener === "function") {
+  globalThis.addEventListener("storage", handleStorageEvent);
+}
+
 /** Drops the token and user from memory and `localStorage`. */
 export function clearAuth(): void {
   authGeneration += 1;
@@ -233,15 +325,44 @@ export async function login(body: LoginRequest): Promise<AuthResponse> {
   return auth;
 }
 
-/** Revokes the refresh token server-side, then clears local state regardless. */
+/** How long the cookie-revoking request is given before it is abandoned. */
+const LOGOUT_TIMEOUT_MS = 5000;
+
+/**
+ * An `init` carrying a deadline, where the runtime has one. `AbortSignal` is
+ * the only thing that bounds a `fetch`: without it a blackholed orchestrator
+ * holds a request until the browser's own connection timeout, minutes later.
+ */
+function timeoutInit(ms: number): RequestInit | undefined {
+  const timeout = (
+    AbortSignal as unknown as { timeout?: (ms: number) => AbortSignal }
+  ).timeout;
+  return typeof timeout === "function"
+    ? { signal: timeout.call(AbortSignal, ms) }
+    : undefined;
+}
+
+/**
+ * Signs out locally first, then asks the orchestrator to revoke the refresh
+ * cookie. The order matters: the local session — memory, `localStorage`, every
+ * sign-out handler and so every other tab — must go away when the user presses
+ * the button, not when an unreachable orchestrator gets round to answering,
+ * and the request itself is bounded by a timeout so it cannot hang forever.
+ * A revocation that never arrives costs the refresh cookie its remaining life;
+ * a sign-out that never happens costs the user their session.
+ */
 export async function logout(): Promise<void> {
-  try {
-    await apiPost<void>("/auth/logout");
-  } catch {
-    // The cookie may already be gone or the orchestrator unreachable; the
-    // local session goes away either way.
-  }
   signOut("user");
+  try {
+    await apiPost<void>(
+      "/auth/logout",
+      undefined,
+      timeoutInit(LOGOUT_TIMEOUT_MS),
+    );
+  } catch {
+    // Already revoked, unreachable, or past the deadline: local authentication
+    // is gone either way.
+  }
 }
 
 /**
@@ -284,13 +405,52 @@ function currentCredentials(): AuthResponse {
   return { user: state.user, access_token: state.accessToken };
 }
 
+/** The Web Locks name the rotation is serialised under, across every tab. */
+const REFRESH_LOCK = "mars.auth.refresh";
+
+interface LockManagerLike {
+  request<T>(name: string, callback: () => Promise<T>): Promise<T>;
+}
+
+/**
+ * Runs `rotate` under the origin-wide refresh lock where the browser has the
+ * Web Locks API, and directly where it has not — an old browser, or jsdom.
+ * Without the lock a tab rotates on its own exactly as it did before: two tabs
+ * can then still race for the single-use cookie, which is the bug this bounds,
+ * not one it introduces.
+ */
+function withRefreshLock<T>(rotate: () => Promise<T>): Promise<T> {
+  const navigator = globalThis.navigator as unknown as
+    | { locks?: LockManagerLike }
+    | undefined;
+  const locks = navigator?.locks;
+  if (locks === undefined || typeof locks.request !== "function") {
+    return rotate();
+  }
+  return locks.request(REFRESH_LOCK, rotate);
+}
+
 async function runRefresh(
   generation: number,
   id: number,
+  startToken: string | null,
 ): Promise<AuthResponse> {
   try {
-    const auth = await apiPost<AuthResponse>("/auth/refresh");
-    if (generation !== authGeneration) {
+    const auth = await withRefreshLock(async () => {
+      // Inside the lock: whatever is in storage now is the browser's current
+      // token. If another tab rotated while this one waited, its pair is the
+      // live one and the cookie this tab would submit is already revoked, so
+      // adopt rather than rotate.
+      const stored = readStoredToken();
+      if (stored !== null && stored !== startToken) {
+        adoptToken(stored);
+        return null;
+      }
+      return await apiPost<AuthResponse>("/auth/refresh");
+    });
+    // `null` is the adopted case, and `adoptToken` has already moved the
+    // generation on, so both answers are "the credentials somebody else left".
+    if (auth === null || generation !== authGeneration) {
       return currentCredentials();
     }
     installSession(auth, "refresh");
@@ -323,6 +483,12 @@ async function runRefresh(
  * stream share one in-flight rotation, because the cookie is single-use and a
  * second submission of it fails (`orchestrator/src/auth/credentials.rs`).
  *
+ * The other tabs of the browser hold the same cookie, so the rotation is also
+ * serialised across them, under a `navigator.locks` request; inside the lock
+ * the stored token is read again and a newer one is adopted instead of
+ * rotating. Two tabs whose tokens expire in the same instant therefore produce
+ * one rotation, not a winner and a signed-out loser.
+ *
  * A 401 means the refresh token is missing, expired or revoked: sign out
  * instead of retrying. A network error or 5xx is transient — the token stays in
  * place and callers back off normally (`SPEC.md`, "Authentication").
@@ -342,7 +508,7 @@ export function refreshAccessToken(): Promise<AuthResponse> {
   }
   const generation = authGeneration;
   const id = nextRefreshId++;
-  const promise = runRefresh(generation, id);
+  const promise = runRefresh(generation, id, state.accessToken);
   refreshAttempt = { generation, id, promise };
   return promise;
 }

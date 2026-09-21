@@ -12,7 +12,9 @@
 //
 // SignOutRegistry: `services/auth` keeps the set of sign-out handlers and runs
 // them in registration order. This component registers the two the application
-// shell owns — clearing the TanStack Query cache and navigating to `/login`.
+// shell owns — clearing the TanStack Query cache and navigating to `/login`,
+// with the current location as the return destination when the sign-out was a
+// failed refresh rather than a user's decision.
 // The session and board epics register their own store resets and stream closes
 // through `onSignOut` from their providers; nothing further is needed here for
 // the "clears stores, closes streams" part of the rule. Navigation is the last
@@ -22,8 +24,8 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router";
 import { Alert, LoadingState, SubmitButton } from "./components";
 import {
   ApiError,
@@ -34,9 +36,11 @@ import {
   onSignOut,
   setCurrentUser,
   signOut,
+  subscribe,
 } from "./services";
 import { getMe } from "./services/users";
 import { useTaskStore } from "./tasks/taskStore";
+import { safeReturnTo } from "./utils/returnTo";
 
 export interface AuthBootstrapProps {
   children: ReactNode;
@@ -54,6 +58,7 @@ function initialPhase(): Phase {
 
 export function AuthBootstrap({ children }: AuthBootstrapProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const [phase, setPhase] = useState<Phase>(initialPhase);
   const [attempt, setAttempt] = useState(0);
@@ -62,6 +67,14 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
     setPhase("loading");
     setAttempt((value) => value + 1);
   }, []);
+
+  // Where the user is, for the sign-out handler: it is registered once and
+  // would otherwise close over the location of the first render. The router's
+  // location, not `window.location`, so the destination is the application's.
+  const locationRef = useRef(location);
+  useEffect(() => {
+    locationRef.current = location;
+  }, [location]);
 
   useEffect(() => {
     const offForbidden = onForbidden(() => {
@@ -74,20 +87,42 @@ export function AuthBootstrap({ children }: AuthBootstrapProps) {
     const offPasswordChange = onPasswordChangeRequired(() => {
       void navigate("/change-password");
     });
-    const offSignOut = onSignOut(() => {
+    const offSignOut = onSignOut((reason) => {
       queryClient.clear();
       // The board snapshot is one user's view of a project; in-flight reads
       // are discarded with it.
       useTaskStore.getState().reset();
-      void navigate("/login", { replace: true });
+      // A session that expired underneath the user did not ask to leave the
+      // page they were on: carry it to `/login` the way `ProtectedRoute`
+      // would, so signing in again returns to that task or session
+      // (`SPEC.md`, "Frontend", Copy links). A deliberate sign-out — here or
+      // in another tab — carries nothing; the next user of this browser
+      // starts at the top.
+      const { pathname, search } = locationRef.current;
+      const from =
+        reason === "refresh_failed" ? safeReturnTo(pathname + search) : null;
+      void navigate("/login", {
+        replace: true,
+        state: from === null ? undefined : { from },
+      });
+    });
+    // Another tab signing a *different* account in leaves this tab holding a
+    // token and no user (`services/auth`, `adoptToken`). Nothing else would
+    // load one: the bootstrap below runs on mount, and every guard waits for
+    // a user that never arrives.
+    const offAuthState = subscribe(() => {
+      if (getAccessToken() !== null && getCurrentUser() === null) {
+        retry();
+      }
     });
 
     return () => {
       offForbidden();
       offPasswordChange();
       offSignOut();
+      offAuthState();
     };
-  }, [navigate, queryClient]);
+  }, [navigate, queryClient, retry]);
 
   useEffect(() => {
     // Nothing to load, and `initialPhase`/`retry` have already put the phase

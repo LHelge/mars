@@ -34,6 +34,7 @@ export {
 export type {
   AuthState,
   CredentialsReplacedHandler,
+  InstallReason,
   SignOutHandler,
   SignOutReason,
 } from "./auth";

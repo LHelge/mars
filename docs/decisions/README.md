@@ -47,3 +47,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0039](0039-layered-dev-session-image.md) | A layered dev session image on top of the contract base | accepted |
 | [0040](0040-render-markdown-in-the-browser.md) | Markdown is rendered in the browser from text; no server-side HTML | accepted |
 | [0041](0041-tracker-row-locks-are-no-key-update.md) | Tracker row locks are `FOR NO KEY UPDATE`, so they never block a foreign-key check | accepted |
+| [0042](0042-bound-unattended-launches.md) | Unattended launches are capped, pausable per project, and recorded by launch source | accepted |

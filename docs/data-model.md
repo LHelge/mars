@@ -202,7 +202,7 @@ Constraints and indexes:
 - Partial unique index `agent_profiles_one_default_idx ON agent_profiles (project_id) WHERE is_default`.
 - Deleting a profile that has sessions is refused (`sessions.profile_id` is `ON DELETE RESTRICT`).
 
-Which task states a profile serves is the `profile_states` link table under "Tasks". Automatic launching (a dispatcher that starts an ephemeral session when a served state has claimable work, or a schedule that runs a profile periodically) is not in v1; when it comes it is columns on this table and one background job, and no change to the task tables (`ARCHITECTURE.md`, "Task tracker").
+Which task states a profile serves is the `profile_states` link table under "Tasks". Automatic launching (a dispatcher that starts an ephemeral session when a served state has claimable work, or a schedule that runs a profile periodically) is not in v1; when it comes it is columns on this table, a cap and a pause switch on `projects`, a `launch_source` column on `sessions` recording who launched a session, and one background job per feature, with no change to the task tables (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042).
 
 ## Sessions and events
 

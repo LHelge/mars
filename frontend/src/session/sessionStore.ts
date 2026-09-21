@@ -34,6 +34,12 @@ export interface AssistantTextMessage {
   kind: "assistant_text";
   text: string;
   streaming: boolean;
+  /**
+   * The block stopped without its completing `text`: a park, a kill or a fatal
+   * error ended the turn mid-stream, so `text` is the deltas that arrived and
+   * not the whole block. A merge needs the difference (`mergeHistory`).
+   */
+  interrupted?: boolean;
 }
 
 export interface ThinkingMessage {
@@ -129,10 +135,12 @@ export interface SessionState {
   /** `seq` of the last `git` event, consumed by the Changes panel. */
   gitEventSeq: number;
   /**
-   * `seq` of the event that last closed the streamed blocks — a `result`, a
-   * fatal `error` or a `state_change` into an ended state. A merged older page
-   * consults it: a page cut inside a delta run ends with a fragment the older
-   * fold never saw finish, and this says the live half saw it.
+   * `seq` of the *first* event held that closed the streamed blocks — a
+   * `result`, a fatal `error` or a `state_change` into an ended state. A merged
+   * older page consults it: a page cut inside a delta run ends with a fragment
+   * the older fold never saw finish, and the first close after the cut is that
+   * block's own end, so a live message above it belongs to the fragment's block
+   * and one below it to a later one.
    */
   streamEndSeq: number;
   /** A turn is in progress; the composer's button reads "Interject". */
@@ -329,18 +337,24 @@ function streamingId(
 /**
  * Completes every streamed block: the turn is over, whether it ended by itself
  * (`result`), was interrupted (a park or a kill, which produce no `result`) or
- * failed fatally. `streamEndSeq` remembers that it happened, so an older page
- * merged in later does not bring a blinking cursor back.
+ * failed fatally. A block still streaming here never got its completing `text`,
+ * so it is marked `interrupted` and its text stays what arrived. The first
+ * close is kept in `streamEndSeq`, so an older page merged in later neither
+ * brings a blinking cursor back nor mistakes a later block for this one.
  */
 function endStreaming(state: SessionState, seq: number): SessionState {
   let messages: Record<string, Message> | null = null;
   for (const message of Object.values(state.messages)) {
     if (message.kind === "assistant_text" && message.streaming) {
       messages ??= { ...state.messages };
-      messages[message.id] = { ...message, streaming: false };
+      messages[message.id] = { ...message, streaming: false, interrupted: true };
     }
   }
-  return { ...state, messages: messages ?? state.messages, streamEndSeq: seq };
+  return {
+    ...state,
+    messages: messages ?? state.messages,
+    streamEndSeq: state.streamEndSeq || seq,
+  };
 }
 
 function system(
@@ -766,16 +780,38 @@ function firstBlockMessage(
   return undefined;
 }
 
+/** The `seq` an event-derived message carries in its id, if it has one. */
+function messageSeq(id: string): number | undefined {
+  const match = /^e(\d+)$/.exec(id);
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * Whether the live half's first block message continues the older page's
+ * fragment rather than starting a block of its own. The first close held by the
+ * live half ends the fragment's block, so a message above it is the same block
+ * and one below it belongs to a later turn — which is what a park and its
+ * resume leave behind, with only transparent system and user rows between.
+ */
+function continuesBlock(live: SessionState, head: Message): boolean {
+  if (live.streamEndSeq === 0) return true;
+  const seq = messageSeq(head.id);
+  return seq === undefined || seq < live.streamEndSeq;
+}
+
 /**
  * Reconciles a page boundary that fell inside a delta run. The older page was
  * folded on its own, so it ends with a streaming fragment of a block the live
  * half has already rebuilt from the later deltas. The two halves become one
- * message at the older position, exactly as a split tool does: a live half
- * still streaming contributes its deltas, a completed one the whole block's
- * `text`, and a block the live half saw interrupted (a park, a kill, a fatal
- * error) merely stops streaming. Writes into `messages` and records what it
- * merged away in `dropped`, which the caller compacts out of every order and
- * child list.
+ * message at the older position, exactly as a split tool does. What the live
+ * half contributes depends on how its own half ended: a head still streaming,
+ * or one an interruption closed without a `text`, holds only the deltas after
+ * the cut and is appended to the fragment; one completed by `text` holds the
+ * whole block and replaces it. A fragment whose block ended with nothing more
+ * in its scope — a park with no further delta — merely stops streaming, and so
+ * does one whose live scope opens with a tool or with a later block. Writes
+ * into `messages` and records what it merged away in `dropped`, which the
+ * caller compacts out of every order and child list.
  */
 function mergeStreamingFragments(
   older: SessionState,
@@ -783,6 +819,10 @@ function mergeStreamingFragments(
   messages: Record<string, Message>,
   dropped: Set<string>,
 ): void {
+  const interrupt = (fragment: AssistantTextMessage) => {
+    messages[fragment.id] = { ...fragment, streaming: false, interrupted: true };
+  };
+
   for (const parent of mergedScopes(older, live)) {
     const fragment = lastBlockMessage(older, parent);
     if (fragment?.kind !== "assistant_text" || !fragment.streaming) continue;
@@ -791,21 +831,22 @@ function mergeStreamingFragments(
       // Only user, system or raw rows follow. The fragment is still the tail of
       // the live scope, so the next delta continues it — unless the live half
       // saw the turn end, which is what interrupted the block.
-      if (live.streamEndSeq > 0) {
-        messages[fragment.id] = { ...fragment, streaming: false };
-      }
+      if (live.streamEndSeq > 0) interrupt(fragment);
       continue;
     }
-    if (head.kind !== "assistant_text") {
-      messages[fragment.id] = { ...fragment, streaming: false };
+    if (head.kind !== "assistant_text" || !continuesBlock(live, head)) {
+      interrupt(fragment);
       continue;
     }
-    // A completed head carries the block's whole text (`SPEC.md`,
-    // "AgentEvent"); a streaming one carries only the deltas after the cut.
+    // Only a head completed by its `text` carries the block's whole text
+    // (`SPEC.md`, "AgentEvent"); a streaming or interrupted one carries just
+    // the deltas that arrived after the cut.
+    const partial = head.streaming || head.interrupted === true;
     messages[fragment.id] = {
       ...fragment,
-      text: head.streaming ? fragment.text + head.text : head.text,
+      text: partial ? fragment.text + head.text : head.text,
       streaming: head.streaming,
+      interrupted: head.interrupted,
     };
     dropped.add(head.id);
   }
@@ -873,7 +914,8 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
     subagents,
     pendingTools,
     gitEventSeq: live.gitEventSeq || older.gitEventSeq,
-    streamEndSeq: live.streamEndSeq || older.streamEndSeq,
+    // The earliest close held: the older page's, when it has one.
+    streamEndSeq: older.streamEndSeq || live.streamEndSeq,
     // The first page is loaded into an empty store, so its tail decides whether
     // a turn is in progress; later pages never revise the live answer.
     turnActive:

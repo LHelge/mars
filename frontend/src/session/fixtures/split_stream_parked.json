@@ -1,0 +1,57 @@
+[
+  {
+    "seq": 1,
+    "ts": "2026-01-02T23:00:00Z",
+    "kind": "user_message",
+    "text": "Explain the merge",
+    "user_id": "00000000-0000-0000-0000-000000000001"
+  },
+  {
+    "seq": 2,
+    "ts": "2026-01-02T23:00:01Z",
+    "kind": "text_delta",
+    "text": "The merge "
+  },
+  {
+    "seq": 3,
+    "ts": "2026-01-02T23:00:02Z",
+    "kind": "text_delta",
+    "text": "joins the "
+  },
+  {
+    "seq": 4,
+    "ts": "2026-01-02T23:00:03Z",
+    "kind": "text_delta",
+    "text": "two halves"
+  },
+  {
+    "seq": 5,
+    "ts": "2026-01-02T23:00:04Z",
+    "kind": "state_change",
+    "from": "running",
+    "to": "parked",
+    "reason": "stopped by user",
+    "signal": "SIGINT"
+  },
+  {
+    "seq": 6,
+    "ts": "2026-01-02T23:00:05Z",
+    "kind": "state_change",
+    "from": "parked",
+    "to": "running",
+    "reason": "resumed by user"
+  },
+  {
+    "seq": 7,
+    "ts": "2026-01-02T23:00:06Z",
+    "kind": "user_message",
+    "text": "carry on",
+    "user_id": "00000000-0000-0000-0000-000000000001"
+  },
+  {
+    "seq": 8,
+    "ts": "2026-01-02T23:00:07Z",
+    "kind": "text",
+    "text": "A fresh block after the park."
+  }
+]

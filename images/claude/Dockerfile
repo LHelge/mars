@@ -34,7 +34,9 @@ ENV LANG=C.UTF-8
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # The base toolchain. Deliberately modest: this image is a base that profiles
-# and per-project images build on (README.md, "Roadmap after v1").
+# and per-project images build on (README.md, "Roadmap after v1"). Its first
+# consumer is images/claude-dev, which layers the Rust and Node development
+# toolchain on top of it (ARCHITECTURE.md, "Session image"; ADR 0039).
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         bash \

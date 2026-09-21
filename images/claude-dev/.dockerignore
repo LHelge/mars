@@ -1,0 +1,15 @@
+# The build context is images/claude-dev and needs exactly the Dockerfile.
+# Everything else is excluded, so a stray file in the directory cannot end up
+# in the image or bust the layer cache.
+*
+!Dockerfile
+!.dockerignore
+
+# Belt and braces for the patterns that must never be in a context, whatever
+# the allow-list above does.
+tests/
+*.md
+.env
+.env.*
+*.key
+*.pem

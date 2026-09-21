@@ -2,8 +2,7 @@
 //
 // `SidePanel` renders whatever is in this array, in this order, so a new panel
 // is one entry here and one component file — `SessionView` never learns its
-// name. The `Changes` and `Terminal` panels are separate tasks and add their
-// entries above `Tasks`.
+// name.
 //
 // A panel takes the session and reaches the socket through
 // `useSessionSocketApi()`, so the registry carries no props of its own.
@@ -13,6 +12,13 @@
 // driven. `SidePanel` renders only the active entry behind a `Suspense`, so the
 // chunk is fetched the first time the Terminal tab is opened. A `lazy` result
 // is a `ComponentType`, so the registry shape is unchanged.
+//
+// The order below is therefore not cosmetic. `SidePanel` shows the first
+// applicable entry until the operator picks another one, so the Terminal comes
+// last: it is the one panel that costs something to show — a lazy chunk and,
+// once the session runs, a `/bin/bash -l` exec in the container — and nobody
+// gets that without asking for it (`SPEC.md`, "Frontend", "Session side
+// panel").
 
 import { lazy } from "react";
 import type { ComponentType } from "react";
@@ -47,8 +53,8 @@ export const sidePanels: SidePanelEntry[] = [
     // A session that has not been created yet has no branch to diff.
     enabled: (session) => session.state !== "creating",
   },
-  { id: "terminal", label: "Terminal", component: TerminalView },
   { id: "tasks", label: "Tasks", component: TasksPanel },
+  { id: "terminal", label: "Terminal", component: TerminalView },
 ];
 
 /** The tabs that apply to this session, in registry order. */

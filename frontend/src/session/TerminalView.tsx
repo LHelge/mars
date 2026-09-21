@@ -15,7 +15,9 @@
 // when the connection drops, so a reconnection leaves the panel detached with a
 // `Reconnect` button rather than reattaching a dead terminal behind the
 // operator's back. Every path out — the panel closing, the session leaving
-// `running`, the socket dropping, unmount — sends `terminal_close` and disposes.
+// `running`, the socket dropping, unmount — sends `terminal_close` and
+// disposes, and every path back in — a `Reconnect`, or a session that parks
+// and runs again — starts from a cleared exit bar.
 //
 // The xterm imports, including its stylesheet, are deliberately confined to
 // this module so it can be lazy-loaded: `sidePanels.ts` is the only importer.
@@ -78,6 +80,13 @@ export function TerminalView({ session }: SessionPanelProps) {
   useEffect(() => {
     const host = hostRef.current;
     if (attachId === null || !running || !live || host === null) return;
+
+    // A new attachment is a new process, so whatever the last one exited with
+    // is no longer what this panel is reporting. Reconnect is not the only way
+    // back here: a session that parks and runs again detaches and re-attaches
+    // on its own, and the exit bar of the shell that died with the old
+    // container must not outlive it.
+    setExitCode(null);
 
     const term = new Terminal({
       convertEol: false,
@@ -160,8 +169,9 @@ export function TerminalView({ session }: SessionPanelProps) {
     };
   }, [attachId, live, running, terminal]);
 
+  // Asking for a new attachment is all this does; the exit bar is cleared by
+  // the attachment itself, wherever it came from.
   const reconnect = (): void => {
-    setExitCode(null);
     setAttachId((id) => (id ?? 0) + 1);
   };
 

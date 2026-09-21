@@ -13,17 +13,12 @@ import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
 import { getSessionStore, optimisticId, useSessionStore } from "./sessionStore";
 import type { SessionSocketApi } from "./useSessionSocket";
+import { useStopSession } from "./useStopSession";
 
 /** The text area grows to this many lines and then scrolls. */
 const MAX_LINES = 8;
 /** Past this length a message is worth a word of warning, never a refusal. */
 const LARGE_TEXT = 100 * 1024;
-/**
- * A stop is a request, not a transaction (`ARCHITECTURE.md`, "Stop
- * semantics"): if no state change arrives, the button becomes usable again
- * rather than staying stuck.
- */
-const STOP_TIMEOUT_MS = 30_000;
 
 export interface ComposerProps {
   sessionId: string;
@@ -70,9 +65,10 @@ export function Composer({
 
   const [text, setText] = useState(initialText ?? "");
   const [consumedInitial, setConsumedInitial] = useState(initialText);
-  const [stopping, setStopping] = useState(false);
+  // The same stop the header's button makes, including what it says while the
+  // request is outstanding.
+  const stop = useStopSession(sessionId, socket.stop);
   const areaRef = useRef<HTMLTextAreaElement>(null);
-  const stopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const state = session?.state;
   const ended = state === "done" || state === "failed";
@@ -98,13 +94,10 @@ export function Composer({
   }, [consumedInitial, onConsumedInitialText]);
 
   // The store is the external system the composer reacts to: a rejection puts
-  // the refused text back in the box, and a session that leaves `running`
-  // ends a stop in progress.
+  // the refused text back in the box. (A session that leaves `running` ends a
+  // stop in progress; that half lives in `useStopSession`.)
   useEffect(() => {
     return getSessionStore(sessionId).subscribe((next, previous) => {
-      if (next.session?.state !== "running") {
-        setStopping(false);
-      }
       const rejection = next.lastRejection;
       if (rejection === null || rejection === previous.lastRejection) return;
       const message = next.messages[optimisticId(rejection.client_id)];
@@ -114,12 +107,6 @@ export function Composer({
       setText((current) => (current.trim() === "" ? message.text : current));
     });
   }, [sessionId]);
-
-  useEffect(() => {
-    return () => {
-      if (stopTimer.current !== null) clearTimeout(stopTimer.current);
-    };
-  }, []);
 
   const send = useCallback(() => {
     const trimmed = text.trim();
@@ -197,17 +184,10 @@ export function Composer({
           <SubmitButton
             type="button"
             variant="danger"
-            disabled={stopping}
-            onClick={() => {
-              setStopping(true);
-              socket.stop();
-              if (stopTimer.current !== null) clearTimeout(stopTimer.current);
-              stopTimer.current = setTimeout(() => {
-                setStopping(false);
-              }, STOP_TIMEOUT_MS);
-            }}
+            disabled={stop.stopping}
+            onClick={stop.requestStop}
           >
-            {stopping ? "Stopping…" : "Stop"}
+            {stop.label}
           </SubmitButton>
         )}
         <SubmitButton disabled={ended || text.trim() === ""}>

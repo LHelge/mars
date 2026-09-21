@@ -2,13 +2,27 @@
 // board": the session view shows the task the session was launched for and the
 // tasks it touched).
 //
-// Two readings of the same tracker: the task this session claimed at launch,
-// with whether it still holds the lease, and every task it has touched since.
-// Agents move tasks while the session runs, so the touched list is refetched on
-// every `session` frame — the frame that tells us anything at all changed — and
-// on a slow timer for the rest.
+// One reading of the tracker, shown twice: `GET /sessions/{id}/tasks` is every
+// task this session has touched, and the task it was launched for is one of
+// them — a launch claims the task and a claim writes the `task_sessions` link
+// (`tracker::leases::claim_for_launch`). So the launched task's row is taken
+// out of that list rather than fetched again, and the rest of the list is what
+// is left after it: a task is never listed twice, and a session that touched
+// nothing else says so.
+//
+// The detail request survives as a fallback for the one case the list cannot
+// answer — it failed, or the link is not there — and asks for a whole
+// `TaskDetail`, comments and hand-offs included, to render a title and a
+// state. That is the price of a case that should not arise, not the normal
+// path.
+//
+// Agents move tasks while the session runs, so the panel is refreshed on every
+// `session` frame — the frame that tells us anything at all changed — and on a
+// slow timer for the rest. Refreshing is `invalidateQueries`, never `refetch`:
+// `refetch` ignores `enabled` and would fire a request for a task this session
+// was not launched for on every frame.
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Link } from "react-router";
 
@@ -24,6 +38,10 @@ import type { SessionPanelProps } from "./sidePanels";
 const REFETCH_MS = 60_000;
 
 export function TasksPanel({ session }: SessionPanelProps) {
+  const queryClient = useQueryClient();
+  const projectId = session.project_id;
+  const taskId = session.task_id;
+
   const touched = useQuery({
     queryKey: queryKeys.sessions.tasks(session.id),
     queryFn: () => listSessionTasks(session.id),
@@ -31,26 +49,36 @@ export function TasksPanel({ session }: SessionPanelProps) {
     refetchIntervalInBackground: false,
   });
 
-  const taskId = session.task_id;
+  const all = touched.data ?? [];
+  const fromTouched =
+    taskId === null ? undefined : all.find((task) => task.id === taskId);
+
   const launched = useQuery({
-    queryKey: queryKeys.tasks.detail(session.project_id, taskId ?? ""),
-    queryFn: () => getTask(session.project_id, taskId ?? ""),
-    enabled: taskId !== null,
+    queryKey: queryKeys.tasks.detail(projectId, taskId ?? ""),
+    queryFn: () => getTask(projectId, taskId ?? ""),
+    // Only once the list has had its say and did not carry the task.
+    enabled: taskId !== null && !touched.isPending && fromTouched === undefined,
   });
 
   // The socket's `session` frames are the panel's change notification: every
   // lease taken or released rewrites the session row too.
-  const refetchTouched = touched.refetch;
-  const refetchLaunched = launched.refetch;
   useEffect(() => {
     return getSessionStore(session.id).subscribe((next, previous) => {
       if (next.session === previous.session) return;
-      void refetchTouched();
-      void refetchLaunched();
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.sessions.tasks(session.id),
+      });
+      if (taskId !== null) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.tasks.detail(projectId, taskId),
+        });
+      }
     });
-  }, [session.id, refetchLaunched, refetchTouched]);
+  }, [projectId, queryClient, session.id, taskId]);
 
-  const rows = touched.data ?? [];
+  const launchedTask = fromTouched ?? launched.data;
+  const rows =
+    taskId === null ? all : all.filter((task) => task.id !== taskId);
   const empty = taskId === null && rows.length === 0;
 
   return (
@@ -58,15 +86,15 @@ export function TasksPanel({ session }: SessionPanelProps) {
       {taskId !== null && (
         <section className="space-y-2">
           <h3 className="text-console-muted font-mono text-xs">Launched for</h3>
-          {launched.isPending ? (
-            <LoadingState label="Loading task" />
-          ) : launched.isError ? (
-            <Alert kind="error">Could not load the task.</Alert>
-          ) : (
+          {launchedTask !== undefined ? (
             <TaskRow
-              task={launched.data}
-              held={launched.data.lease_holder_session_id === session.id}
+              task={launchedTask}
+              held={launchedTask.lease_holder_session_id === session.id}
             />
+          ) : touched.isPending || launched.isLoading ? (
+            <LoadingState label="Loading task" />
+          ) : (
+            <Alert kind="error">Could not load the task.</Alert>
           )}
         </section>
       )}

@@ -12,13 +12,21 @@
 // The single in-flight refresh lives in `./auth`, shared with the session
 // WebSocket and the task SSE stream; this module only asks for it.
 //
-// Every function takes an optional `init`, and the one part of it that matters
-// is `signal`: it is how a caller bounds a request that must not hang — the
-// sign-out's cookie revocation — and how TanStack Query's cancellation reaches
-// the network, so a changed session head abandons the megabyte of diff it no
-// longer wants. The signal survives the 401 retry, which reuses the same
-// `init`, and an abort rejects with the runtime's `AbortError` untouched, like
-// any other network failure.
+// Every function takes an optional `init`, and two parts of it matter.
+//
+// `signal` is how a caller bounds a request that must not hang — the sign-out's
+// cookie revocation — and how TanStack Query's cancellation reaches the
+// network, so a changed session head abandons the megabyte of diff it no longer
+// wants. The signal survives the 401 retry, which reuses the same `init`, and
+// an abort rejects with the runtime's `AbortError` untouched, like any other
+// network failure.
+//
+// `query` is the one way a query string is built here: a record whose defined
+// values go through `URLSearchParams` and whose `undefined` ones are simply
+// absent, so an optional filter is spelled `{ state }` and not with a
+// conditional `?`. Path parts are encoded with `seg()` — every id, name or
+// number that a caller interpolates into a path goes through it, so nothing
+// depends on a route-level UUID check far away for correctness.
 //
 // This module and `./auth` import each other (refresh uses the client, the
 // client reads the token). Neither calls across the cycle at module load.
@@ -68,11 +76,47 @@ const UNAUTHENTICATED_PATHS = [
 ];
 
 function isUnauthenticatedPath(path: string): boolean {
-  const withoutQuery = path.split("?")[0];
+  // A path carries no query string: a filter travels as `init.query`.
   return (
-    UNAUTHENTICATED_PATHS.includes(withoutQuery) ||
-    withoutQuery.startsWith("/auth/invite/")
+    UNAUTHENTICATED_PATHS.includes(path) || path.startsWith("/auth/invite/")
   );
+}
+
+/**
+ * One part of a path — an id, a name, a task number — encoded for it.
+ *
+ * Nothing interpolated into a path skips this. Most of what the frontend puts
+ * there is a UUID the router already checked, but the ones that are not — a
+ * task state's name, a shared directory's name — are user-typed, and a rule
+ * that holds only for the ids is a rule nobody can see at the call site.
+ */
+export function seg(part: string | number): string {
+  return encodeURIComponent(String(part));
+}
+
+/**
+ * The query-string values a service passes. `undefined` means "omit": an
+ * optional filter is written `{ state }` and disappears when it is unset.
+ */
+export type QueryParams = Record<string, string | number | boolean | undefined>;
+
+/** `RequestInit` plus the query string, so `signal` and `query` compose. */
+export interface ApiRequestInit extends RequestInit {
+  query?: QueryParams;
+}
+
+function queryString(query: QueryParams | undefined): string {
+  if (query === undefined) {
+    return "";
+  }
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) {
+      params.set(key, String(value));
+    }
+  }
+  const search = params.toString();
+  return search === "" ? "" : `?${search}`;
 }
 
 type Handler = () => void;
@@ -161,9 +205,10 @@ async function request<T>(
   method: Method,
   path: string,
   body?: unknown,
-  init?: RequestInit,
+  init?: ApiRequestInit,
   retried = false,
 ): Promise<T> {
+  const { query, ...requestInit } = init ?? {};
   const headers = new Headers(init?.headers);
   if (body !== undefined) {
     headers.set("Content-Type", "application/json");
@@ -175,8 +220,8 @@ async function request<T>(
 
   // A network failure rejects with a `TypeError`, which we let through
   // untouched so callers can show "orchestrator unreachable".
-  const response = await fetch(`/api${path}`, {
-    ...init,
+  const response = await fetch(`/api${path}${queryString(query)}`, {
+    ...requestInit,
     method,
     headers,
     // The refresh cookie is `SameSite=Lax`, `Path=/`; same-origin is enough.
@@ -213,14 +258,14 @@ async function request<T>(
   return parseBody<T>(response);
 }
 
-export function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
+export function apiGet<T>(path: string, init?: ApiRequestInit): Promise<T> {
   return request<T>("GET", path, undefined, init);
 }
 
 export function apiPost<T>(
   path: string,
   body?: unknown,
-  init?: RequestInit,
+  init?: ApiRequestInit,
 ): Promise<T> {
   return request<T>("POST", path, body, init);
 }
@@ -228,7 +273,7 @@ export function apiPost<T>(
 export function apiPut<T>(
   path: string,
   body?: unknown,
-  init?: RequestInit,
+  init?: ApiRequestInit,
 ): Promise<T> {
   return request<T>("PUT", path, body, init);
 }
@@ -236,7 +281,7 @@ export function apiPut<T>(
 export function apiPatch<T>(
   path: string,
   body?: unknown,
-  init?: RequestInit,
+  init?: ApiRequestInit,
 ): Promise<T> {
   return request<T>("PATCH", path, body, init);
 }
@@ -248,7 +293,7 @@ export function apiPatch<T>(
  */
 export function apiDelete<T = void>(
   path: string,
-  init?: RequestInit,
+  init?: ApiRequestInit,
 ): Promise<T> {
   return request<T>("DELETE", path, undefined, init);
 }

@@ -78,6 +78,28 @@ export function lineDiffCapped(oldText: string, newText: string): boolean {
   return overCap(splitLines(oldText), splitLines(newText));
 }
 
+/**
+ * The line at `index`, or `""` for one outside the array.
+ *
+ * Every call below is inside its own bound — the walk never leaves the aligned
+ * middle it computed — so the fallback is unreachable rather than a guess. It
+ * is here so the walk reads as the arithmetic it is instead of as a chain of
+ * undefined checks, and so an off-by-one renders a blank line rather than the
+ * word `undefined`.
+ */
+function lineAt(lines: string[], index: number): string {
+  return lines[index] ?? "";
+}
+
+/**
+ * One cell of the suffix-LCS table. The table is `(n + 1) x (m + 1)` with a
+ * zero row and column at the end, and `0` is exactly what a read past them
+ * means: no common suffix remains.
+ */
+function cell(lcs: Uint32Array, index: number): number {
+  return lcs[index] ?? 0;
+}
+
 function unaligned(a: string[], b: string[]): DiffLine[] {
   return [
     ...a.map((text, i): DiffLine => ({ type: "del", text, oldNo: i + 1 })),
@@ -108,48 +130,74 @@ export function lineDiff(oldText: string, newText: string): DiffLine[] {
   for (let i = n - 1; i >= 0; i -= 1) {
     for (let j = m - 1; j >= 0; j -= 1) {
       lcs[i * width + j] =
-        a[start + i] === b[start + j]
-          ? lcs[(i + 1) * width + j + 1] + 1
-          : Math.max(lcs[(i + 1) * width + j], lcs[i * width + j + 1]);
+        lineAt(a, start + i) === lineAt(b, start + j)
+          ? cell(lcs, (i + 1) * width + j + 1) + 1
+          : Math.max(
+              cell(lcs, (i + 1) * width + j),
+              cell(lcs, i * width + j + 1),
+            );
     }
   }
 
   const lines: DiffLine[] = [];
   for (let k = 0; k < start; k += 1) {
-    lines.push({ type: "context", text: a[k], oldNo: k + 1, newNo: k + 1 });
+    lines.push({
+      type: "context",
+      text: lineAt(a, k),
+      oldNo: k + 1,
+      newNo: k + 1,
+    });
   }
 
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
-    if (a[start + i] === b[start + j]) {
+    if (lineAt(a, start + i) === lineAt(b, start + j)) {
       lines.push({
         type: "context",
-        text: a[start + i],
+        text: lineAt(a, start + i),
         oldNo: start + i + 1,
         newNo: start + j + 1,
       });
       i += 1;
       j += 1;
-    } else if (lcs[(i + 1) * width + j] >= lcs[i * width + j + 1]) {
-      lines.push({ type: "del", text: a[start + i], oldNo: start + i + 1 });
+    } else if (
+      cell(lcs, (i + 1) * width + j) >= cell(lcs, i * width + j + 1)
+    ) {
+      lines.push({
+        type: "del",
+        text: lineAt(a, start + i),
+        oldNo: start + i + 1,
+      });
       i += 1;
     } else {
-      lines.push({ type: "add", text: b[start + j], newNo: start + j + 1 });
+      lines.push({
+        type: "add",
+        text: lineAt(b, start + j),
+        newNo: start + j + 1,
+      });
       j += 1;
     }
   }
   for (; i < n; i += 1) {
-    lines.push({ type: "del", text: a[start + i], oldNo: start + i + 1 });
+    lines.push({
+      type: "del",
+      text: lineAt(a, start + i),
+      oldNo: start + i + 1,
+    });
   }
   for (; j < m; j += 1) {
-    lines.push({ type: "add", text: b[start + j], newNo: start + j + 1 });
+    lines.push({
+      type: "add",
+      text: lineAt(b, start + j),
+      newNo: start + j + 1,
+    });
   }
 
   for (let k = 0; k < a.length - endA; k += 1) {
     lines.push({
       type: "context",
-      text: a[endA + k],
+      text: lineAt(a, endA + k),
       oldNo: endA + k + 1,
       newNo: endB + k + 1,
     });
@@ -293,7 +341,8 @@ function gitHeaderPath(rest: string): string | null {
     return headerPath(rest.slice(end + 2));
   }
   const bare = /^a\/.+? ("b\/(?:[^"\\]|\\.)*"|b\/.+)$/.exec(rest);
-  return bare === null ? null : headerPath(bare[1]);
+  const second = bare?.[1];
+  return second === undefined ? null : headerPath(second);
 }
 
 /**

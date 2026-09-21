@@ -33,11 +33,19 @@ export function stateNameError(name: string): string | null {
   return STATE_NAME_PATTERN.test(name) ? null : NAME_RULE;
 }
 
-/** How many tasks sit in each state, keyed by the state's name. */
-export function countTasksByState(tasks: Task[]): Record<string, number> {
-  const counts: Record<string, number> = {};
+/**
+ * How many tasks sit in each state, keyed by the state's name.
+ *
+ * A `Map` and not an object, because the key is a state name the user chose.
+ * `[a-z0-9][a-z0-9_-]*` admits `constructor`, `toString` and `valueOf`, and a
+ * plain object hands those back off `Object.prototype` instead of reporting
+ * nothing: the count becomes a function, `count > 0` compares against `NaN` and
+ * the editor offers to delete a state that still holds work.
+ */
+export function countTasksByState(tasks: Task[]): Map<string, number> {
+  const counts = new Map<string, number>();
   for (const task of tasks) {
-    counts[task.state] = (counts[task.state] ?? 0) + 1;
+    counts.set(task.state, (counts.get(task.state) ?? 0) + 1);
   }
   return counts;
 }
@@ -52,7 +60,7 @@ export function countTasksByState(tasks: Task[]): Record<string, number> {
 export function deletionReason(
   state: TaskState,
   states: TaskState[],
-  taskCounts: Record<string, number>,
+  taskCounts: ReadonlyMap<string, number>,
 ): string | null {
   if (state.kind === "human") {
     return "The human state cannot be deleted";
@@ -64,7 +72,7 @@ export function deletionReason(
     return "The last terminal state cannot be deleted";
   }
 
-  const inState = taskCounts[state.name] ?? 0;
+  const inState = taskCounts.get(state.name) ?? 0;
   if (inState > 0) {
     return inState === 1
       ? "1 task is in this state"

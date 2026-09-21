@@ -2,7 +2,7 @@
 // the whole profile rather than patching it.
 
 import type { Profile, ProfileInput, ProfileTemplate } from "../types";
-import { apiDelete, apiGet, apiPost, apiPut } from "./apiClient";
+import { apiDelete, apiGet, apiPost, apiPut, seg } from "./apiClient";
 
 /**
  * The four role templates (`SPEC.md`, "Role profile templates"), in that
@@ -15,14 +15,14 @@ export function listProfileTemplates(): Promise<ProfileTemplate[]> {
 
 /** Oldest first. */
 export function listProfiles(pid: string): Promise<Profile[]> {
-  return apiGet<Profile[]>(`/projects/${pid}/profiles`);
+  return apiGet<Profile[]>(`/projects/${seg(pid)}/profiles`);
 }
 
 export function createProfile(
   pid: string,
   input: ProfileInput,
 ): Promise<Profile> {
-  return apiPost<Profile>(`/projects/${pid}/profiles`, input);
+  return apiPost<Profile>(`/projects/${seg(pid)}/profiles`, input);
 }
 
 export function updateProfile(
@@ -30,10 +30,10 @@ export function updateProfile(
   id: string,
   input: ProfileInput,
 ): Promise<Profile> {
-  return apiPut<Profile>(`/projects/${pid}/profiles/${id}`, input);
+  return apiPut<Profile>(`/projects/${seg(pid)}/profiles/${seg(id)}`, input);
 }
 
 /** 204; 409 for the project's default profile or one that has sessions. */
 export function deleteProfile(pid: string, id: string): Promise<void> {
-  return apiDelete(`/projects/${pid}/profiles/${id}`);
+  return apiDelete(`/projects/${seg(pid)}/profiles/${seg(id)}`);
 }

@@ -5,6 +5,7 @@
 // only a critical or high priority is set in a state colour, because
 // "ordinary" is the default and should not compete for the eye.
 
+import { TASK_PRIORITIES } from "../types";
 import type { TaskPriority } from "../types";
 
 /** Quiet colour for the two priorities that mean "not later" (`SPEC.md`). */
@@ -23,8 +24,12 @@ export const PRIORITY_MEANING: Record<TaskPriority, string> = {
   3: "P3 — low",
 };
 
-/** The four priorities as a select's options, in the order they are read. */
-export const PRIORITIES: TaskPriority[] = [0, 1, 2, 3];
+/**
+ * The four priorities as a select's options, in the order they are read —
+ * which is the order the union is derived from, so an option and a valid
+ * priority are the same list (`parseTaskPriority` reads the same one back).
+ */
+export const PRIORITIES: readonly TaskPriority[] = TASK_PRIORITIES;
 
 /** One piece of task metadata: a bordered, monospace micro-tag. */
 export const CHIP =

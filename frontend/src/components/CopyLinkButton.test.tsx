@@ -76,7 +76,7 @@ describe("CopyLinkButton", () => {
     await waitFor(() => {
       expect(writeText).toHaveBeenCalled();
     });
-    const copied = writeText.mock.calls[0][0];
+    const copied = writeText.mock.calls[0]?.[0];
     expect(copied).toBe(`${window.location.origin}${PATH}`);
     expect(copied).not.toContain("?");
     expect(copied).not.toContain("#");

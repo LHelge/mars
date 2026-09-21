@@ -35,8 +35,8 @@ describe("MarkdownBody", () => {
     const container = markdown("| a | b |\n| :-: | -: |\n| 1 | 2 |\n");
 
     const [left, right] = [...container.querySelectorAll("th")];
-    expect(left.style.textAlign).toBe("center");
-    expect(right.style.textAlign).toBe("right");
+    expect(left?.style.textAlign).toBe("center");
+    expect(right?.style.textAlign).toBe("right");
 
     const wrapper = container.querySelector("table")?.parentElement;
     expect(wrapper?.className).toContain("overflow-x-auto");
@@ -92,10 +92,10 @@ describe("MarkdownBody", () => {
     const container = markdown("an `inline` token\n\n```sh\nblock\n```\n");
 
     const [inline, block] = [...container.querySelectorAll("code")];
-    expect(inline.className).toContain("bg-console-raised");
-    expect(inline.closest("pre")).toBeNull();
-    expect(block.className).not.toContain("bg-console-raised");
-    expect(block.closest("pre")).not.toBeNull();
+    expect(inline?.className).toContain("bg-console-raised");
+    expect(inline?.closest("pre")).toBeNull();
+    expect(block?.className).not.toContain("bg-console-raised");
+    expect(block?.closest("pre")).not.toBeNull();
   });
 
   it("gives a fence a header with its language and a Copy action", () => {

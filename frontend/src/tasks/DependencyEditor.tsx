@@ -22,6 +22,10 @@ import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { errorMessage } from "../services/errorMessage";
+import {
+  parseTaskDependencyKind,
+  TASK_DEPENDENCY_KINDS,
+} from "../types";
 import type { TaskDependencyKind, TaskDetail } from "../types";
 import { DependencyList } from "./DependencyList";
 import { filterTasks } from "./search";
@@ -36,7 +40,6 @@ const KIND_LABEL: Record<TaskDependencyKind, string> = {
   related: "related — for context only",
 };
 
-const KINDS: TaskDependencyKind[] = ["blocks", "discovered_from", "related"];
 
 /** Long enough to choose from, short enough to keep the drawer scannable. */
 const MAX_MATCHES = 8;
@@ -135,11 +138,16 @@ export function DependencyEditor({ projectId, task }: DependencyEditorProps) {
               name={`${fieldId}-kind`}
               value={kind}
               onChange={(event) => {
-                setKind(event.target.value as TaskDependencyKind);
+                // The options are `TASK_DEPENDENCY_KINDS` itself, so
+                // nothing else can arrive; an unknown value changes nothing.
+                const chosen = parseTaskDependencyKind(event.target.value);
+                if (chosen !== undefined) {
+                  setKind(chosen);
+                }
               }}
               className={CONTROL}
             >
-              {KINDS.map((option) => (
+              {TASK_DEPENDENCY_KINDS.map((option) => (
                 <option key={option} value={option}>
                   {KIND_LABEL[option]}
                 </option>

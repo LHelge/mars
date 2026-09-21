@@ -259,7 +259,10 @@ export function Transcript({ sessionId, loadOlder }: TranscriptProps) {
                     transform: `translateY(${item.start}px)`,
                   }}
                 >
-                  <MessageRow sessionId={sessionId} id={order[item.index]} />
+                  <MessageRow
+                    sessionId={sessionId}
+                    id={order[item.index] ?? ""}
+                  />
                 </div>
               ))}
             </div>

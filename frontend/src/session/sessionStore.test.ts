@@ -73,10 +73,20 @@ function folded(list: AgentEvent[]): SessionStore {
 }
 
 function at(state: SessionStore, index: number): Message {
-  const id = state.order[index];
-  const message = state.messages[id];
-  expect(message, `no message at order[${index}]`).toBeDefined();
+  const message = state.messages[state.order[index] ?? ""];
+  if (message === undefined) {
+    throw new Error(`no message at order[${String(index)}]`);
+  }
   return message;
+}
+
+/** One event of a fixture; a missing index is a broken test, not a case. */
+function ev(list: AgentEvent[], index: number): AgentEvent {
+  const event = list[index];
+  if (event === undefined) {
+    throw new Error(`fixture has no event at ${String(index)}`);
+  }
+  return event;
 }
 
 function tool(state: SessionStore, id: string): ToolMessage {
@@ -268,13 +278,13 @@ describe("subagent fixture", () => {
   });
 
   it("produces one tool message when subagent_start precedes the tool_call", () => {
-    const reordered = [subagent[1], subagent[0], ...subagent.slice(2)].map(
+    const reordered = [ev(subagent, 1), ev(subagent, 0), ...subagent.slice(2)].map(
       (event, index) => ({ ...event, seq: index + 1 }),
     );
     const state = folded(reordered);
 
     expect(state.order).toHaveLength(1);
-    const task = tool(state, state.order[0]);
+    const task = tool(state, state.order[0] ?? "");
     expect(task.name).toBe("Task");
     expect(task.subagent?.description).toBe("Survey the routes");
     expect(task.children).toEqual(["e3", "e4"]);
@@ -654,7 +664,7 @@ describe("a streamed block with other rows in the middle", () => {
 
   it("starts a new message when a tool or thinking ends the block", () => {
     const withTool = folded([
-      gitMidStream[0],
+      ev(gitMidStream, 0),
       {
         seq: 2,
         ts: "2026-01-02T20:00:01Z",
@@ -663,14 +673,14 @@ describe("a streamed block with other rows in the middle", () => {
         name: "Read",
         input: { file_path: "/repo/src/widget.ts" },
       },
-      { ...gitMidStream[4], seq: 3 },
+      { ...ev(gitMidStream, 4), seq: 3 },
     ]);
     expect(withTool.order).toEqual(["e1", "e2", "e3"]);
     expect((withTool.messages.e1 as AssistantTextMessage).text).toBe("Committing");
     expect((withTool.messages.e3 as AssistantTextMessage).text).toBe(" the change");
 
     const withThinking = folded([
-      gitMidStream[0],
+      ev(gitMidStream, 0),
       {
         seq: 2,
         ts: "2026-01-02T20:00:01Z",
@@ -678,7 +688,7 @@ describe("a streamed block with other rows in the middle", () => {
         text: "hm",
         redacted: false,
       },
-      { ...gitMidStream[4], seq: 3 },
+      { ...ev(gitMidStream, 4), seq: 3 },
     ]);
     expect(withThinking.order).toEqual(["e1", "e2", "e3"]);
   });
@@ -707,7 +717,7 @@ describe("a streamed block with other rows in the middle", () => {
 
   it("clears the cursor when a fatal error ends the stream", () => {
     const state = folded([
-      gitMidStream[0],
+      ev(gitMidStream, 0),
       {
         seq: 2,
         ts: "2026-01-02T20:00:01Z",
@@ -828,7 +838,7 @@ describe("a history page cut inside a delta run", () => {
       signal: "SIGINT",
     };
     const store = createSessionStore();
-    applyAll(store, [subagentStream[4], park]);
+    applyAll(store, [ev(subagentStream, 4), park]);
     store.getState().prependHistory(subagentStream.slice(0, 4), false);
     const state = store.getState();
 
@@ -863,7 +873,7 @@ describe("a history page cut inside a delta run", () => {
 
   it("leaves the fragment streaming when only quiet rows follow", () => {
     const store = createSessionStore();
-    applyAll(store, [gitMidStream[1]]);
+    applyAll(store, [ev(gitMidStream, 1)]);
     store.getState().prependHistory(gitMidStream.slice(0, 1), false);
     expect(
       (store.getState().messages.e1 as AssistantTextMessage).streaming,

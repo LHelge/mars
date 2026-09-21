@@ -52,11 +52,13 @@ export function SidePanel({ session, panels }: SidePanelProps) {
   const tabs = useRef(new Map<string, HTMLButtonElement>());
   const uid = useId();
 
-  if (entries.length === 0) {
+  // The selected tab, or the first one. `undefined` is the empty case — this
+  // session offers no panel at all — and renders nothing, as it always did.
+  const active = entries.find((entry) => entry.id === activeId) ?? entries[0];
+  if (active === undefined) {
     return null;
   }
 
-  const active = entries.find((entry) => entry.id === activeId) ?? entries[0];
   const Panel = active.component;
   const tabId = (id: string): string => `${uid}-tab-${id}`;
   const panelId = `${uid}-panel`;

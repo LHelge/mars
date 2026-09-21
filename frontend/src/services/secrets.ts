@@ -12,7 +12,7 @@ import type {
   SecretScope,
   SecretUse,
 } from "../types";
-import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from "./apiClient";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut, seg } from "./apiClient";
 
 export interface ListSecretsParams {
   scope: SecretScope;
@@ -25,11 +25,9 @@ export interface ListSecretsParams {
  * another user's is an administrator's read and 403 for everyone else.
  */
 export function listSecrets(params: ListSecretsParams): Promise<SecretMeta[]> {
-  const query = new URLSearchParams({ scope: params.scope });
-  if (params.scope_id !== undefined) {
-    query.set("scope_id", params.scope_id);
-  }
-  return apiGet<SecretMeta[]>(`/secrets?${query.toString()}`);
+  return apiGet<SecretMeta[]>("/secrets", {
+    query: { scope: params.scope, scope_id: params.scope_id },
+  });
 }
 
 /** 201 with the new metadata; 409 when the scope already has that name. */
@@ -42,7 +40,7 @@ export function replaceSecretValue(
   id: string,
   value: string,
 ): Promise<SecretMeta> {
-  return apiPut<SecretMeta>(`/secrets/${encodeURIComponent(id)}`, { value });
+  return apiPut<SecretMeta>(`/secrets/${seg(id)}`, { value });
 }
 
 /** Rename and the orchestrator-only flag; a rename re-encrypts on the server. */
@@ -50,11 +48,11 @@ export function patchSecret(
   id: string,
   body: PatchSecretRequest,
 ): Promise<SecretMeta> {
-  return apiPatch<SecretMeta>(`/secrets/${encodeURIComponent(id)}`, body);
+  return apiPatch<SecretMeta>(`/secrets/${seg(id)}`, body);
 }
 
 export function deleteSecret(id: string): Promise<void> {
-  return apiDelete(`/secrets/${encodeURIComponent(id)}`);
+  return apiDelete(`/secrets/${seg(id)}`);
 }
 
 /**
@@ -68,7 +66,7 @@ export function getAgentCredentials(
   projectId: string,
 ): Promise<AgentCredentialStatus[]> {
   return apiGet<AgentCredentialStatus[]>(
-    `/projects/${encodeURIComponent(projectId)}/agent-credentials`,
+    `/projects/${seg(projectId)}/agent-credentials`,
   );
 }
 
@@ -77,7 +75,5 @@ export function listSecretUses(
   id: string,
   limit = 20,
 ): Promise<SecretUse[]> {
-  return apiGet<SecretUse[]>(
-    `/secrets/${encodeURIComponent(id)}/uses?limit=${String(limit)}`,
-  );
+  return apiGet<SecretUse[]>(`/secrets/${seg(id)}/uses`, { query: { limit } });
 }

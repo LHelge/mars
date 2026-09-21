@@ -144,7 +144,7 @@ export function useStickToBottom(
     // Counting from the previous tail id rather than from the previous length
     // keeps a prepended history page out of the "new messages" count.
     const appended = appendedAfter(order, lastIdRef.current);
-    const tail = order.length === 0 ? null : order[order.length - 1];
+    const tail = order[order.length - 1] ?? null;
     lastIdRef.current = tail;
     // The reader has just sent something: pin before the branch below, so
     // following their own message down is the same path as following the tail

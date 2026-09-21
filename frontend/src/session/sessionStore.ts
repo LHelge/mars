@@ -16,7 +16,12 @@ import {
   onCredentialsReplaced,
   onSignOut,
 } from "../services/auth";
-import type { AgentEvent, Session, SessionInput } from "../types";
+import type {
+  AgentEvent,
+  Session,
+  SessionInput,
+  WorkTreeOutcome,
+} from "../types";
 import type { SessionState as SessionLifecycleState } from "../types";
 
 /** The name a tool message carries until its `tool_call` is seen. */
@@ -106,6 +111,14 @@ export interface SystemMessage {
   text: string;
   level: "info" | "warn" | "error";
   detail?: unknown;
+  /**
+   * What a `git` event of `op: "rebase"` left the session's checkout as
+   * (`SPEC.md`, "AgentEvent", `git`). Set here, where the event is still the
+   * typed rebase shape, so a reader looking for the last rebase outcome reads
+   * a field instead of asserting its way back into `detail`, which is a
+   * rendering payload and deliberately `unknown`.
+   */
+  workTree?: WorkTreeOutcome;
 }
 
 export interface ResultMessage {
@@ -466,7 +479,8 @@ function streamingId(
 ): string | undefined {
   const ids = scopeIds(state, parent);
   for (let i = ids.length - 1; i >= 0; i -= 1) {
-    const message = state.messages[ids[i]];
+    const id = ids[i];
+    const message = id === undefined ? undefined : state.messages[id];
     if (!message || !endsStreaming(message)) continue;
     if (message.kind !== "assistant_text") return undefined;
     return message.streaming ? message.id : undefined;
@@ -816,9 +830,19 @@ export function foldEvent(state: SessionState, event: AgentEvent): SessionState 
       const text = event.ok
         ? `Git ${event.op} succeeded`
         : `Git ${event.op} failed`;
+      // `op` discriminates `detail`, so the rebase outcome is read off the
+      // typed shape here rather than asserted out of `unknown` by a reader.
+      const message = system(
+        event.seq,
+        text,
+        event.ok ? "info" : "warn",
+        event.detail,
+      );
       const placed = placeMessage(
         next,
-        system(event.seq, text, event.ok ? "info" : "warn", event.detail),
+        event.op === "rebase" && event.detail.work_tree !== undefined
+          ? { ...message, workTree: event.detail.work_tree }
+          : message,
         parent,
       );
       return { ...placed, gitEventSeq: event.seq };
@@ -923,7 +947,8 @@ function lastBlockMessage(
 ): Message | undefined {
   const ids = scopeIds(state, parent);
   for (let i = ids.length - 1; i >= 0; i -= 1) {
-    const message = state.messages[ids[i]];
+    const id = ids[i];
+    const message = id === undefined ? undefined : state.messages[id];
     if (message && endsStreaming(message)) return message;
   }
   return undefined;

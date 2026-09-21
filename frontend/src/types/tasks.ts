@@ -4,12 +4,39 @@
 
 import type { TaskState } from "./taskStates";
 
-export type TaskDependencyKind = "blocks" | "discovered_from" | "related";
+export const TASK_DEPENDENCY_KINDS = [
+  "blocks",
+  "discovered_from",
+  "related",
+] as const;
+
+export type TaskDependencyKind = (typeof TASK_DEPENDENCY_KINDS)[number];
+
+/** The dependency kind a select's string is, or `undefined` for anything else. */
+export function parseTaskDependencyKind(
+  value: string,
+): TaskDependencyKind | undefined {
+  return TASK_DEPENDENCY_KINDS.find((kind) => kind === value);
+}
 
 export type ReviewStatus = "unreviewed" | "approved" | "changes_requested";
 
 /** 0 (critical) to 3 (low), default 2; a number, never a name. */
-export type TaskPriority = 0 | 1 | 2 | 3;
+export const TASK_PRIORITIES = [0, 1, 2, 3] as const;
+
+export type TaskPriority = (typeof TASK_PRIORITIES)[number];
+
+/**
+ * The priority a select's string is, or `undefined` for anything else.
+ *
+ * `Number("")` is 0 and `Number("x")` is `NaN`, so the comparison is against
+ * the parsed number and the answer comes out of the const array — a cast would
+ * make `P0` out of an empty option and `NaN` out of a typo.
+ */
+export function parseTaskPriority(value: string): TaskPriority | undefined {
+  const parsed = Number(value);
+  return TASK_PRIORITIES.find((priority) => priority === parsed);
+}
 
 export interface Handoff {
   id: string;
@@ -92,8 +119,13 @@ export interface TaskDetail extends Task {
 /** Publication of a new commit from a session's synced branch. */
 export interface RevisionHandoffInput {
   kind: "revision";
-  /** Required over REST: a session of this task's project with a synced branch. */
-  source_session_id?: string;
+  /**
+   * A session of this task's project with a synced branch. Optional only for
+   * the MCP tool, which takes the calling session; the frontend is never
+   * anything but the REST client, where it is required (`SPEC.md`, "Code
+   * hand-offs and review").
+   */
+  source_session_id: string;
   /** A full lowercase hexadecimal git object id, not a moving ref. */
   commit: string;
   comment: string;
@@ -125,19 +157,25 @@ export interface CreateTaskInput {
   depends_on?: string[];
 }
 
-export interface UpdateTaskInput {
+interface UpdateTaskFields {
   title?: string;
   description?: string;
-  state?: string;
   priority?: TaskPriority;
   labels?: string[];
   /** `null` makes the task top-level again. */
   parent_id?: string | null;
   /** `null` unassigns the task. */
   assignee_user_id?: string | null;
-  /** Requires a different target `state` in the same update. */
-  handoff?: HandoffInput;
 }
+
+/**
+ * A hand-off requires a target `state` in the same update (`SPEC.md`, "Code
+ * hand-offs and review"), so the two travel together rather than as two
+ * optional fields a caller may fill in independently: an update either carries
+ * no hand-off, or carries one and the state it moves the task into.
+ */
+export type UpdateTaskInput = UpdateTaskFields &
+  ({ state?: string; handoff?: never } | { state: string; handoff: HandoffInput });
 
 // `SPEC.md`, "TaskEvent": the SSE payload of the project's task stream. The
 // board deduplicates by `seq` and treats an event as a refresh signal, never

@@ -37,6 +37,11 @@ function parseRepo(remoteUrl: string): Repo | null {
     return null;
   }
   const [owner, name] = segments;
+  // `segments.length === 2` above is what fills both; the check is what tells
+  // the compiler so, and it reads the same as the empty-string refusal below.
+  if (owner === undefined || name === undefined) {
+    return null;
+  }
   const repo = name.endsWith(".git") ? name.slice(0, -".git".length) : name;
   if (owner === "" || repo === "") {
     return null;

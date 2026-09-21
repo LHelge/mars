@@ -52,7 +52,10 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 /** `apiClient` always passes a string URL; this keeps the assertions honest. */
-function urlOf(input: RequestInfo | URL): string {
+function urlOf(input: RequestInfo | URL | undefined): string {
+  if (input === undefined) {
+    return "";
+  }
   if (typeof input !== "string") {
     throw new TypeError("apiClient passed a non-string URL");
   }
@@ -242,7 +245,7 @@ describe("auth endpoints", () => {
 
     await login({ username: "tester", password: "not-a-real-password" });
 
-    expect(urlOf(fetchMock.mock.calls[0][0])).toBe("/api/auth/login");
+    expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe("/api/auth/login");
     expect(getAccessToken()).toBe("token-a");
   });
 
@@ -255,7 +258,7 @@ describe("auth endpoints", () => {
       password: "not-a-real-password",
     });
 
-    expect(urlOf(fetchMock.mock.calls[0][0])).toBe("/api/auth/accept-invite");
+    expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe("/api/auth/accept-invite");
     expect(getAccessToken()).toBe("token-a");
   });
 
@@ -267,7 +270,7 @@ describe("auth endpoints", () => {
 
     await logout();
 
-    expect(urlOf(fetchMock.mock.calls[0][0])).toBe("/api/auth/logout");
+    expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe("/api/auth/logout");
     expect(getAccessToken()).toBeNull();
     expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBeNull();
     expect(handler).toHaveBeenCalledWith("user");
@@ -285,7 +288,7 @@ describe("auth endpoints", () => {
 
     const lookup = await lookupInvite("a b/c");
 
-    expect(urlOf(fetchMock.mock.calls[0][0])).toBe("/api/auth/invite/a%20b%2Fc");
+    expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe("/api/auth/invite/a%20b%2Fc");
     expect(lookup.email).toBe("invitee@example.invalid");
   });
 
@@ -328,14 +331,14 @@ describe("auth endpoints", () => {
     await requestPasswordReset("tester");
     await resetPassword("reset-token", "not-a-real-password");
 
-    expect(urlOf(fetchMock.mock.calls[0][0])).toBe(
+    expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe(
       "/api/auth/request-password-reset",
     );
-    expect(fetchMock.mock.calls[0][1]?.body).toBe(
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
       JSON.stringify({ identifier: "tester" }),
     );
-    expect(urlOf(fetchMock.mock.calls[1][0])).toBe("/api/auth/reset-password");
-    expect(fetchMock.mock.calls[1][1]?.body).toBe(
+    expect(urlOf(fetchMock.mock.calls[1]?.[0])).toBe("/api/auth/reset-password");
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(
       JSON.stringify({ token: "reset-token", password: "not-a-real-password" }),
     );
   });
@@ -516,7 +519,7 @@ describe("refreshAccessToken coordination", () => {
     );
 
     expect(names).toEqual(["mars.auth.refresh"]);
-    expect(urlOf(fetchMock.mock.calls[0][0])).toBe("/api/auth/refresh");
+    expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe("/api/auth/refresh");
     expect(getAccessToken()).toBe("token-b");
   });
 
@@ -647,7 +650,7 @@ describe("cross-tab authentication", () => {
     expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBeNull();
     expect(signedOut).toHaveBeenCalledWith("user");
     // And the request itself cannot hang forever.
-    expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
 
     gate.resolve(fakeResponse(204));
     await pending;

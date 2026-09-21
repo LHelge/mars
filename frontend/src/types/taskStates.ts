@@ -2,7 +2,15 @@
 // columns of a project's board, in `position` order. `kind` is the
 // `task_state_kind` enum of `docs/data-model.md`, "Enums".
 
-export type TaskStateKind = "queue" | "human" | "terminal";
+/** In the order the editor offers them. */
+export const TASK_STATE_KINDS = ["queue", "human", "terminal"] as const;
+
+export type TaskStateKind = (typeof TASK_STATE_KINDS)[number];
+
+/** The kind a select's string is, or `undefined` for anything else. */
+export function parseTaskStateKind(value: string): TaskStateKind | undefined {
+  return TASK_STATE_KINDS.find((kind) => kind === value);
+}
 
 export interface TaskState {
   id: string;

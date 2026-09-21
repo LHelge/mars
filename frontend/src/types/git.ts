@@ -14,9 +14,24 @@ export interface SessionBranch {
   updated_at: string;
 }
 
+/**
+ * The letters `git diff --name-status` prints, as the orchestrator serialises
+ * them (`orchestrator/src/models/git.rs`, `DiffStatus`).
+ *
+ * `R` and `C` are part of the documented shape and not produced in v1: the
+ * diff is taken with `--no-renames` so that the status list and the line counts
+ * describe the same set of paths. They stay in the type because they are what
+ * the endpoint may answer, and a lookup table that covers them costs one line
+ * each; leaving them out would mean a status the server can send has no
+ * rendering at all.
+ */
+export const DIFF_STATUSES = ["A", "M", "D", "R", "C", "T"] as const;
+
+export type DiffStatus = (typeof DIFF_STATUSES)[number];
+
 export interface DiffFile {
   path: string;
-  status: string;
+  status: DiffStatus;
   additions: number;
   deletions: number;
 }

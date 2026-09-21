@@ -6,6 +6,7 @@ import {
   apiPost,
   onForbidden,
   onPasswordChangeRequired,
+  seg,
 } from "./apiClient";
 import {
   clearAuth,
@@ -70,7 +71,7 @@ function requestUrls(): string[] {
 }
 
 function headerOf(call: number, name: string): string | null {
-  const init = fetchMock.mock.calls[call][1];
+  const init = fetchMock.mock.calls[call]?.[1];
   return new Headers(init?.headers).get(name);
 }
 
@@ -91,7 +92,7 @@ describe("apiClient requests", () => {
     await apiGet<{ orchestrator: boolean }>("/health");
 
     expect(requestUrls()).toEqual(["/api/health"]);
-    expect(fetchMock.mock.calls[0][1]?.credentials).toBe("same-origin");
+    expect(fetchMock.mock.calls[0]?.[1]?.credentials).toBe("same-origin");
     expect(headerOf(0, "authorization")).toBeNull();
     expect(headerOf(0, "content-type")).toBeNull();
   });
@@ -104,9 +105,63 @@ describe("apiClient requests", () => {
 
     expect(headerOf(0, "authorization")).toBe("Bearer token-a");
     expect(headerOf(0, "content-type")).toBe("application/json");
-    expect(fetchMock.mock.calls[0][1]?.body).toBe(
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
       JSON.stringify({ username: "someone" }),
     );
+  });
+
+  it("serialises the query's defined values and omits the rest", async () => {
+    installSession(authResponse("token-a"));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, []))
+      .mockResolvedValueOnce(jsonResponse(200, []))
+      .mockResolvedValueOnce(jsonResponse(200, []));
+
+    await apiGet<unknown[]>("/sessions", { query: { state: "running" } });
+    // An unset filter disappears rather than travelling as "undefined", and a
+    // number or a boolean is written as the server reads it.
+    await apiGet<unknown[]>("/sessions", { query: { state: undefined } });
+    await apiGet<unknown[]>("/sessions/s1/events", {
+      query: { before: 12, limit: 100, all: false },
+    });
+
+    expect(requestUrls()).toEqual([
+      "/api/sessions?state=running",
+      "/api/sessions",
+      "/api/sessions/s1/events?before=12&limit=100&all=false",
+    ]);
+  });
+
+  it("percent-encodes a query value rather than splicing it into the URL", async () => {
+    installSession(authResponse("token-a"));
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, []));
+
+    await apiGet<unknown[]>("/secrets", { query: { scope_id: "a b&c=d" } });
+
+    expect(requestUrls()).toEqual(["/api/secrets?scope_id=a+b%26c%3Dd"]);
+  });
+
+  it("sends the query and the caller's signal together", async () => {
+    installSession(authResponse("token-a"));
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, []));
+    const controller = new AbortController();
+
+    await apiGet<unknown[]>("/sessions", {
+      query: { state: "parked" },
+      signal: controller.signal,
+    });
+
+    expect(requestUrls()).toEqual(["/api/sessions?state=parked"]);
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    // `query` is the client's own option and never reaches `fetch`.
+    expect("query" in (fetchMock.mock.calls[0]?.[1] ?? {})).toBe(false);
+  });
+
+  it("encodes a path part with seg", () => {
+    // A task state's name and a shared directory's name are user-typed, so a
+    // slash or a space in one must not become part of the path.
+    expect(seg("needs human/now")).toBe("needs%20human%2Fnow");
+    expect(seg(42)).toBe("42");
   });
 
   it("resolves 204 and an empty body to undefined", async () => {

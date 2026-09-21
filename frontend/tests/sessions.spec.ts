@@ -122,7 +122,11 @@ function waitForTurn(
   sessionId: string,
   index: number,
 ): Promise<Session> {
-  return waitForCost(client, sessionId, TURN_COST[index]);
+  const cost = TURN_COST[index];
+  if (cost === undefined) {
+    throw new Error(`the transcript fixture has no turn ${String(index)}`);
+  }
+  return waitForCost(client, sessionId, cost);
 }
 
 /**

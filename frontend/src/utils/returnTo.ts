@@ -36,7 +36,10 @@ export function safeReturnTo(value: unknown): string | null {
     return null;
   }
 
-  const path = value.split(/[?#]/)[0];
+  // `value` starts with "/", so the split always yields a first element; `??`
+  // is what says so without an assertion, and an empty path is excluded by
+  // neither list, exactly as a "/"-only value was before.
+  const path = value.split(/[?#]/)[0] ?? "";
   if (EXCLUDED_EXACT.includes(path)) {
     return null;
   }

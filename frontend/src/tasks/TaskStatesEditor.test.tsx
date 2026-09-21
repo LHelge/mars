@@ -67,9 +67,11 @@ function task(stateName: string, number: number): Task {
   };
 }
 
+const READY = state("ready", "queue", 0);
+const REVIEW = state("review", "queue", 1);
 const DEFAULT_STATES = [
-  state("ready", "queue", 0),
-  state("review", "queue", 1),
+  READY,
+  REVIEW,
   state("needs_human", "human", 2),
   state("done", "terminal", 3),
 ];
@@ -198,7 +200,7 @@ describe("TaskStatesEditor", () => {
   });
 
   it("moves a row by its index and disables the ends", async () => {
-    vi.mocked(updateTaskState).mockResolvedValue(DEFAULT_STATES[1]);
+    vi.mocked(updateTaskState).mockResolvedValue(REVIEW);
     renderEditor();
 
     const first = within(await row("ready"));

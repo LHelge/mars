@@ -155,9 +155,9 @@ afterEach(() => {
 
 describe("DashboardPage", () => {
   it("renders one row per section, linking to the session or task", async () => {
-    vi.mocked(listSessions).mockImplementation((params = {}) =>
+    vi.mocked(listSessions).mockImplementation((state) =>
       Promise.resolve(
-        params.state === "running"
+        state === "running"
           ? [session()]
           : [
               session({
@@ -211,8 +211,8 @@ describe("DashboardPage", () => {
     // `position: relative` on it, every row's `inset-0` resolves against some
     // far ancestor and the last row drawn takes clicks across the page. The
     // cell is what positions the link.
-    vi.mocked(listSessions).mockImplementation((params = {}) =>
-      Promise.resolve(params.state === "running" ? [session()] : []),
+    vi.mocked(listSessions).mockImplementation((state) =>
+      Promise.resolve(state === "running" ? [session()] : []),
     );
 
     renderDashboard();
@@ -238,8 +238,8 @@ describe("DashboardPage", () => {
   });
 
   it("keeps the other sections when one query fails", async () => {
-    vi.mocked(listSessions).mockImplementation((params = {}) =>
-      params.state === "running"
+    vi.mocked(listSessions).mockImplementation((state) =>
+      state === "running"
         ? Promise.reject(new Error("orchestrator unreachable"))
         : Promise.resolve([session({ state: "parked", title: "Parked one" })]),
     );
@@ -257,8 +257,8 @@ describe("DashboardPage", () => {
   });
 
   it("does not call a failed section empty", async () => {
-    vi.mocked(listSessions).mockImplementation((params = {}) =>
-      params.state === "running"
+    vi.mocked(listSessions).mockImplementation((state) =>
+      state === "running"
         ? Promise.reject(new Error("orchestrator unreachable"))
         : Promise.resolve([]),
     );

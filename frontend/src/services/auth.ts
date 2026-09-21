@@ -26,7 +26,7 @@ import type {
   LoginRequest,
   User,
 } from "../types";
-import { ApiError, apiGet, apiPost } from "./apiClient";
+import { ApiError, apiGet, apiPost, seg } from "./apiClient";
 import { MessageError } from "./errorMessage";
 
 /**
@@ -523,7 +523,7 @@ export function refreshAccessToken(): Promise<AuthResponse> {
 }
 
 export function lookupInvite(token: string): Promise<InviteLookup> {
-  return apiGet<InviteLookup>(`/auth/invite/${encodeURIComponent(token)}`);
+  return apiGet<InviteLookup>(`/auth/invite/${seg(token)}`);
 }
 
 export async function acceptInvite(

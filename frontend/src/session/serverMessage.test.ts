@@ -194,7 +194,7 @@ describe("foldEvent, unknown kind", () => {
     store.getState().applyEvent(unknown as AgentEvent);
     const state = store.getState();
     expect(state.order).toHaveLength(1);
-    expect(state.messages[state.order[0]]?.kind).toBe("raw");
+    expect(state.messages[state.order[0] ?? ""]?.kind).toBe("raw");
     // The cursor moves over it: a fold that dropped it would replay the gap on
     // every reconnect.
     expect(state.lastSeq).toBe(7);

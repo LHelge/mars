@@ -172,7 +172,8 @@ export function summaryLine(name: string, input: unknown): string {
  */
 export function headerSummary(name: string, input: unknown): string {
   if (isShellInput(input)) {
-    return input.description ?? input.command.split("\n", 1)[0];
+    // `split` with a limit of 1 always yields one element, even for "".
+    return input.description ?? (input.command.split("\n", 1)[0] ?? "");
   }
   const path =
     inputString(input, "file_path") ?? inputString(input, "notebook_path");

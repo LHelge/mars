@@ -32,13 +32,27 @@ const FENCE = /^[ \t>]*(`{3,}|~{3,})(.*)$/;
 // A list item marker at the very start of a line: `-`, `*`, `+`, `1.`, `1)`.
 const LIST_ITEM = /^(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
 
+/**
+ * The line at `index`, or `""` past the end. A line that is not there is blank
+ * for every purpose here — `isBlank`, `kindOf` and `mayFreeze` all read it the
+ * same way — so the fallback is the behaviour the walk already had.
+ */
+function lineAt(lines: string[], index: number): string {
+  return lines[index] ?? "";
+}
+
 function fenceOf(line: string): { fence: Fence; info: string } | null {
   const match = FENCE.exec(line);
   if (!match) return null;
   const marker = match[1];
+  const info = match[2];
+  // Both groups are part of every match `FENCE` produces; the check is what
+  // says so, and it costs the same as the `!match` above.
+  if (marker === undefined || info === undefined) return null;
   return {
-    fence: { char: marker[0] as "`" | "~", len: marker.length },
-    info: match[2],
+    // The alternation is ``` or ~~~, so the first character decides which.
+    fence: { char: marker.startsWith("`") ? "`" : "~", len: marker.length },
+    info,
   };
 }
 
@@ -107,7 +121,7 @@ export function splitTopLevelBlocks(text: string): string[] {
   let open: Fence | null = null;
 
   for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
+    const line = lineAt(lines, i);
     if (open) {
       if (closes(open, line)) open = null;
       continue;
@@ -126,12 +140,12 @@ export function splitTopLevelBlocks(text: string): string[] {
     // text has arrived — a block is frozen after a blank line *followed by*
     // text, never at the end of what has been received so far.
     let next = i + 1;
-    while (next < lines.length && isBlank(lines[next])) next += 1;
+    while (next < lines.length && isBlank(lineAt(lines, next))) next += 1;
     if (next >= lines.length) break;
     // Leading blank lines: there is nothing yet to freeze, and they stay with
     // the block that follows them.
     if (kinds.size === 0) continue;
-    if (!mayFreeze(kinds, lines[next])) continue;
+    if (!mayFreeze(kinds, lineAt(lines, next))) continue;
     // The blank run belongs to the block that ends, so that joining the
     // blocks reproduces the message byte for byte.
     blocks.push(lines.slice(start, next).join("\n") + "\n");

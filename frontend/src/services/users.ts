@@ -11,7 +11,7 @@ import type {
   UpdateUserRequest,
   User,
 } from "../types";
-import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from "./apiClient";
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut, seg } from "./apiClient";
 
 /** The current user; the authenticated bootstrap's first read. */
 export function getMe(): Promise<User> {
@@ -28,7 +28,7 @@ export function listUsers(): Promise<User[]> {
 }
 
 export function getUser(id: string): Promise<User> {
-  return apiGet<User>(`/users/${encodeURIComponent(id)}`);
+  return apiGet<User>(`/users/${seg(id)}`);
 }
 
 /** Admin only; 409 when the change would remove the last administrator. */
@@ -36,12 +36,12 @@ export function updateUser(
   id: string,
   body: UpdateUserRequest,
 ): Promise<User> {
-  return apiPut<User>(`/users/${encodeURIComponent(id)}`, body);
+  return apiPut<User>(`/users/${seg(id)}`, body);
 }
 
 /** Admin only; 409 for the last administrator or for yourself. */
 export function deleteUser(id: string): Promise<void> {
-  return apiDelete(`/users/${encodeURIComponent(id)}`);
+  return apiDelete(`/users/${seg(id)}`);
 }
 
 /**
@@ -54,7 +54,7 @@ export function changePassword(
   body: PasswordChangeRequest,
 ): Promise<AuthResponse | undefined> {
   return apiPost<AuthResponse | undefined>(
-    `/users/${encodeURIComponent(id)}/password`,
+    `/users/${seg(id)}/password`,
     body,
   );
 }
@@ -70,10 +70,10 @@ export function createInvite(body: CreateInviteRequest): Promise<Invite> {
 }
 
 export function revokeInvite(id: string): Promise<void> {
-  return apiDelete(`/users/invites/${encodeURIComponent(id)}`);
+  return apiDelete(`/users/invites/${seg(id)}`);
 }
 
 /** New token and expiry; the invitation email is sent again. */
 export function resendInvite(id: string): Promise<Invite> {
-  return apiPost<Invite>(`/users/invites/${encodeURIComponent(id)}/resend`);
+  return apiPost<Invite>(`/users/invites/${seg(id)}/resend`);
 }

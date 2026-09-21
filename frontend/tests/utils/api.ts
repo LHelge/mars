@@ -198,8 +198,8 @@ function readRefreshCookie(response: APIResponse): string {
   for (const header of response.headersArray()) {
     if (header.name.toLowerCase() !== "set-cookie") continue;
     for (const cookie of header.value.split("\n")) {
-      const match = /(?:^|;\s*)refresh_token=([^;]*)/.exec(cookie);
-      if (match) return match[1];
+      const value = /(?:^|;\s*)refresh_token=([^;]*)/.exec(cookie)?.[1];
+      if (value !== undefined) return value;
     }
   }
   throw new Error(

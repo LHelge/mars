@@ -222,15 +222,18 @@ const RECONCILE_NOTE =
 function selectWorkTreeNote(state: SessionStore): string | null {
   const ids = state.order.slice(-NOTE_SCAN);
   for (let index = ids.length - 1; index >= 0; index -= 1) {
-    const message = state.messages[ids[index]];
+    const id = ids[index];
+    if (id === undefined) {
+      continue;
+    }
+    const message = state.messages[id];
     if (message === undefined || message.kind !== "system") {
       continue;
     }
-    const detail = message.detail as { work_tree?: string } | undefined;
-    if (detail?.work_tree === undefined) {
+    if (message.workTree === undefined) {
       continue;
     }
-    return detail.work_tree === "reconciliation_required"
+    return message.workTree === "reconciliation_required"
       ? RECONCILE_NOTE
       : null;
   }

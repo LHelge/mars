@@ -20,7 +20,9 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    /* As `tsconfig.app.json`: the specs index the same shapes `src/` does. */
+    "noUncheckedIndexedAccess": true
   },
   "include": ["playwright.config.ts", "tests"]
 }

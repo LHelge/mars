@@ -9,6 +9,7 @@
 // It holds no JSX so that both the form and the section can import it and a
 // test can assert the table without rendering anything.
 
+import { AGENT_BACKENDS } from "../types";
 import type { AgentBackend, SecretScope } from "../types";
 
 export interface AgentCredentialKind {
@@ -38,9 +39,6 @@ export const AGENT_CREDENTIALS: Record<AgentBackend, AgentCredentialKind[]> = {
     },
   ],
 };
-
-/** The backends the form offers, in order. v1 has one. */
-export const AGENT_BACKENDS: AgentBackend[] = ["claude"];
 
 /** Every credential of every backend, flattened; the label lookup's source. */
 export const ALL_AGENT_CREDENTIALS: AgentCredentialKind[] =

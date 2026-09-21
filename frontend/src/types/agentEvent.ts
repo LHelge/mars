@@ -7,6 +7,7 @@
 // under `--permission-mode bypassPermissions --permission-prompts none`
 // (ADR 0033; `docs/decisions/0033-no-interactive-prompts-in-v1.md`).
 
+import type { AgentBackend } from "./secrets";
 import type { SessionState } from "./sessions";
 
 export interface AgentEventBase {
@@ -25,36 +26,64 @@ export interface McpServerStatus {
   status: string;
 }
 
-/** The `detail` of a `git` event, one shape per `op` (`SPEC.md`, "AgentEvent"). */
+// The `detail` of a `git` event, one shape per `op` (`SPEC.md`, "AgentEvent").
+//
+// The four are tied to their `op` by the event union below rather than offered
+// as an untagged alternation: a reader that has narrowed on `op === "rebase"`
+// knows it is holding the rebase shape, and nothing has to assert its way to
+// `work_tree`. Optional fields are omitted rather than null: `commit`,
+// `fast_forward` and `compare_url` appear when `ok` is true, `conflicts` and
+// `error` when it is false.
+
+export interface GitSyncDetail {
+  ref: string;
+  commit?: string;
+  error?: string;
+}
+
+export interface GitMergeDetail {
+  /** An API ref name, or the hand-off id for a task merge. */
+  source: string;
+  target: string;
+  commit?: string;
+  fast_forward?: boolean;
+  conflicts?: string[];
+  /** `user:<uuid>`, `session:<uuid>` or `system`. */
+  requested_by: string;
+  error?: string;
+}
+
+/** What a rebase left the session's checkout as (`ARCHITECTURE.md`, "Git model"). */
+export type WorkTreeOutcome =
+  | "updated"
+  | "reconciliation_required"
+  | "not_applicable";
+
+export interface GitRebaseDetail {
+  branch: string;
+  onto: string;
+  commit?: string;
+  conflicts?: string[];
+  work_tree?: WorkTreeOutcome;
+  requested_by: string;
+  error?: string;
+}
+
+export interface GitPushDetail {
+  ref: string;
+  remote_branch: string;
+  commit?: string;
+  force: boolean;
+  compare_url?: string;
+  requested_by: string;
+  error?: string;
+}
+
 export type GitDetail =
-  | { ref: string; commit?: string; error?: string }
-  | {
-      source: string;
-      target: string;
-      commit?: string;
-      fast_forward?: boolean;
-      conflicts?: string[];
-      requested_by: string;
-      error?: string;
-    }
-  | {
-      branch: string;
-      onto: string;
-      commit?: string;
-      conflicts?: string[];
-      work_tree?: "updated" | "reconciliation_required" | "not_applicable";
-      requested_by: string;
-      error?: string;
-    }
-  | {
-      ref: string;
-      remote_branch: string;
-      commit?: string;
-      force: boolean;
-      compare_url?: string;
-      requested_by: string;
-      error?: string;
-    };
+  | GitSyncDetail
+  | GitMergeDetail
+  | GitRebaseDetail
+  | GitPushDetail;
 
 export type GitOp = "sync" | "merge" | "rebase" | "push";
 
@@ -123,9 +152,12 @@ export type AgentEvent = AgentEventBase &
       }
     /** For example an undeclared secret. */
     | { kind: "launch_warning"; message: string }
-    | { kind: "git"; op: GitOp; ok: boolean; detail: GitDetail }
+    | { kind: "git"; op: "sync"; ok: boolean; detail: GitSyncDetail }
+    | { kind: "git"; op: "merge"; ok: boolean; detail: GitMergeDetail }
+    | { kind: "git"; op: "rebase"; ok: boolean; detail: GitRebaseDetail }
+    | { kind: "git"; op: "push"; ok: boolean; detail: GitPushDetail }
     /** An untranslated native line. */
-    | { kind: "raw"; backend: "claude"; native: unknown }
+    | { kind: "raw"; backend: AgentBackend; native: unknown }
   );
 
 export type AgentEventKind = AgentEvent["kind"];

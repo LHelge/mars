@@ -80,19 +80,25 @@ function pairs(lines: DiffLine[]): { left?: DiffLine; right?: DiffLine }[] {
   const rows: { left?: DiffLine; right?: DiffLine }[] = [];
   let i = 0;
   while (i < lines.length) {
-    if (lines[i].type === "context") {
-      rows.push({ left: lines[i], right: lines[i] });
+    // One read per step, so the loop bound and the value it guards are the
+    // same expression: `i < lines.length` is what makes each of these present.
+    const line = lines[i];
+    if (line === undefined) {
+      break;
+    }
+    if (line.type === "context") {
+      rows.push({ left: line, right: line });
       i += 1;
       continue;
     }
     const dels: DiffLine[] = [];
-    while (i < lines.length && lines[i].type === "del") {
-      dels.push(lines[i]);
+    for (let del = lines[i]; del?.type === "del"; del = lines[i]) {
+      dels.push(del);
       i += 1;
     }
     const adds: DiffLine[] = [];
-    while (i < lines.length && lines[i].type === "add") {
-      adds.push(lines[i]);
+    for (let add = lines[i]; add?.type === "add"; add = lines[i]) {
+      adds.push(add);
       i += 1;
     }
     for (let k = 0; k < Math.max(dels.length, adds.length); k += 1) {

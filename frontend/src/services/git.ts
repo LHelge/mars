@@ -12,10 +12,10 @@ import type {
   RebaseInput,
   SessionBranch,
 } from "../types";
-import { ApiError, apiGet, apiPost } from "./apiClient";
+import { ApiError, apiGet, apiPost, seg } from "./apiClient";
 
 export function listSessionBranches(pid: string): Promise<SessionBranch[]> {
-  return apiGet<SessionBranch[]>(`/projects/${pid}/git/session-branches`);
+  return apiGet<SessionBranch[]>(`/projects/${seg(pid)}/git/session-branches`);
 }
 
 /**
@@ -32,27 +32,22 @@ export function getDiff(
   base?: string,
   signal?: AbortSignal,
 ): Promise<Diff> {
-  const query = new URLSearchParams(
-    "head" in target ? { head: target.head } : { handoff_id: target.handoff_id },
-  );
-  if (base !== undefined) {
-    query.set("base", base);
-  }
-  return apiGet<Diff>(`/projects/${pid}/git/diff?${query.toString()}`, {
+  return apiGet<Diff>(`/projects/${seg(pid)}/git/diff`, {
+    query: { ...target, base },
     signal,
   });
 }
 
 export function merge(pid: string, input: MergeInput): Promise<CommitResult> {
-  return apiPost<CommitResult>(`/projects/${pid}/git/merge`, input);
+  return apiPost<CommitResult>(`/projects/${seg(pid)}/git/merge`, input);
 }
 
 export function rebase(pid: string, input: RebaseInput): Promise<CommitResult> {
-  return apiPost<CommitResult>(`/projects/${pid}/git/rebase`, input);
+  return apiPost<CommitResult>(`/projects/${seg(pid)}/git/rebase`, input);
 }
 
 export function push(pid: string, input: PushInput): Promise<PushResult> {
-  return apiPost<PushResult>(`/projects/${pid}/git/push`, input);
+  return apiPost<PushResult>(`/projects/${seg(pid)}/git/push`, input);
 }
 
 /**

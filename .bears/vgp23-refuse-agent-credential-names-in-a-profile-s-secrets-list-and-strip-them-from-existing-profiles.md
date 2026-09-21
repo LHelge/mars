@@ -1,10 +1,10 @@
 ---
 id: vgp23
 title: Refuse agent credential names in a profile's secrets list and strip them from existing profiles
-status: open
+status: done
 priority: P2
 created: "2026-09-20T22:22:25.543786325Z"
-updated: "2026-09-20T22:22:25.543786325Z"
+updated: "2026-09-21T06:32:38.340452778Z"
 tags:
   - orchestrator
   - profiles
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - a8bga
 parent: rdkmk
+attempts: 1
 ---
 
 ## Summary

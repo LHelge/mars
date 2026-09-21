@@ -1,10 +1,10 @@
 ---
 id: "4tb2c"
 title: Give each table row its own mutation, and keep one source of truth for the current user
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:53:48.135364295Z"
-updated: "2026-09-21T10:53:48.135364295Z"
+updated: "2026-09-21T22:12:07.207653683Z"
 tags:
   - frontend
   - technical-review
@@ -12,6 +12,7 @@ tags:
   - react
   - query
 parent: "579dz"
+attempts: 1
 ---
 
 Problem:

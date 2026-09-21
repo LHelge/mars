@@ -1,10 +1,10 @@
 ---
 id: addgw
 title: Clear session transcript stores on logout and bound inactive-session retention
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:44:32.387092180Z"
-updated: "2026-09-21T10:49:59.122630108Z"
+updated: "2026-09-21T22:12:02.866344700Z"
 tags:
   - frontend
   - technical-review
@@ -14,6 +14,7 @@ tags:
 depends_on:
   - "4srw8"
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: frontend/src/session/sessionStore.ts retains per-session stores in a module-level Map. disposeSessionStore is only called by tests. AuthBootstrap clears query and task-board state on sign-out but leaves transcripts, replay cursors and optimistic messages behind. Visiting more sessions grows retained memory, and a later login can reuse a previous login's state.

@@ -1,15 +1,16 @@
 ---
 id: gm6te
 title: "Component fixes: push-rejected banner, password form clearing the wrong fields, render bound for huge diffs and JSON"
-status: open
+status: done
 priority: P3
 created: "2026-09-21T10:55:22.372010812Z"
-updated: "2026-09-21T10:55:22.372010812Z"
+updated: "2026-09-21T22:12:11.451290925Z"
 tags:
   - frontend
   - technical-review
   - bug
 parent: "579dz"
+attempts: 1
 ---
 
 Problem, each small:

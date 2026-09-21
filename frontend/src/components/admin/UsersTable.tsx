@@ -16,6 +16,7 @@ import { formatRelative } from "../../utils/format";
 import { Alert } from "../Alert";
 import { EmptyState } from "../EmptyState";
 import { LoadingState } from "../LoadingState";
+import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SectionHeader } from "../SectionHeader";
 import { SubmitButton } from "../SubmitButton";
 import { errorMessage } from "./errorMessage";
@@ -120,30 +121,23 @@ export function UsersTable() {
       )}
 
       {users.isError && (
-        <Alert kind="error">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>{`Could not load users. ${errorMessage(users.error)}`}</span>
-            <SubmitButton
-              type="button"
-              variant="ghost"
-              loading={users.isFetching}
-              onClick={() => {
-                void users.refetch();
-              }}
-            >
-              Try again
-            </SubmitButton>
-          </div>
-        </Alert>
+        <QueryErrorAlert
+          query={users}
+          message={`Could not load users. ${errorMessage(users.error)}`}
+        />
       )}
 
+      {/* "No users" is a fact only a successful read has (`SPEC.md`,
+          "Frontend", Read failures). */}
       {users.isPending ? (
         <LoadingState />
       ) : rows.length === 0 ? (
-        <EmptyState
-          title="No users"
-          description="Invite someone below to get started."
-        />
+        users.isSuccess && (
+          <EmptyState
+            title="No users"
+            description="Invite someone below to get started."
+          />
+        )
       ) : (
         <div className={SCROLLER}>
           <table className={TABLE}>

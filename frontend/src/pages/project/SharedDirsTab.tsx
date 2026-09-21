@@ -14,6 +14,7 @@ import { useMemo } from "react";
 import { Alert } from "../../components/Alert";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingState } from "../../components/LoadingState";
+import { QueryErrorAlert } from "../../components/QueryErrorAlert";
 import { SectionHeader } from "../../components/SectionHeader";
 import { SubmitButton } from "../../components/SubmitButton";
 import { queryKeys } from "../../services/queryKeys";
@@ -44,7 +45,6 @@ export function SharedDirsTab({ project }: ProjectTabPanelProps) {
   const dirs = useQuery({
     queryKey: queryKeys.projects.sharedDirs(project.id),
     queryFn: () => listSharedDirs(project.id),
-    retry: false,
   });
 
   // Read from the cache, never fetched: the sessions tab owns that list, and
@@ -71,21 +71,10 @@ export function SharedDirsTab({ project }: ProjectTabPanelProps) {
       <SectionHeader title="Shared directories" description={MOUNT_HELP} />
 
       {dirs.isError && (
-        <Alert kind="error">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>{sharedDirErrorMessage(dirs.error)}</span>
-            <SubmitButton
-              type="button"
-              variant="ghost"
-              loading={dirs.isFetching}
-              onClick={() => {
-                void dirs.refetch();
-              }}
-            >
-              Try again
-            </SubmitButton>
-          </div>
-        </Alert>
+        <QueryErrorAlert
+          query={dirs}
+          message={sharedDirErrorMessage(dirs.error)}
+        />
       )}
 
       {live && (
@@ -97,13 +86,17 @@ export function SharedDirsTab({ project }: ProjectTabPanelProps) {
 
       <SharedDirForm projectId={project.id} />
 
+      {/* A failed read never reads as "none": only a successful one knows
+          (`SPEC.md`, "Frontend", Read failures). */}
       {dirs.isPending ? (
         <LoadingState label="Loading shared directories" />
       ) : rows.length === 0 ? (
-        <EmptyState
-          title="No shared directories yet"
-          description="Add one above, or pick a starting point for the ecosystem this project builds with."
-        />
+        dirs.isSuccess && (
+          <EmptyState
+            title="No shared directories yet"
+            description="Add one above, or pick a starting point for the ecosystem this project builds with."
+          />
+        )
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-sm">

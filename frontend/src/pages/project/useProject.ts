@@ -18,9 +18,9 @@ export function useProject(id: string) {
   return useQuery<Project>({
     queryKey: queryKeys.projects.detail(id),
     queryFn: () => getProject(id),
-    // A 404 is an answer, not a transient failure: the page renders the
-    // not-found state rather than retrying three times first.
-    retry: false,
+    // A 404 is an answer, not a transient failure, and the shared policy never
+    // retries one (`queryClient.ts`); a 502 from a restarting orchestrator is
+    // retried once there, and the page keeps what it has meanwhile.
     refetchInterval: (query) =>
       query.state.data?.status === "cloning" ? CLONING_POLL_MS : false,
   });

@@ -159,7 +159,8 @@ describe("AcceptInvitePage", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByRole("alert").textContent).toBe(
+      // The retry button lives inside the alert, so the text is a prefix.
+      expect(screen.getByRole("alert").textContent).toContain(
         "Orchestrator unreachable",
       );
     });
@@ -178,7 +179,8 @@ describe("AcceptInvitePage", () => {
     renderPage();
 
     await waitFor(() => {
-      expect(screen.getByRole("alert").textContent).toBe(
+      // The retry button lives inside the alert, so the text is a prefix.
+      expect(screen.getByRole("alert").textContent).toContain(
         "Orchestrator unreachable",
       );
     });

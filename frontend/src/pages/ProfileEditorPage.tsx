@@ -18,6 +18,7 @@ import type { FormEvent } from "react";
 import {
   Alert,
   FormField,
+  QueryErrorAlert,
   SectionHeader,
   SubmitButton,
 } from "../components";
@@ -112,14 +113,12 @@ export function ProfileEditorPage({
     queryKey: queryKeys.profileTemplates.list(),
     queryFn: listProfileTemplates,
     enabled: profile === null,
-    retry: false,
     staleTime: Infinity,
   });
 
   const states = useQuery({
     queryKey: queryKeys.projects.taskStates(projectId),
     queryFn: () => listTaskStates(projectId),
-    retry: false,
   });
 
   // Every scope a session of this profile draws from, in resolution order
@@ -139,6 +138,18 @@ export function ProfileEditorPage({
       ]),
     [globalSecrets.data, projectSecrets.data, userSecrets.data],
   );
+
+  const secretScopes = [
+    { label: "the shared secrets", query: globalSecrets },
+    { label: "this project's secrets", query: projectSecrets },
+    { label: "your own secrets", query: userSecrets },
+  ];
+
+  // A scope that answered — with its names, or with the 403 of a scope this
+  // user may not list, which contributes none of its own accord. Until every
+  // scope has, a declared name that is in none of them is unread rather than
+  // uncreated, and is left unannotated (`SPEC.md`, "Frontend", Read failures).
+  const secretsKnown = secretScopes.every(({ query }) => scopeAnswered(query));
 
   const queueStates = (states.data ?? []).filter(
     (state) => state.kind === "queue",
@@ -575,12 +586,28 @@ export function ProfileEditorPage({
             <p className="text-console-muted pb-2 text-xs">
               Queue states this profile picks work up from.
             </p>
+            {/* A failed read of the project's states must not read as "this
+                project has none" — that invites clearing a profile down to
+                serving nothing (`SPEC.md`, "Frontend", Read failures). */}
+            {states.isError && (
+              <div className="pb-2">
+                <QueryErrorAlert
+                  query={states}
+                  message="Could not load this project's task states."
+                />
+              </div>
+            )}
+
             {queueStates.length === 0 ? (
-              <p className="text-console-muted text-xs">
-                {states.isPending
-                  ? "Loading states…"
-                  : "This project has no queue states."}
-              </p>
+              states.isPending ? (
+                <p className="text-console-muted text-xs">Loading states…</p>
+              ) : (
+                states.isSuccess && (
+                  <p className="text-console-muted text-xs">
+                    This project has no queue states.
+                  </p>
+                )
+              )
             ) : (
               <div className="flex flex-wrap gap-x-4 gap-y-2">
                 {queueStates.map((state) => (
@@ -608,8 +635,10 @@ export function ProfileEditorPage({
               </div>
             )}
             {/* A state that was renamed or deleted since the profile was saved
-                would be a 400 on submit; show it so it can be cleared. */}
-            {form.serves_states
+                would be a 400 on submit; show it so it can be cleared — but
+                only once the project's own list has actually arrived, or every
+                served state would be flagged on a cold cache. */}
+            {(states.isSuccess ? form.serves_states : [])
               .filter((name) => !queueStates.some((s) => s.name === name))
               .map((name) => (
                 <label
@@ -651,6 +680,20 @@ export function ProfileEditorPage({
               />
             </div>
 
+            {/* One scope that failed leaves names out of the list below, so
+                the failure is said rather than implied. */}
+            {secretScopes
+              .filter(({ query }) => query.isError && !scopeAnswered(query))
+              .map(({ label, query }) => (
+                <div key={label} className="pb-2">
+                  <QueryErrorAlert
+                    kind="warning"
+                    query={query}
+                    message={`Could not load ${label}; names from that scope are missing below.`}
+                  />
+                </div>
+              ))}
+
             <div className="flex flex-col gap-1.5">
               {secretOptions.map((option) => {
                 const checked = form.secrets.includes(option.name);
@@ -684,7 +727,7 @@ export function ProfileEditorPage({
                 );
               })}
 
-              {form.secrets
+              {(secretsKnown ? form.secrets : [])
                 .filter((name) => !secretOptions.some((o) => o.name === name))
                 .map((name) => (
                   <label
@@ -783,6 +826,17 @@ function useSecretNames(scope: "global" | "project" | "user", scopeId?: string) 
         scope,
         ...(scopeId === undefined ? {} : { scope_id: scopeId }),
       }),
-    retry: false,
   });
+}
+
+/**
+ * Whether a scope has given its answer: its names, or the 403 of a scope this
+ * user may not list, which means it contributes none. A failed read has said
+ * nothing either way.
+ */
+function scopeAnswered(query: { isSuccess: boolean; error: unknown }): boolean {
+  return (
+    query.isSuccess ||
+    (query.error instanceof ApiError && query.error.status === 403)
+  );
 }

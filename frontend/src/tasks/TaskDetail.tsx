@@ -24,10 +24,10 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
-import { Alert } from "../components/Alert";
 import { CopyLinkButton } from "../components/CopyLinkButton";
 import { LoadingState } from "../components/LoadingState";
 import { MarkdownBody } from "../components/Markdown";
+import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { SubmitButton } from "../components/SubmitButton";
 import { isNotFound, projectErrorMessage } from "../pages/project/messages";
 import { getTask } from "../services/tasks";
@@ -83,7 +83,6 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
     queryKey: taskKeys.detail(projectId, number ?? 0),
     queryFn: () => getTask(projectId, number ?? 0),
     enabled: number !== null,
-    retry: false,
   });
 
   const task = detail.data;
@@ -132,38 +131,35 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
         <div className="flex-1 px-4 py-4">
           {number === null || (detail.isError && isNotFound(detail.error)) ? (
             <NotFound onClose={close} />
-          ) : detail.isPending ? (
-            <LoadingState label="Loading the task" />
-          ) : detail.isError ? (
-            <Alert kind="error">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span>{projectErrorMessage(detail.error)}</span>
-                <SubmitButton
-                  type="button"
-                  variant="ghost"
-                  loading={detail.isFetching}
-                  onClick={() => {
-                    void detail.refetch();
-                  }}
-                >
-                  Try again
-                </SubmitButton>
-              </div>
-            </Alert>
+          ) : task === undefined ? (
+            detail.isPending ? (
+              <LoadingState label="Loading the task" />
+            ) : (
+              <QueryErrorAlert
+                query={detail}
+                message={projectErrorMessage(detail.error)}
+              />
+            )
           ) : (
-            // The task's id is the drawer's identity boundary: everything
-            // under `TaskBody` — edit mode and its draft, the comment box, an
-            // open confirmation, a half-written review — belongs to the task
-            // it was written for, and a cached neighbour renders with no
-            // loading state in between to unmount it. Keying by `task.id`
-            // makes "another task" a remount and "the same task, refetched"
-            // — which every task event causes — leave the draft alone
-            // (`SPEC.md`, "Frontend", "Task board").
-            <TaskBody
-              key={detail.data.id}
-              projectId={projectId}
-              task={detail.data}
-            />
+            // A failed refetch keeps the drawer and whatever is being edited
+            // in it (`SPEC.md`, "Frontend", Read failures).
+            <div className="space-y-3">
+              {detail.isError && (
+                <QueryErrorAlert
+                  query={detail}
+                  message={projectErrorMessage(detail.error)}
+                />
+              )}
+              {/* The task's id is the drawer's identity boundary: everything
+                  under `TaskBody` — edit mode and its draft, the comment box,
+                  an open confirmation, a half-written review — belongs to the
+                  task it was written for, and a cached neighbour renders with
+                  no loading state in between to unmount it. Keying by
+                  `task.id` makes "another task" a remount and "the same task,
+                  refetched" — which every task event causes — leave the draft
+                  alone (`SPEC.md`, "Frontend", "Task board"). */}
+              <TaskBody key={task.id} projectId={projectId} task={task} />
+            </div>
           )}
         </div>
       </aside>

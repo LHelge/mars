@@ -31,6 +31,7 @@ import { Alert } from "../Alert";
 import { EmptyState } from "../EmptyState";
 import { FormField } from "../FormField";
 import { LoadingState } from "../LoadingState";
+import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SectionHeader } from "../SectionHeader";
 import { SubmitButton } from "../SubmitButton";
 import { errorMessage } from "./errorMessage";
@@ -272,30 +273,23 @@ export function InvitesPanel() {
       )}
 
       {invites.isError && (
-        <Alert kind="error">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>{`Could not load invitations. ${errorMessage(invites.error)}`}</span>
-            <SubmitButton
-              type="button"
-              variant="ghost"
-              loading={invites.isFetching}
-              onClick={() => {
-                void invites.refetch();
-              }}
-            >
-              Try again
-            </SubmitButton>
-          </div>
-        </Alert>
+        <QueryErrorAlert
+          query={invites}
+          message={`Could not load invitations. ${errorMessage(invites.error)}`}
+        />
       )}
 
+      {/* A failed read is not an empty list (`SPEC.md`, "Frontend", Read
+          failures). */}
       {invites.isPending ? (
         <LoadingState />
       ) : rows.length === 0 ? (
-        <EmptyState
-          title="No open invitations"
-          description="Invite someone with the form above."
-        />
+        invites.isSuccess && (
+          <EmptyState
+            title="No open invitations"
+            description="Invite someone with the form above."
+          />
+        )
       ) : (
         <div className={SCROLLER}>
           <table className={TABLE}>

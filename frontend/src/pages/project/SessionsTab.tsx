@@ -23,12 +23,11 @@ import {
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import {
-  Alert,
   EmptyState,
   GitActionsPanel,
   LoadingState,
+  QueryErrorAlert,
   SessionStatePill,
-  SubmitButton,
 } from "../../components";
 import { ApiError } from "../../services/apiClient";
 import { listProfiles } from "../../services/profiles";
@@ -159,38 +158,31 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
         </div>
 
         {sessions.isError && (
-          <Alert kind="error">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span>Could not load the sessions of this project.</span>
-              <SubmitButton
-                type="button"
-                variant="ghost"
-                loading={sessions.isFetching}
-                onClick={() => {
-                  void sessions.refetch();
-                }}
-              >
-                Try again
-              </SubmitButton>
-            </div>
-          </Alert>
+          <QueryErrorAlert
+            query={sessions}
+            message="Could not load the sessions of this project."
+          />
         )}
 
+        {/* Only a successful read may claim the project has no sessions
+            (`SPEC.md`, "Frontend", Read failures). */}
         {sessions.isPending ? (
           <LoadingState label="Loading sessions" />
         ) : rows.length === 0 ? (
-          <EmptyState
-            title={
-              filter === "all"
-                ? "No sessions yet"
-                : `No ${filter} sessions right now`
-            }
-            description={
-              filter === "all"
-                ? "Launch one above to put an agent on this project."
-                : "Choose another state to see the rest."
-            }
-          />
+          sessions.isSuccess && (
+            <EmptyState
+              title={
+                filter === "all"
+                  ? "No sessions yet"
+                  : `No ${filter} sessions right now`
+              }
+              description={
+                filter === "all"
+                  ? "Launch one above to put an agent on this project."
+                  : "Choose another state to see the rest."
+              }
+            />
+          )
         ) : (
           <table className="w-full border-collapse text-sm">
             <thead>

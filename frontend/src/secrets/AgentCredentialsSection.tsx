@@ -99,7 +99,6 @@ export function AgentCredentialsSection({
           scope: view.scope,
           ...(view.scopeId === undefined ? {} : { scope_id: view.scopeId }),
         }),
-      retry: false,
     })),
   });
 

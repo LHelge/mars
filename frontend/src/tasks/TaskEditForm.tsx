@@ -90,7 +90,6 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
     queryFn: listUsers,
     enabled: isAdmin,
     staleTime: 60_000,
-    retry: false,
   });
   const currentAssignee = useUsername(task.assignee_user_id);
   // The draft's own holder, which a reassignment on the server can take out of

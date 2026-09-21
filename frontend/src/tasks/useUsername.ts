@@ -3,8 +3,9 @@
 //
 // `staleTime: Infinity` because a username barely changes and one board can
 // carry the same one on fifty cards; until the read lands, the id's first
-// eight characters say who it is well enough to recognise. `retry: false`
-// because a user the viewer may not read is a 403 that will not improve.
+// eight characters say who it is well enough to recognise. A user the viewer
+// may not read is a 403, which the shared retry policy already never retries
+// (`queryClient.ts`).
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -18,7 +19,6 @@ export function useUsername(id: string | null): string | null {
     queryFn: () => getUser(id ?? ""),
     enabled: id !== null,
     staleTime: Infinity,
-    retry: false,
   });
 
   if (id === null) {

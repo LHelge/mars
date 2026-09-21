@@ -17,6 +17,7 @@ import {
   AuthLayout,
   FormField,
   LoadingState,
+  QueryErrorAlert,
   SubmitButton,
 } from "../components";
 import { useAuth, useFormSubmit } from "../hooks";
@@ -82,7 +83,6 @@ export function AcceptInvitePage() {
   const lookup = useQuery({
     queryKey: ["invite", token],
     queryFn: () => lookupInvite(token ?? ""),
-    retry: false,
     enabled: hasToken,
   });
 
@@ -119,40 +119,25 @@ export function AcceptInvitePage() {
     return <DeadEnd />;
   }
 
-  if (lookup.isPending) {
-    return (
-      <AuthLayout title="Accept your invitation">
-        <LoadingState label="Checking your invitation" />
-      </AuthLayout>
-    );
-  }
-
-  if (lookup.error !== null) {
-    // A rejected token (400) is a dead end; a network failure or a 5xx says
-    // nothing about the invite and is worth retrying.
-    if (lookup.error instanceof ApiError && lookup.error.status === 400) {
-      return <DeadEnd />;
-    }
-    return (
-      <AuthLayout title="Accept your invitation">
-        <div className="flex flex-col items-start gap-4">
-          <Alert kind="error">{UNREACHABLE}</Alert>
-          <SubmitButton
-            type="button"
-            variant="ghost"
-            loading={lookup.isFetching}
-            onClick={() => {
-              void lookup.refetch();
-            }}
-          >
-            Try again
-          </SubmitButton>
-        </div>
-      </AuthLayout>
-    );
+  // A rejected token (400) is a dead end whenever it comes, since the invite
+  // itself is gone; a network failure or a 5xx says nothing about the invite.
+  if (lookup.error instanceof ApiError && lookup.error.status === 400) {
+    return <DeadEnd />;
   }
 
   const invite = lookup.data;
+
+  if (invite === undefined) {
+    return (
+      <AuthLayout title="Accept your invitation">
+        {lookup.isPending ? (
+          <LoadingState label="Checking your invitation" />
+        ) : (
+          <QueryErrorAlert query={lookup} message={UNREACHABLE} />
+        )}
+      </AuthLayout>
+    );
+  }
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -201,6 +186,12 @@ export function AcceptInvitePage() {
             You are signed in as {user.username}; accepting will switch
             accounts.
           </Alert>
+        )}
+
+        {/* The invite is already in hand; a failed re-read is a banner over
+            the half-filled form, not a page that replaces it. */}
+        {lookup.isError && (
+          <QueryErrorAlert query={lookup} message={UNREACHABLE} />
         )}
 
         {error && <Alert kind="error">{error}</Alert>}

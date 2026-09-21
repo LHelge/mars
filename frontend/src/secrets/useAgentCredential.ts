@@ -45,7 +45,6 @@ export function useAgentCredential(
   const query = useQuery({
     queryKey: queryKeys.projects.agentCredentials(projectId),
     queryFn: () => getAgentCredentials(projectId),
-    retry: false,
   });
 
   const entry = query.data?.find((status) => status.backend === backend);

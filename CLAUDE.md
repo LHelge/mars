@@ -31,7 +31,8 @@ Mars runs coding-agent sessions (Claude Code in v1, behind a pluggable `AgentBac
 - All API calls go through `src/services/`; components never call `fetch`. Use `apiGet`/`apiPost`/`apiPut`/`apiPatch`/`apiDelete` from `services/apiClient.ts`, which attaches the access token and refreshes once on 401.
 - Server state through TanStack Query; session transcript and task board state through the Zustand stores in `src/session/` and `src/tasks/`. Never keep raw event arrays in state. Fold session transcript events as they arrive; task events invalidate the board's REST snapshot and trigger its coalesced refresh path (ADR 0022; `SPEC.md`, "Frontend").
 - `useAuth()` for auth state, `useFormSubmit()` for form loading and error state.
-- Shared layouts: `AuthLayout`, `PageLayout`. Shared UI: `FormField`, `SubmitButton`, `Alert`, `LoadingState`, `EmptyState`, `SectionHeader`. Protected routes use `ProtectedRoute`, admin routes `AdminRoute`.
+- Shared layouts: `AuthLayout`, `PageLayout`. Shared UI: `FormField`, `SubmitButton`, `Alert`, `QueryErrorAlert`, `LoadingState`, `EmptyState`, `SectionHeader`. Protected routes use `ProtectedRoute`, admin routes `AdminRoute`.
+- A failed read never unmounts a view that has data and never reads as an empty one; the retry policy lives in `queryClient.ts` alone (`SPEC.md`, "Frontend", Read failures).
 - Types in `src/types/` mirror the shapes in `SPEC.md` exactly, field names in `snake_case` as the API sends them.
 - Invoke the `/frontend-design` skill before creating or reshaping UI. The tone is a focused, dense operator console: dark-friendly, monospace where content is code or logs, quiet colour reserved for state (running, parked, failed, needs human).
 

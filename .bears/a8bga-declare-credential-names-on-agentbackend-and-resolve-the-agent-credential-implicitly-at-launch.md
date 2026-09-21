@@ -1,15 +1,16 @@
 ---
 id: a8bga
 title: Declare credential names on AgentBackend and resolve the agent credential implicitly at launch
-status: open
+status: done
 priority: P1
 created: "2026-09-20T22:21:50.092272783Z"
-updated: "2026-09-20T22:21:50.092272783Z"
+updated: "2026-09-21T05:47:56.494941885Z"
 tags:
   - orchestrator
   - agent
   - secrets
 parent: rdkmk
+attempts: 1
 ---
 
 ## Summary

@@ -1,16 +1,17 @@
 ---
 id: rgrvp
 title: Move session creation out of routes/sessions.rs into session/ so a launch needs no HTTP request and no user
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:07:41.516448919Z"
-updated: "2026-09-21T20:07:41.516448919Z"
+updated: "2026-09-21T20:55:36.157031379Z"
 tags:
   - orchestrator
   - sessions
   - refactor
   - dispatcher
 parent: qabvt
+attempts: 1
 ---
 
 ## Summary

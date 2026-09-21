@@ -1,16 +1,17 @@
 ---
 id: jrgm7
 title: "ADR and ARCHITECTURE.md \"Dispatcher\" section: write down the unattended-launch rules settled in planning"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:07:29.698636172Z"
-updated: "2026-09-21T20:23:25.141734215Z"
+updated: "2026-09-21T20:55:36.129265206Z"
 tags:
   - docs
   - adr
   - dispatcher
   - orchestrator
 parent: qabvt
+attempts: 1
 ---
 
 ## Summary

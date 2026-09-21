@@ -82,12 +82,23 @@ export function reviewLabel(
         tone: TONE.changes_requested,
         status: "changes_requested",
       };
-    default:
+    case "unreviewed":
       return {
         text: "Unreviewed",
         tone: TONE.unreviewed,
         status: "unreviewed",
       };
+    default: {
+      // A `ReviewStatus` this build does not know must not be labelled
+      // "Unreviewed": the badge is the reviewer's statement about which code
+      // was approved, and a wrong one is worse than an unfamiliar one.
+      const unhandled: never = handoff.review_status;
+      return {
+        text: String(unhandled),
+        tone: TONE.unreviewed,
+        status: "unreviewed",
+      };
+    }
   }
 }
 
@@ -180,8 +191,15 @@ export function reviewCoverLine(
       return `Approving commit ${short}`;
     case "changes_requested":
       return `Requesting changes on commit ${short}`;
-    default:
+    case "none":
       return `Forwarding commit ${short} with no review decision`;
+    default: {
+      // A decision this build does not know is not "no decision": the line
+      // says what the reviewer is about to record, so it names the decision
+      // rather than claiming one that is not being made.
+      const unhandled: never = decision;
+      return `Recording ${String(unhandled)} on commit ${short}`;
+    }
   }
 }
 

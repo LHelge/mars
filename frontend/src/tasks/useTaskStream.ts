@@ -33,10 +33,10 @@ import {
 import { errorMessage, isNotFound } from "../services/errorMessage";
 import { getProject } from "../services/projects";
 import { taskStreamUrl } from "../services/tasks";
-import type { TaskEvent } from "../types";
 import { backoffDelay } from "../utils/backoff";
 import { coalesce } from "../utils/coalesce";
 import { taskKeys } from "./queryKeys";
+import { parseTaskEvent } from "./taskEvent";
 import type { TaskStreamStatus } from "./taskStore";
 import { useTaskStore } from "./taskStore";
 
@@ -206,11 +206,15 @@ export class TaskStream {
   }
 
   private handleEvent(data: string): void {
-    let event: TaskEvent;
-    try {
-      event = JSON.parse(data) as TaskEvent;
-    } catch {
-      console.warn("task stream: malformed event ignored");
+    // Checked against the contract before the store sees it (`taskEvent.ts`).
+    // A frame that does not match is dropped whole and the cursor stays where
+    // it was: `noteEvent` writes `event.seq` into `lastSeq` unconditionally
+    // once it passes, and a `lastSeq` that is not a sequence is the `?after=`
+    // the server refuses on every reconnect. The diagnostic names no field
+    // value (`CLAUDE.md` rule 3).
+    const event = parseTaskEvent(data);
+    if (event === null) {
+      console.warn("task stream: event ignored (off-contract frame)");
       return;
     }
     // A replayed or duplicate `seq` changes nothing and owes no refresh.

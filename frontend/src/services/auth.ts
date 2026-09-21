@@ -27,6 +27,7 @@ import type {
   User,
 } from "../types";
 import { ApiError, apiGet, apiPost } from "./apiClient";
+import { MessageError } from "./errorMessage";
 
 /**
  * The one key this module writes; nothing else goes to storage. Exported for
@@ -191,6 +192,14 @@ export function installSession(
   auth: AuthResponse,
   reason: InstallReason = "login",
 ): void {
+  // The one check this boundary owes: an `AuthResponse` is a `JSON.parse` cast
+  // like any other, and a body without a usable `access_token` would otherwise
+  // be written to `localStorage` as the string "undefined" and carried on
+  // every request until a 401 healed it. Nothing is installed instead, and the
+  // caller — a sign-in form, a rotation — is told in words it can show.
+  if (typeof auth.access_token !== "string" || auth.access_token === "") {
+    throw new MessageError("The server's sign-in response was not usable.");
+  }
   const replaced = state.accessToken !== null && reason !== "refresh";
   authGeneration += 1;
   writeStoredToken(auth.access_token);

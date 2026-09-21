@@ -24,6 +24,7 @@ import type { ClientMessage, ServerMessage, SessionInput } from "../types";
 import { backoffDelay } from "../utils/backoff";
 import type { ConnectionStatus, SessionStore } from "./sessionStore";
 import { getSessionStore, useSessionStore } from "./sessionStore";
+import { parseServerMessage } from "./serverMessage";
 import { buildSessionSocketUrl } from "./socketUrl";
 
 /** The history page size; the endpoint caps `limit` at 500. */
@@ -276,14 +277,24 @@ export class SessionSocket {
       console.warn("session socket: unsupported frame type");
       return;
     }
-    let message: ServerMessage;
-    try {
-      message = JSON.parse(data) as ServerMessage;
-    } catch {
-      console.warn("session socket: malformed frame ignored");
+    // Every text frame is checked against the contract before any of it
+    // reaches the store (`serverMessage.ts`): a frame that does not match is
+    // dropped whole, so nothing is half-folded and `lastSeq` never moves past
+    // an event the transcript does not contain. The diagnostic names the field
+    // that failed and never its value — the frame is agent output and the URL
+    // it came in on carries an access token (`CLAUDE.md` rule 3).
+    const outcome = parseServerMessage(data);
+    if (!outcome.ok) {
+      if (outcome.unknown) {
+        // A newer orchestrator; a message carrying no cursor costs nothing to
+        // skip (`SPEC.md`, "WebSocket: session stream").
+        console.debug("session socket: %s", outcome.detail);
+        return;
+      }
+      console.warn("session socket: frame ignored (%s)", outcome.detail);
       return;
     }
-    this.dispatch(message);
+    this.dispatch(outcome.message);
   }
 
   private dispatch(message: ServerMessage): void {

@@ -292,6 +292,8 @@ Server to client:
 
 The server also sends one `session` message immediately after the upgrade, before replay, so the client has the current state.
 
+A client validates every text frame against this table before applying any of it, and reads a frame in one of three ways. A frame that is not JSON, is not an object, or whose `type` is known but whose fields do not match the shape above is **malformed**: it is dropped whole, nothing is applied and no cursor moves, because applying half a message and then advancing `seq` past it leaves a transcript with a hole that no reconnect refills. A frame whose `type` this client has never seen is **unknown**: it is ignored, since a `ServerMessage` carries no cursor of its own and there is nothing to lose by skipping one — a tab left open across an orchestrator upgrade is the ordinary case. An `event` whose `AgentEvent.kind` is unknown is neither: it does carry a cursor, so it is accepted, rendered as a `raw` row, and dedupe advances over it as over any other event (see "AgentEvent"). A client's diagnostics for a rejected frame name the field that failed and never its value: a frame carries agent output, and the URL it arrived on carries an access token.
+
 Client to server:
 
 | Message | Shape |
@@ -326,6 +328,8 @@ A `terminal_open` that cannot be honoured (session not `running`, container gone
 
 Each SSE message has `id: <seq>`, `event: task`, and `data: <TaskEvent JSON>`. The response body opens with a `: ready` comment, written before any replay so the first body byte follows the headers immediately: a stream with nothing to replay must not wait for its first keepalive, because a proxy that holds a response's headers until its first body byte would delay the client's `open` event by that long. Clients ignore comment frames. A `: keepalive` comment is sent every 15 seconds, on its own cadence, unaffected by the opening comment. The server supports replay from `Last-Event-ID`; the browser client disables automatic reconnect and explicitly reopens with a refreshed token and `?after=<lastSeq>` as specified under "Authentication". nginx must serve this location with buffering off.
 
+A client validates every `task` frame before the board sees it: `seq` a safe integer of at least 1, `ts` and `kind` strings, `task_id` a string or null, and `actor` an object with a string `kind`. A frame failing any of those is dropped whole and the cursor stays where it was — a `seq` that is not a sequence would otherwise become `lastSeq` and make every subsequent reconnect ask for a cursor the server answers 400 `BAD_CURSOR` to. An unknown `kind` is accepted: every kind means the same thing to the board — refresh authoritative data — so a kind a newer orchestrator added is already handled correctly by being counted and refreshed on, and rejecting it would leave the cursor behind. As on the session socket, a diagnostic for a rejected frame names no field value.
+
 The server subscribes to project notifications before opening the SSE response, then replays events and follows live changes, with the existing periodic safety read for missed notifications. The board waits for the stream's open event before its initial REST load; when explicitly recreating `EventSource` with a refreshed token it passes `?after=<lastSeq>`, or `?after=latest` when it has no sequence yet. It refreshes authoritative board data on open/reopen and on each new task event, using the loading rules under "Frontend". Historical event `task_id` values, including `deleted` events, survive deletion of the task row.
 
 ## AgentEvent
@@ -359,6 +363,8 @@ type AgentEvent = AgentEventBase & (
   | { kind: "raw";                backend: "claude"; native: unknown }            // untranslated native line
 );
 ```
+
+`kind` is an open enum: values are only ever added, never removed or renamed, and a browser tab outlives an orchestrator upgrade. A client therefore treats an unknown `kind` as forward-compatible rather than as an error — it renders as an untranslated row, exactly as `raw` does, and the client's `seq` dedupe advances over it — while still requiring the envelope (`seq` a safe integer of at least 1, `ts` a string) and, for a `kind` it does know, the fields it reads off it. An event failing either of those is off-contract: it is dropped whole and the cursor does not move (see "WebSocket: session stream"). A client validates only what it consumes; the shapes above are enforced where they are written.
 
 Agent/tool output and user-provided transcript content may contain secrets. v1 applies no automatic secret detection or redaction before storing or displaying this content, including `tool_call`, `tool_result`, `text`, `thinking`, `user_message` and `raw` payloads (ADR 0027). Normal translation and size limits still apply. The `thinking.redacted` flag reflects backend-provided redaction; it is not a Mars secret-filtering guarantee. Orchestrator-generated diagnostics and event metadata must not copy values from credential handling.
 

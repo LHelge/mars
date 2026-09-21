@@ -101,6 +101,32 @@ export function hasDraftText(root: ParentNode): boolean {
  */
 export interface DrawerEscapeRegistry {
   register: (close: () => void) => () => void;
+  /**
+   * The innermost open sub-form's `close`, or `undefined` when the drawer
+   * itself is the innermost open thing.
+   */
+  innermost: () => (() => void) | undefined;
+}
+
+/**
+ * One drawer's registry: a stack of the `close` of everything open under it.
+ *
+ * Deliberately outside React state — a registration is not a render — so the
+ * key handler reads the stack as it is at the moment of the press, and the
+ * ordering rule the drawer depends on is a plain function a unit test drives.
+ */
+export function createEscapeRegistry(): DrawerEscapeRegistry {
+  let open: (() => void)[] = [];
+
+  return {
+    register(close) {
+      open = [...open, close];
+      return () => {
+        open = open.filter((other) => other !== close);
+      };
+    },
+    innermost: () => open.at(-1),
+  };
 }
 
 export const DrawerEscapeContext = createContext<DrawerEscapeRegistry | null>(
@@ -114,6 +140,12 @@ export const DrawerEscapeContext = createContext<DrawerEscapeRegistry | null>(
  * `useDrawerEscape(() => { setOpen(false); }, open);`
  * Outside the drawer the context is absent and the hook does nothing, so a
  * form used elsewhere needs no condition around it.
+ *
+ * `open` is what the form's own `Cancel` is: a submission in flight owns the
+ * form it was made from, so a form whose `Cancel` is shut while it sends does
+ * not claim Escape either, and passes `!loading` here. The drawer may still
+ * close over it — the request lands regardless — but no single key press takes
+ * a pending form's fields out from under it.
  */
 export function useDrawerEscape(close: () => void, open: boolean): void {
   const registry = useContext(DrawerEscapeContext);

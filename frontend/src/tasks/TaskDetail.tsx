@@ -47,12 +47,11 @@ import { taskCardTestId } from "../utils/testIds";
 import { CommentForm } from "./CommentForm";
 import { CommentList } from "./CommentList";
 import { DependencyEditor } from "./DependencyEditor";
-import type { DrawerEscapeRegistry } from "./drawerEscape";
 import {
+  createEscapeRegistry,
   DrawerEscapeContext,
   escapeAction,
   hasDraftText,
-  useDrawerEscape,
 } from "./drawerEscape";
 import { HandoffPanel } from "./HandoffPanel";
 import { taskKeys } from "./queryKeys";
@@ -82,8 +81,6 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
   const typed = useRef(false);
   /** The task the drawer is showing, readable from an unmount cleanup. */
   const shown = useRef(number);
-  /** A sub-form's `close`, innermost last (`drawerEscape.ts`). */
-  const subforms = useRef<(() => void)[]>([]);
   /** An Escape over unsaved text has asked; a second one discards it. */
   const [armed, setArmed] = useState(false);
 
@@ -120,19 +117,11 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
     headingRef.current?.focus();
   }, [number]);
 
-  const escapeRegistry = useMemo<DrawerEscapeRegistry>(
-    () => ({
-      register(handler) {
-        subforms.current = [...subforms.current, handler];
-        return () => {
-          subforms.current = subforms.current.filter(
-            (other) => other !== handler,
-          );
-        };
-      },
-    }),
-    [],
-  );
+  // One registry for the life of the drawer: every sub-form under it — the
+  // edit form, the hand-off forms, the merge form, the launch panel and the
+  // two confirmations — registers its own `close` here while it is open
+  // (`drawerEscape.ts`).
+  const escapeRegistry = useMemo(() => createEscapeRegistry(), []);
 
   // Escape is read from the document rather than from the dialog element: the
   // drawer is modal, so every key press belongs to it, including the ones that
@@ -163,7 +152,7 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
       }
 
       setArmed(false);
-      const innermost = subforms.current.at(-1);
+      const innermost = escapeRegistry.innermost();
       if (innermost === undefined) {
         close();
         return;
@@ -178,7 +167,7 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
     return () => {
       document.removeEventListener("keydown", onKey);
     };
-  }, [armed, close]);
+  }, [armed, close, escapeRegistry]);
 
   const detail = useQuery({
     // `number ?? 0` is never requested: the query is disabled without one.
@@ -352,13 +341,10 @@ function TaskBody({
   // the drawer never shows a title twice with two different values in it.
   const [editing, setEditing] = useState(false);
 
-  // Escape shuts the form before it shuts the drawer; over a draft it asks
-  // first, so the form is never emptied by one key press (`drawerEscape.ts`).
-  // Every other sub-form under here claims Escape the same way, in the module
-  // that owns its open state.
-  useDrawerEscape(() => {
-    setEditing(false);
-  }, editing);
+  // Escape shuts an open sub-form before it shuts the drawer; over a draft it
+  // asks first, so nothing here is emptied by one key press. Each form claims
+  // it in the module that owns its open state (`drawerEscape.ts`), which for a
+  // form that is mounted only while it is open is the form itself.
 
   return (
     <div className="space-y-6">

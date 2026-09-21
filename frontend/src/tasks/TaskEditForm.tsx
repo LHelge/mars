@@ -41,6 +41,7 @@ import { useFormSubmit } from "../hooks/useFormSubmit";
 import { queryKeys } from "../services/queryKeys";
 import { listUsers } from "../services/users";
 import type { TaskDetail, TaskPriority, UpdateTaskInput } from "../types";
+import { useDrawerEscape } from "./drawerEscape";
 import { PRIORITIES, PRIORITY_MEANING } from "./taskChrome";
 import {
   diffTaskInput,
@@ -93,6 +94,10 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
     await updateTask(input);
     onDone();
   });
+
+  // Escape leaves the form as `Cancel` does, and is shut while a save is in
+  // flight for the same reason it is (`drawerEscape.ts`).
+  useDrawerEscape(onDone, !save.loading);
 
   // Admin only; anyone else gets the short list below without a failed read.
   const users = useQuery({

@@ -433,7 +433,7 @@ Address the accepted git-execution vulnerability by isolating operations on agen
 
 Add durable input delivery and recovery handling for messages interrupted by orchestrator restarts, including deduplication and ambiguous delivery (ADR 0020).
 
-A dispatcher that launches ephemeral sessions when a served task state has claimable work, bounded per profile; scheduled agents (a profile run on a cron expression, such as a daily tech-debt scan that files tasks, or an agent that turns GitHub issues into backlog tasks); GitHub App credentials and webhooks; egress restriction for session containers; sandboxed runtimes (gVisor, Kata) per profile; per-project toolchain setup scripts for session images; a second agent backend (GitHub Copilot CLI is the candidate, pending a spike to learn its structured output, stdin protocol and container authentication).
+Scheduled agents (a profile run on a cron expression, such as a daily tech-debt scan that files tasks, or an agent that turns GitHub issues into backlog tasks); GitHub App credentials and webhooks; egress restriction for session containers; sandboxed runtimes (gVisor, Kata) per profile; per-project toolchain setup scripts for session images; a second agent backend (GitHub Copilot CLI is the candidate, pending a spike to learn its structured output, stdin protocol and container authentication).
 
 ## License
 

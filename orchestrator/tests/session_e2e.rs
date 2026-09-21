@@ -55,6 +55,7 @@ use axum::http::StatusCode;
 use bollard::query_parameters::InspectContainerOptions;
 use common::{AuthenticatedUser, TestApp};
 use futures_util::FutureExt;
+use mars_orchestrator::cron::JobName;
 use mars_orchestrator::engine::bollard::BollardEngine;
 use mars_orchestrator::engine::{
     ContainerEngine, EngineKind, LABEL_PROFILE_ID, LABEL_PROJECT_ID, LABEL_SESSION_ID,
@@ -66,6 +67,8 @@ use mars_orchestrator::projects::clone_job;
 use mars_orchestrator::repositories::SessionRepository;
 use mars_orchestrator::session::{LAUNCHED_REASON, SessionDirs};
 use serde_json::{Value, json};
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 // ---- guards ----
@@ -385,6 +388,103 @@ impl Fixture {
         response.assert_status(StatusCode::CREATED);
 
         id_of(&response.json::<Value>())
+    }
+
+    /// An `auto_launch` ephemeral profile of this project, serving `states`.
+    ///
+    /// The image is the project's default, which
+    /// [`TestApp::spawn_with_engine`] set to the stub, so a session this
+    /// profile launches runs the same replay as every other scenario here.
+    async fn auto_profile(&self, app: &TestApp, states: &[&str]) -> Uuid {
+        let response = app
+            .post_as(
+                &self.user,
+                &format!("/api/projects/{}/profiles", self.project_id),
+            )
+            .json(&json!({
+                "name": format!("auto-{}", suffix()),
+                "kind": "ephemeral",
+                "auto_launch": true,
+                "max_concurrent": 1,
+                "serves_states": states,
+            }))
+            .await;
+        response.assert_status(StatusCode::CREATED);
+
+        id_of(&response.json::<Value>())
+    }
+
+    /// Store this project's agent credential, which an `auto_launch` profile
+    /// is refused at save without (`SPEC.md`, "Agent profiles"; ADR 0036).
+    ///
+    /// A user's own credential does not qualify: an unattended launch has no
+    /// user to resolve one for. The value authenticates nothing — the stub
+    /// image never calls a model (rule 3).
+    async fn store_agent_credential(&self, app: &TestApp) {
+        let response = app
+            .post_as(&self.user, "/api/secrets")
+            .json(&json!({
+                "scope": "project",
+                "scope_id": self.project_id.to_string(),
+                "name": "CLAUDE_CODE_OAUTH_TOKEN",
+                "value": "fake-value-not-a-credential",
+            }))
+            .await;
+        response.assert_status(StatusCode::CREATED);
+    }
+
+    /// `POST /api/projects/{pid}/tasks`, answering the task's number.
+    async fn create_task(&self, app: &TestApp, title: &str, state: &str) -> i64 {
+        let response = app
+            .post_as(
+                &self.user,
+                &format!("/api/projects/{}/tasks", self.project_id),
+            )
+            .json(&json!({ "title": title, "state": state }))
+            .await;
+        response.assert_status(StatusCode::CREATED);
+
+        response.json::<Value>()["number"]
+            .as_i64()
+            .expect("a task carries a number")
+    }
+
+    /// Move a task into another state, as the board's drawer does.
+    async fn move_task(&self, app: &TestApp, number: i64, state: &str) {
+        let response = app
+            .put_as(
+                &self.user,
+                &format!("/api/projects/{}/tasks/{number}", self.project_id),
+            )
+            .json(&json!({ "state": state }))
+            .await;
+        response.assert_status_ok();
+    }
+
+    /// `GET /api/projects/{pid}/tasks/{number}`.
+    async fn read_task(&self, app: &TestApp, number: i64) -> Value {
+        let response = app
+            .get_as(
+                &self.user,
+                &format!("/api/projects/{}/tasks/{number}", self.project_id),
+            )
+            .await;
+        response.assert_status_ok();
+
+        response.json::<Value>()
+    }
+
+    /// Every session of this project, as the project page lists them.
+    async fn sessions(&self, app: &TestApp) -> Vec<Value> {
+        let response = app
+            .get_as(
+                &self.user,
+                &format!("/api/projects/{}/sessions", self.project_id),
+            )
+            .await;
+        response.assert_status_ok();
+
+        response.json::<Vec<Value>>()
     }
 
     /// `POST /api/projects/{pid}/sessions`, asserting 201.
@@ -1068,6 +1168,218 @@ async fn an_ephemeral_session_replays_its_prompt_and_finishes_done() {
         wait_for_discarded_container(&app, id).await;
     })
     .await;
+}
+
+/// The dispatcher's own loop and its waker, started as `CronService::start`
+/// starts them and stopped the way the drain does (`tests/cron_dispatcher.rs`,
+/// "the wake-up").
+///
+/// Only the dispatcher: a scenario that wants a job running on its timer wants
+/// that job and not the other six, and the idle reaper in particular would
+/// park the very session under test.
+struct RunningDispatcher {
+    shutdown: watch::Sender<bool>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl RunningDispatcher {
+    fn start(app: &TestApp) -> Self {
+        let (shutdown, rx) = watch::channel(false);
+        let handles = Arc::new(app.cron()).start_job(JobName::Dispatcher, rx);
+        assert_eq!(handles.len(), 2, "the dispatcher runs a loop and a waker");
+
+        RunningDispatcher { shutdown, handles }
+    }
+
+    /// Stop both tasks and wait for them, as the drain does.
+    async fn stop(self) {
+        self.shutdown.send(true).expect("both tasks are listening");
+        for handle in self.handles {
+            tokio::time::timeout(PATIENCE, handle)
+                .await
+                .expect("the dispatcher stops within the drain grace")
+                .expect("neither task panics");
+        }
+    }
+}
+
+/// The whole dispatcher loop on real containers: a task moved into a state an
+/// `auto_launch` profile serves runs the stub image to `done` with nobody
+/// asking, and gives the lease back on the way out (`ARCHITECTURE.md`, "Task
+/// tracker" → "Unattended launches" and "Dispatcher"; ADR 0042).
+///
+/// `tests/cron_dispatcher.rs` is the job's own suite and covers which profile,
+/// which task, whether now and what a refusal does — over `MockEngine`, which
+/// records the container it *would* have created. What is left for here is the
+/// part no mock can stand in for, and it is the whole point of the feature:
+/// that the specification an unattended launch builds is one a real engine
+/// accepts, that the CLI it names really runs, and that the session ends and
+/// releases its task without a person anywhere in the loop.
+///
+/// **Nothing is launched by hand.** The only calls this scenario makes are a
+/// profile, a task and a state change — the three things a user does on the
+/// board. `POST /api/projects/{pid}/sessions` is never reached, which is
+/// asserted through `launch_source` and `created_by` on the row that appears.
+///
+/// **What the stub cannot do.** It replays a fixture and calls no MCP tool at
+/// all (`images/stub/claude`), so the dispatched agent never hands the task
+/// on, never comments and never moves it: the task comes back to the state it
+/// was claimed from. That is what is asserted — one attempt, the lease gone,
+/// the state unchanged — and it is the release path a finished ephemeral
+/// session takes whatever the agent did (`ARCHITECTURE.md`, "Task tracker" →
+/// "Liveness comes from the session, not from tool calls"). A hand-off would
+/// need an agent that speaks MCP, which is `tests/mcp_workflow.rs`'s subject.
+///
+/// **The job is stopped the moment its session exists**, before that session
+/// finishes. Not tidiness: the released task lands back in the served state
+/// and a running dispatcher would launch it again, and again, until the
+/// project's `max_attempts` escalated it. One launch is what is under test, so
+/// the loop is stopped after it.
+#[tokio::test]
+async fn a_task_moved_into_a_served_state_is_dispatched_run_and_released() {
+    scenario(|app| async move {
+        let fixture = StubFixture::load();
+        let project = Fixture::create(&app).await;
+        project.store_agent_credential(&app).await;
+        let profile_id = project.auto_profile(&app, &["ready"]).await;
+
+        // Out of reach to begin with: `backlog` is not served, so the job's
+        // startup tick has nothing to do and the launch below is provably the
+        // move's doing.
+        let number = project
+            .create_task(&app, "Fix the login form", "backlog")
+            .await;
+
+        let dispatcher = RunningDispatcher::start(&app);
+
+        project.move_task(&app, number, "ready").await;
+
+        // The `task_events` notice wakes the job within its debounce
+        // (`cron::dispatcher::WAKE_DEBOUNCE`, 250 ms); the suite's interval is
+        // 45 seconds, so nothing that appears inside [`PATIENCE`] is a tick.
+        let launched = wait_for_dispatched_session(&app, &project).await;
+        let id = id_of(&launched);
+        dispatcher.stop().await;
+
+        // Nobody asked for it, so there is nobody to attribute it to, and
+        // `launch_source` is the record of which job did (`SPEC.md`,
+        // "Sessions").
+        assert_eq!(launched["created_by"], Value::Null);
+        assert_eq!(launched["profile_id"], json!(profile_id.to_string()));
+        assert_eq!(launched["kind"], json!("ephemeral"));
+        // The generated task message is the session's title and the head of
+        // its `-p` prompt (`SPEC.md`, "Sessions").
+        assert_eq!(launched["title"], json!("Fix the login form"));
+
+        // It really is a one-shot run of the stub, on this engine: the prompt
+        // is an argument and no stdin format is attached.
+        wait_for_container(&app, id).await;
+        let cmd = cmd(&inspect(id).await);
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair[0] == "-p" && pair[1].contains("Fix the login form")),
+            "the generated task message is not the prompt: {cmd:?}",
+        );
+        assert!(
+            !cmd.iter().any(|part| part == "--input-format"),
+            "an unattended launch is ephemeral and has no stdin: {cmd:?}",
+        );
+
+        // ---- and it runs to the end on its own ----
+        wait_for_state(&app, &project, id, SessionState::Done).await;
+        let events = transcript(&app, &project, id).await;
+        assert_contiguous_seq(&events);
+        assert_eq!(
+            of_kind(&events, "tool_call")
+                .iter()
+                .map(|event| event["name"].as_str().unwrap_or("?").to_string())
+                .collect::<Vec<_>>(),
+            fixture.turn(1).tools,
+            "the turn that ran is the fixture's first",
+        );
+        assert_eq!(
+            reload(&app, id).await.cost_usd,
+            fixture.turn(1).cumulative_cost,
+        );
+        wait_for_discarded_container(&app, id).await;
+
+        // ---- the lease goes back through the v1 paths ----
+        // A finished ephemeral session ends in `AppState::session_ended`, and
+        // the tracker hook installed there releases what it held. Nothing in
+        // this scenario asked for that either.
+        let released = wait_for_released_task(&app, &project, number).await;
+        assert_eq!(
+            released["attempts"],
+            json!(1),
+            "the claim the launch made is the one attempt on the record",
+        );
+        assert_eq!(
+            released["state"],
+            json!("ready"),
+            "the stub hands nothing off, so the task comes back where it was",
+        );
+        assert!(
+            released["sessions"]
+                .as_array()
+                .expect("a task lists the sessions that touched it")
+                .iter()
+                .any(|touch| touch["session_id"] == json!(id.to_string())),
+            "the dispatched session is not on the task's record: {}",
+            released["sessions"],
+        );
+
+        // One launch, and no second one after the release.
+        let all = project.sessions(&app).await;
+        assert_eq!(all.len(), 1, "something else was launched: {all:?}");
+    })
+    .await;
+}
+
+/// Wait until the project has a session the dispatcher launched, and answer it.
+///
+/// `launch_source` is what it waits on rather than "any session": it is the
+/// one field that says a job and not a person created the row, and a scenario
+/// that asserted on a count could not tell the two apart (`SPEC.md`,
+/// "Sessions").
+async fn wait_for_dispatched_session(app: &TestApp, fixture: &Fixture) -> Value {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+
+    loop {
+        let sessions = fixture.sessions(app).await;
+        if let Some(session) = sessions
+            .iter()
+            .find(|session| session["launch_source"] == json!("dispatcher"))
+        {
+            return session.clone();
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "nothing was dispatched within {PATIENCE:?}: {sessions:?}",
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// Wait until nobody holds the task any more, and answer it.
+///
+/// The hook runs after the session's own transaction has committed, so a task
+/// read the moment a session goes `done` can still be held.
+async fn wait_for_released_task(app: &TestApp, fixture: &Fixture, number: i64) -> Value {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+
+    loop {
+        let task = fixture.read_task(app, number).await;
+        if task["lease_holder_session_id"] == Value::Null {
+            return task;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the finished session still held its task after {PATIENCE:?}: {task}",
+        );
+        tokio::time::sleep(POLL).await;
+    }
 }
 
 /// A restart adopts the session's container, keeps its token and goes on

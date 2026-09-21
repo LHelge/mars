@@ -47,7 +47,7 @@ erDiagram
 | Type | Values | Notes |
 | --- | --- | --- |
 | `project_status` | `cloning`, `ready`, `error` | `cloning` is set at creation; the clone job moves it to `ready` or `error`. |
-| `profile_kind` | `conversational`, `ephemeral` | `conversational` sessions take input over stdin and are parked and resumed; `ephemeral` sessions run one prompt and end. Users launch both in v1; automatic launching of ephemeral sessions is post-v1. |
+| `profile_kind` | `conversational`, `ephemeral` | `conversational` sessions take input over stdin and are parked and resumed; `ephemeral` sessions run one prompt and end. Users launch both, and the dispatcher launches `ephemeral` ones unattended — `auto_launch` on `agent_profiles` is refused on the other kind (`ARCHITECTURE.md`, "Dispatcher"; ADR 0042). |
 | `agent_backend` | `claude` | Which CLI adapter drives sessions of this profile. A second backend is added as a new value by migration. |
 | `session_launch_source` | `user`, `dispatcher`, `schedule` | Who launched a session. `user` is every launch a person makes and is the column default, so every row written before the column existed is one. Never updated after insert: a retry or a resume keeps it (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042). |
 | `session_state` | `creating`, `running`, `parked`, `done`, `failed` | State machine in `ARCHITECTURE.md`, "Session lifecycle". Only conversational sessions use `parked`; an ephemeral session goes to `done` when its result arrives. |

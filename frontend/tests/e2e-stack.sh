@@ -189,6 +189,15 @@ start_orchestrator() {
     # no `.env` overrides, so even a stray `.env` inside `.e2e/` cannot switch
     # the run to real mail delivery, another master key or a session network.
     # `assert_logged_email` below is the check that it held.
+    #
+    # Two job intervals are set away from their defaults. `MIRROR_FETCH_INTERVAL_SECS`
+    # is long because nothing here waits on a fetch and every one of them touches
+    # a `file://` upstream a scenario may be rewriting. `DISPATCHER_INTERVAL_SECS`
+    # is short because `dispatcher.spec.ts` waits on a launch nobody made: the
+    # `task_events` wake-up is what normally starts one within a second, and this
+    # timer is only the fallback under it (`ARCHITECTURE.md`, "Dispatcher"). It
+    # costs the rest of the suite nothing, since a sweep over projects with no
+    # `auto_launch` profile reads two queries and launches nothing.
     (
         cd "$RUN_DIR" &&
             exec env -i \
@@ -215,6 +224,7 @@ start_orchestrator() {
                 SESSION_IMAGE_DEFAULT="$STUB_IMAGE" \
                 STOP_GRACE_SECS=5 \
                 MIRROR_FETCH_INTERVAL_SECS=600 \
+                DISPATCHER_INTERVAL_SECS=10 \
                 RUST_LOG=info \
                 "$(orchestrator_binary)" >>"$LOG_FILE" 2>&1
     ) &

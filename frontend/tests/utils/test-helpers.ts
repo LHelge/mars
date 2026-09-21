@@ -75,8 +75,10 @@ export {
   getTask,
   launchSession,
   listBranches,
+  listProjectSessions,
   moveTask,
   seedAgentCredential,
+  setAutomationPaused,
   sendInput,
   setProfileSecrets,
   setProjectSecret,
@@ -94,6 +96,7 @@ export {
 export { loggedEmail } from "./log";
 
 export {
+  LAUNCH_SOURCE,
   STREAMING_CURSOR,
   SUBAGENT_CHILDREN,
   TASK_COLUMN_PREFIX,

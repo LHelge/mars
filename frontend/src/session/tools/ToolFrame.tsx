@@ -6,8 +6,8 @@ import type { ReactNode } from "react";
 
 import { Spinner } from "../../components/Spinner";
 import type { ToolMessage } from "../sessionStore";
-import { JsonToolRenderer } from "./JsonToolRenderer";
 import { toolRendererFor } from "./registry";
+import { SubagentToolRenderer } from "./SubagentToolRenderer";
 // Populates the registry: a tool row is never drawn without this module.
 import "./renderers";
 import { headerSummary } from "./toolInput";
@@ -93,11 +93,12 @@ export function ToolFrame({
               rather than closed over by a component defined during render.
               A subagent's registered renderer is the nested group `MessageRow`
               already draws as `children`, so the body shows the call itself —
-              the prompt that started the subagent — instead of repeating it. */}
+              the prompt that started the subagent, and the report it handed
+              back — instead of repeating it. */}
           {createElement(
             message.subagent === undefined
               ? toolRendererFor(message.name)
-              : JsonToolRenderer,
+              : SubagentToolRenderer,
             { message },
           )}
         </div>

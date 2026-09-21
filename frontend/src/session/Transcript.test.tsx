@@ -175,6 +175,47 @@ describe("Transcript", () => {
     expect(screen.getByText(/<b>now<\/b>/)).toBeDefined();
   });
 
+  it("renders a subagent's report as markdown, and only once the row is opened", () => {
+    // The same fixture with a table in the final `tool_result`: the report the
+    // subagent handed back.
+    const list = events(subagentFixture).map((event) =>
+      event.kind === "tool_result" && event.tool_use_id === "toolu_task_fake"
+        ? {
+            ...event,
+            content: "| route | file |\n| --- | --- |\n| `/` | App.tsx |\n",
+          }
+        : event,
+    );
+    mount(list);
+
+    // Collapsed: nothing of the report is in the DOM, so nothing is parsed.
+    expect(document.querySelector("table")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Task" }));
+
+    const table = document.querySelector("table");
+    expect(table).not.toBeNull();
+    expect(table?.querySelectorAll("td")).toHaveLength(2);
+    // Not the monospace result body: the collapse never sees it.
+    expect(screen.queryByText("result")).toBeNull();
+  });
+
+  it("shows a user message literally, markdown and all", () => {
+    mount([
+      {
+        seq: 1,
+        ts: "2026-01-02T10:00:00Z",
+        kind: "user_message",
+        text: "*not emphasis* and\n```\nfenced_not_code\n```",
+      } as unknown as AgentEvent,
+    ]);
+
+    expect(screen.getByText(/\*not emphasis\* and/)).toBeDefined();
+    expect(document.querySelector("em")).toBeNull();
+    expect(document.querySelector("pre")).toBeNull();
+    expect(document.querySelector("code")).toBeNull();
+  });
+
   it("asks for older history once when scrolled to the top", () => {
     const sessionId = seed(events(simpleTurnFixture));
     sessions.push(sessionId);

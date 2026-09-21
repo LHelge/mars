@@ -1,4 +1,9 @@
 // What the operator said, and whether it got through.
+//
+// Deliberately literal: the text is shown `whitespace-pre-wrap` and never as
+// markdown (`SPEC.md`, "Transcript rendering"), so a pasted diff keeps its
+// leading `+`, an identifier keeps its underscores and a fence stays a fence.
+// What a person typed is shown as typed.
 
 import type { UserMessage as UserMessageData } from "../sessionStore";
 

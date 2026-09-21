@@ -1,10 +1,10 @@
 ---
 id: "7sq7f"
 title: Add GET /profile-templates so a profile can be created from a role template
-status: open
+status: done
 priority: P2
 created: "2026-09-20T22:41:04.816655620Z"
-updated: "2026-09-20T22:41:04.816655620Z"
+updated: "2026-09-21T09:25:18.923803857Z"
 tags:
   - orchestrator
   - profiles
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - pd6zy
 parent: pekcb
+attempts: 1
 ---
 
 ## Summary

@@ -231,21 +231,18 @@ impl CronService {
         for candidate in candidates {
             // Before every launch, never once per profile: each session this
             // run started counts against all three caps (ADR 0042).
-            match unattended_capacity(&self.state, project, profile).await? {
-                capacity if capacity.is_available() => {}
-                capacity => {
-                    let refusal = capacity
-                        .refusal()
-                        .expect("a capacity that is not available refused");
-                    debug!(
-                        project_id = %project.id,
-                        profile_id = %profile.id,
-                        bound = refusal.bound(),
-                        "dispatch skipped",
-                    );
-                    report.skipped += 1;
-                    return Ok(Halt::for_refusal(refusal));
-                }
+            if let Some(refusal) = unattended_capacity(&self.state, project, profile)
+                .await?
+                .refusal()
+            {
+                debug!(
+                    project_id = %project.id,
+                    profile_id = %profile.id,
+                    bound = refusal.bound(),
+                    "dispatch skipped",
+                );
+                report.skipped += 1;
+                return Ok(Halt::for_refusal(refusal));
             }
 
             let mut request = LaunchRequest::new(profile.id);
@@ -267,7 +264,20 @@ impl CronService {
                 }
                 // Somebody claimed it first, or the queue moved under us. Not a
                 // fault: the next candidate is the answer.
-                Err(Error::Conflict(reason)) | Err(Error::BadRequest(reason)) => {
+                // A refused launch that is not a lost claim — a base that does
+                // not resolve, a profile deleted under the run — is a
+                // misconfiguration somebody should see, not a no-work outcome.
+                Err(Error::BadRequest(reason)) => {
+                    warn!(
+                        project_id = %project.id,
+                        profile_id = %profile.id,
+                        task_id = %candidate.id,
+                        reason = %reason,
+                        "dispatch refused",
+                    );
+                    report.skipped += 1;
+                }
+                Err(Error::Conflict(reason)) => {
                     debug!(
                         project_id = %project.id,
                         profile_id = %profile.id,

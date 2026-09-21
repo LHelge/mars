@@ -962,8 +962,13 @@ impl<'a> ProjectRepository<'a> {
     ///
     /// **Call only while holding [`ProjectRepository::lock_project`] in the
     /// same transaction**: both refusals below are read before the `DELETE`,
-    /// and without the lock a session could be launched on the profile in
-    /// between.
+    /// and without the lock a launch for a task — a mutation of its own —
+    /// could put a session on the profile in between. A launch without a task
+    /// takes no project lock and can still do that; its uncommitted session
+    /// makes the `DELETE` wait, `ON DELETE RESTRICT` then refuses, and
+    /// `map_profile_error` answers the same conflict. The launch waits for
+    /// nothing this transaction holds, so that race has no cycle in it
+    /// (ADR 0041).
     ///
     /// Two profiles cannot be deleted, and each says which it is rather than
     /// letting the client guess (`SPEC.md`, "Agent profiles": 409 "if default

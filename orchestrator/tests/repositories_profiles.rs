@@ -20,6 +20,8 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use axum::http::StatusCode;
 use mars_orchestrator::events::TaskActor;
@@ -27,11 +29,18 @@ use mars_orchestrator::models::{AgentProfile, ProfileInput, ProfileUpdate};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{ProjectRepository, TaskRepository};
 use mars_orchestrator::tracker::TrackerMutation;
+use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 /// Not a real image: the stub the session tests replay a fixture transcript
 /// with (`CLAUDE.md`, rule 3).
 const TEST_IMAGE: &str = "mars-session-stub:test";
+
+/// How long a blocked transaction is given to prove it is blocked.
+const BLOCKED_FOR: Duration = Duration::from_millis(400);
+
+/// How long an unblocked transaction is given once nothing is in its way.
+const UNBLOCKED_WITHIN: Duration = Duration::from_secs(10);
 
 /// The configuration a resolved `ProfileInput` reads its image default from.
 /// Obviously fake values throughout; nothing here is a credential (rule 3).
@@ -592,6 +601,66 @@ async fn the_default_profile_and_a_profile_with_sessions_cannot_be_deleted() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn a_launch_racing_a_profile_deletion_makes_it_a_conflict_not_a_deadlock() {
+    // The deletion, the launch, and the connections the helpers take.
+    let (_postgres, pool) = common::db::test_pool_with(6).await;
+    let project_id = seeded_project(&pool).await;
+    let spare = insert_ok(&pool, project_id, input("spare")).await;
+
+    // A launch without a task takes no project lock: its session row is
+    // written, and not yet committed, while the deletion is open. The project
+    // lock does not stop it — it is `FOR NO KEY UPDATE` and the insert's
+    // foreign-key checks pass it (ADR 0041).
+    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
+        .await
+        .unwrap();
+    let mut launch = pool.begin().await.unwrap();
+    let session_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO sessions (id, project_id, profile_id, kind, base_ref, branch, mcp_token_hash)
+        VALUES ($1, $2, $3, 'conversational'::profile_kind, 'main', $4, $5)
+        "#,
+    )
+    .bind(session_id)
+    .bind(project_id)
+    .bind(spare.id)
+    .bind(format!("session/{session_id}"))
+    .bind(format!("fake-token-hash-{session_id}"))
+    .execute(&mut *launch)
+    .await
+    .expect("the launch is not blocked by the open mutation");
+
+    // The deletion counts no session — the launch is not committed — and its
+    // `DELETE` then waits for the launch, which wants nothing of the
+    // deletion's. Both run on this task: the mutation borrows the pool.
+    let committed = AtomicBool::new(false);
+    let deletion = async {
+        let outcome = ProjectRepository::new(&pool)
+            .delete_profile(&mut mutation.conn(), project_id, spare.id)
+            .await;
+        (outcome, committed.load(Ordering::SeqCst))
+    };
+    let launching = async {
+        sleep(BLOCKED_FOR).await;
+        committed.store(true, Ordering::SeqCst);
+        launch.commit().await.expect("the launch commits");
+    };
+    let ((outcome, waited), ()) = timeout(UNBLOCKED_WITHIN, async {
+        tokio::join!(deletion, launching)
+    })
+    .await
+    .expect("neither transaction waits for the other indefinitely");
+    mutation.no_change().await.unwrap();
+    assert!(waited, "the deletion did not wait for the launch");
+
+    // `ON DELETE RESTRICT` now finds the session, and the backstop answers
+    // the documented 409 rather than a database error.
+    let error = outcome.expect_err("the profile has a session now");
+    assert_conflict(error, "profile has sessions");
 }
 
 #[tokio::test]

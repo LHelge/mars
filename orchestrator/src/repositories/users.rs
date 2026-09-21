@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 use crate::models::{Email, NewUser, User, UserUpdate, Username};
 use crate::prelude::*;
-use crate::repositories::unique_violation;
+use crate::repositories::{ProjectRepository, unique_violation};
 
 /// The 409 for demoting the last administrator (`SPEC.md`, "Users").
 const LAST_ADMIN_DEMOTION: &str = "cannot demote the last administrator";
@@ -513,6 +513,17 @@ impl<'a> UserRepository<'a> {
     /// An unknown id is [`Error::NotFound`]; the two refusals are
     /// [`Error::Conflict`]. Both token tables cascade, and everything else the
     /// user owns follows the schema's foreign keys (`docs/data-model.md`).
+    ///
+    /// **The `DELETE` comes last, after the rows it will clear.** It holds the
+    /// user row exclusively and then waits for every row whose reference it
+    /// sets to NULL, while the holder of such a row — a tracker mutation
+    /// writing another row for this user, a session writer whose second
+    /// `UPDATE` re-checks `sessions.created_by` — waits for a foreign-key check
+    /// on the user. So the user row is first locked `FOR NO KEY UPDATE`, which
+    /// serialises with [`UserRepository::replace`] and another deletion but
+    /// lets those checks through, then [`Self::lock_rows_naming_user`] takes
+    /// the projects and the sessions, and only then does the `DELETE` ask for
+    /// more (`ARCHITECTURE.md`, "Task tracker", the lock strength; ADR 0041).
     pub async fn delete(&self, id: Uuid, acting_user_id: Uuid) -> Result<()> {
         if id == acting_user_id {
             debug!(actor_id = %acting_user_id, "deletion refused: self");
@@ -523,17 +534,19 @@ impl<'a> UserRepository<'a> {
 
         self.lock_admin_membership(&mut tx).await?;
 
-        let Some(target) = self.lock_user(&mut tx, id).await? else {
+        let Some(admin) = self.lock_user_for_delete(&mut tx, id).await? else {
             return Err(Error::NotFound);
         };
 
-        if target.admin && self.count_admins(&mut tx).await? <= 1 {
+        if admin && self.count_admins(&mut tx).await? <= 1 {
             debug!(user_id = %id, "deletion refused: last administrator");
             return Err(Error::Conflict(LAST_ADMIN_DELETION.to_string()));
         }
 
-        // `lock_user` holds the row, so this matches it; `NotFound` rather
-        // than an assertion all the same.
+        self.lock_rows_naming_user(&mut tx, id).await?;
+
+        // `lock_user_for_delete` holds the row, so this matches it; `NotFound`
+        // rather than an assertion all the same.
         let deleted = sqlx::query!("DELETE FROM users WHERE id = $1", id)
             .execute(&mut *tx)
             .await?
@@ -545,6 +558,93 @@ impl<'a> UserRepository<'a> {
         tx.commit().await?;
 
         debug!(user_id = %id, "user deleted");
+
+        Ok(())
+    }
+
+    /// Lock the user row for [`UserRepository::delete`] and say whether it is
+    /// an administrator; `None` for an unknown id.
+    ///
+    /// [`UserRepository::lock_user`] at the strength that does not block a
+    /// foreign-key check, for the reason `delete` gives. It still conflicts
+    /// with `lock_user`'s `FOR UPDATE` and with itself.
+    async fn lock_user_for_delete(&self, tx: &mut PgConnection, id: Uuid) -> Result<Option<bool>> {
+        let admin = sqlx::query_scalar!(
+            "SELECT admin FROM users WHERE id = $1 FOR NO KEY UPDATE",
+            id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        debug!(user_id = %id, found = admin.is_some(), "user row locked for deletion");
+
+        Ok(admin)
+    }
+
+    /// Take, in the documented order, the locks the deletion's cascades would
+    /// otherwise wait for one row at a time: every project with a row naming
+    /// the user, in UUID order, then the user's sessions, in id order.
+    ///
+    /// The project lock is the tracker's own
+    /// ([`ProjectRepository::lock_project`]), so no mutation of those projects
+    /// is open while `tasks`, `task_comments` and `task_handoffs` lose their
+    /// references — user deletion "coordinates tracker changes through it
+    /// rather than relying on uncoordinated cascades" (`ARCHITECTURE.md`,
+    /// "Task tracker"). A project deleted since the list was read is skipped:
+    /// its rows went with it. A reference committed after the list was read is
+    /// cleared by the cascade all the same; its writer made its foreign-key
+    /// check before the `DELETE` and holds nothing this transaction waits for
+    /// while holding the user exclusively, because it has committed by then.
+    async fn lock_rows_naming_user(&self, tx: &mut PgConnection, id: Uuid) -> Result<()> {
+        let project_ids = sqlx::query_scalar!(
+            r#"
+            SELECT project_id AS "project_id!"
+            FROM (
+                SELECT id AS project_id FROM projects WHERE created_by = $1
+                UNION
+                SELECT project_id FROM sessions WHERE created_by = $1
+                UNION
+                SELECT project_id FROM tasks
+                WHERE assignee_user_id = $1 OR created_by_user_id = $1
+                UNION
+                SELECT t.project_id
+                FROM task_comments c
+                JOIN tasks t ON t.id = c.task_id
+                WHERE c.author_user_id = $1
+                UNION
+                SELECT t.project_id
+                FROM task_handoffs h
+                JOIN tasks t ON t.id = h.task_id
+                WHERE h.reviewed_by_user_id = $1 OR h.created_by_user_id = $1
+            ) AS naming
+            ORDER BY project_id
+            "#,
+            id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let projects = ProjectRepository::new(self.pool);
+        for project_id in &project_ids {
+            match projects.lock_project(&mut *tx, *project_id).await {
+                Ok(()) | Err(Error::NotFound) => {}
+                Err(err) => return Err(err),
+            }
+        }
+
+        let sessions = sqlx::query_scalar!(
+            "SELECT id FROM sessions WHERE created_by = $1 ORDER BY id FOR NO KEY UPDATE",
+            id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        debug!(
+            user_id = %id,
+            projects = project_ids.len(),
+            sessions = sessions.len(),
+            "rows naming the user locked",
+        );
 
         Ok(())
     }

@@ -5,12 +5,12 @@
 // The clipboard is a permission, not a certainty: `Link copied` appears only
 // after the write resolves, and a refusal (or a browser without the API, which
 // includes every insecure origin) falls back to the URL in a selectable field
-// so it can still be copied by hand.
+// so it can still be copied by hand. That rule lives in `useClipboardCopy`,
+// which `CodeBlock`'s `Copy` follows too.
 
 import { useEffect, useRef, useState } from "react";
 
-/** How long the confirmation stays before the button goes back to its label. */
-const COPIED_MS = 2000;
+import { useClipboardCopy } from "./useClipboardCopy";
 
 export interface CopyLinkButtonProps {
   /** An application path, already absolute within the origin: `/sessions/{id}`. */
@@ -20,45 +20,18 @@ export interface CopyLinkButtonProps {
 }
 
 export function CopyLinkButton({ path, label = "Link" }: CopyLinkButtonProps) {
-  const [copied, setCopied] = useState(false);
-  const [manual, setManual] = useState(false);
+  const { copied, denied: manual, copy, reset } = useClipboardCopy();
   const [shown, setShown] = useState(path);
   const fieldRef = useRef<HTMLInputElement>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const url = `${window.location.origin}${path}`;
-
-  useEffect(() => {
-    return () => {
-      if (timer.current !== null) clearTimeout(timer.current);
-    };
-  }, []);
 
   // A new resource is a new link: drop whatever the last one said, the React
   // way of reacting to a changed prop without an effect.
   if (path !== shown) {
     setShown(path);
-    setCopied(false);
-    setManual(false);
+    reset();
   }
-
-  const copy = async (): Promise<void> => {
-    const clipboard = navigator.clipboard as Clipboard | undefined;
-    try {
-      if (clipboard === undefined) throw new Error("no clipboard");
-      await clipboard.writeText(url);
-    } catch {
-      setCopied(false);
-      setManual(true);
-      return;
-    }
-    setManual(false);
-    setCopied(true);
-    if (timer.current !== null) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      setCopied(false);
-    }, COPIED_MS);
-  };
 
   // Selecting the text is the whole point of the fallback, so do it for them.
   useEffect(() => {
@@ -70,7 +43,7 @@ export function CopyLinkButton({ path, label = "Link" }: CopyLinkButtonProps) {
       <button
         type="button"
         onClick={() => {
-          void copy();
+          void copy(url);
         }}
         className="text-console-muted hover:text-console-text border-console-border hover:bg-console-raised rounded border px-2 py-0.5 font-mono text-xs"
       >

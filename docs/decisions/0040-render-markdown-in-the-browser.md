@@ -22,4 +22,6 @@ Markdown is rendered in the browser, from the plain text the API already sends. 
 
 The sanitising question never arises: the pipeline builds elements from the markdown syntax tree, and raw HTML in the text is shown as text. Two element types are overridden for reasons of their own — `img` renders as a link carrying the alt text, so no remote fetch reports the viewer's address and session timing to whoever an agent was induced to name, and links open in a new tab through `react-markdown`'s default `urlTransform`, which drops `javascript:` and similar schemes.
 
+Syntax highlighting inside code fences follows the same rule and made the same choice for it: `lowlight` over `highlight.js`'s own HTML-string API and over a `rehype-highlight` step in the pipeline, because it returns a syntax tree that `CodeBlock` turns into React elements with no `dangerouslySetInnerHTML`, and because staying out of the plugin list is what lets it be fetched as a lazy chunk instead of riding in the entry bundle.
+
 The cost is a browser dependency and the styling of every element in one component. A non-browser consumer of the API — an export, a future email — gets the markdown text and renders it itself.

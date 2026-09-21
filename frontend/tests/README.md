@@ -61,7 +61,7 @@ npx playwright test -g "interject mid-turn"
 
 | Run | Machine | Time |
 | --- | --- | --- |
-| 96 scenarios, warm stack, `workers: 1` | Arch Linux developer machine, rootless Podman 6, 2026-09 | 5.9–7.1 minutes |
+| 102 scenarios, warm stack, `workers: 1` | Arch Linux developer machine, rootless Podman 6, 2026-09 | 5.9–7.2 minutes |
 
 CI's `timeout-minutes: 45` covers the suite plus the stack build, with room to
 spare.

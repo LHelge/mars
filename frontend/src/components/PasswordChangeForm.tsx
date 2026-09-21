@@ -7,8 +7,10 @@
 // `current_password` and creates a replacement refresh token in that
 // transaction, then returns its cookie and a matching access token after
 // commit; this browser stays signed in." So the response is installed through
-// `installSession`, which fires `onCredentialsReplaced` and lets the stream
-// hooks reconnect with the fresh token. The TanStack Query cache is *not*
+// `installSession` with the reason `password_change` — the one install that
+// fires `onCredentialsReplaced` for a browser that stays put, letting the
+// stream hooks reconnect with the fresh token. An ordinary refresh rotation
+// installs as `refresh` and leaves open streams alone. The TanStack Query cache is *not*
 // cleared: the same user is still authorised for everything it holds; only the
 // current user is refreshed in place.
 //
@@ -105,7 +107,7 @@ export function PasswordChangeForm({
     setPassword("");
     setConfirm("");
 
-    installSession(auth);
+    installSession(auth, "password_change");
     // Same user, still authorised: only the current user is refreshed.
     queryClient.setQueryData(queryKeys.users.me(), auth.user);
     onSuccess?.();

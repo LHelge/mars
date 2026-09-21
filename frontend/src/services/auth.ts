@@ -40,6 +40,24 @@ export type SignOutHandler = (reason: SignOutReason) => void;
 /** Called with the access token that replaced the previous one. */
 export type CredentialsReplacedHandler = (accessToken: string) => void;
 
+/**
+ * Why a pair is being installed. It decides whether the
+ * `onCredentialsReplaced` handlers run, so open streams survive the one case
+ * that is not a change of credentials at all:
+ *
+ * - `login` — a sign-in or an accepted invite: whoever this browser was, it is
+ *   somebody else's session now.
+ * - `refresh` — an ordinary rotation of the same session's refresh cookie,
+ *   from `apiClient`'s 401 retry or a stream reopening. The access token is
+ *   new, the credentials are not: `SPEC.md`, "Authentication" — "an open
+ *   stream is not closed merely because that token later expires" — so open
+ *   streams are left exactly as they are and pick the fresh token up at their
+ *   next connect.
+ * - `password_change` — a self-service password change, which revokes every
+ *   other pair and hands this browser a replacement; streams reopen with it.
+ */
+export type InstallReason = "login" | "refresh" | "password_change";
+
 function readStoredToken(): string | null {
   try {
     return globalThis.localStorage.getItem(TOKEN_STORAGE_KEY);
@@ -125,12 +143,19 @@ export function onSignOut(handler: SignOutHandler): () => void {
 }
 
 /**
- * Registers a handler to run when the token pair of an *already signed-in*
- * browser is replaced — a self-service password change or a refresh rotation
- * (`SPEC.md`, "Authentication": "A successful self-service password change
- * installs its new pair before reopening streams"; "Frontend", Rules:
- * "Self-service password changes replace the token pair and reconnect streams
- * without replaying pending inputs").
+ * Registers a handler to run when the credentials of an *already signed-in*
+ * browser are really replaced — a self-service password change, or a login
+ * that puts a different session in this browser's place (`SPEC.md`,
+ * "Authentication": "A successful self-service password change installs its
+ * new pair before reopening streams"; "Frontend", Rules: "Self-service
+ * password changes replace the token pair and reconnect streams without
+ * replaying pending inputs").
+ *
+ * An ordinary refresh rotation is *not* such a replacement and does not run
+ * these handlers: the access token lives 15 minutes, so any REST 401 rotates
+ * it, and tearing a healthy stream down for that would dispose the session's
+ * exec PTY — its shell, its working directory and any foreground build — every
+ * quarter of an hour.
  *
  * The session transcript and task board stream hooks subscribe to this from
  * their providers and reconnect their event streams with the fresh access
@@ -148,11 +173,18 @@ export function onCredentialsReplaced(
 /**
  * Installs a fresh `{user, access_token}` pair from login, invite, refresh or
  * a self-service password change: token, then user, then the state
- * subscribers, and finally — when this browser was already signed in — the
- * `onCredentialsReplaced` handlers, which see the new token already in place.
+ * subscribers, and finally — when this browser was already signed in and the
+ * `reason` is a real change of credentials — the `onCredentialsReplaced`
+ * handlers, which see the new token already in place.
+ *
+ * The default is `login`, the reason a caller that installs a pair out of
+ * nowhere has; the refresh path and `PasswordChangeForm` name theirs.
  */
-export function installSession(auth: AuthResponse): void {
-  const replaced = state.accessToken !== null;
+export function installSession(
+  auth: AuthResponse,
+  reason: InstallReason = "login",
+): void {
+  const replaced = state.accessToken !== null && reason !== "refresh";
   authGeneration += 1;
   writeStoredToken(auth.access_token);
   setState({ user: auth.user, accessToken: auth.access_token });
@@ -261,7 +293,7 @@ async function runRefresh(
     if (generation !== authGeneration) {
       return currentCredentials();
     }
-    installSession(auth);
+    installSession(auth, "refresh");
     return auth;
   } catch (error) {
     if (error instanceof StaleRefreshError) {
@@ -293,8 +325,14 @@ async function runRefresh(
  *
  * A 401 means the refresh token is missing, expired or revoked: sign out
  * instead of retrying. A network error or 5xx is transient — the token stays in
- * place and callers back off normally (`SPEC.md`, "Authentication"). A
- * completion that no longer owns the browser's authentication installs nothing:
+ * place and callers back off normally (`SPEC.md`, "Authentication").
+ *
+ * A rotation installs its pair as `reason: "refresh"`, so an already-open
+ * WebSocket or SSE stream is left alone and only the *next* connect reads the
+ * new token; a stream that rotated because its own connection died is the one
+ * that reconnects, from its own `refreshAccessToken()` call.
+ *
+ * A completion that no longer owns the browser's authentication installs nothing:
  * it resolves with the credentials that replaced it, or rejects with
  * `StaleRefreshError` when the user is signed out.
  */

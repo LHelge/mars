@@ -117,16 +117,31 @@ describe("auth state", () => {
     installSession(authResponse("token-a"));
     expect(replaced).not.toHaveBeenCalled();
 
-    // A self-service password change or a refresh rotation does.
-    installSession(authResponse("token-b"));
+    // A self-service password change does.
+    installSession(authResponse("token-b"), "password_change");
     expect(replaced).toHaveBeenCalledTimes(1);
     expect(replaced).toHaveBeenCalledWith("token-b");
     // The new token is already in place when the handler runs.
     expect(getAccessToken()).toBe("token-b");
 
     off();
-    installSession(authResponse("token-c"));
+    installSession(authResponse("token-c"), "password_change");
     expect(replaced).toHaveBeenCalledTimes(1);
+  });
+
+  it("installs a rotated pair without replacing credentials", () => {
+    const replaced = vi.fn();
+    const off = onCredentialsReplaced(replaced);
+    installSession(authResponse("token-a"));
+
+    // The ordinary 401-then-refresh rotation: a new access token for the same
+    // credentials, so nothing reconnects (`SPEC.md`, "Authentication").
+    installSession(authResponse("token-b"), "refresh");
+
+    expect(replaced).not.toHaveBeenCalled();
+    // A stream that connects later still reads the current token.
+    expect(getAccessToken()).toBe("token-b");
+    off();
   });
 
   it("keeps the snapshot object identical until something changes", () => {
@@ -222,6 +237,21 @@ describe("auth endpoints", () => {
 
     expect(urlOf(fetchMock.mock.calls[0][0])).toBe("/api/auth/invite/a%20b%2Fc");
     expect(lookup.email).toBe("invitee@example.invalid");
+  });
+
+  it("rotates without running the credentials-replaced handlers", async () => {
+    installSession(authResponse("token-a"));
+    const replaced = vi.fn();
+    const unregister = onCredentialsReplaced(replaced);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, authResponse("token-b")));
+
+    await expect(refreshAccessToken()).resolves.toEqual(
+      authResponse("token-b"),
+    );
+
+    expect(getAccessToken()).toBe("token-b");
+    expect(replaced).not.toHaveBeenCalled();
+    unregister();
   });
 
   it("signs out when the rotation itself answers 401", async () => {

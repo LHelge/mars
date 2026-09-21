@@ -92,7 +92,11 @@ export class SessionSocket {
   private wasOpen = false;
   private attempt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Our own refresh is in flight; ignore the credential change it causes. */
+  /**
+   * Our own reconnecting refresh is in flight; a replacement that lands while
+   * it runs is ignored here, because that refresh resolves with the current
+   * credentials and connects once with them.
+   */
   private refreshing = false;
   private sawAuthError = false;
   private lastAuthCloseAt: number | null = null;
@@ -310,7 +314,15 @@ export class SessionSocket {
     this.retryTimer = null;
   }
 
-  /** A self-service password change installed a new pair: reopen with it. */
+  /**
+   * The browser's credentials were really replaced — a self-service password
+   * change, or a login as somebody else — so this socket's authorization is
+   * gone and it reopens with the new token. An ordinary refresh rotation does
+   * not come through here at all (`services/auth`, `InstallReason`): an open
+   * stream is not closed because its token expired (`SPEC.md`,
+   * "Authentication"), and closing it would dispose the exec PTY behind the
+   * terminal.
+   */
   private onCredentialsReplaced(): void {
     if (this.disposed || this.refreshing) return;
     this.cancelRetry();

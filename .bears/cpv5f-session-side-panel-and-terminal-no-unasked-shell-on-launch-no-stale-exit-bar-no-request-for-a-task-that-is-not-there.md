@@ -1,16 +1,17 @@
 ---
 id: cpv5f
 title: "Session side panel and terminal: no unasked shell on launch, no stale exit bar, no request for a task that is not there"
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:53:21.634646954Z"
-updated: "2026-09-21T10:53:21.634646954Z"
+updated: "2026-09-21T19:25:53.769045859Z"
 tags:
   - frontend
   - technical-review
   - bug
   - session
 parent: "579dz"
+attempts: 1
 ---
 
 Problem:

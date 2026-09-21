@@ -1,16 +1,17 @@
 ---
 id: kzvp9
 title: Manage keyboard focus and background interaction for the modal task drawer
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:44:49.596495260Z"
-updated: "2026-09-21T10:50:53.940880554Z"
+updated: "2026-09-21T19:25:56.033202496Z"
 tags:
   - frontend
   - technical-review
   - accessibility
   - react
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: TaskDetail declares role=dialog and aria-modal=true, but does not move focus into the drawer, contain keyboard focus, restore the opener's focus, or make the underlying board inert. Keyboard users can reach controls behind the modal overlay.

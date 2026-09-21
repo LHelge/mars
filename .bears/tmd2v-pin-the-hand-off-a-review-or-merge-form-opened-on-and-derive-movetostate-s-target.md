@@ -1,10 +1,10 @@
 ---
 id: tmd2v
 title: Pin the hand-off a review or merge form opened on, and derive MoveToState's target
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:52:16.163757837Z"
-updated: "2026-09-21T10:52:16.163757837Z"
+updated: "2026-09-21T19:25:50.040447406Z"
 tags:
   - frontend
   - technical-review
@@ -12,6 +12,7 @@ tags:
   - tracker
   - react
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: three tracker forms follow a prop that keeps moving under a user who has already decided. Same family as wsckz, different forms and fix.

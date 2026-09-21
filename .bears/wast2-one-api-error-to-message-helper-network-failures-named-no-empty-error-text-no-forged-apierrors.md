@@ -1,16 +1,17 @@
 ---
 id: wast2
 title: "One API error-to-message helper: network failures named, no empty error text, no forged ApiErrors"
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:54:08.553165925Z"
-updated: "2026-09-21T10:54:08.553165925Z"
+updated: "2026-09-21T19:25:48.179207872Z"
 tags:
   - frontend
   - technical-review
   - bug
   - refactor
 parent: "579dz"
+attempts: 1
 ---
 
 Problem:

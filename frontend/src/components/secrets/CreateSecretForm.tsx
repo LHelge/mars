@@ -8,6 +8,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { invalidateSecretQueries } from "../../secrets/invalidate";
 import { createSecret } from "../../services/secrets";
 import { queryKeys } from "../../services/queryKeys";
 import type { CreateSecretRequest, SecretMeta, SecretScope } from "../../types";
@@ -41,6 +42,9 @@ export function CreateSecretForm({ scope, scopeId }: CreateSecretFormProps) {
         rows === undefined ? [created] : [created, ...rows],
       );
       void queryClient.invalidateQueries({ queryKey: listKey });
+      // A credential can be created here too, by typing its name; whichever it
+      // was, the agent-credential answers are stale (`SPEC.md`, "Frontend").
+      invalidateSecretQueries(queryClient);
       setName("");
       setOrchestratorOnly(false);
       setError(null);

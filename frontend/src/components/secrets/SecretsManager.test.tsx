@@ -52,6 +52,7 @@ function secret(overrides: Partial<SecretMeta> = {}): SecretMeta {
     created_at: "2026-03-01T09:00:00Z",
     updated_at: "2026-03-01T10:00:00Z",
     last_used_at: null,
+    credential_for: null,
     ...overrides,
   };
 }

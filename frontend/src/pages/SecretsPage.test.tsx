@@ -5,14 +5,15 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAuth, installSession } from "../services/auth";
 import { listProjects } from "../services/projects";
-import { listSecrets } from "../services/secrets";
+import { createSecret, listSecrets } from "../services/secrets";
 import { listUsers } from "../services/users";
-import type { Project, User } from "../types";
+import type { Project, SecretMeta, User } from "../types";
 import { SecretsPage } from "./SecretsPage";
 
 vi.mock("../services/secrets", () => ({
@@ -46,6 +47,23 @@ function project(): Project {
   };
 }
 
+function secret(overrides: Partial<SecretMeta> = {}): SecretMeta {
+  return {
+    id: "00000000-0000-0000-0000-0000000000b1",
+    scope: "global",
+    scope_id: null,
+    name: "MY_TOKEN",
+    orchestrator_only: false,
+    key_version: 1,
+    created_by: USER_ID,
+    created_at: "2026-03-01T09:00:00Z",
+    updated_at: "2026-03-01T09:00:00Z",
+    last_used_at: null,
+    credential_for: null,
+    ...overrides,
+  };
+}
+
 function user(overrides: Partial<User> = {}): User {
   return {
     id: USER_ID,
@@ -62,7 +80,9 @@ function user(overrides: Partial<User> = {}): User {
 function renderPage(initial = "/secrets") {
   render(
     <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
     >
       <MemoryRouter initialEntries={[initial]}>
         <SecretsPage />
@@ -94,9 +114,9 @@ describe("SecretsPage", () => {
     await waitFor(() => {
       expect(vi.mocked(listSecrets)).toHaveBeenCalledWith({ scope: "global" });
     });
-    expect(
-      screen.getByLabelText<HTMLInputElement>("Global").checked,
-    ).toBe(true);
+    expect(screen.getByLabelText<HTMLInputElement>("Global").checked).toBe(
+      true,
+    );
   });
 
   it("reads the scope out of the URL, including a project still cloning", async () => {
@@ -122,9 +142,9 @@ describe("SecretsPage", () => {
     await waitFor(() => {
       expect(vi.mocked(listSecrets)).toHaveBeenCalledWith({ scope: "user" });
     });
-    expect(
-      screen.getByLabelText<HTMLInputElement>("My secrets").checked,
-    ).toBe(true);
+    expect(screen.getByLabelText<HTMLInputElement>("My secrets").checked).toBe(
+      true,
+    );
   });
 
   it("switches scope through the radio group", async () => {
@@ -135,6 +155,94 @@ describe("SecretsPage", () => {
 
     await waitFor(() => {
       expect(vi.mocked(listSecrets)).toHaveBeenCalledWith({ scope: "user" });
+    });
+  });
+
+  it("lists agent credentials in the section above and nowhere else", async () => {
+    // Each scope the section reads answers for itself: the caller's own user
+    // scope holds the subscription token, the global scope an API key beside
+    // an ordinary secret (`SPEC.md`, "Frontend", Agent credentials).
+    vi.mocked(listSecrets).mockImplementation((params) => {
+      if (params.scope === "user" && params.scope_id === undefined) {
+        return Promise.resolve([
+          secret({
+            id: "00000000-0000-0000-0000-0000000000b2",
+            scope: "user",
+            scope_id: USER_ID,
+            name: "CLAUDE_CODE_OAUTH_TOKEN",
+            credential_for: "claude",
+          }),
+        ]);
+      }
+      if (params.scope === "global") {
+        return Promise.resolve([
+          secret(),
+          secret({
+            id: "00000000-0000-0000-0000-0000000000b3",
+            name: "ANTHROPIC_API_KEY",
+            credential_for: "claude",
+          }),
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    renderPage();
+
+    // Under their labels, with the scope each applies to.
+    const token = await screen.findByRole("row", {
+      name: /Claude subscription token/,
+    });
+    expect(token.textContent).toContain("You");
+    const key = screen.getByRole("row", { name: /Anthropic API key/ });
+    expect(key.textContent).toContain("Everyone");
+
+    // The general list below is the global scope, and leaves its credential
+    // out while keeping the ordinary secret.
+    expect(await screen.findByText("MY_TOKEN")).not.toBeNull();
+    expect(screen.queryByText("ANTHROPIC_API_KEY")).toBeNull();
+    expect(screen.queryByText("CLAUDE_CODE_OAUTH_TOKEN")).toBeNull();
+  });
+
+  it("says so when no scope holds a credential", async () => {
+    renderPage();
+
+    expect(await screen.findByText("No agent credential")).not.toBeNull();
+    expect(
+      screen.getByText(/Sessions cannot authenticate without one/),
+    ).not.toBeNull();
+  });
+
+  it("writes the name the chosen kind dictates, at the chosen scope", async () => {
+    vi.mocked(createSecret).mockResolvedValue(
+      secret({ name: "ANTHROPIC_API_KEY", credential_for: "claude" }),
+    );
+
+    renderPage();
+    const form = await screen.findByRole("form", {
+      name: "Add agent credential",
+    });
+
+    // The name is never typed: picking the kind is what names the secret.
+    fireEvent.click(within(form).getByLabelText("Anthropic API key"));
+    fireEvent.change(within(form).getByLabelText(/^Value/), {
+      target: { value: "fake-api-key-for-tests" },
+    });
+    fireEvent.submit(form);
+
+    await waitFor(() => {
+      expect(vi.mocked(createSecret)).toHaveBeenCalledWith({
+        scope: "user",
+        name: "ANTHROPIC_API_KEY",
+        value: "fake-api-key-for-tests",
+      });
+    });
+
+    // The value field is cleared once it is stored.
+    await waitFor(() => {
+      expect(
+        within(form).getByLabelText<HTMLInputElement>(/^Value/).value,
+      ).toBe("");
     });
   });
 

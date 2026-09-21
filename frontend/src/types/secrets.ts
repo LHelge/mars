@@ -3,6 +3,12 @@
 
 export type SecretScope = "global" | "user" | "project";
 
+/**
+ * An agent backend, as `SPEC.md`, "Secrets", spells it. v1 has one; a second
+ * one adds its name here and its credential table in `src/secrets/`.
+ */
+export type AgentBackend = "claude";
+
 export interface SecretMeta {
   id: string;
   scope: SecretScope;
@@ -14,6 +20,11 @@ export interface SecretMeta {
   created_at: string;
   updated_at: string;
   last_used_at: string | null;
+  /**
+   * The backend whose agent credential this name is, else null (`SPEC.md`,
+   * "Secrets"): derived from the name by the server, never stored.
+   */
+  credential_for: AgentBackend | null;
 }
 
 /** A row of `GET /secrets/{id}/uses`. */

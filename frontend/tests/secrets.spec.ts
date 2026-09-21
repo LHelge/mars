@@ -34,6 +34,9 @@ import {
 /** Obviously fake, and the whole point of the scenarios below (rule 3). */
 const VALUE = "fake-value-1";
 const REPLACEMENT = "fake-value-2";
+/** Agent credentials, equally fake; the names are the CLI's, the values are not. */
+const FAKE_OAUTH_TOKEN = "fake-oauth-token-for-tests";
+const FAKE_API_KEY = "fake-api-key-for-tests";
 
 /**
  * A secret name no other test in the run holds. `uniqueName` joins with a
@@ -408,6 +411,92 @@ test("a launch writes a use, and the uses view lists it without the value", asyn
     name,
   );
   expect(meta.last_used_at).not.toBeNull();
+});
+
+test("an agent credential is added under its label, and a second kind at that scope is refused", async ({
+  page,
+  context,
+  user,
+  api,
+}) => {
+  await loginViaToken(context, user);
+
+  // The delete confirmation at the end of the scenario.
+  page.on("dialog", (dialog) => {
+    void dialog.accept();
+  });
+
+  await page.goto("/secrets");
+
+  // Three fields and no name: the kind names the secret (`SPEC.md`,
+  // "Frontend", Agent credentials).
+  const form = page.getByRole("form", { name: "Add agent credential" });
+  await expect(form).toBeVisible();
+  await expect(form.getByLabel("Name")).toHaveCount(0);
+  // The defaults are the subscription token and `Me`.
+  await expect(
+    form.getByRole("radio", { name: "Claude subscription token" }),
+  ).toBeChecked();
+  await expect(form.getByRole("radio", { name: "Me" })).toBeChecked();
+
+  await form.getByLabel("Value").fill(FAKE_OAUTH_TOKEN);
+  await form.getByRole("button", { name: "Add agent credential" }).click();
+
+  const credential = secretRow(page, "Claude subscription token");
+  await expect(credential).toBeVisible();
+  await expect(credential).toContainText("You");
+  await expectValueNeverShown(page, FAKE_OAUTH_TOKEN);
+
+  // It is an ordinary secret under the name the table dictates, at the
+  // caller's own user scope, and never orchestrator-only (ADR 0036).
+  const created = trackSecret(
+    api,
+    await readSecret(api, "?scope=user", "CLAUDE_CODE_OAUTH_TOKEN"),
+  );
+  expect(created.scope).toBe("user");
+  expect(created.scope_id).toBe(user.id);
+  expect(created.credential_for).toBe("claude");
+  expect(created.orchestrator_only).toBe(false);
+
+  // The general list below is where it is *not*: neither its name nor its
+  // label appears in the table of the scope that holds it.
+  await page.getByRole("radio", { name: "My secrets" }).click();
+  await expect(page.getByRole("heading", { name: "My secrets" })).toBeVisible();
+  await expect(page.getByText("CLAUDE_CODE_OAUTH_TOKEN")).toHaveCount(0);
+  await expect(secretRow(page, "Claude subscription token")).toHaveCount(1);
+
+  // --- a second credential at the same scope --------------------------------
+
+  await form.getByRole("radio", { name: "Anthropic API key" }).click();
+  await form.getByLabel("Value").fill(FAKE_API_KEY);
+  await form.getByRole("button", { name: "Add agent credential" }).click();
+
+  // The body's `error` verbatim: it names the credential already there
+  // (`SPEC.md`, "Secrets").
+  await expect(
+    page.getByText(
+      "this scope already has an agent credential (CLAUDE_CODE_OAUTH_TOKEN); replace or delete it first",
+    ),
+  ).toBeVisible();
+  await expectValueNeverShown(page, FAKE_API_KEY);
+
+  const refused = await api.send(
+    "POST",
+    "/secrets",
+    { scope: "user", name: "ANTHROPIC_API_KEY", value: FAKE_API_KEY },
+    { allow: [409] },
+  );
+  expect(refused.status).toBe(409);
+
+  // --- and deleting it takes the section back to its warning -----------------
+
+  await secretRow(page, "Claude subscription token")
+    .getByRole("button", { name: "Delete" })
+    .click();
+  await expect(secretRow(page, "Claude subscription token")).toHaveCount(0);
+  await expect(
+    page.getByText(/Sessions cannot authenticate without one/),
+  ).toBeVisible();
 });
 
 test("a name that is not an environment-variable name is refused", async ({

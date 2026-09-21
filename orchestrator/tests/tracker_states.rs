@@ -1,31 +1,28 @@
-//! `TaskRepository`'s mutation primitive, state configuration and event append
-//! against a real Postgres (`CLAUDE.md`, "Testing expectations").
+//! The board's columns, through the `tracker::states` verbs against a real
+//! Postgres (`CLAUDE.md`, "Testing expectations").
 //!
-//! Four things are being asserted here.
+//! Three things are being asserted here.
 //!
 //! The state configuration is the documented default set, the position
 //! arithmetic `SPEC.md`, "Task states" promises — a missing position appends,
 //! an explicit one shifts, moves and deletions re-pack — and every refusal
 //! `ARCHITECTURE.md`, "Task tracker" reserves: a project keeps at least one
 //! queue state, exactly one human state and at least one terminal state, and
-//! no state a task is still in may be removed.
+//! no state a task is still in may be removed. Every one of them is driven
+//! through [`create_state`], [`update_state`] and [`delete_state`], which is
+//! the surface a REST handler, an MCP tool and a test all share; the
+//! repository's row helpers are the tracker's alone (`ARCHITECTURE.md`, "Task
+//! tracker").
 //!
 //! The `profile_states` link is the role mechanism, and its two cross-table
 //! rules — same project, `queue` kind — have no constraint behind them, so
 //! they are asserted directly.
 //!
-//! The event append is the sibling of `SessionRepository::append_events` with
-//! the project row in place of the session row: successive sequences, the
-//! scope check on `task_id` with its one documented exception for `deleted`,
-//! and one notification per committed batch and none per rolled-back one
-//! (ADR 0028).
-//!
-//! Last, the lock itself. `docs/data-model.md`, "Tracker mutation
-//! transactions" makes opening a `TrackerMutation` the serialisation point of
-//! the whole tracker, so it is asserted the only way a lock can be: a second mutation is
-//! opened on the same project while the first still holds it and must wait,
-//! while a third on another project must not. A `FOR UPDATE` quietly dropped
-//! from the statement would pass every functional assertion and fail here.
+//! Last, the notification. A board edit is the cheapest mutation that emits
+//! more than one event, so it is what "one `pg_notify` per committed batch,
+//! carrying its highest sequence, and none per rolled-back one" (ADR 0028) is
+//! proved with here, at the [`TrackerMutation`] seam and through a verb. The
+//! lock the mutation takes is asserted in `tests/tracker_mutation.rs`.
 //!
 //! Needs a container engine; see `tests/common/db.rs`.
 
@@ -35,16 +32,14 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use mars_orchestrator::events::TaskActor;
-use mars_orchestrator::models::{
-    DEFAULT_TASK_STATES, NewTaskEvent, NewTaskState, TaskStateKind, TaskStateName, task_event_kind,
-};
+use mars_orchestrator::models::{DEFAULT_TASK_STATES, TaskStateKind};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::TaskRepository;
-use mars_orchestrator::repositories::tasks::test_support::TaskRepositoryTestExt;
-use mars_orchestrator::tracker::TrackerMutation;
-use serde_json::json;
+use mars_orchestrator::tracker::{
+    NewStateInput, StateUpdate, TrackerMutation, create_state, delete_state, update_state,
+};
 use sqlx::postgres::PgListener;
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use uuid::Uuid;
 
 /// Not a credential: an obviously fake stand-in for the Argon2id PHC string
@@ -55,19 +50,14 @@ const FAKE_PASSWORD_HASH: &str = "$argon2id$fake$hash";
 /// with.
 const TEST_IMAGE: &str = "localhost/mars-session-stub:test";
 
-/// How long a blocked transaction is given to prove it is blocked. Long enough
-/// that a slow container has certainly started the second transaction, short
-/// enough not to drag the suite out.
-const BLOCKED_FOR: Duration = Duration::from_millis(400);
-
-/// How long an unblocked transaction — or an expected notification — is given
-/// once nothing should be in its way.
+/// How long an expected notification is given once nothing should be in its
+/// way.
 const UNBLOCKED_WITHIN: Duration = Duration::from_secs(10);
 
 /// The rows a project's tracker needs to exist at all.
 ///
 /// Seeded with unchecked statements rather than through their repositories:
-/// this file is about `TaskRepository`, and the foreign keys are all it needs
+/// this file is about the state verbs, and the foreign keys are all it needs
 /// from the others.
 struct Fixture {
     project_id: Uuid,
@@ -125,10 +115,11 @@ async fn seed_profile(pool: &PgPool, project_id: Uuid, name: &str) -> Uuid {
     profile_id
 }
 
-/// A bare `tasks` row, for the checks that need one to exist.
+/// A bare `tasks` row, for the one deletion refusal that needs a task to be in
+/// the state.
 ///
-/// Task rows are the next task's to write; this is the minimum set of columns
-/// the table demands.
+/// Written directly rather than through `create_task`: this file is about the
+/// columns, and "some task is in this state" is all the refusal reads.
 async fn seed_task(pool: &PgPool, project_id: Uuid, state_id: Uuid, number: i32) -> Uuid {
     let task_id = Uuid::new_v4();
     sqlx::query(
@@ -190,102 +181,62 @@ async fn state_id(repository: &TaskRepository<'_>, project_id: Uuid, name: &str)
         .id
 }
 
-fn new_state(project_id: Uuid, name: &str, kind: TaskStateKind) -> NewTaskState {
-    NewTaskState::new(project_id, name, kind).expect("the test state name is valid")
+fn new_state(name: &str, kind: TaskStateKind, position: Option<i32>) -> NewStateInput {
+    NewStateInput {
+        name: name.to_string(),
+        kind,
+        position,
+    }
 }
 
-/// Insert `state` in its own committed mutation.
-async fn insert_state(pool: &PgPool, project_id: Uuid, state: &NewTaskState) -> Result<Uuid> {
-    let repository = TaskRepository::new(pool);
+/// Run `body` against an open mutation on `project_id`, committing it when the
+/// verb succeeded and rolling it back when it did not.
+///
+/// The pairing every transport makes (`tracker::commit_and_notify`), without
+/// the email side no state edit owes.
+async fn in_mutation<T, F>(pool: &PgPool, project_id: Uuid, body: F) -> Result<T>
+where
+    F: AsyncFnOnce(&mut TrackerMutation<'_>) -> Result<T>,
+{
     let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System).await?;
-    let inserted = repository
-        .insert_state(mutation.conn(), project_id, state)
-        .await?;
-    mutation.commit().await?;
-
-    Ok(inserted.id)
+    match body(&mut mutation).await {
+        Ok(outcome) => {
+            mutation.commit().await?;
+            Ok(outcome)
+        }
+        Err(error) => {
+            mutation.no_change().await?;
+            Err(error)
+        }
+    }
 }
 
-/// Append `events` in their own committed mutation.
-async fn append(pool: &PgPool, project_id: Uuid, events: &[NewTaskEvent]) -> Result<Vec<i64>> {
-    let repository = TaskRepository::new(pool);
-    let mut mutation = TrackerMutation::begin(pool, project_id, TaskActor::System).await?;
-    let sequences = repository
-        .append_task_events(mutation.conn(), project_id, events)
-        .await?;
-    mutation.commit().await?;
-
-    Ok(sequences)
+/// Add a column in its own committed mutation.
+async fn create(pool: &PgPool, project_id: Uuid, input: NewStateInput) -> Result<Uuid> {
+    in_mutation(pool, project_id, async |m| {
+        create_state(m, input).await.map(|state| state.id)
+    })
+    .await
 }
 
-fn states_changed_event() -> NewTaskEvent {
-    NewTaskEvent::project_wide(task_event_kind::STATES_CHANGED, json!({ "states": [] }))
-}
-
-#[tokio::test]
-async fn a_mutation_locks_a_project_that_exists_and_refuses_one_that_does_not() {
-    let (_postgres, pool) = common::db::test_pool().await;
-    let fixture = seed(&pool).await;
-    let mutation = TrackerMutation::begin(&pool, fixture.project_id, TaskActor::System)
-        .await
-        .expect("the mutation opens");
-    mutation.no_change().await.unwrap();
-
-    let error = TrackerMutation::begin(&pool, Uuid::new_v4(), TaskActor::System)
-        .await
-        .err()
-        .expect("there is no such project");
-    assert_eq!(error.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn mutations_serialise_per_project_and_not_across_projects() {
-    // Three transactions at once, plus the ones the helpers take.
-    let (_postgres, pool) = common::db::test_pool_with(6).await;
-    let fixture = seed(&pool).await;
-    let other_project = seed_project(&pool).await;
-
-    // The first mutation takes the lock and keeps it.
-    let first = TrackerMutation::begin(&pool, fixture.project_id, TaskActor::System)
-        .await
-        .expect("the first mutation opens");
-
-    // The second wants the same project and must wait at the lock.
-    let second_pool = pool.clone();
-    let project_id = fixture.project_id;
-    let second = tokio::spawn(async move {
-        let mutation = TrackerMutation::begin(&second_pool, project_id, TaskActor::System)
+/// Rename and/or move a column in its own committed mutation.
+async fn update(
+    pool: &PgPool,
+    project_id: Uuid,
+    name: &str,
+    update: StateUpdate,
+) -> Result<(String, i32, bool)> {
+    in_mutation(pool, project_id, async |m| {
+        update_state(m, name, update)
             .await
-            .unwrap();
-        mutation.commit().await.unwrap();
-    });
+            .map(|(state, changed)| (state.name, state.position, changed))
+    })
+    .await
+}
 
-    // The third wants a different project row and must not.
-    let third_pool = pool.clone();
-    let third = tokio::spawn(async move {
-        let mutation = TrackerMutation::begin(&third_pool, other_project, TaskActor::System)
-            .await
-            .unwrap();
-        mutation.commit().await.unwrap();
-    });
-
-    timeout(UNBLOCKED_WITHIN, third)
-        .await
-        .expect("another project's mutation is not blocked")
-        .expect("the third transaction does not panic");
-
-    sleep(BLOCKED_FOR).await;
-    assert!(
-        !second.is_finished(),
-        "the second mutation did not wait for the project lock",
-    );
-
-    first.commit().await.unwrap();
-
-    timeout(UNBLOCKED_WITHIN, second)
-        .await
-        .expect("the second mutation proceeds once the lock is free")
-        .expect("the second transaction does not panic");
+/// Remove a column in its own committed mutation.
+async fn delete(pool: &PgPool, project_id: Uuid, name: &str) -> Result<()> {
+    in_mutation(pool, project_id, async |m| delete_state(m, name).await).await
 }
 
 #[tokio::test]
@@ -359,7 +310,7 @@ async fn the_default_states_are_the_documented_set() {
 }
 
 #[tokio::test]
-async fn inserting_a_state_appends_or_shifts_the_states_at_and_after_it() {
+async fn creating_a_state_appends_or_shifts_the_states_at_and_after_it() {
     let (_postgres, pool) = common::db::test_pool().await;
     let fixture = seed(&pool).await;
     let project_id = fixture.project_id;
@@ -368,8 +319,13 @@ async fn inserting_a_state_appends_or_shifts_the_states_at_and_after_it() {
     seed_default_states(&pool, project_id).await;
 
     // A missing position appends.
-    let appended = new_state(project_id, "archive", TaskStateKind::Terminal);
-    insert_state(&pool, project_id, &appended).await.unwrap();
+    create(
+        &pool,
+        project_id,
+        new_state("archive", TaskStateKind::Terminal, None),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         names(&repository, project_id).await,
         [
@@ -385,9 +341,13 @@ async fn inserting_a_state_appends_or_shifts_the_states_at_and_after_it() {
     );
 
     // An explicit position shifts the states at and after it.
-    let mut triage = new_state(project_id, "triage", TaskStateKind::Queue);
-    triage.position = Some(1);
-    insert_state(&pool, project_id, &triage).await.unwrap();
+    create(
+        &pool,
+        project_id,
+        new_state("triage", TaskStateKind::Queue, Some(1)),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         names(&repository, project_id).await,
         [
@@ -408,9 +368,13 @@ async fn inserting_a_state_appends_or_shifts_the_states_at_and_after_it() {
     );
 
     // A position beyond the end appends rather than leaving a gap.
-    let mut parked = new_state(project_id, "parked", TaskStateKind::Queue);
-    parked.position = Some(999);
-    insert_state(&pool, project_id, &parked).await.unwrap();
+    create(
+        &pool,
+        project_id,
+        new_state("parked", TaskStateKind::Queue, Some(999)),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         names(&repository, project_id)
             .await
@@ -424,11 +388,13 @@ async fn inserting_a_state_appends_or_shifts_the_states_at_and_after_it() {
     );
 
     // A negative position is the caller's mistake.
-    let mut negative = new_state(project_id, "nowhere", TaskStateKind::Queue);
-    negative.position = Some(-1);
-    let error = insert_state(&pool, project_id, &negative)
-        .await
-        .expect_err("a negative position is rejected");
+    let error = create(
+        &pool,
+        project_id,
+        new_state("nowhere", TaskStateKind::Queue, Some(-1)),
+    )
+    .await
+    .expect_err("a negative position is rejected");
     assert_eq!(error.status(), StatusCode::BAD_REQUEST);
     assert!(
         repository
@@ -437,6 +403,20 @@ async fn inserting_a_state_appends_or_shifts_the_states_at_and_after_it() {
             .unwrap()
             .is_none(),
         "the rejected state was inserted anyway",
+    );
+
+    // And so is a name that is not one, before any row is written.
+    let error = create(
+        &pool,
+        project_id,
+        new_state("Not A Name", TaskStateKind::Queue, None),
+    )
+    .await
+    .expect_err("the name does not parse");
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        positions(&repository, project_id).await,
+        (0..10).collect::<Vec<_>>()
     );
 }
 
@@ -448,161 +428,115 @@ async fn a_duplicate_name_and_a_second_human_state_are_conflicts() {
 
     seed_default_states(&pool, project_id).await;
 
-    let duplicate = new_state(project_id, "ready", TaskStateKind::Queue);
-    let error = insert_state(&pool, project_id, &duplicate)
-        .await
-        .expect_err("the name is taken");
+    let error = create(
+        &pool,
+        project_id,
+        new_state("ready", TaskStateKind::Queue, None),
+    )
+    .await
+    .expect_err("the name is taken");
     assert_eq!(error.status(), StatusCode::CONFLICT);
     assert_eq!(error.to_string(), "state name already taken");
 
-    let second_human = new_state(project_id, "escalated", TaskStateKind::Human);
-    let error = insert_state(&pool, project_id, &second_human)
-        .await
-        .expect_err("the project already has a human state");
+    let error = create(
+        &pool,
+        project_id,
+        new_state("escalated", TaskStateKind::Human, None),
+    )
+    .await
+    .expect_err("the project already has a human state");
     assert_eq!(error.status(), StatusCode::CONFLICT);
     assert_eq!(error.to_string(), "project already has a human state");
 
     // The same name in another project is fine: names are per project.
     let other_project = seed_project(&pool).await;
-    let elsewhere = new_state(other_project, "ready", TaskStateKind::Queue);
-    insert_state(&pool, other_project, &elsewhere)
-        .await
-        .expect("another project may reuse the name");
+    seed_default_states(&pool, other_project).await;
+    create(
+        &pool,
+        other_project,
+        new_state("triage", TaskStateKind::Queue, None),
+    )
+    .await
+    .expect("another project has its own board");
 }
 
 #[tokio::test]
-async fn renaming_keeps_the_position_and_refuses_a_taken_name() {
+async fn renaming_and_moving_repack_the_board_and_refuse_a_taken_name() {
     let (_postgres, pool) = common::db::test_pool().await;
     let fixture = seed(&pool).await;
     let project_id = fixture.project_id;
     let repository = TaskRepository::new(&pool);
 
     seed_default_states(&pool, project_id).await;
-    let review = state_id(&repository, project_id, "review").await;
 
-    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-        .await
-        .unwrap();
-    let renamed = repository
-        .rename_state(
-            mutation.conn(),
-            project_id,
-            review,
-            &TaskStateName::parse("in-review").unwrap(),
-        )
-        .await
-        .unwrap();
-    mutation.commit().await.unwrap();
+    // A rename keeps the position and the kind.
+    let (name, position, changed) = update(
+        &pool,
+        project_id,
+        "review",
+        StateUpdate {
+            name: Some("in-review".into()),
+            ..StateUpdate::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!((name.as_str(), position, changed), ("in-review", 2, true));
+    assert_eq!(
+        repository
+            .find_state_by_name(project_id, "in-review")
+            .await
+            .unwrap()
+            .expect("the renamed state is there")
+            .kind,
+        TaskStateKind::Queue,
+    );
 
-    assert_eq!(renamed.id, review);
-    assert_eq!(renamed.name, "in-review");
-    assert_eq!(renamed.position, 2);
-    assert_eq!(renamed.kind, TaskStateKind::Queue);
+    // Towards the front, and then past the end, which lands it last. Both
+    // re-pack every position to `0..n`.
+    let (_, position, changed) = update(
+        &pool,
+        project_id,
+        "merge",
+        StateUpdate {
+            position: Some(0),
+            ..StateUpdate::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!((position, changed), (0, true));
+    assert_eq!(
+        names(&repository, project_id).await,
+        [
+            "merge",
+            "backlog",
+            "ready",
+            "in-review",
+            "needs_human",
+            "done",
+            "cancelled"
+        ],
+    );
+
+    let (_, position, changed) = update(
+        &pool,
+        project_id,
+        "merge",
+        StateUpdate {
+            position: Some(999),
+            ..StateUpdate::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!((position, changed), (6, true));
     assert_eq!(
         names(&repository, project_id).await,
         [
             "backlog",
             "ready",
             "in-review",
-            "merge",
-            "needs_human",
-            "done",
-            "cancelled"
-        ],
-    );
-    assert_eq!(
-        positions(&repository, project_id).await,
-        (0..7).collect::<Vec<_>>()
-    );
-
-    // A name another state already holds is a conflict.
-    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-        .await
-        .unwrap();
-    let error = repository
-        .rename_state(
-            mutation.conn(),
-            project_id,
-            review,
-            &TaskStateName::parse("merge").unwrap(),
-        )
-        .await
-        .expect_err("the name is taken");
-    mutation.no_change().await.unwrap();
-    assert_eq!(error.status(), StatusCode::CONFLICT);
-    assert_eq!(error.to_string(), "state name already taken");
-
-    // An unknown state, and one of another project, are both out of scope.
-    let other_project = seed_project(&pool).await;
-    let mut mutation = TrackerMutation::begin(&pool, other_project, TaskActor::System)
-        .await
-        .unwrap();
-    let error = repository
-        .rename_state(
-            mutation.conn(),
-            other_project,
-            review,
-            &TaskStateName::parse("elsewhere").unwrap(),
-        )
-        .await
-        .expect_err("the state belongs to another project");
-    mutation.no_change().await.unwrap();
-    assert_eq!(error.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn moving_a_state_repacks_the_board_order() {
-    let (_postgres, pool) = common::db::test_pool().await;
-    let fixture = seed(&pool).await;
-    let project_id = fixture.project_id;
-    let repository = TaskRepository::new(&pool);
-
-    seed_default_states(&pool, project_id).await;
-    let merge = state_id(&repository, project_id, "merge").await;
-
-    // Towards the front.
-    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-        .await
-        .unwrap();
-    let moved = repository
-        .move_state(mutation.conn(), project_id, merge, 0)
-        .await
-        .unwrap();
-    mutation.commit().await.unwrap();
-    assert_eq!(moved.position, 0);
-    assert_eq!(
-        names(&repository, project_id).await,
-        [
-            "merge",
-            "backlog",
-            "ready",
-            "review",
-            "needs_human",
-            "done",
-            "cancelled"
-        ],
-    );
-    assert_eq!(
-        positions(&repository, project_id).await,
-        (0..7).collect::<Vec<_>>()
-    );
-
-    // Towards the back, and past the end, which lands it last.
-    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-        .await
-        .unwrap();
-    let moved = repository
-        .move_state(mutation.conn(), project_id, merge, 999)
-        .await
-        .unwrap();
-    mutation.commit().await.unwrap();
-    assert_eq!(moved.position, 6);
-    assert_eq!(
-        names(&repository, project_id).await,
-        [
-            "backlog",
-            "ready",
-            "review",
             "needs_human",
             "done",
             "cancelled",
@@ -614,22 +548,74 @@ async fn moving_a_state_repacks_the_board_order() {
         (0..7).collect::<Vec<_>>()
     );
 
-    // A negative position is the caller's mistake, an unknown state is not
-    // found.
-    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-        .await
-        .unwrap();
-    let error = repository
-        .move_state(mutation.conn(), project_id, merge, -1)
-        .await
-        .expect_err("a negative position is rejected");
+    // Asking for what is already true changes nothing and says so, which is
+    // what keeps the event stream quiet.
+    let (_, _, changed) = update(
+        &pool,
+        project_id,
+        "merge",
+        StateUpdate {
+            name: Some("merge".into()),
+            position: Some(999),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!changed, "a move to where it already is is not a change");
+
+    // A name another state already holds is a conflict.
+    let error = update(
+        &pool,
+        project_id,
+        "in-review",
+        StateUpdate {
+            name: Some("merge".into()),
+            ..StateUpdate::default()
+        },
+    )
+    .await
+    .expect_err("the name is taken");
+    assert_eq!(error.status(), StatusCode::CONFLICT);
+    assert_eq!(error.to_string(), "state name already taken");
+
+    // A negative position is refused before anything is written, even when a
+    // legal rename came with it.
+    let error = update(
+        &pool,
+        project_id,
+        "in-review",
+        StateUpdate {
+            name: Some("triage".into()),
+            position: Some(-1),
+        },
+    )
+    .await
+    .expect_err("a negative position is rejected");
     assert_eq!(error.status(), StatusCode::BAD_REQUEST);
-    let error = repository
-        .move_state(mutation.conn(), project_id, Uuid::new_v4(), 0)
-        .await
-        .expect_err("there is no such state");
+    assert_eq!(error.to_string(), "position must not be negative");
+    assert!(
+        repository
+            .find_state_by_name(project_id, "triage")
+            .await
+            .unwrap()
+            .is_none(),
+        "the rename was applied anyway",
+    );
+
+    // A name this project does not have is not found — which is also how a
+    // state of another project reads from here.
+    let error = update(
+        &pool,
+        project_id,
+        "nowhere",
+        StateUpdate {
+            name: Some("elsewhere".into()),
+            ..StateUpdate::default()
+        },
+    )
+    .await
+    .expect_err("there is no such state");
     assert_eq!(error.status(), StatusCode::NOT_FOUND);
-    mutation.no_change().await.unwrap();
 }
 
 #[tokio::test]
@@ -642,15 +628,7 @@ async fn deleting_a_state_repacks_and_refuses_the_four_documented_cases() {
     seed_default_states(&pool, project_id).await;
 
     // An ordinary queue state goes, and the board closes up behind it.
-    let review = state_id(&repository, project_id, "review").await;
-    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-        .await
-        .unwrap();
-    repository
-        .delete_state(mutation.conn(), project_id, review)
-        .await
-        .unwrap();
-    mutation.commit().await.unwrap();
+    delete(&pool, project_id, "review").await.unwrap();
     assert_eq!(
         names(&repository, project_id).await,
         [
@@ -668,77 +646,46 @@ async fn deleting_a_state_repacks_and_refuses_the_four_documented_cases() {
     );
 
     // The human state never goes: escalations would have nowhere to land.
-    let needs_human = state_id(&repository, project_id, "needs_human").await;
-    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-        .await
-        .unwrap();
-    let error = repository
-        .delete_state(mutation.conn(), project_id, needs_human)
+    let error = delete(&pool, project_id, "needs_human")
         .await
         .expect_err("the human state is kept");
-    mutation.no_change().await.unwrap();
     assert_eq!(error.status(), StatusCode::CONFLICT);
     assert_eq!(error.to_string(), "cannot delete the human state");
 
     // A state a task is in never goes either.
     let ready = state_id(&repository, project_id, "ready").await;
     seed_task(&pool, project_id, ready, 1).await;
-    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-        .await
-        .unwrap();
-    let error = repository
-        .delete_state(mutation.conn(), project_id, ready)
+    let error = delete(&pool, project_id, "ready")
         .await
         .expect_err("a task is in the state");
-    mutation.no_change().await.unwrap();
     assert_eq!(error.status(), StatusCode::CONFLICT);
     assert_eq!(error.to_string(), "state is in use by tasks");
 
-    // An unknown state, and one of another project, are out of scope.
-    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-        .await
-        .unwrap();
-    let error = repository
-        .delete_state(mutation.conn(), project_id, Uuid::new_v4())
+    // A name this project does not have is out of scope.
+    let error = delete(&pool, project_id, "archive")
         .await
         .expect_err("there is no such state");
-    mutation.no_change().await.unwrap();
     assert_eq!(error.status(), StatusCode::NOT_FOUND);
 
     // Down to the last queue state and the last terminal state, both of which
     // the project keeps.
     for name in ["backlog", "merge", "done"] {
-        let id = state_id(&repository, project_id, name).await;
-        let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-            .await
-            .unwrap();
-        repository
-            .delete_state(mutation.conn(), project_id, id)
-            .await
-            .unwrap();
-        mutation.commit().await.unwrap();
+        delete(&pool, project_id, name).await.unwrap();
     }
     assert_eq!(
         names(&repository, project_id).await,
         ["ready", "needs_human", "cancelled"],
     );
 
-    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
-        .await
-        .unwrap();
-    let error = repository
-        .delete_state(mutation.conn(), project_id, ready)
+    let error = delete(&pool, project_id, "ready")
         .await
         .expect_err("the last queue state is kept");
     assert_eq!(error.status(), StatusCode::CONFLICT);
     assert_eq!(error.to_string(), "cannot delete the last queue state");
 
-    let cancelled = state_id(&repository, project_id, "cancelled").await;
-    let error = repository
-        .delete_state(mutation.conn(), project_id, cancelled)
+    let error = delete(&pool, project_id, "cancelled")
         .await
         .expect_err("the last terminal state is kept");
-    mutation.no_change().await.unwrap();
     assert_eq!(error.status(), StatusCode::CONFLICT);
     assert_eq!(error.to_string(), "cannot delete the last terminal state");
 }
@@ -863,150 +810,27 @@ async fn a_profile_serves_queue_states_of_its_own_project_and_nothing_else() {
 }
 
 #[tokio::test]
-async fn appended_events_take_successive_sequences_per_project() {
-    let (_postgres, pool) = common::db::test_pool().await;
-    let fixture = seed(&pool).await;
-    let project_id = fixture.project_id;
-    let repository = TaskRepository::new(&pool);
-
-    // An empty batch writes nothing.
-    assert!(append(&pool, project_id, &[]).await.unwrap().is_empty());
-    assert_eq!(repository.max_task_event_seq(project_id).await.unwrap(), 0);
-
-    let batch = vec![states_changed_event(), states_changed_event()];
-    assert_eq!(append(&pool, project_id, &batch).await.unwrap(), [1, 2]);
-    assert_eq!(append(&pool, project_id, &batch).await.unwrap(), [3, 4]);
-    assert_eq!(repository.max_task_event_seq(project_id).await.unwrap(), 4);
-
-    let replayed = repository
-        .list_task_events_after(project_id, 2, 100)
-        .await
-        .unwrap();
-    assert_eq!(
-        replayed.iter().map(|row| row.seq).collect::<Vec<_>>(),
-        [3, 4]
-    );
-    for row in &replayed {
-        assert_eq!(row.project_id, project_id);
-        assert!(row.task_id.is_none(), "a states_changed event has no task");
-        assert_eq!(row.kind, task_event_kind::STATES_CHANGED);
-    }
-
-    // The limit is applied, and a cursor at the end replays nothing.
-    assert_eq!(
-        repository
-            .list_task_events_after(project_id, 0, 1)
-            .await
-            .unwrap()
-            .len(),
-        1,
-    );
-    assert!(
-        repository
-            .list_task_events_after(project_id, 4, 100)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-
-    // Sequences are per project: another project starts at 1 again.
-    let other_project = seed_project(&pool).await;
-    assert_eq!(
-        append(&pool, other_project, &[states_changed_event()])
-            .await
-            .unwrap(),
-        [1],
-    );
-    assert_eq!(repository.max_task_event_seq(project_id).await.unwrap(), 4);
-}
-
-#[tokio::test]
-async fn an_event_task_must_belong_to_the_project_unless_it_was_deleted() {
-    let (_postgres, pool) = common::db::test_pool().await;
-    let fixture = seed(&pool).await;
-    let project_id = fixture.project_id;
-    let repository = TaskRepository::new(&pool);
-
-    seed_default_states(&pool, project_id).await;
-    let ready = state_id(&repository, project_id, "ready").await;
-    let task_id = seed_task(&pool, project_id, ready, 1).await;
-
-    // A task of this project is fine.
-    assert_eq!(
-        append(
-            &pool,
-            project_id,
-            &[NewTaskEvent::about(
-                task_id,
-                task_event_kind::CREATED,
-                json!({ "actor": { "kind": "system" } }),
-            )],
-        )
-        .await
-        .unwrap(),
-        [1],
-    );
-
-    // A task of another project is not, and the batch writes nothing.
-    let other_project = seed_project(&pool).await;
-    seed_default_states(&pool, other_project).await;
-    let foreign_ready = state_id(&repository, other_project, "ready").await;
-    let foreign_task = seed_task(&pool, other_project, foreign_ready, 1).await;
-
-    let error = append(
-        &pool,
-        project_id,
-        &[
-            states_changed_event(),
-            NewTaskEvent::about(foreign_task, task_event_kind::UPDATED, json!({})),
-        ],
-    )
-    .await
-    .expect_err("the task belongs to another project");
-    assert_eq!(error.status(), StatusCode::NOT_FOUND);
-    assert_eq!(repository.max_task_event_seq(project_id).await.unwrap(), 1);
-
-    // A `deleted` event keeps the original id of a task that is already gone,
-    // which is exactly why it is not checked (ADR 0022).
-    let gone = Uuid::new_v4();
-    assert_eq!(
-        append(
-            &pool,
-            project_id,
-            &[NewTaskEvent::about(
-                gone,
-                task_event_kind::DELETED,
-                json!({ "actor": { "kind": "system" } }),
-            )],
-        )
-        .await
-        .unwrap(),
-        [2],
-    );
-    let stored = repository
-        .list_task_events_after(project_id, 1, 100)
-        .await
-        .unwrap();
-    assert_eq!(stored[0].task_id, Some(gone));
-    assert_eq!(stored[0].kind, task_event_kind::DELETED);
-}
-
-#[tokio::test]
 async fn a_batch_notifies_once_on_commit_and_never_on_rollback() {
     let (_postgres, pool) = common::db::test_pool_with(6).await;
     let fixture = seed(&pool).await;
     let project_id = fixture.project_id;
     let repository = TaskRepository::new(&pool);
 
+    seed_default_states(&pool, project_id).await;
+
     let mut listener = PgListener::connect_with(&pool).await.unwrap();
     listener.listen("task_events").await.unwrap();
 
-    let batch = vec![
-        states_changed_event(),
-        states_changed_event(),
-        states_changed_event(),
-    ];
-    append(&pool, project_id, &batch).await.unwrap();
+    // Three verb calls in one mutation, so three `states_changed` events in
+    // one batch.
+    in_mutation(&pool, project_id, async |m| {
+        for name in ["archive", "parked", "triage"] {
+            create_state(m, new_state(name, TaskStateKind::Queue, None)).await?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
 
     let notification = timeout(UNBLOCKED_WITHIN, listener.recv())
         .await
@@ -1017,22 +841,31 @@ async fn a_batch_notifies_once_on_commit_and_never_on_rollback() {
     assert_eq!(notification.payload(), format!("{project_id}:3"));
 
     // A rolled-back batch publishes neither its rows nor its notification
-    // (ADR 0028).
+    // (ADR 0028). The verb succeeds; the mutation is ended with `no_change`
+    // anyway, which is the no-op path every transport has.
     let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::System)
         .await
         .unwrap();
-    repository
-        .append_task_events(mutation.conn(), project_id, &batch)
-        .await
-        .unwrap();
+    create_state(
+        &mut mutation,
+        new_state("rolled-back", TaskStateKind::Queue, None),
+    )
+    .await
+    .unwrap();
     mutation.no_change().await.unwrap();
+
     assert_eq!(repository.max_task_event_seq(project_id).await.unwrap(), 3);
+    assert!(
+        repository
+            .find_state_by_name(project_id, "rolled-back")
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     // The next committed batch continues from 4, and its notification is the
     // only one waiting.
-    append(&pool, project_id, &[states_changed_event()])
-        .await
-        .unwrap();
+    delete(&pool, project_id, "archive").await.unwrap();
     let notification = timeout(UNBLOCKED_WITHIN, listener.recv())
         .await
         .expect("the next committed batch notifies")

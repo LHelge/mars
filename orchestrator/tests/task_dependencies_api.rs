@@ -3,7 +3,8 @@
 //! tracker" → "Blocked is stored").
 //!
 //! What the graph *rules* are is asserted against a real database in
-//! `tests/repositories_tasks_core.rs`; what is asserted here is everything the
+//! `tests/tracker_graph.rs` and `tests/tracker_tasks.rs`; what is asserted
+//! here is everything the
 //! two endpoints add on top:
 //!
 //! - the documented status and body of each success and each refusal, and the

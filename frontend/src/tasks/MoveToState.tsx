@@ -13,6 +13,15 @@
 // This is a planning move and carries no `handoff` (`SPEC.md`, "Code hand-offs
 // and review": a planning-only state move needs no hand-off and preserves the
 // existing one). Publishing work belongs to the hand-off controls.
+//
+// The control stores only the choice the user made, never the task's state.
+// The drawer rereads the task on every task event ("Board refresh ordering"),
+// so a target seeded from `task.state` would go on naming a state the task has
+// since left: an agent hands a `ready` task to `review`, and the select still
+// reads `ready` with Move armed, one confirmation away from sending the task
+// back and clearing its lease. With `null` meaning "the user chose nothing",
+// the target follows the task until somebody picks a state, and Move is armed
+// only by that pick.
 
 import { useState } from "react";
 
@@ -33,10 +42,14 @@ export interface MoveToStateProps {
 export function MoveToState({ projectId, task }: MoveToStateProps) {
   const states = useTaskStore((state) => state.states);
   const { update } = useTaskMutations(projectId, task.number);
-  const [target, setTarget] = useState(task.state);
+  // The user's explicit choice, or `null` while they have made none.
+  const [choice, setChoice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
 
+  const target = choice ?? task.state;
   const selectId = `task-${String(task.number)}-move-to`;
+  // True while nothing is chosen, and again when the task reaches the state
+  // that was chosen on its own: there is nothing left to send either way.
   const unchanged = target === task.state;
 
   return (
@@ -51,7 +64,7 @@ export function MoveToState({ projectId, task }: MoveToStateProps) {
           value={target}
           disabled={update.isPending}
           onChange={(event) => {
-            setTarget(event.target.value);
+            setChoice(event.target.value);
             setConfirming(false);
           }}
           className={`${CONTROL} py-1`}
@@ -113,6 +126,9 @@ export function MoveToState({ projectId, task }: MoveToStateProps) {
                   {
                     onSuccess: () => {
                       setConfirming(false);
+                      // The move landed: the task's own state is the answer
+                      // again, and the select follows it.
+                      setChoice(null);
                     },
                   },
                 );

@@ -139,7 +139,9 @@ export function HandoffPanel({ projectId, task }: HandoffPanelProps) {
       {open?.kind === "review" && current !== null && (
         <ReviewForm
           // A fresh form per decision: the comment written to approve is not
-          // the comment written to reject.
+          // the comment written to reject. Not per hand-off: the form pins the
+          // one it opened on and says when a newer revision arrives, rather
+          // than throwing away a half-written review.
           key={open.decision}
           projectId={projectId}
           task={task}

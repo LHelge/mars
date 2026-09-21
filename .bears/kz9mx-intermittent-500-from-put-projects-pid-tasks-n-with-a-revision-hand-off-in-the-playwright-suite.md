@@ -1,10 +1,10 @@
 ---
 id: kz9mx
 title: Intermittent 500 from PUT /projects/{pid}/tasks/{n} with a revision hand-off in the Playwright suite
-status: open
+status: done
 priority: P2
 created: "2026-09-21T06:01:32.790150544Z"
-updated: "2026-09-21T06:01:45.506176216Z"
+updated: "2026-09-21T17:35:30.445702072Z"
 tags:
   - orchestrator
   - tracker
@@ -28,3 +28,5 @@ Seen once on 2026-09-21 while verifying round 1 of epic rdkmk (main at ba0ed19, 
 ## Notes
 - The machine was loaded at the time: three `task-implementer` agents were dispatched (and may have been compiling) during the second half of the run, so load is a plausible trigger. The rerun that passed was under the same or heavier load.
 - Not related to the agent-credentials change: the failing call is a tracker mutation and the session was already `running`.
+## Resolution (2026-09-21)
+Closed with kb48s, which saw the same scenario (`tests/handoffs.spec.ts`, "the merge control is shut without an approval and a superseded review is refused") fail at the same call with the orchestrator log kept: a Postgres deadlock (`40P01`) between this tracker mutation and the session owner's transcript commit, surfacing as the generic 500. The cause and fix are ADR 0041 (tracker row locks are `FOR NO KEY UPDATE`); the regression tests are the two interleavings in `orchestrator/tests/tracker_mutation.rs`. This occurrence's own log was lost, so the identification rests on the identical scenario, call and status, not on its error line; reopen if the 500 is seen again after that change.

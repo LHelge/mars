@@ -1,15 +1,16 @@
 ---
 id: kb48s
 title: "Tracker mutation and session owner transcript commit can deadlock (40P01): the HTTP request answers 500 instead of retrying"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T14:05:55.342238521Z"
-updated: "2026-09-21T14:05:55.342238521Z"
+updated: "2026-09-21T17:35:30.473439872Z"
 tags:
   - orchestrator
   - tracker
   - session
   - flaky
+attempts: 1
 ---
 
 ## Summary

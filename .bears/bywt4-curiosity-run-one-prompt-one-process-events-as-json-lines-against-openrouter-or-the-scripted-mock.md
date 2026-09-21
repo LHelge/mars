@@ -2,9 +2,9 @@
 id: bywt4
 title: "curiosity run: one prompt, one process, events as JSON lines — against OpenRouter or the scripted mock"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:19:01.235637Z"
-updated: "2026-09-21T12:19:01.235637Z"
+updated: "2026-09-21T20:26:14.895017478Z"
 tags:
   - curiosity
   - cli

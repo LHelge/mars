@@ -3,9 +3,9 @@ id: eydgf
 title: "ACP backend: an Agent Client Protocol adapter in the orchestrator and the `curiosity` agent_backend value"
 type: epic
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:12:26.529401Z"
-updated: "2026-09-21T12:12:26.529401Z"
+updated: "2026-09-21T20:26:14.589459079Z"
 tags:
   - orchestrator
   - agent

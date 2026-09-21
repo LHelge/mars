@@ -2,9 +2,9 @@
 id: jneu8
 title: "Scaffold the curiosity crate: its own Cargo package, CI workflow, commit scope and quality chain"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:18:04.047673Z"
-updated: "2026-09-21T12:18:04.047673Z"
+updated: "2026-09-21T20:26:14.783028543Z"
 tags:
   - curiosity
   - infra

@@ -2,9 +2,9 @@
 id: tt9d9
 title: "agent_backend gains `curiosity`: migration, credential OPENROUTER_API_KEY with its one-per-scope index, and the backend's launch command"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:20:45.814998Z"
-updated: "2026-09-21T12:20:45.814998Z"
+updated: "2026-09-21T20:26:15.033767949Z"
 tags:
   - orchestrator
   - agent

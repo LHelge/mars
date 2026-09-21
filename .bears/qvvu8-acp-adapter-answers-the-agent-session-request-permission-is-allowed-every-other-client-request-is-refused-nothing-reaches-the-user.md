@@ -2,9 +2,9 @@
 id: qvvu8
 title: "ACP adapter answers the agent: session/request_permission is allowed, every other client request is refused, nothing reaches the user"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:21:28.692005Z"
-updated: "2026-09-21T12:21:28.692005Z"
+updated: "2026-09-21T20:26:15.117819556Z"
 tags:
   - orchestrator
   - agent

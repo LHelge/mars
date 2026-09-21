@@ -2,9 +2,9 @@
 id: wt969
 title: "Protocol state survives an orchestrator restart: rebuilt from the transcript, with outbound ids that need no counter"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:13:28.797492Z"
-updated: "2026-09-21T12:13:28.797492Z"
+updated: "2026-09-21T20:26:14.671912264Z"
 tags:
   - orchestrator
   - agent

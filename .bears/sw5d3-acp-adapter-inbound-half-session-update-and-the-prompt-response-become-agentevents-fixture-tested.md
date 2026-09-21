@@ -2,9 +2,9 @@
 id: sw5d3
 title: "ACP adapter, inbound half: session/update and the prompt response become AgentEvents, fixture-tested"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:21:20.758025Z"
-updated: "2026-09-21T12:21:20.758025Z"
+updated: "2026-09-21T20:26:15.090552010Z"
 tags:
   - orchestrator
   - agent

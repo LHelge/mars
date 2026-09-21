@@ -2,9 +2,9 @@
 id: hy5bz
 title: "Session-owner tests over an ACP transcript: restart mid-file, held input, resume by session/load"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:21:49.665350Z"
-updated: "2026-09-21T12:21:49.665350Z"
+updated: "2026-09-21T20:26:15.144630276Z"
 tags:
   - orchestrator
   - agent

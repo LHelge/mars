@@ -2,9 +2,9 @@
 id: yvb82
 title: "The CLI state directory is the backend's: no CLAUDE_CONFIG_DIR in the container spec or the project layout"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:17:02.175Z"
-updated: "2026-09-21T12:17:02.175Z"
+updated: "2026-09-21T20:26:14.727456742Z"
 tags:
   - orchestrator
   - agent

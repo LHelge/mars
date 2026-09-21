@@ -2,9 +2,9 @@
 id: x8zqq
 title: "AgentBackend carries protocol state: a launch preamble, stateful encode_input, and translate that can answer the process"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:13:15.219185Z"
-updated: "2026-09-21T12:13:15.219185Z"
+updated: "2026-09-21T20:26:14.644497478Z"
 tags:
   - orchestrator
   - agent

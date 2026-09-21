@@ -2,9 +2,9 @@
 id: tj596
 title: "Curiosity as PID 1: SIGINT ends the turn and the process, SIGTERM exits 143, a FIFO stdin never ends it"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:19:58.832817Z"
-updated: "2026-09-21T12:19:58.832817Z"
+updated: "2026-09-21T20:26:15.004861473Z"
 tags:
   - curiosity
   - acp

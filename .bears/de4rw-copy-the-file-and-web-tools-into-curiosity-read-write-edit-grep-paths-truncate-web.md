@@ -2,9 +2,9 @@
 id: de4rw
 title: "Copy the file and web tools into curiosity: read, write, edit, grep, paths, truncate, web"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:18:33.210714Z"
-updated: "2026-09-21T12:18:33.210714Z"
+updated: "2026-09-21T20:26:14.838451270Z"
 tags:
   - curiosity
   - tools

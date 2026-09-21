@@ -3,9 +3,9 @@ id: w9nsq
 title: "Curiosity foundation: Mars's own coding agent as a separate crate, built from the agent loop, provider layer and tools of midgaard"
 type: epic
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:12:07.368539Z"
-updated: "2026-09-21T12:12:07.368539Z"
+updated: "2026-09-21T20:26:14.534019620Z"
 tags:
   - curiosity
   - agent

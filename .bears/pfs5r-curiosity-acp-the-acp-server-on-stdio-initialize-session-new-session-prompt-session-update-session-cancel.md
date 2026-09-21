@@ -2,9 +2,9 @@
 id: pfs5r
 title: "curiosity acp: the ACP server on stdio — initialize, session/new, session/prompt, session/update, session/cancel"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:19:19.239709Z"
-updated: "2026-09-21T12:19:19.239709Z"
+updated: "2026-09-21T20:26:14.922655487Z"
 tags:
   - curiosity
   - acp

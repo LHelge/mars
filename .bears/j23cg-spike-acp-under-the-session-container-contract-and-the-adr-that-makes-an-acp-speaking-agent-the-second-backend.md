@@ -2,9 +2,9 @@
 id: j23cg
 title: "Spike: ACP under the session container contract, and the ADR that makes an ACP-speaking agent the second backend"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:12:57.966345Z"
-updated: "2026-09-21T12:12:57.966345Z"
+updated: "2026-09-21T20:26:14.616203814Z"
 tags:
   - orchestrator
   - agent

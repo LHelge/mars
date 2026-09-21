@@ -2,9 +2,9 @@
 id: k5e7m
 title: "Curiosity MCP client: connect the servers named in session/new and offer their tools to the model"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:19:33.991832Z"
-updated: "2026-09-21T12:19:33.991832Z"
+updated: "2026-09-21T20:26:14.950227552Z"
 tags:
   - curiosity
   - mcp

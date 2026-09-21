@@ -1,10 +1,10 @@
 ---
 id: s9rxc
 title: Separate field presentation from controls and remove duplicated form wiring
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:44:39.152212355Z"
-updated: "2026-09-21T10:50:34.095685712Z"
+updated: "2026-09-21T18:14:06.389848014Z"
 tags:
   - frontend
   - technical-review
@@ -12,6 +12,7 @@ tags:
   - accessibility
   - react
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: FormField requires value/onChange even when children provide the real select/textarea/output. Call sites supply dummy callbacks or duplicate handlers, and custom children bypass automatic aria-describedby, aria-invalid and other control attributes. Input styles are repeated across editors.

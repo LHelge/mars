@@ -1,16 +1,17 @@
 ---
 id: "5453d"
 title: Allow retrying failed transcript history loads and report their actual status
-status: open
+status: done
 priority: P2
 created: "2026-09-21T10:44:34.504746905Z"
-updated: "2026-09-21T10:50:07.369487607Z"
+updated: "2026-09-21T18:14:08.240924055Z"
 tags:
   - frontend
   - technical-review
   - bug
   - session
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: Transcript remembers requestedFor.current = oldestSeq before loading. loadOlder catches failure and logs it, leaving oldestSeq and the request marker unchanged. Subsequent scrolling refuses the same page forever until remount, while hasMore keeps the 'Loading earlier messages' indicator visible even when no request runs.

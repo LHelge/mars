@@ -193,6 +193,34 @@ describe("tool_use fixture", () => {
     expect(tool(running, "e1").running).toBe(true);
     expect(running.pendingTools).toEqual({ toolu_edit_fake: "e1" });
   });
+
+  it("indexes every tool message and keeps the entry after the result", () => {
+    const state = folded(toolUse);
+
+    // `pendingTools` is emptied by the results; the index is not, so a late
+    // event naming a finished tool still finds its message without a scan.
+    expect(state.toolIndex).toEqual({
+      toolu_edit_fake: "e1",
+      toolu_bash_fake: "e3",
+    });
+
+    const store = createSessionStore();
+    applyAll(store, toolUse);
+    // A duplicate result for a tool that already finished reconciles onto the
+    // message the index names rather than inventing an `unknown` row.
+    store.getState().applyEvent({
+      seq: 9,
+      ts: "2026-01-02T10:00:09Z",
+      kind: "tool_result",
+      tool_use_id: "toolu_edit_fake",
+      content: "Ran again.",
+      is_error: false,
+      truncated: false,
+    } as unknown as AgentEvent);
+    const after = store.getState();
+    expect(after.order).toEqual(["e1", "e3"]);
+    expect(tool(after, "e1").result).toBe("Ran again.");
+  });
 });
 
 describe("subagent fixture", () => {

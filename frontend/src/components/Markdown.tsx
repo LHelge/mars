@@ -22,7 +22,7 @@
 
 import type { Element } from "hast";
 import type { ComponentProps } from "react";
-import { createContext, use } from "react";
+import { createContext, memo, use } from "react";
 import Markdown from "react-markdown";
 import type { Components, ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -362,7 +362,15 @@ export interface MarkdownBodyProps {
   className?: string;
 }
 
-export function MarkdownBody({ children, className }: MarkdownBodyProps) {
+// Memoised on the text it is given: parsing is the expensive part of a
+// transcript row, and a row re-renders for reasons that leave its text alone —
+// a sibling row streaming, a disclosure opening above it. Both props are
+// primitives, so the shallow comparison is the right one. Nothing in this
+// build memoises for us (`ARCHITECTURE.md`, "Frontend architecture").
+export const MarkdownBody = memo(function MarkdownBody({
+  children,
+  className,
+}: MarkdownBodyProps) {
   return (
     // A URL, a hash or a path with no break opportunity wraps rather than
     // widening the row; `pre` and inline code opt back out.
@@ -372,4 +380,4 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
       </Markdown>
     </div>
   );
-}
+});

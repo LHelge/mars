@@ -1,10 +1,10 @@
 ---
 id: vx7sq
 title: "Dispatcher schema and API: launch_source on sessions, auto_launch and max_concurrent on profiles, max_concurrent_sessions and automation_paused on projects"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:23:41.520962153Z"
-updated: "2026-09-21T20:28:59.114380531Z"
+updated: "2026-09-21T21:26:41.688979233Z"
 tags:
   - orchestrator
   - dispatcher
@@ -16,6 +16,7 @@ depends_on:
   - jrgm7
   - rgrvp
 parent: qabvt
+attempts: 1
 ---
 
 ## Summary

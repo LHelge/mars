@@ -17,6 +17,16 @@ path = "src/main.rs"
 # mocked), not only from the test harness.
 integration-tests = ["dep:tempfile"]
 
+# Dependencies are compiled with light optimisation even in a debug build; the
+# crate itself is not, so an edit still recompiles at debug speed and a
+# backtrace still points at our own lines. The test suite spends most of its
+# CPU inside sqlx, serde and tokio rather than inside this crate, and an
+# unoptimised build of those is several times slower than a lightly optimised
+# one (ADR 0037, `CLAUDE.md`, "Code quality"). Dependencies are built once per
+# build directory, so this is paid once and only there.
+[profile.dev.package."*"]
+opt-level = 1
+
 [dependencies]
 aes-gcm = "0.11.1"
 argon2 = "0.6.0"

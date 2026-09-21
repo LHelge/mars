@@ -20,10 +20,10 @@
 //! `#[tokio::test]` hangs until the harness is killed rather than failing. So
 //! every join in both suites is wrapped in a [`RACE_TIMEOUT`].
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mars_orchestrator::repositories::users::ADMIN_MEMBERSHIP_LOCK_KEY;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Connection, PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 /// The ceiling on every raced step.
@@ -32,13 +32,14 @@ use uuid::Uuid;
 /// a genuine deadlock is a failing test rather than a hung run.
 pub const RACE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long a deterministic race leaves a request in flight before the holding
-/// transaction commits.
+/// How often [`wait_until_blocked`] asks Postgres whether the racing requests
+/// have arrived.
 ///
-/// Long enough for the request to authenticate, hash whatever it hashes and
-/// block on the lock; the same half second the single-request last-administrator
-/// test in `tests/users.rs` uses.
-pub const IN_FLIGHT: Duration = Duration::from_millis(500);
+/// The gates used to be a flat half-second sleep, which is both slower than it
+/// needs to be and weaker than it looks: it asserts nothing, so a request that
+/// was still authenticating when the gate opened produced a degenerate race
+/// that passed. Postgres answers the question exactly, so the gates ask it.
+const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// How many times each repeated race runs.
 ///
@@ -90,7 +91,7 @@ pub async fn hold_admin_membership_lock(pool: &PgPool) -> Transaction<'static, P
 /// project — a creation, a state change, a dependency edge, a comment — waits
 /// behind this transaction (`ARCHITECTURE.md`, "Task tracker" → "One mutation
 /// at a time per project"; ADR 0021). The starting gate for the tracker races,
-/// used with [`release_after_in_flight`].
+/// used with [`release_when_blocked`].
 pub async fn hold_project_lock(pool: &PgPool, project_id: Uuid) -> Transaction<'static, Postgres> {
     let mut tx = pool.begin().await.expect("a transaction begins");
 
@@ -104,8 +105,52 @@ pub async fn hold_project_lock(pool: &PgPool, project_id: Uuid) -> Transaction<'
     tx
 }
 
-/// Let go of a lock once the requests racing behind it have certainly reached
-/// it.
+/// Wait until `waiters` backends of this test's database are blocked on a
+/// lock.
+///
+/// The one observation that says a racing request has got as far as the lock
+/// the race is about: a backend waiting for a row lock, an advisory lock or
+/// the transaction holding one reports `wait_event_type = 'Lock'` in
+/// `pg_stat_activity`. Every test has a database of its own, so
+/// `current_database()` is the whole of the scope needed — no other test's
+/// backends are visible under it.
+///
+/// The probe is a connection of its own rather than one from `pool`: the
+/// racing requests are themselves holding connections from that pool, and a
+/// gate that cannot get one while it waits for them would be a deadlock.
+///
+/// Panics after [`RACE_TIMEOUT`]. A race whose requests never reach the lock
+/// proves nothing, so it fails rather than passing quietly.
+pub async fn wait_until_blocked(pool: &PgPool, waiters: i64) {
+    let mut probe = PgConnection::connect_with(&pool.connect_options())
+        .await
+        .expect("the gate's own connection opens");
+    let deadline = Instant::now() + RACE_TIMEOUT;
+
+    loop {
+        let blocked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(&mut probe)
+        .await
+        .expect("pg_stat_activity answers");
+
+        if blocked >= waiters {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "only {blocked} of {waiters} racing requests ever blocked on a lock"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    let _ = probe.close().await;
+}
+
+/// Let go of a lock once the requests racing behind it have reached it.
 ///
 /// The starting gate of the repeated races: two requests are launched while
 /// [`hold_admin_membership_lock`] is held, so both of them authenticate and
@@ -116,8 +161,12 @@ pub async fn hold_project_lock(pool: &PgPool, project_id: Uuid) -> Transaction<'
 /// extractor instead of the invariant.
 ///
 /// A rollback rather than a commit: the holder is a gate and writes nothing.
-pub async fn release_after_in_flight(holder: Transaction<'static, Postgres>) {
-    tokio::time::sleep(IN_FLIGHT).await;
+pub async fn release_when_blocked(
+    pool: &PgPool,
+    holder: Transaction<'static, Postgres>,
+    waiters: i64,
+) {
+    wait_until_blocked(pool, waiters).await;
     holder.rollback().await.expect("the holder rolls back");
 }
 

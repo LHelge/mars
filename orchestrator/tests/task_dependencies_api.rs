@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use axum_test::TestResponse;
-use common::races::{RACE_TIMEOUT, hold_project_lock, release_after_in_flight};
+use common::races::{RACE_TIMEOUT, hold_project_lock, release_when_blocked};
 use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::projects::{NewProjectRequest, create_project};
 use mars_orchestrator::repositories::TaskRepository;
@@ -720,7 +720,7 @@ async fn two_reciprocal_blocks_requests_leave_exactly_one_edge() {
         tokio::join!(
             a_depends_on_b,
             b_depends_on_a,
-            release_after_in_flight(gate)
+            release_when_blocked(&app.pool, gate, 2)
         )
     })
     .await

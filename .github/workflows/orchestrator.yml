@@ -80,6 +80,11 @@ jobs:
           cargo fmt --version
           cargo clippy --version
 
+      # The test runner (ADR 0037). A prebuilt binary, so this costs seconds
+      # and never compiles nextest itself.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Cache cargo registry and target directory
         uses: Swatinem/rust-cache@v2
         with:
@@ -122,13 +127,21 @@ jobs:
       # Split from the run below so the step timings report compiling the
       # crate and its test binaries separately from executing the tests.
       - name: Build the test binaries
-        run: cargo test --features integration-tests --no-run
+        run: cargo nextest run --features integration-tests --no-run
 
       # Integration tests bring up Postgres through testcontainers on the
-      # Docker daemon that ubuntu-latest provides. DOCKER_HOST is deliberately
-      # unset, so the engine tests stay skipped in this workflow.
+      # Docker daemon that ubuntu-latest provides: one container for the whole
+      # run, shared by every test process (`tests/common/db.rs`). DOCKER_HOST
+      # is deliberately unset, and `tests/engine.rs` and
+      # `tests/session_e2e.rs` are not part of a nextest run anyway — the
+      # Engine workflow is where they run (ADR 0037).
       - name: Tests
-        run: cargo test --features integration-tests
+        run: cargo nextest run --profile ci --features integration-tests
+
+      # nextest runs no doctests, so the one `no_run` example in `src/git/`
+      # would otherwise stop being compiled.
+      - name: Doctests
+        run: cargo test --features integration-tests --doc
 
   # The job above runs on the runner's git, which is far newer than the one the
   # orchestrator image ships, so an argv only newer git accepts passed every

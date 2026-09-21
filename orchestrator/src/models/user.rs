@@ -87,19 +87,51 @@ impl UserError {
     }
 }
 
-/// The Argon2id PHC string to store in `users.password_hash`.
+/// The Argon2id context new hashes are derived with.
 ///
 /// `Argon2::default()` is Argon2id v19 at the OWASP-recommended parameters
 /// (`m=19456, t=2, p=1`), the same ones the seeded administrator's hash in the
-/// `users` migration was produced with, and it generates a fresh 16-byte salt
-/// per call — so hashing one password twice gives two different strings, which
-/// is the point of a salt (`docs/data-model.md`, `users`).
+/// `users` migration was produced with.
+#[cfg(not(feature = "integration-tests"))]
+fn hasher() -> Argon2<'static> {
+    Argon2::default()
+}
+
+/// The cheapest parameters the algorithm accepts — 8 KiB, one pass, one lane —
+/// in a build that carries the `integration-tests` feature.
+///
+/// Nothing in such a build is real: it is the test harness and the end-to-end
+/// orchestrator, whose users, passwords and databases exist for the length of
+/// one run (`CLAUDE.md`, "Testing expectations"). The default parameters are
+/// tens of milliseconds of CPU *per hash* by design, and a suite that creates
+/// a handful of users per test spends more time deriving keys than testing.
+///
+/// Only derivation is affected. [`verify_password`] takes its parameters from
+/// the stored hash, so a production hash still verifies at production cost in
+/// a test build, and a test hash is recognisable by its `m=8` — nothing
+/// written by this build can be mistaken for a production hash.
+#[cfg(feature = "integration-tests")]
+fn hasher() -> Argon2<'static> {
+    use argon2::{Algorithm, Params, Version};
+
+    Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(Params::MIN_M_COST, 1, 1, None).expect("the test parameters are in range"),
+    )
+}
+
+/// The Argon2id PHC string to store in `users.password_hash`.
+///
+/// [`hasher`] generates a fresh 16-byte salt per call — so hashing one
+/// password twice gives two different strings, which is the point of a salt
+/// (`docs/data-model.md`, `users`).
 ///
 /// This is CPU-bound for tens of milliseconds by design. Request handlers call
 /// it inside `tokio::task::spawn_blocking` so one login cannot stall the
 /// runtime's worker thread.
 pub fn hash_password(password: &str) -> UserResult<String> {
-    Argon2::default()
+    hasher()
         .hash_password(password.as_bytes())
         .map(|hash| hash.to_string())
         .map_err(|err| {

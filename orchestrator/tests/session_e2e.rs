@@ -626,6 +626,34 @@ async fn container_exists(app: &TestApp, id: Uuid) -> bool {
         .any(|summary| summary.labels.get(LABEL_SESSION_ID) == Some(&label))
 }
 
+/// Wait until the session's row carries a container id.
+///
+/// What a scenario that wants to look at the container itself waits for.
+/// Waiting for `running` instead is a race for a session that can *finish*:
+/// an ephemeral run on the stub image is over in well under a poll interval,
+/// so the state read after it can be `done` and `running` never comes. The
+/// column is set at launch and cleared only when the container is discarded,
+/// well after `done` (see [`wait_for_discarded_container`]), so it is the wide
+/// window the narrow one was standing in for.
+async fn wait_for_container(app: &TestApp, id: Uuid) {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+
+    loop {
+        let session = reload(app, id).await;
+        if session.container_id.is_some() {
+            return;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the session had no container after {PATIENCE:?}: {} {:?}",
+            session.state,
+            session.error,
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
 /// Wait until the session has no container left on the engine and none on its
 /// row (`docs/data-model.md`, `sessions.container_id`).
 ///
@@ -975,10 +1003,10 @@ async fn an_ephemeral_session_replays_its_prompt_and_finishes_done() {
             )
             .await;
 
-        // The argv, read while the run is still going: a one-shot launch takes
-        // its prompt as an argument and never attaches an input format
+        // The argv, read while the container is still there: a one-shot launch
+        // takes its prompt as an argument and never attaches an input format
         // (`ARCHITECTURE.md`, "Claude Code invocation").
-        wait_for_state(&app, &project, id, SessionState::Running).await;
+        wait_for_container(&app, id).await;
         let cmd = cmd(&inspect(id).await);
         assert!(
             cmd.iter().any(|part| part == "-p"),

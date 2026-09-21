@@ -42,3 +42,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0034](0034-cli-stdin-is-a-fifo-fed-by-an-exec.md) | The CLI's stdin is a FIFO it holds open itself, fed through an exec | accepted |
 | [0035](0035-compose-engine-variants-as-override-files.md) | Carry the Podman/Docker compose difference in one-line override files | accepted |
 | [0036](0036-agent-credentials-belong-to-the-backend.md) | Agent credentials belong to the backend and are resolved implicitly | accepted |
+| [0037](0037-nextest-runs-the-backend-suite.md) | `cargo nextest` runs the backend suite; the live engine suites keep `cargo test` | accepted |

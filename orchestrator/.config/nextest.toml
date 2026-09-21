@@ -1,0 +1,33 @@
+# `cargo nextest` is the backend test runner (ADR 0037, `CLAUDE.md`, "Code
+# quality"). It runs every test in a process of its own and those processes
+# across all test binaries at once, which is where the default suite's wall
+# time comes from; the Postgres server they share is arranged by
+# `tests/common/db.rs`.
+
+[profile.default]
+# The live engine suites are the one thing this runner must not schedule.
+# `tests/engine.rs` and `tests/session_e2e.rs` serialise their container work
+# with in-process mutexes (`tests/common/engine.rs`), because rootless Podman
+# cannot resolve `keep-id` for two containers at once (Bears u6zkz), and a
+# mutex in one process says nothing to the next. They keep running under
+# `cargo test --test engine --test session_e2e`, which is one process per
+# binary and so still one `keep-id` start at a time; the merge chain and the
+# Engine workflow both run it.
+default-filter = 'not binary(engine) and not binary(session_e2e)'
+
+# Four times the four cores of the development machine. Almost every test
+# spends its time waiting for Postgres, for an HTTP round trip inside its own
+# process or for a lock a sibling test holds, so the cores idle at one process
+# per core: measured over the whole suite, 4 threads leave a third of the
+# machine idle, 8 leave a sixth and 16 leave a tenth, and past that the
+# remaining idle time is the tests that are waiting for a timer.
+test-threads = 16
+
+# Warn, never kill: a first run pulls `postgres:18` before any test can
+# proceed, and a race suite is allowed ten seconds per raced step
+# (`tests/common/races.rs`). A test that hangs is a failing run either way.
+slow-timeout = { period = "60s" }
+
+# CI wants every failure of a push in one report rather than the first one.
+[profile.ci]
+fail-fast = false

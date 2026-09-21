@@ -24,7 +24,7 @@
 //!
 //! The two racing tests launch both requests while a third transaction holds
 //! the membership lock and release it once both are blocked on it
-//! (`common::races::release_after_in_flight`). A bare `join!` is not enough:
+//! (`common::races::release_when_blocked`). A bare `join!` is not enough:
 //! the first request routinely runs to completion before the second one has
 //! loaded its caller, and the second one then fails on the *caller* — 403 for
 //! an administrator who was demoted a moment ago, or 401 for one who was
@@ -43,13 +43,13 @@ mod common;
 use axum::http::StatusCode;
 use axum_test::TestResponse;
 use common::races::{
-    IN_FLIGHT, RACE_ITERATIONS, RACE_TIMEOUT, admin_count, hold_admin_membership_lock,
-    release_after_in_flight,
+    RACE_ITERATIONS, RACE_TIMEOUT, admin_count, hold_admin_membership_lock, release_when_blocked,
+    wait_until_blocked,
 };
 use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::models::User;
 use serde_json::{Value, json};
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use uuid::Uuid;
 
 /// Obviously fake, and inside the documented 10–128 range. Nothing here logs
@@ -128,7 +128,7 @@ fn assert_one_won(first: (&TestResponse, StatusCode), second: (&TestResponse, St
 /// lock first is the runtime's and Postgres's choice and one round proves only
 /// that the winner of that round was serialised correctly.
 ///
-/// Both requests are launched behind [`release_after_in_flight`], so they are
+/// Both requests are launched behind [`release_when_blocked`], so they are
 /// provably in flight together: the invariant is only under test when both
 /// callers authenticated while both were still administrators.
 #[tokio::test]
@@ -171,7 +171,11 @@ async fn concurrent_mutual_demotions_leave_one_administrator() {
             .json(&demotion(&a.user));
 
         let (first, second, ()) = timeout(RACE_TIMEOUT, async {
-            tokio::join!(a_demotes_b, b_demotes_a, release_after_in_flight(gate))
+            tokio::join!(
+                a_demotes_b,
+                b_demotes_a,
+                release_when_blocked(&app.pool, gate, 2)
+            )
         })
         .await
         .expect("the two demotions did not deadlock");
@@ -207,7 +211,7 @@ async fn a_demotion_that_waits_for_the_last_administrator_is_409() {
         .json(&demotion_and_rename());
 
     let demote_a = async {
-        sleep(IN_FLIGHT).await;
+        wait_until_blocked(&app.pool, 1).await;
 
         // A row-level fact with no interface: the demotion has to happen inside
         // the transaction that holds the membership lock, which no route can
@@ -264,7 +268,11 @@ async fn a_deletion_racing_a_demotion_leaves_an_administrator() {
         .json(&demotion_and_rename());
 
     let (deletion, demotion, ()) = timeout(RACE_TIMEOUT, async {
-        tokio::join!(a_deletes_b, b_demotes_a, release_after_in_flight(gate))
+        tokio::join!(
+            a_deletes_b,
+            b_demotes_a,
+            release_when_blocked(&app.pool, gate, 2)
+        )
     })
     .await
     .expect("the deletion and the demotion did not deadlock");

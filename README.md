@@ -312,7 +312,13 @@ export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock
 
 With Docker instead: `export DOCKER_HOST=unix:///var/run/docker.sock`. The supported Docker uid contract also requires running the orchestrator as uid 1000 with a data directory owned by that uid; see `ARCHITECTURE.md`, "Uid contract".
 
-The backend tests reach this socket too: each test binary starts one `postgres:18` container of its own and gives every test a database on it (`CLAUDE.md`, "Testing expectations"), and removes the container when the process exits.
+The backend tests reach this socket too: the first process of a test run to want a database starts one `postgres:18` container, every process of that run gives its tests a database of their own on that one server (`CLAUDE.md`, "Testing expectations"), and the last process out removes the container.
+
+**Test runner**: the backend suite runs under [`cargo nextest`](https://nexte.st), which the "Code quality" chain in `CLAUDE.md` calls and which is not part of a Rust toolchain (ADR 0037):
+
+```bash
+cargo install cargo-nextest --locked
+```
 
 **Orchestrator**:
 
@@ -335,7 +341,7 @@ podman build -t mars-session-stub:latest images/stub
 
 The claude image's version tag is the CLI version pinned in `images/claude/Dockerfile` and `mars-session-claude:latest` is an alias for that same build, which is what `SESSION_IMAGE_DEFAULT` points at; the stub image replays a recorded transcript instead of calling a model, so tests run on it without credentials. `ENGINE=podman images/smoke-test.sh` checks both. With Docker, run the same two commands with `docker build`.
 
-`orchestrator/tests/session_e2e.rs` runs the session lifecycle on real containers and needs the stub image; it takes the tag from `MARS_STUB_IMAGE` and defaults to `localhost/mars-session-stub:dev`, so either build it under that tag (`podman build -t localhost/mars-session-stub:dev images/stub`) or point the variable at the tag you have. `orchestrator/tests/engine.rs` reads the same variable for its one scenario that needs a real session image — the terminal running `/bin/bash -l` as `agent` — but has no default for it: with `MARS_STUB_IMAGE` unset that scenario prints a line and passes, and the rest of the engine suite runs on a plain `alpine` image. Like the rest of the engine suite both run only with `DOCKER_HOST` set. The test suite starts its own Postgres through testcontainers; on an engine that cannot publish a port to it, set `MARS_TEST_POSTGRES_URL` (`postgres://user:password@host:port`, no database name) to a throw-away server and the suite uses that instead, rebuilding its template database there.
+`orchestrator/tests/session_e2e.rs` runs the session lifecycle on real containers and needs the stub image; it takes the tag from `MARS_STUB_IMAGE` and defaults to `localhost/mars-session-stub:dev`, so either build it under that tag (`podman build -t localhost/mars-session-stub:dev images/stub`) or point the variable at the tag you have. `orchestrator/tests/engine.rs` reads the same variable for its one scenario that needs a real session image — the terminal running `/bin/bash -l` as `agent` — but has no default for it: with `MARS_STUB_IMAGE` unset that scenario prints a line and passes, and the rest of the engine suite runs on a plain `alpine` image. Like the rest of the engine suite both run only with `DOCKER_HOST` set, and both run under `cargo test --test engine --test session_e2e` rather than under `cargo nextest`, which excludes them (ADR 0037). The test suite starts its own Postgres through testcontainers; on an engine that cannot publish a port to it, set `MARS_TEST_POSTGRES_URL` (`postgres://user:password@host:port`, no database name) to a throw-away server and the suite uses that instead, building its template database there.
 
 **Deployment images**, built from the repository root. The orchestrator image is a multi-stage build that compiles the crate offline (`SQLX_OFFLINE=true`, from the committed `.sqlx/`, so no `DATABASE_URL` is needed) and ships the binary, `git` and CA certificates on `debian:trixie-slim`, running as uid 1000 under a read-only root filesystem with a tmpfs at `/tmp` (`ARCHITECTURE.md`, "Trust boundaries"; ADR 0012):
 
@@ -407,7 +413,7 @@ The stack sets every orchestrator variable itself and ignores the repository's `
 
 | Workflow | Triggers on | Checks |
 | --- | --- | --- |
-| Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests with `SQLX_OFFLINE=true`; a second job reruns the git tests that need no database or engine inside two older gits rather than the runner's — `rust:1.98.1-trixie`, the Dockerfile's builder base and so the git the orchestrator image ships, and `rust:1.98.1-bookworm`, which carries the documented minimum, git 2.39.5; a third job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
+| Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests under `cargo nextest` plus the doctests, with `SQLX_OFFLINE=true`; a second job reruns the git tests that need no database or engine inside two older gits rather than the runner's — `rust:1.98.1-trixie`, the Dockerfile's builder base and so the git the orchestrator image ships, and `rust:1.98.1-bookworm`, which carries the documented minimum, git 2.39.5; a third job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
 | Engine | `orchestrator/**` or `images/**` | `tests/engine.rs` against the runner's Docker daemon and against rootless Podman via its compatible socket; then the stub session image is built with that engine and `tests/session_e2e.rs` runs the session lifecycle on real containers, with a `postgres:18` service container as its database through `MARS_TEST_POSTGRES_URL` (on Docker the runner's uid is not 1000, so that binary reports the uid contract and returns) |
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright against a real orchestrator, Postgres and the stub session image on rootless Podman, all brought up by `frontend/tests/e2e-stack.sh`; the report, traces and orchestrator log are uploaded on failure |

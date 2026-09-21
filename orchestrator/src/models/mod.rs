@@ -36,7 +36,7 @@ pub use project::{
 pub use secret::{
     MAX_SECRET_NAME_CHARS, MAX_SECRET_VALUE_BYTES, NewSecret, ScopeRef, Secret, SecretError,
     SecretMeta, SecretName, SecretResult, SecretScope, SecretUse, SecretUsePurpose,
-    validate_secret_value,
+    validate_credential_flag, validate_secret_value,
 };
 pub use session::{
     MAX_DERIVED_TITLE_CHARS, MAX_SESSION_TITLE_CHARS, NewSession, Session, SessionError,

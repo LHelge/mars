@@ -1042,7 +1042,16 @@ async fn two_credentials_at_one_scope_pick_the_backends_first_name() {
     let fixture = seed(&app).await;
 
     // Rows older than the one-credential-per-scope index; the tie is broken by
-    // the adapter's order, which puts the subscription token first.
+    // the adapter's order, which puts the subscription token first. The index
+    // is dropped in this test's own database rather than the arrangement being
+    // softened, because what is under test is precisely how the resolver reads
+    // a pair of rows the write rules can no longer create
+    // (`docs/data-model.md`, `secrets`).
+    sqlx::query("DROP INDEX secrets_claude_credential_idx")
+        .execute(&app.pool)
+        .await
+        .expect("the credential index is dropped for this scenario");
+
     seed_secret(
         &app,
         ScopeRef::project(fixture.project_id),

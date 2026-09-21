@@ -534,6 +534,7 @@ Migrations are created with `sqlx migrate add -r <name>` and applied automatical
 4. `sessions` — `sessions`, `events`.
 5. `tasks` — `task_states`, `profile_states`, `tasks`, `task_dependencies`, `task_comments`, `task_handoffs`, `task_sessions`, `task_events`, then `ALTER TABLE tasks ADD COLUMN current_handoff_id` and `ALTER TABLE sessions ADD COLUMN task_id, ADD COLUMN handoff_id` with their foreign keys. The down migration removes these referencing columns before dropping the tables.
 6. `secrets` — `secrets`, `secret_uses`.
-7. `strip_agent_credentials_from_profiles` — removes `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` from every `agent_profiles.secrets` array (ADR 0036).
+7. `secrets_claude_credential_idx` — the partial unique index above, preceded by a `DO` block that raises a readable exception naming any scope that already holds both Claude credentials (ADR 0036).
+8. `strip_agent_credentials_from_profiles` — removes `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` from every `agent_profiles.secrets` array (ADR 0036).
 
 Each `.down.sql` drops exactly what its `.up.sql` created, in reverse order. A migration that changes rows rather than schema has nothing to drop: `strip_agent_credentials_from_profiles` reverses to a documented `SELECT 1;`, because the entries it removed carried no information the launcher does not already act on.

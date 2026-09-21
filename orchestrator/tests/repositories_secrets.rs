@@ -705,3 +705,92 @@ async fn rotation_selects_only_older_rows_and_rewraps_without_touching_the_ciphe
         3
     );
 }
+
+/// The read behind the one-agent-credential-per-scope rule
+/// (`SPEC.md`, "Secrets", Agent credentials).
+///
+/// The statement's own job and nothing above it: which of a list of names this
+/// exact scope holds, with the row being patched excluded, and NULL scope_ids
+/// compared the way the partial unique index compares them.
+#[tokio::test]
+async fn the_credential_lookup_is_scoped_and_skips_the_row_being_patched() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let repository = SecretRepository::new(&pool);
+
+    let names = [
+        "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+        "ANTHROPIC_API_KEY".to_string(),
+    ];
+    let owner = seed_user(&pool, "credential-owner").await;
+    let global = insert(&pool, &new_secret(ScopeRef::global(), &names[1], "g")).await;
+
+    let mut tx = pool.begin().await.expect("a transaction begins");
+
+    // The global row is found under its own scope and nowhere else: a
+    // credential at another scope is the resolution model, not a conflict.
+    assert_eq!(
+        repository
+            .find_credential_at_scope(&mut tx, &ScopeRef::global(), &names, None)
+            .await
+            .expect("the lookup reads"),
+        Some(names[1].clone()),
+    );
+    assert_eq!(
+        repository
+            .find_credential_at_scope(&mut tx, &ScopeRef::user(owner), &names, None)
+            .await
+            .expect("the lookup reads"),
+        None,
+    );
+
+    // The row being renamed is not its own conflict.
+    assert_eq!(
+        repository
+            .find_credential_at_scope(&mut tx, &ScopeRef::global(), &names, Some(global.id))
+            .await
+            .expect("the lookup reads"),
+        None,
+    );
+
+    // A name no backend declares is invisible to it.
+    assert_eq!(
+        repository
+            .find_credential_at_scope(&mut tx, &ScopeRef::global(), &["DEPLOY_TOKEN".into()], None)
+            .await
+            .expect("the lookup reads"),
+        None,
+    );
+
+    tx.commit().await.expect("the transaction commits");
+}
+
+/// The partial unique index refuses a second credential at one scope even when
+/// the service does not get there first (`docs/data-model.md`, `secrets`).
+#[tokio::test]
+async fn a_second_claude_credential_at_one_scope_is_a_conflict() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let repository = SecretRepository::new(&pool);
+
+    insert(
+        &pool,
+        &new_secret(ScopeRef::global(), "CLAUDE_CODE_OAUTH_TOKEN", "token"),
+    )
+    .await;
+
+    let mut tx = pool.begin().await.expect("a transaction begins");
+    let error = repository
+        .insert(
+            &mut tx,
+            &new_secret(ScopeRef::global(), "ANTHROPIC_API_KEY", "key"),
+        )
+        .await
+        .expect_err("the second credential is refused");
+
+    assert_eq!(error.status(), StatusCode::CONFLICT, "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("already has an agent credential"),
+        "{error}"
+    );
+}

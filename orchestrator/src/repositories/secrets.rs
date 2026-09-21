@@ -39,6 +39,7 @@ use crate::models::{
 use crate::prelude::*;
 use crate::repositories::unique_violation;
 use crate::secrets::SealedSecret;
+use crate::secrets::service::credential_conflict;
 
 /// Which user-scoped secrets one listing is allowed to show.
 ///
@@ -286,6 +287,53 @@ impl<'a> SecretRepository<'a> {
         .await?;
 
         Ok(exists)
+    }
+
+    /// The name of the agent credential this scope already holds, out of
+    /// `names`, or `None`.
+    ///
+    /// The one-credential-per-scope rule of `SPEC.md`, "Secrets", Agent
+    /// credentials, as the question the service asks before it writes: `names`
+    /// is one backend's `credential_names` and the scope is the pair the row
+    /// would be created or renamed into, so a match is the row the caller must
+    /// replace or delete first. `exclude` is the row being patched, which is
+    /// not its own conflict.
+    ///
+    /// Takes the caller's connection, because the answer is only worth
+    /// anything inside the transaction that then writes; the partial unique
+    /// index `secrets_claude_credential_idx` is what holds when two
+    /// transactions ask at once (`docs/data-model.md`, `secrets`).
+    ///
+    /// `IS NOT DISTINCT FROM` for `scope_id` for the reason
+    /// [`SecretRepository::find_by_name`] gives: the global scope stores NULL
+    /// there, and it is the comparison the index makes.
+    pub async fn find_credential_at_scope(
+        &self,
+        tx: &mut PgConnection,
+        scope: &ScopeRef,
+        names: &[String],
+        exclude: Option<Uuid>,
+    ) -> Result<Option<String>> {
+        let existing = sqlx::query_scalar!(
+            r#"
+            SELECT name
+            FROM secrets
+            WHERE scope = $1
+              AND scope_id IS NOT DISTINCT FROM $2
+              AND name = ANY($3)
+              AND ($4::uuid IS NULL OR id <> $4)
+            ORDER BY name
+            LIMIT 1
+            "#,
+            scope.scope() as SecretScope,
+            scope.scope_id(),
+            names,
+            exclude,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        Ok(existing)
     }
 
     /// Every row any of `names` could resolve to for this project and this
@@ -907,16 +955,25 @@ impl<'a> SecretRepository<'a> {
     }
 }
 
-/// Map the `secrets` unique constraint to the conflict `SPEC.md` promises.
+/// Map the `secrets` unique constraints to the conflicts `SPEC.md` promises.
 ///
-/// The index is deliberately unnamed in the migration so that Postgres assigns
-/// `secrets_scope_scope_id_name_key`, which is the name matched here. Anything
-/// else — including a unique violation on a constraint this function does not
-/// know — widens through `#[from] sqlx::Error`, which logs the detail once and
-/// answers a generic 500 rather than guessing at a client message.
+/// The name index is deliberately unnamed in the migration so that Postgres
+/// assigns `secrets_scope_scope_id_name_key`, which is the name matched here.
+/// `secrets_claude_credential_idx` is the partial unique index behind the
+/// one-agent-credential-per-scope rule (`docs/data-model.md`, `secrets`): the
+/// service checks that rule first and answers the friendly message naming the
+/// credential already there, so reaching this arm means a concurrent write won
+/// the race between the check and the insert. The message is the same 409
+/// without the name, because reading back which name won would be a second
+/// statement on a path that has just failed — and never a 500.
+///
+/// Anything else — including a unique violation on a constraint this function
+/// does not know — widens through `#[from] sqlx::Error`, which logs the detail
+/// once and answers a generic 500 rather than guessing at a client message.
 fn map_duplicate(err: sqlx::Error) -> Error {
     match unique_violation(&err) {
         Some("secrets_scope_scope_id_name_key") => Error::Conflict("secret already exists".into()),
+        Some("secrets_claude_credential_idx") => credential_conflict(None),
         _ => Error::from(err),
     }
 }
@@ -930,5 +987,19 @@ mod tests {
         // Not a database error at all: the generic mapping answers 500.
         let error = map_duplicate(sqlx::Error::Protocol("unexpected packet".into()));
         assert!(matches!(error, Error::Database(_)), "{error:?}");
+    }
+
+    #[test]
+    fn the_credential_index_has_a_conflict_message_of_its_own() {
+        // The nameless half of the message the service builds; the two are
+        // the same sentence so a client sees one rule, not two.
+        let error = credential_conflict(None);
+        assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
+        assert!(
+            error
+                .to_string()
+                .contains("already has an agent credential"),
+            "{error}"
+        );
     }
 }

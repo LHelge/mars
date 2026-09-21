@@ -25,7 +25,7 @@ Mars runs coding-agent sessions (Claude Code in v1, behind a pluggable `AgentBac
 
 ## Frontend conventions
 
-**Stack**: Vite, React 19, TypeScript (strict), Tailwind CSS 4, React Router 7, TanStack Query, Zustand, `@tanstack/react-virtual`, `react-markdown`, `xterm.js`, Heroicons (`@heroicons/react/24/outline`), ESLint, Vitest, Playwright.
+**Stack**: Vite, React 19, TypeScript (strict), Tailwind CSS 4, React Router 7, TanStack Query, Zustand, `@tanstack/react-virtual`, `react-markdown` with `remark-gfm`, `xterm.js`, Heroicons (`@heroicons/react/24/outline`), ESLint, Vitest, Playwright.
 
 - Functional components with hooks only; named exports.
 - All API calls go through `src/services/`; components never call `fetch`. Use `apiGet`/`apiPost`/`apiPut`/`apiPatch`/`apiDelete` from `services/apiClient.ts`, which attaches the access token and refreshes once on 401.

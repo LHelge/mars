@@ -4,11 +4,10 @@ title: Decide StatusBadge colour for `error` and stop PasswordChangeForm stealin
 status: open
 priority: P3
 created: "2026-09-19T11:29:34.264466241Z"
-updated: "2026-09-19T11:29:34.264466241Z"
+updated: "2026-09-21T11:29:36.079544337Z"
 tags:
   - frontend
   - design
-parent: vdscb
 ---
 
 ## Summary

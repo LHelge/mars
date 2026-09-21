@@ -1330,6 +1330,10 @@ fn test_config(
         // configuration rather than from a constant, and a value equal to the
         // default could not tell the two apart.
         ("MIRROR_FETCH_INTERVAL_SECS", "900".to_string()),
+        // Deliberately not the documented default of 60, for the same reason:
+        // the dispatcher's period is configurable and the cron suite proves it.
+        // No loop is ever started in a test, so the value only has to differ.
+        ("DISPATCHER_INTERVAL_SECS", "45".to_string()),
         // No `RESEND_API_KEY`: mail goes to the mock, and setting a key would
         // only make `MAIL_FROM` required as well (ADR 0026).
     ]

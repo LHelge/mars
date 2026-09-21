@@ -871,6 +871,47 @@ impl<'a> ProjectRepository<'a> {
         Ok(profiles)
     }
 
+    /// The project's `auto_launch` profiles, oldest first.
+    ///
+    /// The dispatcher's scan (`ARCHITECTURE.md`, "Dispatcher"). `created_at`
+    /// order is the documented tie-break of that section — "when two
+    /// `auto_launch` profiles serve the same state, the older profile by
+    /// `agent_profiles.created_at` wins" — so the order is the rule and not a
+    /// presentation choice, with the name breaking a tie between two profiles
+    /// created in one transaction exactly as [`ProjectRepository::list_profiles`]
+    /// does.
+    ///
+    /// A separate query rather than a filter over that list, because the
+    /// predicate is the partial index `agent_profiles_auto_launch_idx
+    /// (project_id, created_at) WHERE auto_launch`: a job that ticks over every
+    /// ready project reads only the handful of rows that can launch anything,
+    /// however many profiles the project has.
+    pub async fn list_auto_launch_profiles(&self, project_id: Uuid) -> Result<Vec<AgentProfile>> {
+        let profiles = sqlx::query_as!(
+            AgentProfile,
+            r#"
+            SELECT p.id, p.project_id, p.name, p.kind as "kind: ProfileKind",
+                   p.backend as "backend: AgentBackend", p.model, p.system_prompt,
+                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,
+                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
+                       as "serves_states!",
+                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,
+                   p.max_concurrent, p.created_at, p.updated_at
+            FROM agent_profiles AS p
+            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
+            LEFT JOIN task_states AS ts ON ts.id = ps.state_id
+            WHERE p.project_id = $1 AND p.auto_launch
+            GROUP BY p.id
+            ORDER BY p.created_at, p.name
+            "#,
+            project_id,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(profiles)
+    }
+
     /// Replace a profile's configuration and return the stored row, or `None`
     /// when this project has no such profile.
     ///

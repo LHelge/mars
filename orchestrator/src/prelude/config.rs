@@ -41,6 +41,17 @@ const SESSION_IMAGE_DEFAULT: &str = "mars-session-claude-dev:latest";
 /// at all pauses the project, which is the reversible switch for that.
 pub const AUTOMATION_MAX_SESSIONS_DEFAULT: i64 = 4;
 
+/// The default value of `DISPATCHER_INTERVAL_SECS` (`README.md`,
+/// "Configuration").
+///
+/// Sixty seconds, the reapers' period: the dispatcher's timer is the fallback
+/// behind the `task_events` wake-up (`ARCHITECTURE.md`, "Dispatcher"), so what
+/// it has to bound is not how quickly a queue is noticed but how long a missed
+/// wake-up can go unnoticed. A minute is short enough that nobody watches a
+/// ready task sit there, and long enough that an instance with nothing to do
+/// asks a handful of indexed questions a minute and stops.
+pub const DISPATCHER_INTERVAL_SECS_DEFAULT: u64 = 60;
+
 /// Fewest live sessions the instance may allow automation.
 ///
 /// One, for the reason `agent_profiles.max_concurrent` and
@@ -149,6 +160,15 @@ pub struct Config {
     pub stop_grace_secs: u64,
     /// How often project mirrors are fetched.
     pub mirror_fetch_interval_secs: u64,
+    /// How often the dispatcher sweeps for claimable work.
+    ///
+    /// The fallback timer of `ARCHITECTURE.md`, "Dispatcher": the job is meant
+    /// to be woken by `task_events`, and this interval is what catches the work
+    /// no event arrived for — a lease that expired with its session, a task
+    /// state edited straight in the board, a wake-up lost to a restart. It is
+    /// configurable because it is the one knob that trades how promptly a
+    /// queue is picked up against how often an idle instance asks.
+    pub dispatcher_interval_secs: u64,
     /// Image used by the default profile of new projects and by the startup
     /// probe; defaults to [`SESSION_IMAGE_DEFAULT`].
     pub session_image_default: String,
@@ -335,6 +355,11 @@ impl Config {
         let stop_grace_secs: u64 = optional_parsed(&vars, "STOP_GRACE_SECS", 20)?;
         let mirror_fetch_interval_secs: u64 =
             optional_parsed(&vars, "MIRROR_FETCH_INTERVAL_SECS", 600)?;
+        let dispatcher_interval_secs: u64 = optional_parsed(
+            &vars,
+            "DISPATCHER_INTERVAL_SECS",
+            DISPATCHER_INTERVAL_SECS_DEFAULT,
+        )?;
 
         // Optional so a default installation needs no image name: the value
         // below is the tag the documented build command produces, and both the
@@ -381,6 +406,7 @@ impl Config {
             mcp_port,
             stop_grace_secs,
             mirror_fetch_interval_secs,
+            dispatcher_interval_secs,
             session_image_default,
             automation_max_sessions,
             resend_api_key,
@@ -430,6 +456,7 @@ impl fmt::Debug for Config {
                 "mirror_fetch_interval_secs",
                 &self.mirror_fetch_interval_secs,
             )
+            .field("dispatcher_interval_secs", &self.dispatcher_interval_secs)
             .field("session_image_default", &self.session_image_default)
             .field("automation_max_sessions", &self.automation_max_sessions)
             .field(
@@ -599,6 +626,7 @@ mod tests {
         "HTTP_PORT",
         "STOP_GRACE_SECS",
         "MIRROR_FETCH_INTERVAL_SECS",
+        "DISPATCHER_INTERVAL_SECS",
         "SESSION_IMAGE_DEFAULT",
         "AUTOMATION_MAX_SESSIONS",
         "RESEND_API_KEY",
@@ -704,6 +732,10 @@ mod tests {
         assert_eq!(config.stop_grace_secs, 20);
         assert_eq!(config.mirror_fetch_interval_secs, 600);
         assert_eq!(
+            config.dispatcher_interval_secs,
+            DISPATCHER_INTERVAL_SECS_DEFAULT
+        );
+        assert_eq!(
             config.session_image_default,
             "mars-session-claude-dev:latest"
         );
@@ -714,6 +746,22 @@ mod tests {
         assert_eq!(config.resend_api_key, None);
         assert_eq!(config.mail_from, None);
         assert_eq!(config.rust_log, "info");
+    }
+
+    /// The dispatcher's timer is optional and overridable; it is a fallback
+    /// interval, so no value of it is refused (`ARCHITECTURE.md`,
+    /// "Dispatcher").
+    #[test]
+    fn the_dispatcher_interval_is_optional_and_overridable() {
+        let mut vars = required_only();
+        vars.insert("DISPATCHER_INTERVAL_SECS".to_string(), "5".to_string());
+        assert_eq!(load(&vars).expect("loads").dispatcher_interval_secs, 5);
+
+        vars.insert("DISPATCHER_INTERVAL_SECS".to_string(), "often".to_string());
+        assert!(matches!(
+            load(&vars).expect_err("a non-numeric interval fails"),
+            ConfigError::Invalid { ref name, .. } if name == "DISPATCHER_INTERVAL_SECS"
+        ));
     }
 
     /// The instance cap is optional, overridable and bounded below by 1: zero

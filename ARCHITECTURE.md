@@ -661,7 +661,7 @@ Sending happens after the mutation has committed, never inside it, and it is `tr
 
 ### Unattended launches
 
-Nothing in v1 launches a session by itself; the rules in this section and the next are v2's, and hold from the moment the dispatcher job lands. They touch profiles, projects, sessions and jobs only, never the task tables (ADR 0042).
+Nothing in v1 launched a session by itself. The rules in this section are v2's and hold for every launch no person made: the dispatcher below applies them now, and the scheduled agents of "After v1" will apply the same ones. They touch profiles, projects, sessions and jobs only, never the task tables (ADR 0042).
 
 An **unattended launch** is a launch with no user behind it: one made by the dispatcher below, or by a scheduled agent. Its session has `created_by` NULL and `launch_source` `dispatcher` or `schedule` — `user` for every launch a person makes — and its tracker actor is `System`. `created_by` alone says nothing, because deleting a user leaves the same NULL on the sessions that user launched, so `sessions.launch_source` is the record of who launched a session.
 
@@ -677,7 +677,11 @@ The pause and the three caps are one function, `session::capacity::unattended_ca
 
 ### Dispatcher
 
-A job, woken by `task_events` and run on a timer as a fallback, finds the profiles with `auto_launch` whose served states contain a claimable task and launches an ephemeral session for one such task, through the same path as a user launch and under the rules above.
+A job, run on a timer (`DISPATCHER_INTERVAL_SECS`, default 60 s) and woken by `task_events` so a queue is picked up as it fills, finds the profiles with `auto_launch` whose served states contain a claimable task and launches an ephemeral session for one such task, through the same path as a user launch and under the rules above. The wake-up is the reason the interval can be a fallback rather than a poll; it is not wired up yet (Bears `svgjq` landed the timer, the wake-up is its follower).
+
+Each run walks the `ready` projects that are not paused, and within each the `auto_launch` profiles in `created_at` order, launching for one profile while capacity allows before moving to the next. Capacity is re-asked before every launch, because each launch changes the counts the next one is measured against. A profile whose agent credential no longer resolves at `global` or `project` scope is skipped with one `info` line per run and claims nothing, and a `conversational` profile is never dispatched whatever its row says.
+
+The candidate reads are lock-free pool reads and the job holds no lock between launches; each launch takes the project git lock and then the project row lock exactly as a user launch does (ADR 0021). The listing is therefore stale by the time a launch runs, and the claim inside that launch is what decides: a task somebody else took first answers 409 `task is not claimable`, which is a `debug` line and the next candidate, never an error and never a retry. A launch that then fails in `creating` releases its task as any launch does; the job adds no back-off of its own.
 
 It honours served states, which a user launch does not: it considers only the `queue` states the profile serves, so it never dispatches a task in the human state, a terminal one, a held one or a blocked one. A task escalated to `needs_human` is therefore waiting for a person, not for the next dispatch.
 
@@ -761,6 +765,7 @@ One cron service with independent intervals, mirroring the reference layout of a
 | mirror fetch | 10 min | `git fetch --prune` on every `ready` mirror. |
 | idle reaper | 1 min | Park `running` conversational sessions idle beyond their profile's timeout; stop and fail `running` ephemeral sessions idle beyond it (`stalled`); a CLI that survives both signals receives `SIGKILL` on a later tick. |
 | stuck-task reaper | 1 min | Release tasks held by `done` or `failed` sessions, escalating those at the attempt limit; write the system comment and emit `TaskEvent`s. |
+| dispatcher | `DISPATCHER_INTERVAL_SECS` (default 60) | For every `ready`, unpaused project and every `auto_launch` profile of it in `created_at` order: launch an ephemeral session on the best claimable task of the `queue` states that profile serves, while the capacity rules of "Unattended launches" allow ("Dispatcher"). The timer is the fallback behind the `task_events` wake-up. Candidate reads are lock-free; each launch takes the project git lock and then the project row lock, and no lock is held between launches. A lost claim is the next candidate, not a failure. |
 | token cleanup | 1 h | Delete expired refresh tokens, reset tokens, unaccepted invites, and secrets whose scope row no longer exists. |
 | secret rotation | 1 h | Re-wrap rows whose `key_version` is behind the newest key, if any. |
 | orphan cleanup | 1 h | Remove containers labelled `mars.session_id` whose session is `parked`/`done`/`failed`/missing; delete `/data/tmp` leftovers; under each project's git lock, remove `refs/handoffs/*` with no matching hand-off row. (Containers younger than 5 minutes and sessions this process is launching or running are skipped; `/data/tmp` entries older than one hour; a hand-off ref only after two runs at least an hour apart found it without a row.) |

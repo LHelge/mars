@@ -211,6 +211,27 @@ impl Error {
         }
     }
 
+    /// Did Postgres abort this transaction to break a deadlock or a
+    /// serialisation cycle?
+    ///
+    /// SQLSTATE class 40: `40P01` `deadlock_detected` and `40001`
+    /// `serialization_failure`. Both mean the transaction was rolled back
+    /// whole — no row, no event, no notification survived it — so the
+    /// operation can simply be run again, which is what
+    /// [`retry_on_serialization_failure`](crate::tracker::retry_on_serialization_failure)
+    /// does. It is *not* a failure of the caller's request and must never be
+    /// answered as one: a client sees the retry's outcome
+    /// (`ARCHITECTURE.md`, "Task tracker" → "Lock order").
+    pub fn is_serialization_failure(&self) -> bool {
+        let Error::Database(err) = self else {
+            return false;
+        };
+
+        err.as_database_error()
+            .and_then(|err| err.code())
+            .is_some_and(|code| code == "40P01" || code == "40001")
+    }
+
     /// The conflicting paths this failure carries, for the 422 body's
     /// `conflicts` and the `git` event detail's (`SPEC.md`, "REST API").
     pub fn conflicts(&self) -> Option<Vec<String>> {

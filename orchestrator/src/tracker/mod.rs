@@ -15,10 +15,17 @@
 //! literally the same struct.
 //!
 //! **Lock order.** git lock (outside) → project row (the mutation's own
-//! transaction) → session rows → task rows; never call engine, email, git or
+//! transaction) → task rows → session rows; never call engine, email, git or
 //! model code while a [`TrackerMutation`] is open (`ARCHITECTURE.md`, "Task
-//! tracker";
-//! `docs/data-model.md`, "Tracker mutation transactions"). Git preparation
+//! tracker" → "Lock order";
+//! `docs/data-model.md`, "Tracker mutation transactions"). The session rows
+//! come last because a mutation reaches them through the foreign keys of what
+//! it writes — a `task_sessions` link, a hand-off's `source_session_id` — and
+//! a transaction that takes a session row first and a tracker row second is
+//! the deadlock that order exists to prevent, which is why session deletion
+//! locks the project row too ([`repositories::SessionRepository::delete`]).
+//! [`retry_on_serialization_failure`] is the backstop for the cycles no single
+//! project lock can order. Git preparation
 //! finishes before the tracker transaction opens, and the escalation emails a
 //! mutation makes due are sent after it commits, from
 //! [`MutationOutcome::escalations`] — which is what [`commit_and_notify`] does
@@ -34,6 +41,7 @@ pub mod hooks;
 pub mod leases;
 pub mod mutation;
 pub mod provenance;
+pub mod retry;
 pub mod state;
 pub mod states;
 pub mod tasks;
@@ -57,6 +65,7 @@ pub use leases::{
 };
 pub use mutation::{Locked, MutationOutcome, TrackerMutation};
 pub use provenance::resolve_origin;
+pub use retry::retry_on_serialization_failure;
 pub use state::{StateChangeOptions, StateChangeResult, StateEventKind};
 pub use states::{NewStateInput, StateUpdate, create_state, delete_state, update_state};
 pub use tasks::{CreateTaskInput, CreatedBy, create_task};

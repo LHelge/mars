@@ -32,7 +32,7 @@ use crate::models::{
     StateChange,
 };
 use crate::prelude::*;
-use crate::repositories::unique_violation;
+use crate::repositories::{ProjectRepository, unique_violation};
 
 /// The largest page `GET /sessions/{id}/events` will return (`SPEC.md`,
 /// "Sessions": `?before=<seq>&limit=<n≤500>`).
@@ -672,16 +672,43 @@ impl<'a> SessionRepository<'a> {
         Ok(replaced)
     }
 
-    /// Delete a session, reporting whether a row matched.
+    /// Delete a session of this project, reporting whether a row matched.
     ///
     /// `Ok(false)` rather than an error when nothing matched: the route turns
-    /// that into 404. `events` cascade with the row; whether the session is in
-    /// a state that may be deleted, and removing its directory, are the
-    /// route's (`SPEC.md`, "Sessions").
-    pub async fn delete(&self, tx: &mut PgConnection, id: Uuid) -> Result<bool> {
-        let result = sqlx::query!("DELETE FROM sessions WHERE id = $1", id)
-            .execute(&mut *tx)
+    /// that into 404. `events` and `secret_uses` cascade with the row; whether
+    /// the session is in a state that may be deleted, and removing its
+    /// directory, are the route's (`SPEC.md`, "Sessions").
+    ///
+    /// **It locks the project row first**, and that is the whole reason it
+    /// takes a `project_id`. Deleting a session is not only a write to
+    /// `sessions`: the schema's referential actions reach straight into the
+    /// tracker's tables — `task_sessions` cascades, and
+    /// `tasks.created_by_session_id`, `task_comments.author_session_id` and
+    /// the three `*_session_id` columns of `task_handoffs` are set to NULL
+    /// (`docs/data-model.md`, `sessions`). Without the project lock this
+    /// transaction takes the session row and *then* tracker rows, which is the
+    /// documented order backwards: a tracker mutation holding the project and
+    /// task rows reaches the same session row through the `FOR KEY SHARE` of
+    /// its own foreign keys, the two wait on each other and Postgres aborts
+    /// one with `40P01` (`ARCHITECTURE.md`, "Task tracker" → "Lock order";
+    /// ADR 0021). With the lock the deletion simply queues behind that
+    /// mutation like any other tracker writer.
+    ///
+    /// The project scope is in the `WHERE` clause rather than checked
+    /// afterwards, so a session of another project is `Ok(false)` — the same
+    /// answer as one that is not there.
+    pub async fn delete(&self, tx: &mut PgConnection, project_id: Uuid, id: Uuid) -> Result<bool> {
+        ProjectRepository::new(self.pool)
+            .lock_project(&mut *tx, project_id)
             .await?;
+
+        let result = sqlx::query!(
+            "DELETE FROM sessions WHERE id = $1 AND project_id = $2",
+            id,
+            project_id,
+        )
+        .execute(&mut *tx)
+        .await?;
 
         let deleted = result.rows_affected() > 0;
         debug!(session_id = %id, deleted, "session deleted");

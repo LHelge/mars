@@ -52,6 +52,15 @@ pub const INSTRUCTIONS: &str = "Mars task tracker and git tools. This server is 
 /// again before every call.
 const TOOL_LIST_TTL_MS: u64 = 60_000;
 
+/// How many times one `tools/call` is attempted when Postgres aborts it as a
+/// deadlock victim; the same bound the REST side uses
+/// (`tracker::retry_on_serialization_failure`).
+const RETRY_ATTEMPTS: u32 = 3;
+
+/// How long a deadlocked call waits before trying again, multiplied by the
+/// attempt number.
+const RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// What the server advertises in its `initialize` response.
 ///
 /// A free function rather than a method because it reads nothing from the
@@ -163,7 +172,39 @@ impl McpServer {
         // or a scalar in the JSON-RPC envelope, before any handler is chosen.
         let args = Value::Object(arguments.unwrap_or_default());
 
-        tools::dispatch(&self.state, context, tool, args).await
+        // The one place every tool's tracker mutation is retried: a deadlock
+        // victim's transaction rolled back whole, so the call is simply made
+        // again rather than answered `internal` (`ARCHITECTURE.md`, "Task
+        // tracker" → "Lock order"). The arguments are cloned per attempt
+        // because a handler parses them; nothing else of the call is carried
+        // over.
+        for attempt in 1..=RETRY_ATTEMPTS {
+            match tools::dispatch(&self.state, context, tool, args.clone()).await {
+                Err(err) if err.retry && attempt < RETRY_ATTEMPTS => {
+                    warn!(
+                        session_id = %context.session_id,
+                        tool = name,
+                        attempt,
+                        "an mcp tool call was chosen as a deadlock victim; retrying",
+                    );
+                    tokio::time::sleep(RETRY_BACKOFF * attempt).await;
+                }
+                Err(err) if err.retry => {
+                    error!(
+                        session_id = %context.session_id,
+                        tool = name,
+                        attempts = attempt,
+                        "an mcp tool call deadlocked on every attempt",
+                    );
+                    return Err(err);
+                }
+                other => return other,
+            }
+        }
+
+        // Unreachable: the loop returns on the last attempt either way.
+        error!(tool = name, "the mcp retry loop fell through");
+        Err(McpError::internal())
     }
 }
 

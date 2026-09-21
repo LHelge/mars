@@ -337,6 +337,12 @@ impl SessionService {
     /// the row behind and the next delete retries rather than orphaning files
     /// nothing points at any more. `events` and `secret_uses` cascade with the
     /// row.
+    ///
+    /// The row itself goes through [`SessionRepository::delete`], which takes
+    /// the project row lock first because the deletion's referential actions
+    /// reach into the tracker's tables — the documented lock order, and the
+    /// reason this passes the project id (`ARCHITECTURE.md`, "Task tracker" →
+    /// "Lock order").
     pub async fn delete(&self, session_id: Uuid) -> Result<()> {
         let repository = SessionRepository::new(&self.state.pool);
         let session = repository.get(session_id).await?;
@@ -354,7 +360,9 @@ impl SessionService {
 
         self.state.session_registry.remove(session_id);
         let mut tx = self.state.pool.begin().await?;
-        let deleted = repository.delete(&mut tx, session_id).await?;
+        let deleted = repository
+            .delete(&mut tx, session.project_id, session_id)
+            .await?;
         tx.commit().await?;
 
         if !deleted {

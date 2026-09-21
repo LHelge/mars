@@ -9,8 +9,18 @@
 // nobody should have to send a request to learn it.
 //
 // The approval can lapse while the form is open, when a new revision arrives
-// unreviewed. That 409 is shown in the server's words and the task is
-// refetched, which re-disables the button under the answer.
+// unreviewed. The form merges the hand-off it was opened on — the id is taken
+// when the button is pressed, not read off the task on every render — so a
+// revision arriving mid-form cannot move the merge onto a commit nobody
+// approved; the request carries the superseded id and the server answers 409.
+// That 409 is shown in the server's words and the task is refetched, which
+// re-disables the button under the answer. The form says the revision arrived
+// as soon as it does, rather than at the refusal.
+//
+// The outcome of a merge is one thing: merged, conflicted or refused. It is
+// held as one value for that reason — three flags for three exclusive
+// outcomes can show two answers at once — and a merge that landed disarms its
+// own button, because a second press would merge the same commit twice.
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -46,7 +56,8 @@ export interface MergeTaskActionProps {
 }
 
 export function MergeTaskAction({ projectId, task }: MergeTaskActionProps) {
-  const [open, setOpen] = useState(false);
+  // The hand-off the form was opened on, which is also whether it is open.
+  const [opened, setOpened] = useState<Handoff | null>(null);
   const allowed = canMerge(task);
   const handoff = task.handoff;
 
@@ -57,9 +68,9 @@ export function MergeTaskAction({ projectId, task }: MergeTaskActionProps) {
       <span title={allowed ? undefined : MERGE_BLOCKED}>
         <button
           type="button"
-          disabled={!allowed || open}
+          disabled={!allowed || handoff === null || opened !== null}
           onClick={() => {
-            setOpen(true);
+            setOpened(handoff);
           }}
           className="border-console-border hover:bg-console-raised hover:text-console-text rounded border px-1.5 py-px font-mono text-[0.6875rem] disabled:opacity-50 disabled:hover:bg-transparent"
         >
@@ -67,19 +78,25 @@ export function MergeTaskAction({ projectId, task }: MergeTaskActionProps) {
         </button>
       </span>
 
-      {open && handoff !== null && (
+      {opened !== null && (
         <MergeHandoffForm
           projectId={projectId}
           task={task}
-          handoff={handoff}
+          handoff={opened}
           onClose={() => {
-            setOpen(false);
+            setOpened(null);
           }}
         />
       )}
     </>
   );
 }
+
+/** What one merge attempt ended as; the three outcomes exclude each other. */
+type MergeOutcome =
+  | { kind: "merged"; commit: string }
+  | { kind: "conflict"; conflict: MergeConflict }
+  | { kind: "refused"; message: string };
 
 function MergeHandoffForm({
   projectId,
@@ -89,6 +106,7 @@ function MergeHandoffForm({
 }: {
   projectId: string;
   task: TaskDetail;
+  /** The hand-off this form was opened on; the merge names this one. */
   handoff: Handoff;
   onClose: () => void;
 }) {
@@ -106,21 +124,26 @@ function MergeHandoffForm({
   const heads: Branch[] = refsOfKind(branches.data ?? [], "head");
   const [chosenTarget, setChosenTarget] = useState("");
   // The project's `default_branch` is only a name until the mirror confirms
-  // it; `chosenOr` falls back to a head that really exists.
-  const target = chosenOr(
-    chosenTarget === "" ? (project.data?.default_branch ?? "") : chosenTarget,
-    heads,
-  );
+  // it; `chosenOr` falls back to a head that really exists. With no heads at
+  // all there is nothing to fall back to — `chosenOr` hands the name back
+  // unchanged — so the target is empty, which is what the select shows and
+  // what disables Merge, rather than a branch the server would answer 400 for.
+  const target =
+    heads.length === 0
+      ? ""
+      : chosenOr(
+          chosenTarget === ""
+            ? (project.data?.default_branch ?? "")
+            : chosenTarget,
+          heads,
+        );
 
   const [message, setMessage] = useState("");
-  const [merged, setMerged] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<MergeConflict | null>(null);
-  const [refused, setRefused] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<MergeOutcome | null>(null);
+  const superseded = task.handoff?.id !== handoff.id;
 
   const form = useFormSubmit(async () => {
-    setMerged(null);
-    setConflict(null);
-    setRefused(null);
+    setOutcome(null);
     try {
       const result = await merge(projectId, {
         target,
@@ -128,7 +151,7 @@ function MergeHandoffForm({
         handoff_id: handoff.id,
         ...(message.trim() === "" ? {} : { message: message.trim() }),
       });
-      setMerged(result.commit);
+      setOutcome({ kind: "merged", commit: result.commit });
       // The merge moved an integration head and left the task where it was,
       // so the board's snapshot and the branch list are what went stale.
       void queryClient.invalidateQueries({
@@ -141,11 +164,11 @@ function MergeHandoffForm({
     } catch (caught) {
       const conflicts = mergeConflict(caught);
       if (conflicts !== null) {
-        setConflict(conflicts);
+        setOutcome({ kind: "conflict", conflict: conflicts });
         return;
       }
       if (isStaleMerge(caught)) {
-        setRefused(mergeErrorMessage(caught));
+        setOutcome({ kind: "refused", message: mergeErrorMessage(caught) });
         void queryClient.invalidateQueries({
           queryKey: taskKeys.detail(projectId, task.number),
         });
@@ -166,6 +189,14 @@ function MergeHandoffForm({
     >
       <p className="text-console-muted text-xs">{mergeCoverLine(handoff)}</p>
 
+      {superseded && (
+        <Alert kind="warning">
+          A newer revision was published while this form was open. It merges the
+          commit above, which the server will refuse now that it is no longer
+          the task's current hand-off.
+        </Alert>
+      )}
+
       <FieldShell label="Target" name="merge-target">
         {(control) => (
           <select
@@ -178,7 +209,11 @@ function MergeHandoffForm({
             className={FIELD}
           >
             {heads.length === 0 && (
-              <option value="">No integration head</option>
+              <option value="">
+                {branches.isPending
+                  ? "Loading branches…"
+                  : "No integration head"}
+              </option>
             )}
             {heads.map((head) => (
               <option key={head.name} value={head.name}>
@@ -207,10 +242,15 @@ function MergeHandoffForm({
         )}
       </FieldShell>
 
-      {conflict !== null && (
-        <ConflictList paths={conflict.paths} message={conflict.message} />
+      {outcome?.kind === "conflict" && (
+        <ConflictList
+          paths={outcome.conflict.paths}
+          message={outcome.conflict.message}
+        />
       )}
-      {refused !== null && <Alert kind="error">{refused}</Alert>}
+      {outcome?.kind === "refused" && (
+        <Alert kind="error">{outcome.message}</Alert>
+      )}
       {form.error !== null && (
         <Alert kind="error" onDismiss={form.clearError}>
           {form.error}
@@ -218,7 +258,12 @@ function MergeHandoffForm({
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <SubmitButton loading={form.loading} disabled={target === ""}>
+        {/* Merged is final for this form: the commit is on the branch, and a
+            second press would put it there again. */}
+        <SubmitButton
+          loading={form.loading}
+          disabled={target === "" || outcome?.kind === "merged"}
+        >
           Merge
         </SubmitButton>
         <SubmitButton
@@ -227,11 +272,11 @@ function MergeHandoffForm({
           disabled={form.loading}
           onClick={onClose}
         >
-          {merged === null ? "Cancel" : "Close"}
+          {outcome?.kind === "merged" ? "Close" : "Cancel"}
         </SubmitButton>
-        {merged !== null && (
+        {outcome?.kind === "merged" && (
           <span className="text-state-running font-mono text-xs">
-            {mergedMessage(merged)}
+            {mergedMessage(outcome.commit)}
           </span>
         )}
       </div>

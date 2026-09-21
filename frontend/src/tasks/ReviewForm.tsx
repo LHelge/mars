@@ -10,10 +10,22 @@
 // reason: an approval is about a commit, and the badge it produces will carry
 // that commit forever.
 //
-// The hand-off can be superseded while the form is open. That 409 is the one
-// refusal not shown in the server's words: the useful answer is not "the id
-// does not match" but "there is newer work, read it", and the task is
-// refetched so the panel above the form already shows it.
+// The hand-off can be superseded while the form is open. The form reviews the
+// hand-off it opened on and no other: the id is captured at mount and the
+// cover line, the branch and the submitted `handoff_id` all come from that one
+// reading. Following the prop instead would quietly retarget a decision the
+// reviewer has already made — the drawer rereads the task on every task event
+// ("Board refresh ordering"), so an approval typed against commit A would
+// leave as an approval of commit B, which nobody looked at, and the 409 that
+// exists for exactly this could only fire in the moment before the refetch.
+// Pinned, the request carries the superseded id and the server refuses it.
+//
+// A newer revision is said out loud while it is still a choice: the form shows
+// that one arrived rather than swapping the commit under the comment, and the
+// reviewer can cancel and read it. That 409 is the one refusal not shown in
+// the server's words: the useful answer is not "the id does not match" but
+// "there is newer work, read it", and the task is refetched so the panel above
+// the form already shows it.
 
 import { useState } from "react";
 import type { FormEvent } from "react";
@@ -36,7 +48,10 @@ import { useTaskMutations } from "./useTaskMutations";
 export interface ReviewFormProps {
   projectId: string;
   task: TaskDetail;
-  /** The task's current hand-off; the form only ever forwards this one. */
+  /**
+   * The task's current hand-off when the form opens; the form forwards that
+   * one for as long as it is open, whatever the task's current one becomes.
+   */
   handoff: Handoff;
   decision: ReviewDecision;
   onDone: () => void;
@@ -51,6 +66,11 @@ export function ReviewForm({
 }: ReviewFormProps) {
   const states = useTaskStore((store) => store.states);
   const { update } = useTaskMutations(projectId, task.number);
+
+  // The hand-off under review, captured once. `handoff` goes on naming the
+  // task's current one, which is how the form knows a revision arrived.
+  const [reviewing] = useState(handoff);
+  const superseded = handoff.id !== reviewing.id;
 
   const [state, setState] = useState("");
   const [comment, setComment] = useState("");
@@ -67,7 +87,7 @@ export function ReviewForm({
         state,
         handoff: {
           kind: "forward",
-          handoff_id: handoff.id,
+          handoff_id: reviewing.id,
           comment: comment.trim(),
           ...(decision === "none" ? {} : { review: decision }),
         },
@@ -83,11 +103,19 @@ export function ReviewForm({
       className="border-console-border bg-console-bg space-y-3 rounded border p-3"
     >
       <p className="text-console-text text-sm">
-        {reviewCoverLine(decision, handoff.commit)}{" "}
+        {reviewCoverLine(decision, reviewing.commit)}{" "}
         <span className="text-console-muted font-mono text-xs">
-          on {handoff.source_branch}
+          on {reviewing.source_branch}
         </span>
       </p>
+
+      {superseded && (
+        <Alert kind="warning">
+          A newer revision was published while you were reviewing. This form
+          still covers the commit above, so submitting it will be refused; the
+          panel already shows the new revision.
+        </Alert>
+      )}
 
       <FieldShell label="Move to" name="review-state" hint={STATE_HINT}>
         {(control) => (

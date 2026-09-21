@@ -129,7 +129,16 @@ function taskEvent(seq: number, overrides: Partial<TaskEvent> = {}): string {
 
 /** Lets the promise chains inside `refresh` and the reconnect settle. */
 async function settle(): Promise<void> {
-  for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+}
+
+/**
+ * Lets the coalesced invalidation fall due. Real timers only — every test that
+ * calls this asserts on `invalidateQueries`, and none of them fakes time.
+ */
+async function tick(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await settle();
 }
 
 beforeEach(() => {
@@ -160,7 +169,7 @@ describe("useTaskStream", () => {
 
     expect(FakeEventSource.instances).toHaveLength(1);
     expect(last().url).toBe(
-      `/api/projects/${PROJECT}/tasks/stream?token=token-one&after=0`,
+      `/api/projects/${PROJECT}/tasks/stream?token=token-one&after=latest`,
     );
     expect(board().projectId).toBe(PROJECT);
     expect(listTasks).not.toHaveBeenCalled();
@@ -189,7 +198,7 @@ describe("useTaskStream", () => {
 
     await act(async () => {
       last().task(taskEvent(4));
-      await settle();
+      await tick();
     });
 
     expect(board().lastSeq).toBe(4);
@@ -213,7 +222,53 @@ describe("useTaskStream", () => {
     view.unmount();
   });
 
-  it("invalidates the per-session task lists on a claim, and nothing else under sessions", async () => {
+  it("invalidates the task keys for a states_changed that carries no task_id", async () => {
+    // A state rename emits only this, and an open drawer is showing the old
+    // name until the keys under `taskKeys.all` are invalidated.
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const view = renderHook(() => useTaskStream(PROJECT));
+    await act(async () => {
+      last().accept();
+      await settle();
+    });
+
+    await act(async () => {
+      last().task(taskEvent(1, { kind: "states_changed", task_id: null }));
+      await tick();
+    });
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: taskKeys.all(PROJECT) });
+    expect(listTasks).toHaveBeenCalledTimes(2);
+
+    view.unmount();
+  });
+
+  it("coalesces a burst of events into one invalidation", async () => {
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const view = renderHook(() => useTaskStream(PROJECT));
+    await act(async () => {
+      last().accept();
+      await settle();
+    });
+    invalidate.mockClear();
+
+    await act(async () => {
+      for (let seq = 1; seq <= 20; seq += 1) last().task(taskEvent(seq));
+      await tick();
+    });
+
+    // Each one would otherwise be a scan of the query cache and a refetch of
+    // every open task detail.
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(board().lastSeq).toBe(20);
+
+    view.unmount();
+  });
+
+  it("invalidates nothing under the sessions keys", async () => {
+    // The per-session task lists are refreshed where an observer exists — the
+    // session page's own panel — not from a stream that is mounted only while
+    // the board is.
     const invalidate = vi.spyOn(queryClient, "invalidateQueries");
     const view = renderHook(() => useTaskStream(PROJECT));
     await act(async () => {
@@ -223,18 +278,13 @@ describe("useTaskStream", () => {
 
     await act(async () => {
       last().task(taskEvent(1, { kind: "claimed" }));
-      await settle();
+      await tick();
     });
 
-    const predicates = invalidate.mock.calls
-      .map(([filters]) => filters?.predicate)
-      .filter((predicate) => predicate !== undefined);
-    expect(predicates).toHaveLength(1);
-    const matches = (queryKey: readonly unknown[]) =>
-      predicates[0]({ queryKey } as never);
-    expect(matches(["sessions", "abc", "tasks"])).toBe(true);
-    expect(matches(["sessions", "abc"])).toBe(false);
-    expect(matches(["sessions", "list", "all"])).toBe(false);
+    for (const [filters] of invalidate.mock.calls) {
+      expect(filters?.predicate).toBeUndefined();
+      expect(filters?.queryKey).toEqual(taskKeys.all(PROJECT));
+    }
 
     view.unmount();
   });

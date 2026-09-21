@@ -30,6 +30,7 @@ import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
 import type { TaskState } from "../types";
 import { taskColumnTestId } from "../utils/testIds";
+import { useDelayedFlag } from "../utils/useDelayedFlag";
 import { CreateTaskForm } from "./CreateTaskForm";
 import { normalizeQuery } from "./search";
 import { TaskCard } from "./TaskCard";
@@ -68,6 +69,14 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
 
   const [creating, setCreating] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
+
+  // A refresh is two REST reads and is normally over before anyone could read
+  // a word about it, while a stream that is not live stays that way: only the
+  // first is delayed. Both share one `role="status"`, which is why a marker
+  // that flipped on every task event was a screen reader talking over an
+  // agent's whole working session (`SPEC.md`, "Frontend", "Board refresh
+  // ordering").
+  const slowRefresh = useDelayedFlag(loading);
 
   const columns = useMemo(
     () => selectVisibleColumns({ states, tasks, query }),
@@ -121,7 +130,7 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
         description={BOARD_HELP}
         actions={
           <>
-            {loaded && (loading || stream !== "live") && (
+            {loaded && (slowRefresh || stream !== "live") && (
               <span
                 role="status"
                 className="text-console-muted font-mono text-xs"

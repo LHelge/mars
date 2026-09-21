@@ -225,7 +225,9 @@ impl TaskRepository<'_> {
     /// The highest committed sequence of a project's stream, or `0` when it
     /// has no events yet.
     ///
-    /// The cursor a stream starts from when the client sends none. Read on the
+    /// The cursor a stream starts from when the client asks for `?after=latest`
+    /// — a board with no cursor of its own (`SPEC.md`, "SSE: task stream"), for
+    /// which the whole history is a replay nobody reads. Read on the
     /// pool, so the answer is a snapshot: a writer needs no such read, because
     /// the insert derives the next sequence from the table itself under the
     /// project lock.

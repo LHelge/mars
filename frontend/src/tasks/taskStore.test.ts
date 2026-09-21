@@ -2,17 +2,44 @@
 // (ADR 0022), driven through a store whose two reads are deferred promises, so
 // every interleaving an event can have with a load in flight is exact.
 
-import { describe, expect, it } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import * as services from "../services/tasks";
+import * as taskStateServices from "../services/taskStates";
+
+// Only the two reads `createQueryDeps` makes; the rest of the store's tests
+// inject their own deps and never reach the services at all.
+vi.mock("../services/tasks", async (original) => ({
+  ...(await original<typeof services>()),
+  listTasks: vi.fn(),
+}));
+
+vi.mock("../services/taskStates", async (original) => ({
+  ...(await original<typeof taskStateServices>()),
+  listTaskStates: vi.fn(),
+}));
 
 import { ApiError } from "../services/apiClient";
 import type { Task, TaskEvent, TaskState } from "../types";
+import { taskKeys } from "./queryKeys";
 import {
+  createQueryDeps,
   createTaskStore,
   selectColumns,
+  selectTaskById,
+  selectTaskByNumber,
   selectVisibleColumns,
   UNKNOWN_COLUMN,
   type TaskStoreDeps,
 } from "./taskStore";
+
+const listTasks = vi.mocked(services.listTasks);
+const listTaskStates = vi.mocked(taskStateServices.listTaskStates);
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
 
 const PROJECT = "11111111-1111-4111-8111-111111111111";
 const OTHER_PROJECT = "22222222-2222-4222-8222-222222222222";
@@ -131,7 +158,7 @@ const READY = state("ready", 1);
 const BACKLOG = state("backlog", 0);
 
 describe("taskStore refresh ordering", () => {
-  it("discards responses dirtied by an event and coalesces one follow-up", async () => {
+  it("installs responses dirtied by an event and coalesces one follow-up", async () => {
     const deps = harness();
     const store = createTaskStore(deps);
     store.getState().bindProject(PROJECT);
@@ -145,9 +172,10 @@ describe("taskStore refresh ordering", () => {
     expect(store.getState().dirty).toBe(true);
 
     await deps.settle(0, [READY], [task(1, "ready")]);
-    // The dirtied responses are dropped, not installed.
-    expect(store.getState().loaded).toBe(false);
-    expect(store.getState().tasks).toEqual([]);
+    // Older than the event, newer than the empty board it replaces: it is
+    // installed, and the event is still owed its own read.
+    expect(store.getState().loaded).toBe(true);
+    expect(store.getState().tasks).toHaveLength(1);
     // Exactly one follow-up, per endpoint.
     expect(deps.taskCalls).toHaveLength(2);
     expect(deps.stateCalls).toHaveLength(2);
@@ -268,7 +296,10 @@ describe("taskStore refresh ordering", () => {
     expect(deps.taskCalls).toHaveLength(1);
 
     await deps.settle(0, [READY], [task(1, "ready")]);
-    expect(store.getState().loaded).toBe(false);
+    // A mutation's own refresh is a whole snapshot too: it is shown, and the
+    // event the write is about to produce still gets its own read.
+    expect(store.getState().loaded).toBe(true);
+    expect(store.getState().tasks.map((t) => t.number)).toEqual([1]);
     expect(deps.taskCalls).toHaveLength(2);
 
     await deps.settle(1, [READY], [task(2, "ready")]);
@@ -309,6 +340,109 @@ describe("taskStore refresh ordering", () => {
     store.getState().bindProject(PROJECT);
     expect(store.getState().viewGeneration).toBe(view);
     expect(store.getState().query).toBe("login");
+  });
+});
+
+describe("the snapshot's indexes", () => {
+  it("resolve a task by id and by number without scanning the board", async () => {
+    const deps = harness();
+    const store = createTaskStore(deps);
+    store.getState().bindProject(PROJECT);
+
+    void store.getState().refresh();
+    await deps.settle(0, [READY], [task(1, "ready"), task(2, "ready")]);
+
+    expect(selectTaskById("task-2")(store.getState())?.number).toBe(2);
+    expect(selectTaskByNumber(1)(store.getState())?.id).toBe("task-1");
+    expect(selectTaskById("task-9")(store.getState())).toBeUndefined();
+    expect(selectTaskByNumber(9)(store.getState())).toBeUndefined();
+  });
+
+  it("describe the snapshot that is installed, never the one before it", async () => {
+    const deps = harness();
+    const store = createTaskStore(deps);
+    store.getState().bindProject(PROJECT);
+
+    void store.getState().refresh();
+    await deps.settle(0, [READY], [task(1, "ready")]);
+    store.getState().invalidate();
+    await deps.settle(1, [READY], [task(2, "ready")]);
+
+    expect(selectTaskById("task-1")(store.getState())).toBeUndefined();
+    expect(selectTaskById("task-2")(store.getState())?.number).toBe(2);
+
+    // A project change empties them with the arrays they index.
+    store.getState().bindProject(OTHER_PROJECT);
+    expect(selectTaskById("task-2")(store.getState())).toBeUndefined();
+  });
+});
+
+describe("the board's reads through the query cache", () => {
+  /** A query client with retries off: a rejected read is the read's answer. */
+  function client(): QueryClient {
+    return new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+  }
+
+  it("never installs a read that began before the refresh did", async () => {
+    // The ordering `fetchQuery` alone could not give: it joins a request
+    // already in flight for the same key, and that request may have been
+    // started before the event this refresh is answering.
+    const cache = client();
+    const store = createTaskStore(createQueryDeps(cache));
+    const responses: Deferred<Task[]>[] = [];
+    listTasks.mockImplementation(() => {
+      const next = deferred<Task[]>();
+      responses.push(next);
+      return next.promise;
+    });
+    listTaskStates.mockResolvedValue([READY]);
+
+    // A read of the same key, in flight before the board asks for anything.
+    cache
+      .fetchQuery({
+        queryKey: taskKeys.all(PROJECT),
+        queryFn: () => services.listTasks(PROJECT),
+      })
+      // Whoever started it is told it was cancelled; here nobody is waiting.
+      .catch(() => undefined);
+    await flush();
+    expect(listTasks).toHaveBeenCalledTimes(1);
+
+    store.getState().bindProject(PROJECT);
+    void store.getState().refresh();
+    await flush();
+
+    // The refresh made a request of its own rather than joining that one.
+    expect(listTasks).toHaveBeenCalledTimes(2);
+
+    // The older read answers first, and with the older board.
+    responses[0].resolve([task(1, "ready")]);
+    await flush();
+    expect(store.getState().loaded).toBe(false);
+
+    responses[1].resolve([task(1, "ready"), task(2, "ready")]);
+    await flush();
+    expect(store.getState().tasks.map((t) => t.number)).toEqual([1, 2]);
+  });
+
+  it("keeps the identity of a task that did not change", async () => {
+    // `fetchQuery` resolves with the response; the cache holds the
+    // structurally shared copy, and that is what `memo(TaskCard)` compares.
+    const cache = client();
+    const deps = createQueryDeps(cache);
+    listTaskStates.mockResolvedValue([READY]);
+    // A fresh object graph every time, as a real response is.
+    listTasks.mockImplementation(() =>
+      Promise.resolve([task(1, "ready"), task(2, "ready")]),
+    );
+
+    const first = await deps.listTasks(PROJECT);
+    const second = await deps.listTasks(PROJECT);
+
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).toBe(first[1]);
   });
 });
 

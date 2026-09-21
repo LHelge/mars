@@ -7,7 +7,11 @@
 // unit-testable with a fake `EventSource`; `useTaskStream` only owns its
 // lifetime. The browser's automatic `EventSource` retry is never used: every
 // error closes the source, refreshes the access token and reopens with
-// `?after=<lastSeq>`, which is also why `Last-Event-ID` is never relied on.
+// `?after=<lastSeq>`, which is also why `Last-Event-ID` is never relied on. A
+// board that has received no event yet has no such cursor and opens at
+// `?after=latest` instead (`services/tasks`, `taskStreamUrl`), so a project's
+// whole history is never replayed into a client that is about to read a REST
+// snapshot anyway.
 //
 // The access token is read from `services/auth` at connect time and never kept
 // in React state, so a refresh reconnects the stream without re-rendering the
@@ -25,8 +29,9 @@ import {
   refreshAccessToken,
 } from "../services/auth";
 import { taskStreamUrl } from "../services/tasks";
-import type { TaskEvent, TaskEventKind } from "../types";
+import type { TaskEvent } from "../types";
 import { backoffDelay } from "../utils/backoff";
+import { coalesce } from "../utils/coalesce";
 import { taskKeys } from "./queryKeys";
 import type { TaskStreamStatus } from "./taskStore";
 import { useTaskStore } from "./taskStore";
@@ -43,22 +48,6 @@ export interface EventSourceLike {
 }
 
 export type EventSourceFactory = (url: string) => EventSourceLike;
-
-/**
- * Kinds that change what `GET /sessions/{id}/tasks` returns for some session:
- * a hand-over, a hold taken or given back, or a comment shown in the panel.
- */
-const SESSION_TASK_KINDS: ReadonlySet<TaskEventKind> = new Set<TaskEventKind>([
-  "commented",
-  "state_changed",
-  "claimed",
-  "released",
-]);
-
-/** `queryKeys.sessions.tasks(id)` is `["sessions", <id>, "tasks"]`. */
-function isSessionTasksKey(key: readonly unknown[]): boolean {
-  return key.length === 3 && key[0] === "sessions" && key[2] === "tasks";
-}
 
 function isUnauthorized(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
@@ -81,6 +70,20 @@ export class TaskStream {
    */
   private refreshing = false;
   private readonly unsubscribes: (() => void)[] = [];
+
+  /**
+   * One `invalidateQueries` per tick, however many events arrived in it
+   * (`SPEC.md`, "Frontend", "Board refresh ordering"). Each call is a scan of
+   * the query cache and a refetch of every open task detail, and a project
+   * with agents working in it emits events faster than that is worth doing.
+   */
+  private readonly invalidate = coalesce(() => {
+    // `taskKeys.all` is the prefix of every task detail key, so one
+    // invalidation covers the board snapshot and any open drawer.
+    void queryClient.invalidateQueries({
+      queryKey: taskKeys.all(this.projectId),
+    });
+  });
 
   constructor(projectId: string, factory: EventSourceFactory = browserEventSource) {
     this.projectId = projectId;
@@ -149,20 +152,10 @@ export class TaskStream {
     }
     // A replayed or duplicate `seq` changes nothing and owes no refresh.
     if (!this.store.noteEvent(event)) return;
-    const taskId = event.task_id;
-    if (taskId === null || taskId === undefined) return;
-    // `taskKeys.all` is the prefix of every task detail key, so one
-    // invalidation covers the board snapshot and any open drawer.
-    void queryClient.invalidateQueries({
-      queryKey: taskKeys.all(this.projectId),
-    });
-    if (SESSION_TASK_KINDS.has(event.kind)) {
-      // Best effort, and only the per-session task lists: matching the whole
-      // `["sessions"]` prefix would refetch every session query in the app.
-      void queryClient.invalidateQueries({
-        predicate: (query) => isSessionTasksKey(query.queryKey),
-      });
-    }
+    // Every kind, including the `states_changed` that carries no `task_id`: a
+    // renamed state is exactly what an open drawer is showing the old name of
+    // (`SPEC.md`, "Frontend", "Board refresh ordering").
+    this.invalidate.run();
   }
 
   /** Drops our handlers before closing, so this close never reconnects. */
@@ -249,6 +242,7 @@ export class TaskStream {
   }
 
   private handleSignOut(): void {
+    this.invalidate.cancel();
     this.cancelRetry();
     this.teardown();
   }
@@ -258,6 +252,7 @@ export class TaskStream {
     if (this.disposed) return;
     this.disposed = true;
     for (const unsubscribe of this.unsubscribes.splice(0)) unsubscribe();
+    this.invalidate.cancel();
     this.cancelRetry();
     this.teardown();
     // A read still in flight can no longer update the store.

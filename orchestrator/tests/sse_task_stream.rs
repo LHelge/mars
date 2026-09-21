@@ -395,6 +395,46 @@ async fn a_cursor_beyond_the_stream_replays_nothing_and_follows_from_it() {
     assert!(quiet.is_err(), "nothing at or below the cursor is sent");
 }
 
+#[tokio::test]
+async fn after_latest_replays_nothing_and_follows_from_the_current_end() {
+    use futures_util::StreamExt;
+
+    let app = TestApp::spawn().await;
+    let fixture = arrange(&app).await;
+    append(&app, fixture.project_id, 3).await;
+
+    // What a board opening this project for the first time sends: it has no
+    // cursor, and the history is a replay it would throw away, because it
+    // loads an authoritative REST snapshot as soon as this stream is open
+    // (`SPEC.md`, "Frontend", "Board refresh ordering").
+    let response = app
+        .sse_response(
+            fixture.project_id,
+            Some(&fixture.user.access_token),
+            Some("latest"),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), 200, "`latest` is a cursor, not a 400");
+
+    let mut reader = SseReader::new(
+        response
+            .bytes_stream()
+            .map(|chunk| chunk.expect("the body streams")),
+    );
+
+    let first = reader.next_frame().await.expect("the stream is open");
+    assert!(first.is_ready(), "the body still opens with `: ready`");
+
+    let quiet = tokio::time::timeout(Duration::from_millis(500), reader.event_within(WITHIN)).await;
+    assert!(quiet.is_err(), "none of the three events is replayed");
+
+    // The cursor really is the end of the stream, not zero: the next event
+    // arrives live, once.
+    append(&app, fixture.project_id, 1).await;
+    assert_eq!(task_event(&reader.event_within(WITHIN).await).seq, 4);
+}
+
 // ---- live ----
 
 #[tokio::test]

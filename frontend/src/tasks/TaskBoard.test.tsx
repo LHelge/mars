@@ -7,6 +7,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -19,9 +20,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listTasks } from "../services/tasks";
 import { listTaskStates } from "../services/taskStates";
 import { getUser } from "../services/users";
+import { DELAYED_FLAG_MS } from "../utils/useDelayedFlag";
 import type { Task, TaskState } from "../types";
 import { TaskBoard } from "./TaskBoard";
-import { emptyTaskBoardState, useTaskStore } from "./taskStore";
+import { emptyTaskBoardState, taskSnapshot, useTaskStore } from "./taskStore";
 
 vi.mock("../services/tasks", () => ({ listTasks: vi.fn() }));
 vi.mock("../services/taskStates", () => ({ listTaskStates: vi.fn() }));
@@ -76,9 +78,8 @@ const TASKS = [
 function loadedBoard(tasks: Task[] = TASKS): void {
   useTaskStore.setState({
     ...emptyTaskBoardState(),
+    ...taskSnapshot(STATES, tasks),
     projectId: PROJECT_ID,
-    states: STATES,
-    tasks,
     loaded: true,
     stream: "live",
   });
@@ -209,5 +210,54 @@ describe("TaskBoard search", () => {
 
     expect(screen.queryByText("No matching tasks")).toBeNull();
     expect(screen.getByText("the board could not be read")).toBeTruthy();
+  });
+});
+
+// `SPEC.md`, "Frontend", "Board refresh ordering": one `role="status"`, and a
+// refresh is normally over before it could be read, so only a stream that is
+// not live says anything at once.
+describe("the board's status marker", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("says nothing about a refresh that is over quickly", () => {
+    vi.useFakeTimers();
+    loadedBoard();
+    useTaskStore.setState({ loading: true });
+    show();
+
+    expect(screen.queryByRole("status")).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(DELAYED_FLAG_MS - 1);
+      useTaskStore.setState({ loading: false });
+    });
+    act(() => {
+      vi.advanceTimersByTime(DELAYED_FLAG_MS);
+    });
+
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("says Refreshing once a refresh has taken a while", () => {
+    vi.useFakeTimers();
+    loadedBoard();
+    useTaskStore.setState({ loading: true });
+    show();
+
+    act(() => {
+      vi.advanceTimersByTime(DELAYED_FLAG_MS);
+    });
+
+    expect(screen.getByRole("status").textContent).toBe("Refreshing");
+  });
+
+  it("says Reconnecting without waiting", () => {
+    loadedBoard();
+    useTaskStore.setState({ stream: "reconnecting" });
+    show();
+
+    expect(screen.getByRole("status").textContent).toBe("Reconnecting");
   });
 });

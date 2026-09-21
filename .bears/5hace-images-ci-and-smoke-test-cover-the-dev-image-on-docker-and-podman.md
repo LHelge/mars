@@ -1,10 +1,10 @@
 ---
 id: "5hace"
 title: Images CI and smoke test cover the dev image on Docker and Podman
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-21T10:01:18.377029657Z"
-updated: "2026-09-21T11:13:17.871416874Z"
+updated: "2026-09-21T11:31:46.493383883Z"
 tags:
   - images
   - ci

@@ -65,6 +65,12 @@ describe("splitTopLevelBlocks", () => {
       "1. one\n\n2. two\n\n",
       "after",
     ]);
+    // A list that starts under an intro line, in the same block, is still
+    // one loose list.
+    expect(split("Intro:\n- one\n\n- two\n\nafter")).toEqual([
+      "Intro:\n- one\n\n- two\n\n",
+      "after",
+    ]);
   });
 
   it("keeps a blockquote with a blank line together", () => {

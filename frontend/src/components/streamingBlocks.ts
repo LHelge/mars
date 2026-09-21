@@ -67,20 +67,21 @@ function kindOf(line: string): BlockKind {
 }
 
 /**
- * Whether the block starting at `first` may be frozen when the next non-blank
- * line of the message is `next`. Everything that could still be pulled into
- * the same construct by what follows answers `false`.
+ * Whether a block whose unindented lines were of `kinds` may be frozen when
+ * the next non-blank line of the message is `next`. Everything that could
+ * still be pulled into the same construct by what follows answers `false`.
  */
-function mayFreeze(first: string, next: string): boolean {
+function mayFreeze(kinds: ReadonlySet<BlockKind>, next: string): boolean {
   // Indented: a lazy continuation, an indented code block, or the body of a
   // list item — never a new top-level block.
   if (/^[ \t]/.test(next)) return false;
-  const kind = kindOf(first);
-  // A loose list is one list: items separated by blank lines.
-  if (kind === "list" && LIST_ITEM.test(next)) return false;
+  // A loose list is one list: items separated by blank lines. The list need
+  // not open the block — `Intro:` directly above `- one` is a paragraph and a
+  // list in one block — so any item in it keeps a following item with it.
+  if (kinds.has("list") && LIST_ITEM.test(next)) return false;
   // Two quoted chunks separated by a blank line are still one blockquote as
   // far as the reader is concerned; keep them together.
-  if (kind === "quote" && next.startsWith(">")) return false;
+  if (kinds.has("quote") && next.startsWith(">")) return false;
   return true;
 }
 
@@ -98,10 +99,11 @@ export function splitTopLevelBlocks(text: string): string[] {
   if (text === "") return [""];
   const lines = text.split("\n");
   const blocks: string[] = [];
-  // Index into `lines` where the current block starts, and the first
-  // non-blank line of that block, which decides what a blank line means.
+  // Index into `lines` where the current block starts, and the kinds of the
+  // unindented lines seen in that block so far, which decide what a blank
+  // line means. Empty until the block has a non-blank line.
   let start = 0;
-  let first: string | null = null;
+  let kinds = new Set<BlockKind>();
   let open: Fence | null = null;
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -112,12 +114,12 @@ export function splitTopLevelBlocks(text: string): string[] {
     }
     const fence = fenceOf(line);
     if (fence) {
-      first ??= line;
+      kinds.add(kindOf(line));
       open = fence.fence;
       continue;
     }
     if (!isBlank(line)) {
-      first ??= line;
+      kinds.add(kindOf(line));
       continue;
     }
     // A blank line outside a fence. It is a split point only once further
@@ -128,13 +130,13 @@ export function splitTopLevelBlocks(text: string): string[] {
     if (next >= lines.length) break;
     // Leading blank lines: there is nothing yet to freeze, and they stay with
     // the block that follows them.
-    if (first === null) continue;
-    if (!mayFreeze(first, lines[next])) continue;
+    if (kinds.size === 0) continue;
+    if (!mayFreeze(kinds, lines[next])) continue;
     // The blank run belongs to the block that ends, so that joining the
     // blocks reproduces the message byte for byte.
     blocks.push(lines.slice(start, next).join("\n") + "\n");
     start = next;
-    first = null;
+    kinds = new Set();
     i = next - 1;
   }
 

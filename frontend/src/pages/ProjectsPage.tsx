@@ -19,10 +19,10 @@ import { LockClosedIcon } from "@heroicons/react/24/outline";
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import {
-  Alert,
   EmptyState,
   LoadingState,
   PageLayout,
+  QueryErrorAlert,
   SubmitButton,
 } from "../components";
 import { ApiError } from "../services/apiClient";
@@ -118,33 +118,25 @@ export function ProjectsPage() {
         )}
 
         {projects.isError && (
-          <Alert kind="error">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span>
-                {`Could not load projects. ${projects.error instanceof Error ? projects.error.message : ""}`.trim()}
-              </span>
-              <SubmitButton
-                type="button"
-                variant="ghost"
-                loading={projects.isFetching}
-                onClick={() => {
-                  void projects.refetch();
-                }}
-              >
-                Try again
-              </SubmitButton>
-            </div>
-          </Alert>
+          <QueryErrorAlert
+            query={projects}
+            message={`Could not load projects. ${projects.error instanceof Error ? projects.error.message : ""}`.trim()}
+          />
         )}
 
+        {/* A read that failed says nothing about how many projects there are,
+            so it never becomes "No projects yet" under its own alert
+            (`SPEC.md`, "Frontend", Read failures). */}
         {projects.isPending ? (
           <LoadingState label="Loading projects" />
         ) : rows.length === 0 ? (
-          <EmptyState
-            title="No projects yet"
-            description="A project is a git remote Mars mirrors once and then runs every session from."
-            action={newProjectButton}
-          />
+          projects.isSuccess && (
+            <EmptyState
+              title="No projects yet"
+              description="A project is a git remote Mars mirrors once and then runs every session from."
+              action={newProjectButton}
+            />
+          )
         ) : (
           <table className="w-full border-collapse text-sm">
             <thead>

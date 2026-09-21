@@ -232,6 +232,24 @@ describe("DashboardPage", () => {
     expect(within(parked).getByRole("link", { name: "Parked one" })).toBeDefined();
   });
 
+  it("does not call a failed section empty", async () => {
+    vi.mocked(listSessions).mockImplementation((params = {}) =>
+      params.state === "running"
+        ? Promise.reject(new Error("orchestrator unreachable"))
+        : Promise.resolve([]),
+    );
+
+    renderDashboard();
+
+    // The alert is the whole answer: a read that failed knows nothing about
+    // how many running sessions there are (`SPEC.md`, "Frontend", Read
+    // failures).
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not load running sessions");
+    expect(screen.queryByText("No running sessions")).toBeNull();
+    expect(await screen.findByText("No parked sessions")).toBeDefined();
+  });
+
   it("polls the three lists every 30 seconds, and only in the foreground", async () => {
     renderDashboard();
     await screen.findByText("No running sessions");

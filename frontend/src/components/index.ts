@@ -40,6 +40,9 @@ export type { PasswordChangeFormProps } from "./PasswordChangeForm";
 
 export { ProtectedRoute } from "./ProtectedRoute";
 
+export { QueryErrorAlert } from "./QueryErrorAlert";
+export type { QueryErrorAlertProps, RetryableQuery } from "./QueryErrorAlert";
+
 export { SecretsManager } from "./secrets/SecretsManager";
 export type { SecretsManagerProps } from "./secrets/SecretsManager";
 

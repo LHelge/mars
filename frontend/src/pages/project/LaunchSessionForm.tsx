@@ -70,7 +70,6 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
     queryKey: queryKeys.projects.branches(project.id),
     queryFn: () => listBranches(project.id),
     enabled: ready,
-    retry: false,
   });
 
   const [profileId, setProfileId] = useState("");

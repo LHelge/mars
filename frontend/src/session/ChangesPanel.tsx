@@ -44,7 +44,6 @@ export function ChangesPanel({ session }: SessionPanelProps) {
     queryFn: () => getDiff(projectId, { head: session.id }, base ?? undefined),
     // A refetch replaces the diff in place instead of blanking the panel.
     placeholderData: keepPreviousData,
-    retry: false,
   });
 
   const gitEventSeq = useSessionStore(session.id, (state) => state.gitEventSeq);

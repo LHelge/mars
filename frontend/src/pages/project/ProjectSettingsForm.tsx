@@ -47,7 +47,6 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
     queryKey: queryKeys.projects.branches(project.id),
     queryFn: () => listBranches(project.id),
     enabled: project.status === "ready",
-    retry: false,
   });
 
   const heads = (branches.data ?? []).filter((ref) => ref.kind === "head");

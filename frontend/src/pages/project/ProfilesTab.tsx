@@ -12,6 +12,7 @@ import {
   Alert,
   EmptyState,
   LoadingState,
+  QueryErrorAlert,
   SectionHeader,
   SubmitButton,
 } from "../../components";
@@ -37,7 +38,6 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
   const profiles = useQuery({
     queryKey: queryKeys.projects.profiles(project.id),
     queryFn: () => listProfiles(project.id),
-    retry: false,
   });
 
   /** `null` closes the editor; `"new"` or an id opens it. */
@@ -52,31 +52,29 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
     setSearch(next);
   }
 
-  if (profiles.isPending) {
-    return <LoadingState label="Loading profiles" />;
-  }
+  const rows = profiles.data;
 
-  if (profiles.isError) {
-    return (
-      <Alert kind="error">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span>{projectErrorMessage(profiles.error)}</span>
-          <SubmitButton
-            type="button"
-            variant="ghost"
-            loading={profiles.isFetching}
-            onClick={() => {
-              void profiles.refetch();
-            }}
-          >
-            Try again
-          </SubmitButton>
-        </div>
-      </Alert>
+  // The list has never arrived: still on its way, or the first read failed.
+  if (rows === undefined) {
+    return profiles.isPending ? (
+      <LoadingState label="Loading profiles" />
+    ) : (
+      <QueryErrorAlert
+        query={profiles}
+        message={projectErrorMessage(profiles.error)}
+      />
     );
   }
 
-  const rows = profiles.data;
+  // A refetch that failed over a list already on screen — and over an open
+  // editor with a system prompt half written in it — is a banner and nothing
+  // more (`SPEC.md`, "Frontend", Read failures).
+  const staleWarning = profiles.isError ? (
+    <QueryErrorAlert
+      query={profiles}
+      message={projectErrorMessage(profiles.error)}
+    />
+  ) : null;
 
   if (selected !== null) {
     const editing = selected === "new" ? null : rows.find((p) => p.id === selected);
@@ -85,39 +83,34 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
     // tab, or simply wrong. Say so rather than opening an empty create form.
     if (editing === undefined) {
       return (
-        <Alert kind="error">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>That profile no longer exists.</span>
-            <SubmitButton
-              type="button"
-              variant="ghost"
-              loading={false}
-              onClick={() => {
-                openEditor(null);
-              }}
-            >
-              Back to profiles
-            </SubmitButton>
-          </div>
-        </Alert>
+        <QueryErrorAlert
+          message="That profile no longer exists."
+          retryLabel="Back to profiles"
+          onRetry={() => {
+            openEditor(null);
+          }}
+        />
       );
     }
 
     return (
-      <ProfileEditorPage
-        // Remounts when the editor moves to another profile, so the form
-        // starts from that profile's values instead of the previous one's.
-        key={selected}
-        projectId={project.id}
-        profile={editing}
-        defaultImage={defaultImageOf(rows)}
-        // For the `<name>-2` suffix a role template's name takes when the
-        // project already has that role (`SPEC.md`, "Frontend").
-        existingNames={rows.map((profile) => profile.name)}
-        onClose={() => {
-          openEditor(null);
-        }}
-      />
+      <div className="space-y-3">
+        {staleWarning}
+        <ProfileEditorPage
+          // Remounts when the editor moves to another profile, so the form
+          // starts from that profile's values instead of the previous one's.
+          key={selected}
+          projectId={project.id}
+          profile={editing}
+          defaultImage={defaultImageOf(rows)}
+          // For the `<name>-2` suffix a role template's name takes when the
+          // project already has that role (`SPEC.md`, "Frontend").
+          existingNames={rows.map((profile) => profile.name)}
+          onClose={() => {
+            openEditor(null);
+          }}
+        />
+      </div>
     );
   }
 
@@ -140,6 +133,8 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
         description="What an agent is: its image, its prompt, the states it serves and what it may reach."
         actions={newProfile}
       />
+
+      {staleWarning}
 
       {rows.length === 0 ? (
         <EmptyState

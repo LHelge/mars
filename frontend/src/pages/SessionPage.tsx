@@ -16,7 +16,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useParams } from "react-router";
 
-import { Alert, LoadingState, PageLayout, SubmitButton } from "../components";
+import {
+  Alert,
+  LoadingState,
+  PageLayout,
+  QueryErrorAlert,
+} from "../components";
 import { ApiError } from "../services/apiClient";
 import { queryKeys } from "../services/queryKeys";
 import { getSession } from "../services/sessions";
@@ -48,6 +53,20 @@ function SessionRoute({ id }: { id: string }) {
     queryFn: () => getSession(id),
   });
 
+  if (session.isError && isNotFound(session.error)) {
+    return <NotFoundPage />;
+  }
+
+  const loaded = session.data;
+
+  // Once the session is known the socket owns the view; a failed re-read of
+  // the REST row never takes the transcript down with it (`SPEC.md`,
+  // "Frontend", Read failures), and what it would have said is already the
+  // socket's to report.
+  if (loaded !== undefined) {
+    return <SessionLive id={id} loaded={loaded} />;
+  }
+
   if (session.isPending) {
     return (
       <PageLayout title="Session">
@@ -56,42 +75,26 @@ function SessionRoute({ id }: { id: string }) {
     );
   }
 
-  if (session.isError) {
-    if (isNotFound(session.error)) {
-      return <NotFoundPage />;
-    }
-    const forbidden =
-      session.error instanceof ApiError && session.error.status === 403;
-    return (
-      <PageLayout title="Session">
-        <Alert kind="error">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>
-              {forbidden
-                ? "You do not have access to this session."
-                : session.error instanceof ApiError
-                  ? session.error.error
-                  : "Could not load the session."}
-            </span>
-            {!forbidden && (
-              <SubmitButton
-                type="button"
-                variant="ghost"
-                loading={session.isFetching}
-                onClick={() => {
-                  void session.refetch();
-                }}
-              >
-                Try again
-              </SubmitButton>
-            )}
-          </div>
-        </Alert>
-      </PageLayout>
-    );
-  }
+  const forbidden =
+    session.error instanceof ApiError && session.error.status === 403;
 
-  return <SessionLive id={id} loaded={session.data} />;
+  return (
+    <PageLayout title="Session">
+      {forbidden ? (
+        // A refusal, not a failure: there is nothing to try again.
+        <Alert kind="error">You do not have access to this session.</Alert>
+      ) : (
+        <QueryErrorAlert
+          query={session}
+          message={
+            session.error instanceof ApiError
+              ? session.error.error
+              : "Could not load the session."
+          }
+        />
+      )}
+    </PageLayout>
+  );
 }
 
 /**

@@ -1,17 +1,18 @@
 // The one TanStack Query client for the application (`CLAUDE.md`, "Frontend
 // conventions": server state through TanStack Query).
 //
-// A 401, 403 or 404 is an answer, not a hiccup: retrying it wastes a round trip
-// and, for a 403, would fire the current-user refresh again. Everything else is
-// retried once.
+// Any answer below 500 is an answer, not a hiccup: a 401, 403 or 404, and
+// equally a 400, 409, 422 or 429, says the same thing the second time, and a
+// repeated 403 would fire the current-user refresh again. What is worth one
+// more try is what never reached a verdict — a network failure, or a 5xx from
+// an orchestrator that is restarting or a proxy answering 502 — so that one
+// retry is left to the default and no call site turns it off.
 
 import { QueryClient } from "@tanstack/react-query";
 import { ApiError } from "./services/apiClient";
 
-const NEVER_RETRIED = [401, 403, 404];
-
 export function shouldRetry(failureCount: number, error: unknown): boolean {
-  if (error instanceof ApiError && NEVER_RETRIED.includes(error.status)) {
+  if (error instanceof ApiError && error.status < 500) {
     return false;
   }
   return failureCount < 1;

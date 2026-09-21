@@ -35,7 +35,6 @@ export function HandoffDiff({ projectId, handoff, onClose }: HandoffDiffProps) {
     queryFn: () => getDiff(projectId, { handoff_id: handoff.id }),
     // A retained commit never moves, so neither does its diff.
     staleTime: Infinity,
-    retry: false,
   });
 
   return (

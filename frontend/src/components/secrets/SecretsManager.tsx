@@ -17,8 +17,8 @@ import type { SecretScope } from "../../types";
 import { Alert } from "../Alert";
 import { EmptyState } from "../EmptyState";
 import { LoadingState } from "../LoadingState";
+import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SectionHeader } from "../SectionHeader";
-import { SubmitButton } from "../SubmitButton";
 import { CreateSecretForm } from "./CreateSecretForm";
 import { SecretRow } from "./SecretRow";
 import {
@@ -55,7 +55,6 @@ export function SecretsManager({
     queryKey: queryKeys.secrets.list(scope, scopeId),
     queryFn: () =>
       listSecrets({ scope, ...(scopeId === undefined ? {} : { scope_id: scopeId }) }),
-    retry: false,
   });
 
   // `GET /users` is admin only; without it a `created_by` that is not the
@@ -92,27 +91,16 @@ export function SecretsManager({
     <section className="space-y-3">
       <SectionHeader title={title} description={PRECEDENCE_HELP} />
 
-      {secrets.isError && (
-        <Alert kind="error">
-          {forbidden ? (
-            FORBIDDEN_SECRET_MESSAGE
-          ) : (
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span>{secretErrorMessage(secrets.error)}</span>
-              <SubmitButton
-                type="button"
-                variant="ghost"
-                loading={secrets.isFetching}
-                onClick={() => {
-                  void secrets.refetch();
-                }}
-              >
-                Try again
-              </SubmitButton>
-            </div>
-          )}
-        </Alert>
-      )}
+      {secrets.isError &&
+        (forbidden ? (
+          // A refusal, not a failure: there is nothing to try again.
+          <Alert kind="error">{FORBIDDEN_SECRET_MESSAGE}</Alert>
+        ) : (
+          <QueryErrorAlert
+            query={secrets}
+            message={secretErrorMessage(secrets.error)}
+          />
+        ))}
 
       {!forbidden && <CreateSecretForm scope={scope} scopeId={scopeId} />}
 
@@ -120,10 +108,13 @@ export function SecretsManager({
       {forbidden ? null : secrets.isPending ? (
         <LoadingState label="Loading secrets" />
       ) : rows.length === 0 ? (
-        <EmptyState
-          title="No secrets in this scope"
-          description="Add one above; its value is stored encrypted and never shown again."
-        />
+        // Nor does any other failed read claim the scope is empty.
+        secrets.isSuccess && (
+          <EmptyState
+            title="No secrets in this scope"
+            description="Add one above; its value is stored encrypted and never shown again."
+          />
+        )
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-sm">

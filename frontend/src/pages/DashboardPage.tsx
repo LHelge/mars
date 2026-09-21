@@ -15,13 +15,12 @@ import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 import {
-  Alert,
   EmptyState,
   LoadingState,
   PageLayout,
+  QueryErrorAlert,
   SectionHeader,
   StatusBadge,
-  SubmitButton,
 } from "../components";
 import { useAuth } from "../hooks/useAuth";
 import { listProjects } from "../services/projects";
@@ -70,7 +69,9 @@ interface SectionProps {
 /**
  * The four things every list on this page can be: loading its first page,
  * broken, empty, or a table. An error never blanks the table — the rows from
- * the last good poll stay on screen under the alert.
+ * the last good poll stay on screen under the alert — and a list that has
+ * failed is never called empty: "no running sessions" is something only a
+ * successful read may say (`SPEC.md`, "Frontend", Read failures).
  */
 function Section({
   title,
@@ -85,27 +86,18 @@ function Section({
       <SectionHeader title={title} />
 
       {query.isError && (
-        <Alert kind="error">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>{`Could not load ${title.toLowerCase()}. ${query.error instanceof Error ? query.error.message : ""}`.trim()}</span>
-            <SubmitButton
-              type="button"
-              variant="ghost"
-              loading={query.isFetching}
-              onClick={() => {
-                void query.refetch();
-              }}
-            >
-              Try again
-            </SubmitButton>
-          </div>
-        </Alert>
+        <QueryErrorAlert
+          query={query}
+          message={`Could not load ${title.toLowerCase()}. ${query.error instanceof Error ? query.error.message : ""}`.trim()}
+        />
       )}
 
       {query.isPending ? (
         <LoadingState />
       ) : rowCount === 0 ? (
-        <EmptyState title={emptyTitle} description={emptyDescription} />
+        query.isSuccess && (
+          <EmptyState title={emptyTitle} description={emptyDescription} />
+        )
       ) : (
         <div className="max-h-96 overflow-y-auto">
           <table className="w-full border-collapse text-sm">{children}</table>

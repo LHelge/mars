@@ -11,11 +11,10 @@
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import {
-  Alert,
   LoadingState,
   PageLayout,
+  QueryErrorAlert,
   SecretsManager,
-  SubmitButton,
 } from "../components";
 import { TaskStatesEditor } from "../tasks";
 import type { Project } from "../types";
@@ -97,44 +96,44 @@ function ProjectView({
 }: ProjectViewProps) {
   const project = useProject(id);
 
-  if (project.isPending) {
-    return (
-      <PageLayout title="Project">
-        <LoadingState label="Loading project" />
-      </PageLayout>
-    );
-  }
-
-  if (project.isError) {
-    if (isNotFound(project.error)) {
-      return <NotFoundPage />;
-    }
-    return (
-      <PageLayout title="Project">
-        <Alert kind="error">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>{projectErrorMessage(project.error)}</span>
-            <SubmitButton
-              type="button"
-              variant="ghost"
-              loading={project.isFetching}
-              onClick={() => {
-                void project.refetch();
-              }}
-            >
-              Try again
-            </SubmitButton>
-          </div>
-        </Alert>
-      </PageLayout>
-    );
+  // The project stopped existing — deleted here or in another tab — whether or
+  // not this page had already loaded it.
+  if (project.isError && isNotFound(project.error)) {
+    return <NotFoundPage />;
   }
 
   const data = project.data;
 
+  // Nothing to show yet: the first read is still out, or it failed.
+  if (data === undefined) {
+    return (
+      <PageLayout title="Project">
+        {project.isPending ? (
+          <LoadingState label="Loading project" />
+        ) : (
+          <QueryErrorAlert
+            query={project}
+            message={projectErrorMessage(project.error)}
+          />
+        )}
+      </PageLayout>
+    );
+  }
+
   return (
     <PageLayout title={data.name}>
       <div className="space-y-4">
+        {/* A failed refetch — the focus refresh or the cloning poll meeting a
+            restarting orchestrator — is a banner, never an unmount: the
+            settings form, the open editor and the board keep what is in them
+            (`SPEC.md`, "Frontend", Read failures). */}
+        {project.isError && (
+          <QueryErrorAlert
+            query={project}
+            message={projectErrorMessage(project.error)}
+          />
+        )}
+
         <ProjectHeader
           project={data}
           settingsOpen={settingsOpen}

@@ -25,6 +25,7 @@ import { Alert } from "../components/Alert";
 import { EmptyState } from "../components/EmptyState";
 import { FormField } from "../components/FormField";
 import { LoadingState } from "../components/LoadingState";
+import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
 import { ApiError } from "../services/apiClient";
@@ -70,13 +71,11 @@ export function TaskStatesEditor({ projectId }: TaskStatesEditorProps) {
   const states = useQuery({
     queryKey: taskStateKeys.list(projectId),
     queryFn: () => listTaskStates(projectId),
-    retry: false,
   });
 
   const tasks = useQuery({
     queryKey: taskKeys.all(projectId),
     queryFn: () => listTasks(projectId),
-    retry: false,
     // This tab is not on the task stream; the board is. Coming back to the
     // window is the moment to find out that a state was emptied elsewhere.
     refetchOnWindowFocus: true,
@@ -123,28 +122,15 @@ export function TaskStatesEditor({ projectId }: TaskStatesEditorProps) {
       <SectionHeader title="Task states" description={STATES_HELP} />
 
       {states.isError && (
-        <Alert kind="error">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>{errorMessage(states.error)}</span>
-            <SubmitButton
-              type="button"
-              variant="ghost"
-              loading={states.isFetching}
-              onClick={() => {
-                void states.refetch();
-              }}
-            >
-              Try again
-            </SubmitButton>
-          </div>
-        </Alert>
+        <QueryErrorAlert query={states} message={errorMessage(states.error)} />
       )}
 
       {tasks.isError && (
-        <Alert kind="warning">
-          {COUNTS_UNKNOWN}: {errorMessage(tasks.error)}. Removing a state waits
-          until they are.
-        </Alert>
+        <QueryErrorAlert
+          kind="warning"
+          query={tasks}
+          message={`${COUNTS_UNKNOWN}: ${errorMessage(tasks.error)}. Removing a state waits until they are.`}
+        />
       )}
 
       <AddStateForm
@@ -154,13 +140,17 @@ export function TaskStatesEditor({ projectId }: TaskStatesEditorProps) {
         afterMutation={afterMutation}
       />
 
+      {/* A failed read never says the project has no states (`SPEC.md`,
+          "Frontend", Read failures). */}
       {states.isPending ? (
         <LoadingState label="Loading task states" />
       ) : rows.length === 0 ? (
-        <EmptyState
-          title="No task states"
-          description="Add the first queue state above; the board has no columns until one exists."
-        />
+        states.isSuccess && (
+          <EmptyState
+            title="No task states"
+            description="Add the first queue state above; the board has no columns until one exists."
+          />
+        )
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-sm">

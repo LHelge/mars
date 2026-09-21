@@ -7,6 +7,12 @@
 //! channel carries is [`crate::events::SessionInput`], the same one the agent
 //! backend encodes (`SPEC.md`, "WebSocket: session stream").
 //!
+//! [`create`] is where a launch begins: the project, profile, prompt, title and
+//! base checks, the task claim that commits with the session row and the first
+//! message, behind one entry point that needs no HTTP request and no user, so
+//! that a dispatcher or a schedule launches through the same path as a person
+//! (`ARCHITECTURE.md`, "After v1: dispatcher and scheduled agents").
+//!
 //! [`prepare`] is what a launch does before it asks the engine for anything:
 //! the session's directories under `DATA_DIR/sessions/<sid>/`, a fresh MCP
 //! bearer token from [`token`] and the `mcp.json` that carries it, written
@@ -30,7 +36,7 @@
 //!
 //! [`task_message`] is the one sentence — two, with a hand-off — a session
 //! launched for a task is told before anything else, and nothing but a
-//! formatter: the route reads the task under the tracker lock and delivers the
+//! formatter: [`create`] reads the task under the tracker lock and delivers the
 //! text as the first queued input or as the head of the `-p` prompt
 //! (`SPEC.md`, "Sessions").
 //!
@@ -39,6 +45,7 @@
 //! gone and fails the ones the restart caught mid-creation
 //! (`ARCHITECTURE.md`, "Restart procedure").
 
+pub mod create;
 pub mod idle_reaper;
 pub mod launcher;
 pub mod owner;
@@ -49,6 +56,9 @@ pub mod service;
 pub mod task_message;
 pub mod token;
 
+pub use create::{
+    LaunchActor, LaunchRequest, NOT_READY, UNKNOWN_PROFILE, UNRESOLVED_BASE, create_session,
+};
 pub use idle_reaper::{SIGKILL_GRACE, reap_idle, sigkill_after};
 pub use launcher::{
     FRESH_FETCH_MAX_AGE, LAUNCH_FAILED_REASON, LAUNCHED_REASON, LaunchMode, Launcher,

@@ -8,16 +8,17 @@
 //! a session's: one implementation, which launch-for-task reuses rather than
 //! repeats.
 //!
-//! **Launching for a task** ([`insert_claiming`]) is the one create that
-//! writes outside `sessions`: with a `task_id` the row insert and the claim are
-//! one project-locked transaction, so a session that exists holds its task and
-//! a claim that loses leaves no session behind (`ARCHITECTURE.md`, "Task
-//! tracker" → "Launching a session for a task"). The base a hand-off pins, the
-//! generated first message and the 409 for a task that is held, blocked or
-//! finished all follow from the row read under that lock.
+//! **Launching** is [`crate::session::create_session`]'s, all of it: the
+//! project, profile, prompt, title and base checks, the task claim that commits
+//! with the session row and the first message. `POST` here parses the body,
+//! calls it with [`LaunchActor::User`] and answers 201, so that the dispatcher
+//! and the scheduled agents planned in `ARCHITECTURE.md`, "After v1: dispatcher
+//! and scheduled agents", launch through the same path without an HTTP request
+//! and without a user. What that path decides, and in which order, is
+//! `session::create`'s documentation.
 //!
 //! **The resource half** is a row read, a row write or one launch handed to
-//! [`crate::session::Launcher`].
+//! [`crate::session::create_session`].
 //!
 //! **The action half** — `input`, `stop`, `end`, `retry`, `sync` and `DELETE` —
 //! is [`SessionService`]: every lifecycle rule, every state check and every
@@ -33,104 +34,26 @@
 //! limitation). `end` and `retry` answer the `Session` they produced, and
 //! `sync` the `{ref, commit}` of the ref it published.
 //!
-//! **What `POST` decides**, in this order, because the cheap refusals come
-//! first and nothing irreversible happens before the last of them
-//! (`SPEC.md`, "Sessions", `POST /projects/{pid}/sessions`;
-//! `ARCHITECTURE.md`, "Launch sequence"):
-//!
-//! 1. the project exists (404) and is `ready` (409) — a project without a
-//!    `default_branch` is answered with the same 409, because a session has no
-//!    base to start from and a `ready` project always has one;
-//! 2. the profile is one of *this* project's (400), which is also what makes
-//!    `kind` the profile's kind at launch (`docs/data-model.md`, `sessions`);
-//! 3. an ephemeral profile was given a prompt (400), since an ephemeral
-//!    session accepts no input after launch (ADR 0003);
-//! 4. an explicitly given `title` is 1 to 200 characters (400), and an omitted
-//!    one is derived by [`default_title`];
-//! 5. the base ref resolves in the project repository (400), checked under the
-//!    project git lock and before any transaction, because a git lock is never
-//!    taken from inside a database one (ADR 0021). The launcher resolves it
-//!    again when it clones — the mirror may have been fetched in between — so
-//!    this check exists only to answer 400 now instead of producing a session
-//!    that fails a moment later. A base a task's hand-off pins is not checked
-//!    here: it is chosen under the tracker lock this request has not taken yet,
-//!    and it is a commit the project retains;
-//! 6. a fresh MCP token is generated **before** the insert, so the row's hash
-//!    and the only copy of the value come into existence together (ADR 0029;
-//!    `ARCHITECTURE.md`, "MCP design"): the raw token goes to the launcher,
-//!    which writes it into the session's `mcp.json`, and never back to the UI.
-//!
-//! The row is then inserted and committed, the response is 201 with the
-//! `creating` session, and the launch runs on its own task.
-//!
-//! **How the first message is delivered.** It is not a column: `message` is the
-//! first thing said to this session — after the generated task message, when
-//! there is a task — and where the two go depends on the kind. An ephemeral
-//! session has no stdin to say them on, so they become the `-p` prompt the
-//! launcher passes, joined by a blank line ([`LaunchMode::Fresh`]). A
-//! conversational session reads its messages from stdin, so each is submitted
-//! to the registry as a [`QueuedInput`] — the generated one with no `user_id`,
-//! since nobody typed it, the caller's with theirs — and the owner records them
-//! as the session's first `user_message`s exactly as it records any other input
-//! (`ARCHITECTURE.md`, "Session owner task").
-//!
-//! That submission has to be race-free against the launch, which is why the
-//! *route* registers the session entry: [`SessionRegistry::submit`] rejects an
-//! id it has never seen, and the launch task only registers once it starts. So
-//! the order here is: commit the row, `register(.., Phase::Creating)`, submit
-//! the input, launch. The launch task's own `register` keeps the queue of an id
-//! it already knows — that is what makes a message to a parked session survive
-//! the resume it triggers — so the queued input is picked up by the owner when
-//! stdin attaches, whichever of the two `register` calls ran first. Nothing in
-//! the launcher or the registry had to change for that.
-//!
 //! **The token hash never leaves.** The response type is the
 //! [`Session`] model, whose `mcp_token_hash` is `#[serde(skip)]`, so there is
-//! no DTO here to forget to strip it from, and the raw token exists only as the
-//! value moved into [`LaunchMode::Fresh`] (`CLAUDE.md`, rule 3).
+//! no DTO here to forget to strip it from (`CLAUDE.md`, rule 3).
 
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::events::{MAX_TEXT_BYTES, SessionEvent, SessionInput, TaskActor, validate_client_id};
-use crate::git::{DataPaths, resolve_base};
-use crate::models::{
-    AgentProfile, NewSession, ProjectStatus, Session, SessionKind, SessionState, SessionTitle,
-    SyncOutcome, TaskRef, default_title, validate_launch_prompt, validate_title,
-};
+use crate::events::{MAX_TEXT_BYTES, SessionEvent, SessionInput, validate_client_id};
+use crate::models::{Session, SessionState, SessionTitle, SyncOutcome, TaskRef};
 use crate::prelude::*;
 use crate::repositories::{MAX_EVENT_PAGE, ProjectRepository, SessionRepository, TaskRepository};
 use crate::routes::tasks::task_ref;
 use crate::routes::{CurrentUser, Path, Query};
-use crate::session::{
-    HandoffContext, LaunchMode, McpToken, Phase, QueuedInput, SessionRegistry, SessionService,
-    SubmitResult, generated_task_message,
-};
-use crate::tracker::{TaskDto, TrackerMutation, claim_for_launch, retry_on_serialization_failure};
-
-/// What a create against a project that has no repository to clone is told
-/// (409).
-///
-/// The same words `routes::projects` answers a fetch or a branch listing with,
-/// because it is the same condition: the project is not `ready`.
-const NOT_READY: &str = "project is not ready";
-
-/// What a create naming a profile of another project — or of no project — is
-/// told (400).
-///
-/// One message for "no such profile" and "not this project's profile" alike:
-/// the lookup is scoped in the `WHERE` clause (`CLAUDE.md`, "Backend
-/// conventions"), so which of the two it was is not something a caller learns.
-const UNKNOWN_PROFILE: &str = "unknown profile";
-
-/// What a create whose base ref is not in the mirror is told (400).
-const UNRESOLVED_BASE: &str = "base_ref does not resolve";
+use crate::session::{LaunchActor, LaunchRequest, SessionService, create_session};
+use crate::tracker::TaskDto;
 
 /// What a `?state=` outside the five lifecycle values is told (400).
 const UNKNOWN_STATE: &str = "unknown state";
@@ -286,23 +209,28 @@ struct CreateSessionInput {
 }
 
 impl CreateSessionInput {
-    /// The message, or `None` when there is nothing to say.
+    /// The launch this body asks for, or 404 for a `task_id` that names no
+    /// task at all.
     ///
-    /// A message of whitespace is no message: it would derive no title, and
-    /// [`validate_launch_prompt`] does not count it as an ephemeral session's
-    /// prompt either, so it is not sent as input either.
-    fn message(&self) -> Option<&str> {
-        self.message
-            .as_deref()
-            .filter(|message| !message.trim().is_empty())
-    }
-
-    /// The task this create names, in the form the tracker resolves, or 404.
-    fn task(&self) -> Result<Option<TaskRef>> {
-        self.task_id
+    /// The one place the DTO becomes the domain request: every rule about what
+    /// the fields mean is [`create_session`]'s, and a user launch never
+    /// enforces the profile's served states (`ARCHITECTURE.md`, "Task tracker"
+    /// → "Launching a session for a task").
+    fn into_request(self) -> Result<LaunchRequest> {
+        let task = self
+            .task_id
             .as_ref()
             .map(TaskIdInput::reference)
-            .transpose()
+            .transpose()?;
+
+        Ok(LaunchRequest {
+            profile_id: self.profile_id,
+            task,
+            base_ref: self.base_ref,
+            title: self.title,
+            message: self.message,
+            require_served_state: false,
+        })
     }
 }
 
@@ -338,361 +266,24 @@ impl TaskIdInput {
 /// `POST /projects/{pid}/sessions` → the `creating` session (201; 400, 404 and
 /// 409 as the module documentation lists them).
 ///
-/// The launch is spawned after the transaction committed, for the reason every
-/// other job in this crate is: the launch task re-reads the row it is about to
-/// work on (`ARCHITECTURE.md`, "Launch sequence").
+/// Everything this endpoint decides beyond the shape of the body is
+/// [`create_session`]'s, which is what the dispatcher and the scheduler will
+/// call too; what is HTTP's is the parse, the launching user and the 201.
 async fn create(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Path(pid): Path<Uuid>,
     Json(body): Json<CreateSessionInput>,
 ) -> Result<(StatusCode, Json<Session>)> {
-    let projects = ProjectRepository::new(&state.pool);
-    let project = projects.find(pid).await?.ok_or(Error::NotFound)?;
-
-    // A project with no repository has no base to clone, and one with no
-    // `default_branch` has no base to default to. The second cannot happen on a
-    // `ready` project — the clone job will not promote one — and is guarded
-    // rather than unwrapped.
-    if project.status != ProjectStatus::Ready {
-        return Err(Error::Conflict(NOT_READY.to_string()));
-    }
-    let Some(default_branch) = project.default_branch.as_deref() else {
-        error!(project_id = %pid, "a ready project has no default branch");
-        return Err(Error::Conflict(NOT_READY.to_string()));
-    };
-
-    let profile = projects
-        .find_profile(pid, body.profile_id)
-        .await?
-        .ok_or_else(|| Error::BadRequest(UNKNOWN_PROFILE.to_string()))?;
-
-    let message = body.message();
-
-    // Read on the pool, for the 404 and for the title: the row the claim is
-    // decided against is the one the mutation locks a few lines down.
-    let task = match body.task()? {
-        Some(reference) => Some(
-            TaskRepository::new(&state.pool)
-                .find_task(pid, reference)
-                .await?
-                .ok_or(Error::NotFound)?,
-        ),
-        None => None,
-    };
-
-    // A task is a prompt: its generated message is what an ephemeral session
-    // runs, so one launched for a task needs no `message` (`SPEC.md`).
-    validate_launch_prompt(profile.kind, task.as_ref().map(|task| task.id), message)?;
-
-    let title = match body.title.as_deref() {
-        Some(raw) => Some(validate_title(raw)?),
-        None => default_title(task.as_ref().map(|task| task.title.as_str()), message),
-    };
-
-    // A base the caller named is resolved now, under the project git lock and
-    // before any database transaction, so that the documented lock order holds
-    // and a name that is not in the mirror is a 400 rather than a session that
-    // fails a moment later (ADR 0021). The launcher resolves it again when it
-    // clones. A hand-off's base is skipped here: it is a commit this project
-    // pinned, chosen under a lock this request has not taken yet.
-    let explicit_base = body.base_ref.as_deref();
-    let starts_from_handoff = explicit_base.is_none()
-        && task
-            .as_ref()
-            .is_some_and(|task| task.current_handoff_id.is_some());
-    if !starts_from_handoff {
-        let base_ref = explicit_base.unwrap_or(default_branch);
-        let guard = state.git_locks.lock(pid).await;
-        resolve_base(
-            &guard,
-            &DataPaths::from_config(&state.config),
-            Some(base_ref),
-            default_branch,
-        )
-        .await
-        .map_err(|err| {
-            debug!(
-                project_id = %pid,
-                git.base = %base_ref,
-                error = %err,
-                "a requested session base ref does not resolve",
-            );
-            Error::BadRequest(UNRESOLVED_BASE.to_string())
-        })?;
-    }
-
-    // Before the insert, so the hash the row stores and the only copy of the
-    // value are created together (ADR 0029). The row records the name the
-    // caller gave, not the commit it resolved to.
-    let token = McpToken::generate();
-
-    let (session, task_message) = match task {
-        Some(task) => {
-            insert_claiming(
-                &state,
-                &profile,
-                user.id,
-                task.id,
-                LaunchBase {
-                    explicit: explicit_base,
-                    default_branch,
-                },
-                title.as_deref(),
-                &token,
-            )
-            .await?
-        }
-        None => {
-            let mut new_session = NewSession::new(
-                pid,
-                profile.id,
-                profile.kind,
-                explicit_base.unwrap_or(default_branch),
-                token.hash(),
-            );
-            new_session.created_by = Some(user.id);
-            let new_session = new_session.with_title(title.as_deref())?;
-
-            let mut tx = state.pool.begin().await?;
-            let session = SessionRepository::new(&state.pool)
-                .insert(&mut tx, &new_session)
-                .await?;
-            tx.commit().await?;
-
-            (session, None)
-        }
-    };
-
-    info!(
-        session_id = %session.id,
-        project_id = %pid,
-        profile_id = %profile.id,
-        kind = ?profile.kind,
-        task_id = ?session.task_id,
-        "session created",
-    );
-
-    let prompt = first_message(&state, &session, user.id, task_message.as_deref(), message);
-    state
-        .launcher()
-        .launch(session.id, LaunchMode::Fresh { token, prompt });
+    let session = create_session(
+        &state,
+        pid,
+        body.into_request()?,
+        LaunchActor::User { user_id: user.id },
+    )
+    .await?;
 
     Ok((StatusCode::CREATED, Json(session)))
-}
-
-/// What a launch starts from before the task's hand-off has been read.
-///
-/// The caller's `base_ref` and the project's integration head: which of them
-/// the session ends up with — and whether a hand-off commit displaces both —
-/// is decided under the lock in [`insert_claiming`].
-#[derive(Debug, Clone, Copy)]
-struct LaunchBase<'a> {
-    /// The `base_ref` the caller named, already resolved in the mirror.
-    explicit: Option<&'a str>,
-    /// The project's `default_branch`.
-    default_branch: &'a str,
-}
-
-/// Insert the session row and claim its task in one tracker-locked
-/// transaction, and answer with the row and the generated task message.
-///
-/// The whole of `ARCHITECTURE.md`, "Task tracker" → "Launching a session for a
-/// task" that is not the launch itself, in the documented lock order: the
-/// project row (the mutation), then the task row, then the session insert
-/// (ADR 0021). Nothing here resolves a ref or calls the engine — a git lock is
-/// never taken from inside a database one.
-///
-/// The order within the transaction is forced by the schema:
-/// `tasks.lease_holder_session_id` references `sessions`, so the row exists
-/// before the claim points at it. Both are the same transaction, so a lost
-/// claim takes the session row with it: [`claim_for_launch`] answers 409 `task
-/// is not claimable` for a held, blocked or terminal task — the statement's
-/// `WHERE` decides all three at once — and `?` drops the mutation, which rolls
-/// back.
-///
-/// The base and the hand-off are selected from the *locked* row, so a session
-/// cannot start from a hand-off that was superseded between the read and the
-/// claim. An explicit `base_ref` overrides the hand-off commit and leaves
-/// `handoff_id` null, and the generated message says so.
-async fn insert_claiming(
-    state: &AppState,
-    profile: &AgentProfile,
-    user_id: Uuid,
-    task_id: Uuid,
-    base: LaunchBase<'_>,
-    title: Option<&str>,
-    token: &McpToken,
-) -> Result<(Session, Option<String>)> {
-    // The whole transaction is retried if Postgres aborts it as a deadlock
-    // victim: it rolled back whole, so nothing of the session or the claim
-    // survived it to be half-applied (`ARCHITECTURE.md`, "Task tracker" →
-    // "Lock order").
-    retry_on_serialization_failure("launch_session", || async {
-        insert_claiming_once(state, profile, user_id, task_id, base, title, token).await
-    })
-    .await
-}
-
-/// One attempt of [`insert_claiming`], from the project lock to the commit.
-async fn insert_claiming_once(
-    state: &AppState,
-    profile: &AgentProfile,
-    user_id: Uuid,
-    task_id: Uuid,
-    base: LaunchBase<'_>,
-    title: Option<&str>,
-    token: &McpToken,
-) -> Result<(Session, Option<String>)> {
-    let project_id = profile.project_id;
-    let tasks = TaskRepository::new(&state.pool);
-
-    let mut mutation =
-        TrackerMutation::begin(&state.pool, project_id, TaskActor::User { user_id }).await?;
-
-    let task = tasks
-        .find_task_for_update(mutation.conn(), project_id, TaskRef::Id(task_id))
-        .await?
-        .ok_or(Error::NotFound)?;
-
-    let handoff = match task.current_handoff_id {
-        Some(id) => {
-            tasks
-                .find_handoff_in(mutation.conn(), project_id, id)
-                .await?
-        }
-        None => None,
-    };
-    let comment = match handoff.as_ref().and_then(|handoff| handoff.comment_id) {
-        Some(id) => {
-            tasks
-                .find_comment_in(mutation.conn(), project_id, id)
-                .await?
-        }
-        None => None,
-    };
-
-    // The pinned commit is the default base for a task that has one; an
-    // explicit base wins and records no hand-off, because the session is not
-    // starting from that revision (`SPEC.md`, "Sessions").
-    let (base_ref, handoff_id, base_override) = match (base.explicit, handoff.as_ref()) {
-        (Some(explicit), handoff) => (
-            explicit.to_string(),
-            None,
-            handoff.is_some().then_some(explicit),
-        ),
-        (None, Some(handoff)) => (handoff.commit.clone(), Some(handoff.id), None),
-        (None, None) => (base.default_branch.to_string(), None, None),
-    };
-
-    let task_message = generated_task_message(
-        &task,
-        handoff.as_ref().map(|handoff| HandoffContext {
-            handoff,
-            comment: comment.as_ref().map(|comment| comment.body.as_str()),
-        }),
-        base_override,
-    );
-
-    let mut new_session =
-        NewSession::new(project_id, profile.id, profile.kind, base_ref, token.hash());
-    new_session.created_by = Some(user_id);
-    new_session.task_id = Some(task.id);
-    new_session.handoff_id = handoff_id;
-    let new_session = new_session.with_title(title)?;
-
-    let session = SessionRepository::new(&state.pool)
-        .insert(&mut mutation.conn(), &new_session)
-        .await?;
-
-    // The claim, its `claimed` event, its `task_sessions` link and the
-    // notification the commit issues are all the tracker's.
-    claim_for_launch(&mut mutation, &task, session.id).await?;
-    mutation.commit().await?;
-
-    Ok((session, Some(task_message)))
-}
-
-/// Deliver what this session is told first, and answer with the ephemeral
-/// launch prompt.
-///
-/// Up to two texts, in the one documented order: the generated task message,
-/// when the session was launched for a task, and then the caller's `message`
-/// (`SPEC.md`, "Sessions").
-///
-/// The two kinds differ in *where* they go, not in whether they are delivered:
-/// an ephemeral session gets them joined by a blank line as the `-p` prompt the
-/// returned value carries, a conversational one gets them as inputs queued for
-/// the owner that is about to attach. See the module documentation for why the
-/// registry entry is created here.
-///
-/// The generated message is queued with no `user_id`: nobody typed it, so the
-/// `user_message` the owner records for it carries `user_id: null`.
-///
-/// A refused submission is logged and not returned: the session exists and is
-/// launching, and the caller can send the message again over the socket. No
-/// text is ever logged (rule 3).
-fn first_message(
-    state: &AppState,
-    session: &Session,
-    user_id: Uuid,
-    task_message: Option<&str>,
-    message: Option<&str>,
-) -> Option<String> {
-    if session.kind == SessionKind::Ephemeral {
-        return match (task_message, message) {
-            (Some(task_message), Some(message)) => Some(format!("{task_message}\n\n{message}")),
-            (Some(text), None) | (None, Some(text)) => Some(text.to_string()),
-            (None, None) => None,
-        };
-    }
-
-    if task_message.is_none() && message.is_none() {
-        return None;
-    }
-
-    // The receiver is dropped: the launch task's own `register` installs the
-    // channel the owner reads, and keeps the queue these submissions fill.
-    let _owner = state
-        .session_registry
-        .register(session.id, session.kind, Phase::Creating);
-
-    if let Some(task_message) = task_message {
-        queue_first(state, session, None, task_message);
-    }
-    if let Some(message) = message {
-        queue_first(state, session, Some(user_id), message);
-    }
-
-    None
-}
-
-/// Queue one of a new session's first inputs, or log why it was refused.
-fn queue_first(state: &AppState, session: &Session, user_id: Option<Uuid>, text: &str) {
-    let registry: &SessionRegistry = &state.session_registry;
-
-    match registry.submit(
-        session.id,
-        QueuedInput {
-            input: SessionInput::Message {
-                text: text.to_string(),
-            },
-            user_id,
-            client_id: None,
-            accepted_at: Utc::now(),
-        },
-    ) {
-        SubmitResult::Rejected(reason) => warn!(
-            session_id = %session.id,
-            reason = %reason,
-            "a first message of a new session was not queued",
-        ),
-        result => debug!(
-            session_id = %session.id,
-            result = ?result,
-            "a first message of a new session was queued",
-        ),
-    }
 }
 
 // ---- read and retitle ----
@@ -1063,30 +654,48 @@ mod tests {
         }))
         .expect("the minimal body parses");
 
+        let minimal = minimal
+            .into_request()
+            .expect("the minimal body is a launch");
         assert_eq!(minimal.profile_id, profile_id);
         assert_eq!(minimal.base_ref, None);
         assert_eq!(minimal.title, None);
-        assert_eq!(minimal.message(), None);
+        assert_eq!(minimal.message, None);
+        assert!(minimal.task.is_none());
 
         let full: CreateSessionInput = serde_json::from_value(json!({
             "profile_id": profile_id,
             "base_ref": "origin/main",
             "title": "Fix the login form",
             "message": "Fix login\nand the rest",
+            "task_id": 12,
         }))
         .expect("the full body parses");
 
+        let full = full.into_request().expect("the full body is a launch");
         assert_eq!(full.base_ref.as_deref(), Some("origin/main"));
         assert_eq!(full.title.as_deref(), Some("Fix the login form"));
-        assert_eq!(full.message(), Some("Fix login\nand the rest"));
+        assert_eq!(full.message.as_deref(), Some("Fix login\nand the rest"));
+        assert_eq!(full.task, Some(TaskRef::Number(12)));
 
-        // A message of whitespace is no message at all.
-        let blank: CreateSessionInput = serde_json::from_value(json!({
+        // A user launch never asks for the profile's served states
+        // (`ARCHITECTURE.md`, "Task tracker" → "Launching a session for a
+        // task").
+        assert!(!full.require_served_state);
+
+        // A reference that names no task at all is the documented 404, before
+        // anything is launched.
+        let bad: CreateSessionInput = serde_json::from_value(json!({
             "profile_id": profile_id,
-            "message": "   \n ",
+            "task_id": "not-a-task",
         }))
         .expect("the body parses");
-        assert_eq!(blank.message(), None);
+        assert_eq!(
+            bad.into_request()
+                .expect_err("a malformed reference names no task")
+                .status(),
+            StatusCode::NOT_FOUND,
+        );
 
         // The fields that are the server's.
         serde_json::from_value::<CreateSessionInput>(json!({

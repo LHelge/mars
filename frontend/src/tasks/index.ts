@@ -63,10 +63,10 @@ export { useUsername } from "./useUsername";
 export { CONTROL, PRIORITIES } from "./taskChrome";
 export {
   diffTaskInput,
-  hasChildren,
   isEmptyUpdate,
   parentCandidates,
   taskEditValues,
+  taskEditValuesDiffer,
 } from "./taskEdit";
 export type { TaskEditValues } from "./taskEdit";
 

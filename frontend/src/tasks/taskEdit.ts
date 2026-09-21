@@ -1,10 +1,11 @@
 // What the drawer's edit form sends, and what it is allowed to offer
 // (`SPEC.md`, "Tasks": the `PUT` body and the one-level parent rules).
 //
-// Both functions here are pure and hold the two decisions that are easy to get
-// wrong: which fields a save actually carries, and which tasks may be named as
-// a parent. They live apart from the form because a module that renders a
-// component exports nothing else (`react-refresh/only-export-components`).
+// Everything here is pure and holds the decisions that are easy to get wrong:
+// which fields a save actually carries, whether the server has moved away from
+// the reading the form opened on, and which tasks may be named as a parent.
+// They live apart from the form because a module that renders a component
+// exports nothing else (`react-refresh/only-export-components`).
 
 import type { Task, TaskPriority, UpdateTaskInput } from "../types";
 
@@ -71,7 +72,8 @@ export function diffTaskInput(
   if (edited.assignee_user_id !== original.assignee_user_id) {
     input.assignee_user_id = edited.assignee_user_id;
   }
-  if (edited.parent_id !== original.parent_id) input.parent_id = edited.parent_id;
+  if (edited.parent_id !== original.parent_id)
+    input.parent_id = edited.parent_id;
 
   return input;
 }
@@ -79,6 +81,22 @@ export function diffTaskInput(
 /** Nothing to send: the form closes without a request. */
 export function isEmptyUpdate(input: UpdateTaskInput): boolean {
   return Object.keys(input).length === 0;
+}
+
+/**
+ * True when the two sets of values differ in any editable field.
+ *
+ * The form opens on one reading of the task and keeps it as its baseline for
+ * as long as it is open, so a refresh cannot silently widen a save. It can,
+ * though, mean the form is editing values someone else has already moved on
+ * from, which is what this answers: the drawer says so instead of staying
+ * silent.
+ */
+export function taskEditValuesDiffer(
+  a: TaskEditValues,
+  b: TaskEditValues,
+): boolean {
+  return !isEmptyUpdate(diffTaskInput(a, b));
 }
 
 /**
@@ -99,9 +117,4 @@ export function parentCandidates(tasks: Task[], task: Task): Task[] {
   return tasks.filter(
     (candidate) => candidate.id !== task.id && candidate.parent_id === null,
   );
-}
-
-/** True when some task in the snapshot names `task` as its parent. */
-export function hasChildren(tasks: Task[], task: Task): boolean {
-  return tasks.some((candidate) => candidate.parent_id === task.id);
 }

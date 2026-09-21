@@ -7,10 +7,10 @@ import { describe, expect, it } from "vitest";
 import type { Task } from "../types";
 import {
   diffTaskInput,
-  hasChildren,
   isEmptyUpdate,
   parentCandidates,
   taskEditValues,
+  taskEditValuesDiffer,
 } from "./taskEdit";
 
 const PROJECT = "11111111-1111-4111-8111-111111111111";
@@ -63,14 +63,17 @@ describe("diffTaskInput", () => {
   });
 
   it("sends only the fields that changed", () => {
-    expect(
-      diffTaskInput(original, { ...original, priority: 0 }),
-    ).toEqual({ priority: 0 });
+    expect(diffTaskInput(original, { ...original, priority: 0 })).toEqual({
+      priority: 0,
+    });
   });
 
   it("trims the title, and treats trailing whitespace as no change", () => {
     expect(
-      diffTaskInput(original, { ...original, title: "  Rewrite the importer " }),
+      diffTaskInput(original, {
+        ...original,
+        title: "  Rewrite the importer ",
+      }),
     ).toEqual({});
     expect(
       diffTaskInput(original, { ...original, title: "  Rewrite the reader " }),
@@ -95,7 +98,10 @@ describe("diffTaskInput", () => {
 
   it("ignores label order, since the API stores a set", () => {
     expect(
-      diffTaskInput(original, { ...original, labels: ["migration", "backend"] }),
+      diffTaskInput(original, {
+        ...original,
+        labels: ["migration", "backend"],
+      }),
     ).toEqual({});
     expect(
       diffTaskInput(original, { ...original, labels: ["backend"] }),
@@ -136,16 +142,25 @@ describe("parentCandidates", () => {
   });
 });
 
-describe("hasChildren", () => {
-  const parent = task(1);
-  const child = task(2, { parent_id: "task-1" });
-  const snapshot = [parent, child];
+describe("taskEditValuesDiffer", () => {
+  const values = taskEditValues(task(1, { labels: ["api", "ui"] }));
 
-  it("is true for a task some other task names as its parent", () => {
-    expect(hasChildren(snapshot, parent)).toBe(true);
+  it("is false for the same reading twice", () => {
+    expect(taskEditValuesDiffer(values, { ...values })).toBe(false);
   });
 
-  it("is false for a leaf", () => {
-    expect(hasChildren(snapshot, child)).toBe(false);
+  it("is false when only the label order moved", () => {
+    expect(
+      taskEditValuesDiffer(values, { ...values, labels: ["ui", "api"] }),
+    ).toBe(false);
+  });
+
+  it("is true when the server changed a field", () => {
+    expect(taskEditValuesDiffer(values, { ...values, priority: 0 })).toBe(true);
+  });
+
+  it("is true when the server cleared the assignee", () => {
+    const held = { ...values, assignee_user_id: ALICE };
+    expect(taskEditValuesDiffer(held, values)).toBe(true);
   });
 });

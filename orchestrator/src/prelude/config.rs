@@ -157,21 +157,25 @@ impl Config {
     /// the same sources in the same order, and must not fail because some
     /// unrelated required variable is missing (`crate::healthcheck`).
     pub fn load_dotenv() {
-        for candidate in [".env", "../.env"] {
-            match dotenvy::from_filename(candidate) {
-                Ok(path) => {
-                    // The file name only, never any of the values it carries.
-                    debug!(env_file = %path.display(), "loaded environment file");
-                    return;
-                }
-                Err(err) if err.not_found() => continue,
-                Err(err) => {
-                    debug!(env_file = candidate, error = %err, "could not load environment file");
-                    return;
-                }
+        let Some(path) = std::env::current_dir()
+            .ok()
+            .and_then(|dir| find_dotenv(&dir))
+        else {
+            debug!("no .env file found; using the process environment only");
+            return;
+        };
+
+        // `from_path` and not `from_filename`: the latter searches every
+        // ancestor directory, which is how a process started three levels down
+        // (the end-to-end stack's orchestrator) once picked up the developer's
+        // root `.env` and its real `RESEND_API_KEY`.
+        match dotenvy::from_path(&path) {
+            // The file name only, never any of the values it carries.
+            Ok(()) => debug!(env_file = %path.display(), "loaded environment file"),
+            Err(err) => {
+                debug!(env_file = %path.display(), error = %err, "could not load environment file");
             }
         }
-        debug!("no .env file found; using the process environment only");
     }
 
     /// Build the configuration from a lookup closure.
@@ -387,6 +391,19 @@ impl fmt::Debug for Config {
     }
 }
 
+/// The `.env` file a process started in `current_dir` loads: `.env` there, or
+/// else `../.env`, and nothing further up.
+///
+/// Two levels and no more, deliberately. `cargo run` from `orchestrator/` finds
+/// the repository root's file; a process started deeper in the tree — the
+/// end-to-end stack's orchestrator in `frontend/.e2e/run` — finds none, and so
+/// runs on exactly the variables it was given.
+fn find_dotenv(current_dir: &Path) -> Option<PathBuf> {
+    [current_dir.join(".env"), current_dir.join("../.env")]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
 /// A trimmed value, treating an unset variable and an empty one alike: a `.env`
 /// line such as `JWT_SECRET=` is a common mistake and must not pass as set.
 fn value<F>(vars: &F, name: &str) -> Option<String>
@@ -561,6 +578,46 @@ mod tests {
 
     fn load(vars: &HashMap<String, String>) -> std::result::Result<Config, ConfigError> {
         Config::from_vars_in(|name| vars.get(name).cloned(), Path::new(BASE))
+    }
+
+    /// `root/.env`, with `root/a/b/c` below it; the file holds a name only.
+    fn tree_with_root_dotenv() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("a/b/c")).unwrap();
+        std::fs::write(root.path().join(".env"), "MARS_TEST_ONLY=root\n").unwrap();
+        root
+    }
+
+    #[test]
+    fn the_dotenv_lookup_prefers_the_current_directory_to_its_parent() {
+        let root = tree_with_root_dotenv();
+        std::fs::write(root.path().join("a/.env"), "MARS_TEST_ONLY=a\n").unwrap();
+
+        let found = find_dotenv(&root.path().join("a")).unwrap();
+
+        assert_eq!(found, root.path().join("a/.env"));
+    }
+
+    #[test]
+    fn the_dotenv_lookup_falls_back_to_the_parent_directory() {
+        let root = tree_with_root_dotenv();
+
+        let found = find_dotenv(&root.path().join("a")).unwrap();
+
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            root.path().join(".env").canonicalize().unwrap()
+        );
+    }
+
+    /// The end-to-end stack's orchestrator runs in `frontend/.e2e/run`, three
+    /// levels below a developer's root `.env`, and must not find it.
+    #[test]
+    fn the_dotenv_lookup_never_looks_above_the_parent_directory() {
+        let root = tree_with_root_dotenv();
+
+        assert_eq!(find_dotenv(&root.path().join("a/b")), None);
+        assert_eq!(find_dotenv(&root.path().join("a/b/c")), None);
     }
 
     #[test]

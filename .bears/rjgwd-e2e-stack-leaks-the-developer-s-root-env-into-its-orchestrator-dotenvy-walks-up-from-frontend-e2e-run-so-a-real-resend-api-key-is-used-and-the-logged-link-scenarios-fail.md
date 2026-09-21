@@ -1,15 +1,16 @@
 ---
 id: rjgwd
 title: "E2E stack leaks the developer's root .env into its orchestrator: dotenvy walks up from frontend/.e2e/run, so a real RESEND_API_KEY is used and the logged-link scenarios fail"
-status: open
+status: done
 priority: P1
 created: "2026-09-20T23:58:18.585720151Z"
-updated: "2026-09-20T23:58:18.585720151Z"
+updated: "2026-09-21T05:08:58.551428109Z"
 tags:
   - frontend
   - e2e
   - orchestrator
   - bug
+attempts: 1
 ---
 
 ## Summary

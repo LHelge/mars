@@ -175,16 +175,30 @@ start_orchestrator() {
     local master_key
     master_key="1=$(openssl rand -base64 32)"
 
+    # The log is appended to, and E2E_KEEP_LOG can leave an earlier run's in
+    # place: `assert_logged_email` reads this run's lines only.
+    LOG_START=0
+    [ ! -f "$LOG_FILE" ] || LOG_START="$(wc -l <"$LOG_FILE")"
+
     say "e2e-stack: starting the orchestrator on $API_URL (log: $LOG_FILE)"
-    # `env -i` keeps the developer's own RESEND_API_KEY, MAIL_FROM or
-    # SECRETS_MASTER_KEY_FILE out of the run, and the working directory is a
-    # fresh one so `Config::from_env`'s `.env`/`../.env` lookup finds nothing:
-    # this stack sets every variable itself.
+    # `env -i` keeps the developer's own environment out of the run, and the
+    # working directory is two levels below `frontend/`, so `Config::from_env`'s
+    # `.env`/`../.env` lookup cannot reach the repository's `.env`: this stack
+    # sets every variable itself. The five the orchestrator reads and this stack
+    # has no value for are pinned empty, which `Config` reads as unset and which
+    # no `.env` overrides, so even a stray `.env` inside `.e2e/` cannot switch
+    # the run to real mail delivery, another master key or a session network.
+    # `assert_logged_email` below is the check that it held.
     (
         cd "$RUN_DIR" &&
             exec env -i \
                 PATH="$PATH" \
                 HOME="$HOME" \
+                RESEND_API_KEY= \
+                MAIL_FROM= \
+                SECRETS_MASTER_KEY_FILE= \
+                SESSION_NETWORK_INTERNAL= \
+                SESSION_NETWORK_EGRESS= \
                 PUBLIC_URL="$BASE_URL" \
                 JWT_SECRET="e2e-not-a-real-secret" \
                 DATABASE_URL="postgres://mars:mars@localhost:$PG_PORT/mars" \
@@ -226,6 +240,22 @@ await_health() {
     exit 1
 }
 
+# The scenarios that follow an invitation, a reset or an escalation read the
+# link out of the orchestrator's log, which only `LogEmailClient` writes; with
+# `RESEND_API_KEY` set the orchestrator would instead try to deliver the suite's
+# mail through somebody's real account. Its own startup line says which client
+# it chose, so a configuration that leaked in fails here, by name, and not as
+# five timeouts an hour later. The orchestrator is stopped first: nothing may
+# run against it. Only the line's presence is read, never a value (rule 3).
+assert_logged_email() {
+    if tail -n "+$((LOG_START + 1))" "$LOG_FILE" | grep -q "RESEND_API_KEY is unset"; then
+        return 0
+    fi
+
+    stop_orchestrator
+    fail "the orchestrator did not choose the logging email client, so RESEND_API_KEY reached it from somewhere this stack does not control (a .env in $E2E_DIR or $RUN_DIR?). The orchestrator has been stopped."
+}
+
 write_env_file() {
     cat >"$ENV_FILE" <<EOF
 PLAYWRIGHT_BASE_URL=$BASE_URL
@@ -251,6 +281,7 @@ cmd_up() {
     build_orchestrator
     start_orchestrator
     await_health
+    assert_logged_email
     write_env_file
     say "e2e-stack: up. $(cat "$RUN_DIR/health.json")"
     say "e2e-stack: wrote $ENV_FILE; sign in as admin/changeme"

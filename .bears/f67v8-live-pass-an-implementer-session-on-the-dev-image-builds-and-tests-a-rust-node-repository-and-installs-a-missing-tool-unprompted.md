@@ -1,10 +1,10 @@
 ---
 id: f67v8
 title: "Live pass: an implementer session on the dev image builds and tests a Rust+Node repository and installs a missing tool unprompted"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-21T10:01:49.299009734Z"
-updated: "2026-09-21T11:31:48.343321657Z"
+updated: "2026-09-21T11:56:38.481863136Z"
 tags:
   - images
   - verification

@@ -37,6 +37,7 @@ vi.mock("../services/users", () => ({
 // Obviously fake fixture values (CLAUDE.md, rule 3).
 const ME_ID = "00000000-0000-0000-0000-0000000000a1";
 const OTHER_ID = "00000000-0000-0000-0000-0000000000b2";
+const THIRD_ID = "00000000-0000-0000-0000-0000000000e5";
 const INVITE_ID = "00000000-0000-0000-0000-0000000000c3";
 
 function me(overrides: Partial<User> = {}): User {
@@ -61,6 +62,19 @@ function other(overrides: Partial<User> = {}): User {
     must_change_password: true,
     notify_email: false,
     created_at: "2026-02-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function third(overrides: Partial<User> = {}): User {
+  return {
+    id: THIRD_ID,
+    username: "zoe",
+    email: "zoe@example.invalid",
+    admin: false,
+    must_change_password: false,
+    notify_email: true,
+    created_at: "2026-02-15T00:00:00Z",
     ...overrides,
   };
 }
@@ -234,6 +248,47 @@ describe("AdminPage", () => {
     expect(
       await screen.findByText("cannot delete the last administrator"),
     ).toBeDefined();
+  });
+
+  it("keeps both rows busy while two deletions overlap", async () => {
+    vi.mocked(listUsers).mockResolvedValue([me(), other(), third()]);
+    // One resolver per user, so each request can be answered on its own.
+    const finish = new Map<string, () => void>();
+    vi.mocked(deleteUser).mockImplementation(
+      (id: string) =>
+        new Promise<void>((resolve) => {
+          finish.set(id, () => {
+            resolve();
+          });
+        }),
+    );
+    renderAdmin();
+
+    const users = await sectionTable("Users");
+    const deleteIn = (username: string): HTMLButtonElement =>
+      within(rowFor(users, username)).getByRole("button", { name: "Delete" });
+
+    fireEvent.click(deleteIn("operator"));
+    await waitFor(() => {
+      expect(finish.has(OTHER_ID)).toBe(true);
+    });
+    fireEvent.click(deleteIn("zoe"));
+    await waitFor(() => {
+      expect(finish.has(THIRD_ID)).toBe(true);
+    });
+
+    // A shared observer would have followed the second press and re-enabled
+    // the first row while its DELETE was still in flight.
+    expect(deleteIn("operator").disabled).toBe(true);
+    expect(deleteIn("zoe").disabled).toBe(true);
+
+    // The row whose request answered stops waiting; the other keeps waiting.
+    vi.mocked(listUsers).mockResolvedValue([me(), third()]);
+    finish.get(OTHER_ID)?.();
+    await waitFor(() => {
+      expect(within(users).queryByText("operator")).toBeNull();
+    });
+    expect(deleteIn("zoe").disabled).toBe(true);
   });
 
   it("normalises the invited address and says where the link is", async () => {

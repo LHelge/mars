@@ -9,12 +9,14 @@
 // admin when there is none; each user can opt out", stored as
 // `users.notify_email` (`docs/data-model.md`).
 //
-// Two copies of the current user exist — `services/auth`'s, which
-// `PageLayout`, `AdminRoute` and `ProtectedRoute` read, and the query cache's
-// — so whichever `User` arrives last is written to both: the fetch, the
-// preference mutation and (inside the form) the password change all install
-// the same object. A user demoted elsewhere therefore loses the Admin nav
-// entry as soon as this page reads `GET /users/me`.
+// There is one current user, the one in `services/auth` that `PageLayout`,
+// `AdminRoute` and `ProtectedRoute` read, and this page reads it through
+// `useAuth()` like everything else (`SPEC.md`, "Frontend", Rules). The query
+// below is the read, not a second copy: `refreshCurrentUser` installs what
+// `GET /users/me` answered, and the query itself is here for its retry and its
+// error state. Nothing ever writes a cached user back into the store, which is
+// what used to give a demoted administrator their Admin nav entry back from a
+// five-minute-old answer.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
@@ -25,19 +27,21 @@ import {
   PasswordChangeForm,
   SectionHeader,
 } from "../components";
+import { useAuth } from "../hooks";
 import { getCurrentUser, setCurrentUser } from "../services/auth";
+import { refreshCurrentUser } from "../services/currentUser";
 import { errorMessage } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
-import { getMe, updateMe } from "../services/users";
+import { updateMe } from "../services/users";
 import type { User } from "../types";
 import { formatDateTime } from "../utils/format";
 
 /** How long a "saved" banner stays on screen before it fades out again. */
 export const CONFIRMATION_MS = 4_000;
 
-/** The cache value `onMutate` captured, so `onError` can put it back. */
+/** The user `onMutate` captured, so `onError` can put it back. */
 interface Rollback {
-  previous: User | undefined;
+  previous: User | null;
 }
 
 function Field({ label, children }: { label: string; children: string }) {
@@ -52,41 +56,17 @@ function Field({ label, children }: { label: string; children: string }) {
 export function SettingsPage() {
   const queryClient = useQueryClient();
   const key = queryKeys.users.me();
+  const { user } = useAuth();
 
   // The signed-in user is already in memory from the authenticated bootstrap,
-  // so the page paints immediately; `initialDataUpdatedAt: 0` marks that copy
-  // as stale, which refetches `GET /users/me` at once for the authoritative
-  // one.
+  // so the page paints immediately and this read is only about replacing that
+  // snapshot with the authoritative one.
   const me = useQuery({
     queryKey: key,
-    queryFn: getMe,
-    initialData: () => getCurrentUser() ?? undefined,
-    initialDataUpdatedAt: 0,
+    queryFn: refreshCurrentUser,
   });
 
-  const user = me.data;
-
-  // Whatever the fetch answered wins over the bootstrap snapshot everywhere.
-  useEffect(() => {
-    if (user !== undefined) {
-      setCurrentUser(user);
-    }
-  }, [user]);
-
-  const [savedAt, setSavedAt] = useState<number | null>(null);
   const [passwordChanged, setPasswordChanged] = useState(false);
-
-  useEffect(() => {
-    if (savedAt === null) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      setSavedAt(null);
-    }, CONFIRMATION_MS);
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [savedAt]);
 
   const preference = useMutation<User, Error, boolean, Rollback>({
     mutationFn: (notify_email: boolean) => updateMe({ notify_email }),
@@ -94,27 +74,37 @@ export function SettingsPage() {
       // An in-flight `GET /users/me` would otherwise land on top of the
       // optimistic value and flip the checkbox back under the pointer.
       await queryClient.cancelQueries({ queryKey: key });
-      const previous = queryClient.getQueryData<User>(key);
-      if (previous !== undefined) {
-        queryClient.setQueryData<User>(key, { ...previous, notify_email });
+      const previous = getCurrentUser();
+      if (previous !== null) {
+        setCurrentUser({ ...previous, notify_email });
       }
-      setSavedAt(null);
       return { previous };
     },
     onError: (_error, _notifyEmail, context) => {
       // 400, 403, 5xx or an unreachable orchestrator alike: the checkbox goes
       // back to what the server last confirmed and the message is shown
       // verbatim.
-      if (context?.previous !== undefined) {
-        queryClient.setQueryData<User>(key, context.previous);
+      if (context !== undefined && context.previous !== null) {
+        setCurrentUser(context.previous);
       }
     },
     onSuccess: (updated) => {
-      queryClient.setQueryData<User>(key, updated);
       setCurrentUser(updated);
-      setSavedAt(Date.now());
     },
   });
+
+  // The confirmation is the mutation's own success, so it needs no second
+  // copy in state; the timer simply drops it again.
+  const { isSuccess, reset } = preference;
+  useEffect(() => {
+    if (!isSuccess) {
+      return;
+    }
+    const timer = setTimeout(reset, CONFIRMATION_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [isSuccess, reset]);
 
   return (
     <PageLayout title="Settings">
@@ -125,7 +115,7 @@ export function SettingsPage() {
             description="Your details, as the orchestrator holds them."
           />
 
-          {user === undefined ? (
+          {user === null ? (
             me.isError ? (
               <Alert kind="error">
                 {errorMessage(me.error, "Could not load your account.")}
@@ -160,18 +150,25 @@ export function SettingsPage() {
 
           {preference.isError && (
             <Alert kind="error">
-              {errorMessage(preference.error, "Could not save your preferences.")}
+              {errorMessage(
+                preference.error,
+                "Could not save your preferences.",
+              )}
             </Alert>
           )}
 
-          {savedAt !== null && <Alert kind="success">Preferences saved</Alert>}
+          {preference.isSuccess && (
+            <Alert kind="success">Preferences saved</Alert>
+          )}
 
           <label className="flex max-w-prose items-start gap-2 text-sm">
+            {/* Disabled while the PATCH is in flight: two overlapping writes
+                would be settled by whichever answered last. */}
             <input
               type="checkbox"
               className="accent-console-accent mt-0.5 size-4 shrink-0"
               checked={user?.notify_email ?? false}
-              disabled={user === undefined}
+              disabled={user === null || preference.isPending}
               onChange={(event) => {
                 preference.mutate(event.target.checked);
               }}

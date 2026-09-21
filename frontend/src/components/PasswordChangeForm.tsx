@@ -10,9 +10,10 @@
 // `installSession` with the reason `password_change` — the one install that
 // fires `onCredentialsReplaced` for a browser that stays put, letting the
 // stream hooks reconnect with the fresh token. An ordinary refresh rotation
-// installs as `refresh` and leaves open streams alone. The TanStack Query cache is *not*
-// cleared: the same user is still authorised for everything it holds; only the
-// current user is refreshed in place.
+// installs as `refresh` and leaves open streams alone. The TanStack Query cache
+// is *not* cleared: the same user is still authorised for everything it holds,
+// and the current user it answers with is installed in the one place the
+// current user lives (`SPEC.md`, "Frontend", Rules).
 //
 // Wrong or missing current password: the orchestrator
 // (`orchestrator/src/routes/users.rs`) answers **400** `current password is
@@ -21,7 +22,6 @@
 // token expiry. A new password equal to the current one is allowed by the
 // spec and is not blocked here.
 
-import { useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { useAuth, useFormSubmit } from "../hooks";
 import {
@@ -30,7 +30,6 @@ import {
   errorMessage,
   installSession,
   MessageError,
-  queryKeys,
 } from "../services";
 import { validatePassword } from "../utils";
 import { Alert } from "./Alert";
@@ -74,7 +73,6 @@ export function PasswordChangeForm({
   requireCurrent = true,
 }: PasswordChangeFormProps) {
   const { user } = useAuth();
-  const queryClient = useQueryClient();
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [password, setPassword] = useState("");
@@ -117,9 +115,9 @@ export function PasswordChangeForm({
       setPassword("");
       setConfirm("");
 
+      // `installSession` is what makes the response the current user; there
+      // is no second copy to keep in step (`SPEC.md`, "Frontend", Rules).
       installSession(auth, "password_change");
-      // Same user, still authorised: only the current user is refreshed.
-      queryClient.setQueryData(queryKeys.users.me(), auth.user);
       onSuccess?.();
     },
     { mapError: changeFailure },

@@ -1,10 +1,10 @@
 ---
 id: auzv5
 title: Parse unified patches by hunk line counts so content lines starting with "-- " or "++ " survive, and handle quoted paths
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:51:33.387322477Z"
-updated: "2026-09-21T10:51:33.387322477Z"
+updated: "2026-09-21T17:01:02.884930241Z"
 tags:
   - frontend
   - orchestrator
@@ -12,6 +12,7 @@ tags:
   - bug
   - git
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: parseUnifiedPatch (frontend/src/utils/diff.ts:209-290) tests for `--- ` and `+++ ` file headers before it handles the hunk body and without asking whether a hunk is open. Reproduced by running the parser on hand-written patches:

@@ -1,16 +1,17 @@
 ---
 id: "3rgt7"
 title: Keep one assistant message per streamed text block when other rows land mid-stream or a history page cuts the run
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:52:01.167569393Z"
-updated: "2026-09-21T10:52:01.167569393Z"
+updated: "2026-09-21T17:01:07.140188919Z"
 tags:
   - frontend
   - technical-review
   - bug
   - session
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: text_delta events are persisted with a seq and `text` carries the complete text of the block (SPEC.md, "AgentEvent"). streamingId (session/sessionStore.ts:291-303) continues a streaming assistant message only when it is the last row of its scope.

@@ -1,16 +1,17 @@
 ---
 id: wsckz
 title: Preserve the task edit baseline across concurrent server updates
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:44:25.262432502Z"
-updated: "2026-09-21T10:49:31.120348428Z"
+updated: "2026-09-21T17:00:56.626101494Z"
 tags:
   - frontend
   - technical-review
   - bug
   - tracker
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: frontend/src/tasks/TaskEditForm.tsx recomputes original with useMemo([task]), while draft fields initialized with useState retain the values from edit start. An SSE/query refresh changing priority from P2 to P0 makes a title-only save submit priority P2 as well. A temporary component regression test confirmed the incorrect payload.

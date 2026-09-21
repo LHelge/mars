@@ -1,10 +1,10 @@
 ---
 id: hqbzq
 title: Keep a loaded page mounted when a background refetch fails, and stop retrying 4xx answers
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:51:48.800893256Z"
-updated: "2026-09-21T10:51:48.800893256Z"
+updated: "2026-09-21T17:01:05.214459644Z"
 tags:
   - frontend
   - technical-review
@@ -12,6 +12,7 @@ tags:
   - react
   - query
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: in TanStack Query v5 a failed background refetch yields `isError === true` while `data` stays defined (isRefetchError). queryClient.ts sets refetchOnWindowFocus and a 5 s staleTime, and several queries set `retry: false`, so one failed request is enough.

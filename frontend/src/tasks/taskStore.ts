@@ -29,8 +29,17 @@ export interface TaskStoreDeps {
   listTaskStates: (projectId: string) => Promise<TaskState[]>;
 }
 
-/** The stream status shown beside a snapshot that may be stale. */
-export type TaskStreamStatus = "connecting" | "live" | "reconnecting";
+/**
+ * The stream status shown beside a snapshot that may be stale. `reconnecting`
+ * means an attempt is pending; `offline` means none is, `streamError` says
+ * why, and the board offers `reconnectStream` (`SPEC.md`, "Frontend", "Task
+ * board").
+ */
+export type TaskStreamStatus =
+  | "connecting"
+  | "live"
+  | "reconnecting"
+  | "offline";
 
 export interface TaskBoardState {
   /** The project the snapshot belongs to; `null` before the first bind. */
@@ -59,6 +68,15 @@ export interface TaskBoardState {
   /** The last read failure, cleared by the next successful load. */
   error: string | null;
   stream: TaskStreamStatus;
+  /** Why the stream gave up; `null` unless `stream` is `offline`. */
+  streamError: string | null;
+  /**
+   * The mounted stream's own recovery action, registered by `TaskStream` for
+   * as long as it is mounted. The board is not the stream's owner — the page
+   * that mounts `useTaskStream` is — so this is how a view several levels
+   * down offers the reader a way back.
+   */
+  reconnectStream: (() => void) | null;
   /** Bumped by a project change, a reconnect, an unmount and `reset()`. */
   viewGeneration: number;
   /** Bumped by every non-duplicate event and every local mutation. */
@@ -70,7 +88,10 @@ export interface TaskBoardState {
 export interface TaskBoardActions {
   /** Binds the store to a project; a different one resets the snapshot. */
   bindProject: (projectId: string) => void;
-  setStream: (status: TaskStreamStatus) => void;
+  /** `offline` carries the sentence the board shows; the rest clear it. */
+  setStream: (status: TaskStreamStatus, error?: string) => void;
+  /** The mounted stream registers its reconnect here, and clears it on unmount. */
+  setStreamRetry: (reconnect: (() => void) | null) => void;
   /**
    * Records a stream event. Returns `false` for a duplicate or replayed
    * `seq` (nothing changes); otherwise advances the cursor, dirties the
@@ -103,6 +124,8 @@ export function emptyTaskBoardState(): TaskBoardState {
     dirty: false,
     error: null,
     stream: "connecting",
+    streamError: null,
+    reconnectStream: null,
     viewGeneration: 0,
     eventGeneration: 0,
     query: "",
@@ -162,11 +185,19 @@ export function createTaskStore(deps: TaskStoreDeps): TaskStoreHook {
         dirty: false,
         error: null,
         stream: "connecting",
+        streamError: null,
         viewGeneration: state.viewGeneration + 1,
       }));
     },
 
-    setStream: (status) => set({ stream: status }),
+    setStream: (status, error) =>
+      set({
+        stream: status,
+        streamError:
+          status === "offline" ? (error ?? "Disconnected") : null,
+      }),
+
+    setStreamRetry: (reconnect) => set({ reconnectStream: reconnect }),
 
     noteEvent: (event) => {
       if (event.seq <= get().lastSeq) return false;

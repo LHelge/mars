@@ -6,8 +6,10 @@
 // open-before-load ordering, the explicit reconnect and the invalidations are
 // unit-testable with a fake `EventSource`; `useTaskStream` only owns its
 // lifetime. The browser's automatic `EventSource` retry is never used: every
-// error closes the source, refreshes the access token and reopens with
-// `?after=<lastSeq>`, which is also why `Last-Event-ID` is never relied on. A
+// error closes the source and reopens it with `?after=<lastSeq>` — the access
+// token rotated on the first error of a run of failures and on no other, and
+// the attempts bounded and ended visibly (`handleError`) — which is also why
+// `Last-Event-ID` is never relied on. A
 // board that has received no event yet has no such cursor and opens at
 // `?after=latest` instead (`services/tasks`, `taskStreamUrl`), so a project's
 // whole history is never replayed into a client that is about to read a REST
@@ -28,6 +30,8 @@ import {
   onSignOut,
   refreshAccessToken,
 } from "../services/auth";
+import { errorMessage, isNotFound } from "../services/errorMessage";
+import { getProject } from "../services/projects";
 import { taskStreamUrl } from "../services/tasks";
 import type { TaskEvent } from "../types";
 import { backoffDelay } from "../utils/backoff";
@@ -53,6 +57,30 @@ function isUnauthorized(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
 }
 
+function isForbidden(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403;
+}
+
+/**
+ * How many errors that never reached `open` are made before the project is
+ * read over REST. `EventSource` never hands JavaScript the status behind a
+ * refused connection, so a stream that cannot open has to ask the endpoint
+ * that answers in words (the same rule as `session/useSessionSocket`).
+ */
+const ATTEMPTS_BEFORE_CHECK = 5;
+
+/** How many such attempts end it, the check having found nothing wrong. */
+const ATTEMPTS_BEFORE_OFFLINE = 10;
+
+/** What the reader is told when the project is no longer there. */
+const GONE = "This project no longer exists.";
+/** ... when it is there but no longer theirs. */
+const FORBIDDEN = "You no longer have access to this project.";
+/** ... when their authentication itself is gone. */
+const SIGNED_OUT = "Your sign-in has ended. Sign in again to reconnect.";
+/** ... when nothing answered at all for as long as we kept trying. */
+const UNREACHABLE = "Could not reconnect to the task stream.";
+
 const browserEventSource: EventSourceFactory = (url) => new EventSource(url);
 
 export class TaskStream {
@@ -69,6 +97,14 @@ export class TaskStream {
    * credentials and reopens once with them.
    */
   private refreshing = false;
+  /** The current source reached `open`; reset by every `connect`. */
+  private opened = false;
+  /** Errors since the last connection that opened; the loop's bound. */
+  private failedOpens = 0;
+  /** The REST check has already been made for this run of failures. */
+  private checked = false;
+  /** A REST check is in flight; a second error must not start another. */
+  private checking = false;
   private readonly unsubscribes: (() => void)[] = [];
 
   /**
@@ -111,13 +147,39 @@ export class TaskStream {
     );
     this.store.bindProject(this.projectId);
     this.store.setStream("connecting");
+    this.store.setStreamRetry(() => {
+      this.reconnect();
+    });
+    this.connect();
+  }
+
+  /**
+   * Start again from nothing: the board's recovery action out of `offline`,
+   * and the path a credential replacement takes. Every count the last run
+   * left behind is dropped.
+   */
+  reconnect(): void {
+    if (this.disposed) return;
+    this.cancelRetry();
+    this.attempt = 0;
+    this.failedOpens = 0;
+    this.checked = false;
+    this.teardown();
+    this.store.setStream("reconnecting");
+    this.store.bumpView();
     this.connect();
   }
 
   private connect(): void {
     if (this.disposed || this.source !== null) return;
     const token = getAccessToken();
-    if (token === null) return; // Signed out; the route guard sends us away.
+    if (token === null) {
+      // Signed out; the route guard sends us away. Say so rather than leave a
+      // status claiming an attempt that will never be made.
+      this.store.setStream("offline", SIGNED_OUT);
+      return;
+    }
+    this.opened = false;
 
     // Captured before the source exists, so a handler that arrives after a
     // project change or a reconnect cannot write to the current view.
@@ -128,6 +190,7 @@ export class TaskStream {
     this.source = source;
     source.onopen = () => {
       if (this.disposed || this.store.viewGeneration !== view) return;
+      this.opened = true;
       this.attempt = 0;
       this.store.setStream("live");
       // The initial load on the first open, the catch-up refresh afterwards.
@@ -174,16 +237,39 @@ export class TaskStream {
 
   /**
    * `onerror` fires both for a dropped connection and for a refused one that
-   * never opened (an expired token answers 401 while still `CONNECTING`), so
-   * both take the same path: close, refresh, reopen at the last cursor.
+   * never opened (an expired token answers 401 while still `CONNECTING`), and
+   * `EventSource` never says which, so the token is rotated on the first
+   * error of a run and never again: a stream that cannot open — the project
+   * was deleted, say — would otherwise spend the single-use refresh cookie on
+   * every cycle for as long as the tab was left open, while telling the
+   * reader a reconnect was underway.
+   *
+   * The attempts that never open are counted, and after
+   * `ATTEMPTS_BEFORE_CHECK` the project is read over REST, which answers in
+   * words where the stream cannot.
    */
   private handleError(): void {
     if (this.disposed) return;
     this.teardown();
-    this.store.setStream("reconnecting");
     // Anything still in flight belongs to the connection that just died.
     this.store.bumpView();
-    void this.refreshThenReconnect();
+
+    if (this.opened) {
+      this.failedOpens = 0;
+      this.checked = false;
+      this.attempt = 0;
+    } else {
+      this.failedOpens += 1;
+    }
+
+    if (this.failedOpens <= 1) {
+      // The first error of this run: an expired token is a real reading of it,
+      // and the rotation is what `SPEC.md`, "Authentication" asks for.
+      this.store.setStream("reconnecting");
+      void this.refreshThenReconnect();
+      return;
+    }
+    this.retryOrCheck();
   }
 
   private async refreshThenReconnect(): Promise<void> {
@@ -197,14 +283,80 @@ export class TaskStream {
       // A 401 already cleared local authentication and routed to login, and a
       // stale completion belongs to a session that is gone; only transient
       // failures are worth retrying.
-      if (!isUnauthorized(error) && !isStaleRefreshError(error)) {
-        this.scheduleRetry();
+      if (isUnauthorized(error) || isStaleRefreshError(error)) {
+        this.giveUp(SIGNED_OUT);
+        return;
       }
+      this.retryOrCheck();
       return;
     } finally {
       this.refreshing = false;
     }
+    this.retryOrCheck();
+  }
+
+  /**
+   * The bound on reconnection: back off while attempts are cheap, ask REST
+   * once they are not, and stop with something the reader can act on rather
+   * than reopening at the 30 s cap until the tab is closed.
+   */
+  private retryOrCheck(): void {
+    if (this.disposed) return;
+    if (this.failedOpens >= ATTEMPTS_BEFORE_OFFLINE) {
+      this.giveUp(UNREACHABLE);
+      return;
+    }
+    this.store.setStream("reconnecting");
+    if (this.failedOpens >= ATTEMPTS_BEFORE_CHECK && !this.checked) {
+      void this.checkProject();
+      return;
+    }
     this.scheduleRetry();
+  }
+
+  /** Reads the project once over REST to decide what the errors mean. */
+  private async checkProject(): Promise<void> {
+    if (this.checking || this.disposed) return;
+    this.checking = true;
+    this.checked = true;
+    try {
+      await getProject(this.projectId);
+    } catch (error) {
+      if (this.disposed) return;
+      if (isNotFound(error)) {
+        this.giveUp(GONE);
+        return;
+      }
+      if (isForbidden(error)) {
+        this.giveUp(FORBIDDEN);
+        return;
+      }
+      if (isUnauthorized(error)) {
+        // `apiClient` has already rotated once and failed; `services/auth`
+        // has cleared this browser's authentication and is routing to login.
+        this.giveUp(SIGNED_OUT);
+        return;
+      }
+      console.warn("task stream project check failed:", errorMessage(error));
+      this.scheduleRetry();
+      return;
+    } finally {
+      this.checking = false;
+    }
+    if (this.disposed) return;
+    // The project is there and still ours: waiting is worth something, under
+    // the same bound as any other attempt.
+    this.scheduleRetry();
+  }
+
+  /**
+   * The end of the line: no timer, no rotation, no pretence that a reconnect
+   * is underway — a sentence saying why and the board's Reconnect action.
+   */
+  private giveUp(message: string): void {
+    this.cancelRetry();
+    this.teardown();
+    this.store.setStream("offline", message);
   }
 
   private scheduleRetry(): void {
@@ -233,18 +385,14 @@ export class TaskStream {
    */
   private handleCredentialsReplaced(): void {
     if (this.disposed || this.refreshing) return;
-    this.cancelRetry();
-    this.attempt = 0;
-    this.teardown();
-    this.store.setStream("reconnecting");
-    this.store.bumpView();
-    this.connect();
+    this.reconnect();
   }
 
   private handleSignOut(): void {
     this.invalidate.cancel();
     this.cancelRetry();
     this.teardown();
+    this.store.setStream("offline", SIGNED_OUT);
   }
 
   /** Closes the stream, cancels pending backoff and retires the view. */
@@ -255,6 +403,7 @@ export class TaskStream {
     this.invalidate.cancel();
     this.cancelRetry();
     this.teardown();
+    this.store.setStreamRetry(null);
     // A read still in flight can no longer update the store.
     this.store.bumpView();
   }

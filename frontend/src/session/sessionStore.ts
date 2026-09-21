@@ -110,7 +110,18 @@ export type Message =
   | ResultMessage
   | RawMessage;
 
-export type ConnectionStatus = "connecting" | "live" | "reconnecting";
+/**
+ * `reconnecting` is a promise: an attempt is pending — a retry timer, a token
+ * rotation or the REST check that decides between them. `offline` is the end
+ * of the line: nothing is pending, `connectionError` says why, and only the
+ * view's own Reconnect action starts the socket again (`SPEC.md`, "Frontend",
+ * "Session state").
+ */
+export type ConnectionStatus =
+  | "connecting"
+  | "live"
+  | "reconnecting"
+  | "offline";
 
 /**
  * Where the older-history request stands. `loading` is an actual request in
@@ -126,6 +137,8 @@ export type HistoryStatus = "idle" | "loading" | "error";
 export interface SessionState {
   session: Session | null;
   status: ConnectionStatus;
+  /** Why the connection gave up; `null` unless `status` is `offline`. */
+  connectionError: string | null;
   /** Highest applied `seq`; the socket reconnects with `after = lastSeq`. */
   lastSeq: number;
   /** Top-level message ids in display order. */
@@ -174,7 +187,11 @@ export interface SessionState {
 export interface SessionActions {
   reset: () => void;
   setSession: (session: Session) => void;
-  setStatus: (status: ConnectionStatus) => void;
+  /**
+   * The connection's own status. `offline` carries the sentence the view
+   * shows beside its Reconnect action; every other status clears it.
+   */
+  setStatus: (status: ConnectionStatus, error?: string) => void;
   /** Live and replay path: ignores `seq <= lastSeq`, advances `lastSeq`. */
   applyEvent: (event: AgentEvent) => void;
   /** An older page, newest-last as the REST endpoint returns it. */
@@ -218,6 +235,7 @@ export function emptySessionState(): SessionState {
   return {
     session: null,
     status: "connecting",
+    connectionError: null,
     lastSeq: 0,
     order: [],
     messages: {},
@@ -1009,8 +1027,11 @@ export function createSessionStore(): StoreApi<SessionStore> {
       set({ session });
     },
 
-    setStatus: (status) => {
-      set({ status });
+    setStatus: (status, error) => {
+      set({
+        status,
+        connectionError: status === "offline" ? (error ?? "Disconnected") : null,
+      });
     },
 
     applyEvent: (event) => {

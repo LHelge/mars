@@ -63,6 +63,8 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
   const loading = useTaskStore((state) => state.loading);
   const error = useTaskStore((state) => state.error);
   const stream = useTaskStore((state) => state.stream);
+  const streamError = useTaskStore((state) => state.streamError);
+  const reconnectStream = useTaskStore((state) => state.reconnectStream);
   const refresh = useTaskStore((state) => state.refresh);
   const query = useTaskStore((state) => state.query);
   const setQuery = useTaskStore((state) => state.setQuery);
@@ -135,13 +137,37 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
                 role="status"
                 className="text-console-muted font-mono text-xs"
               >
-                {stream === "reconnecting" ? "Reconnecting" : "Refreshing"}
+                {stream === "reconnecting"
+                  ? "Reconnecting"
+                  : stream === "offline"
+                    ? "Disconnected"
+                    : "Refreshing"}
               </span>
             )}
             {!creating && newTask}
           </>
         }
       />
+
+      {/* The stream gave up: the board below is a snapshot that will not
+          update itself again until this is answered (`SPEC.md`, "Frontend",
+          "Task board"). */}
+      {stream === "offline" && streamError !== null && (
+        <Alert kind="error">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>{streamError}</span>
+            {reconnectStream !== null && (
+              <SubmitButton
+                type="button"
+                variant="ghost"
+                onClick={reconnectStream}
+              >
+                Reconnect
+              </SubmitButton>
+            )}
+          </div>
+        </Alert>
+      )}
 
       {error !== null && (
         <Alert kind="error">

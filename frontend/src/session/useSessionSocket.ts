@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { StoreApi } from "zustand";
 
 import { ApiError } from "../services/apiClient";
-import { errorMessage } from "../services/errorMessage";
+import { errorMessage, isNotFound } from "../services/errorMessage";
 import {
   getAccessToken,
   isStaleRefreshError,
@@ -19,7 +19,7 @@ import {
   onSignOut,
   refreshAccessToken,
 } from "../services/auth";
-import { listEvents, sendInput, stopSession } from "../services/sessions";
+import { getSession, listEvents, sendInput, stopSession } from "../services/sessions";
 import type { ClientMessage, ServerMessage, SessionInput } from "../types";
 import { backoffDelay } from "../utils/backoff";
 import type { ConnectionStatus, SessionStore } from "./sessionStore";
@@ -34,6 +34,39 @@ const AUTH_CLOSE_CODE = 1008;
 const AUTH_RETRY_WINDOW_MS = 5000;
 const AUTH_ERROR = "authentication required";
 const OPEN = 1;
+
+/**
+ * How many attempts that never reached `open` are made before the session is
+ * read over REST. A refused upgrade is a close with no status — the browser
+ * never hands JavaScript the 404 or 403 behind it — so a socket that cannot
+ * open has to ask the one endpoint that answers in words.
+ */
+const ATTEMPTS_BEFORE_CHECK = 5;
+
+/**
+ * How many such attempts end it. The check only says the session is still
+ * there and still ours; when that many attempts on top of it still never
+ * open, the reason is not one this client can wait out.
+ */
+const ATTEMPTS_BEFORE_OFFLINE = 10;
+
+/** What the reader is told when the session is no longer there. */
+const GONE = "This session no longer exists.";
+/** ... when it is there but no longer theirs. */
+const FORBIDDEN = "You no longer have access to this session.";
+/** ... when their authentication itself is gone. */
+const SIGNED_OUT = "Your sign-in has ended. Sign in again to reconnect.";
+/**
+ * ... when the server refuses the stream although the session reads fine over
+ * REST with the same credentials: the refusal is about this stream, not about
+ * them, and refreshing the token has already been tried and changed nothing.
+ */
+const REFUSED = "The server refused this session's live stream.";
+/** ... when nothing answered at all for as long as we kept trying. */
+const UNREACHABLE = "Could not reconnect to this session.";
+
+/** What a REST check that answered decides, when it answers "still yours". */
+type Alive = "retry" | "stop";
 
 /** Delivered to terminal subscribers: PTY bytes, or the exit notice. */
 export type TerminalFrame = Uint8Array | { exit_code: number };
@@ -66,9 +99,13 @@ export interface TerminalApi {
 
 export interface SessionSocketApi {
   status: ConnectionStatus;
+  /** Why the connection gave up; `null` unless `status` is `offline`. */
+  error: string | null;
   /** Returns the generated `client_id` the `user_message` echoes back. */
   send: (input: SessionInput) => string;
   stop: () => void;
+  /** The reader's recovery action out of `offline`: start again from scratch. */
+  reconnect: () => void;
   /** Resolves `false` when the request failed; see `SessionSocket.loadOlder`. */
   loadOlder: () => Promise<boolean>;
   terminal: TerminalApi;
@@ -80,6 +117,18 @@ function reason(error: unknown): string {
 
 function isUnauthorized(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
+}
+
+function isForbidden(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403;
+}
+
+/** Silences one socket for good: no handler of ours points at it again. */
+function detach(socket: SocketLike): void {
+  socket.onopen = null;
+  socket.onmessage = null;
+  socket.onclose = null;
+  socket.onerror = null;
 }
 
 export class SessionSocket {
@@ -102,6 +151,12 @@ export class SessionSocket {
   private refreshing = false;
   private sawAuthError = false;
   private lastAuthCloseAt: number | null = null;
+  /** Closes since the last one that had reached `open`; the loop's bound. */
+  private failedOpens = 0;
+  /** The REST check has already been made for this run of failures. */
+  private checked = false;
+  /** A REST check is in flight; a second close must not start another. */
+  private checking = false;
   /** The older-history request in flight, which later callers join. */
   private loadingOlder: Promise<boolean> | null = null;
   private terminalRunning = false;
@@ -154,7 +209,12 @@ export class SessionSocket {
   private connect(): void {
     if (this.disposed || this.socket !== null) return;
     const token = getAccessToken();
-    if (token === null) return; // Signed out; `onSignOut` already stopped us.
+    if (token === null) {
+      // Signed out; `onSignOut` already stopped us. Say so rather than leave
+      // a status claiming an attempt that will never be made.
+      this.store.getState().setStatus("offline", SIGNED_OUT);
+      return;
+    }
 
     const after = this.store.getState().lastSeq;
     const socket = this.factory(buildSessionSocketUrl(this.sessionId, after, token));
@@ -173,6 +233,10 @@ export class SessionSocket {
       // A close always follows; reconnection is decided there.
     };
     socket.onclose = (ev) => {
+      // Detached first: a socket that has closed is nobody's stream any more,
+      // and a late frame from it must not reach the store behind the
+      // connection that replaces it.
+      detach(socket);
       this.handleClose(ev.code);
     };
   }
@@ -183,10 +247,7 @@ export class SessionSocket {
     this.socket = null;
     this.terminalRunning = false;
     if (socket === null) return;
-    socket.onopen = null;
-    socket.onmessage = null;
-    socket.onclose = null;
-    socket.onerror = null;
+    detach(socket);
     try {
       socket.close(code);
     } catch {
@@ -249,28 +310,141 @@ export class SessionSocket {
     }
   }
 
+  /**
+   * Every close the socket did not ask for. Three readings of one event:
+   *
+   * - an authentication close (`error { authentication required }` and 1008,
+   *   `SPEC.md`, "Authentication") is the one close a token rotation can fix,
+   *   and it is tried exactly once per window: a token this browser has just
+   *   refreshed being refused again is not a token problem, and rotating the
+   *   single-use refresh cookie on every close is how a dead stream turned
+   *   into a rotation storm;
+   * - any other close leaves the credentials alone — an open stream is not
+   *   closed because its token expired, so a close is no evidence about it —
+   *   and simply comes back, on backoff when the attempt never opened;
+   * - and either way the attempts are counted. A connection that never opens
+   *   is a refused upgrade whose status JavaScript never sees, so after
+   *   `ATTEMPTS_BEFORE_CHECK` of them the session is read over REST, which
+   *   does answer in words, and a deleted or forbidden session ends here
+   *   visibly instead of retrying at the backoff cap for ever.
+   */
   private handleClose(code: number): void {
     this.socket = null;
     this.terminalRunning = false;
     if (this.disposed) return;
-    this.store.getState().setStatus("reconnecting");
 
-    if (this.sawAuthError || code === AUTH_CLOSE_CODE) {
-      this.sawAuthError = false;
-      const now = Date.now();
-      if (
-        this.lastAuthCloseAt !== null &&
-        now - this.lastAuthCloseAt < AUTH_RETRY_WINDOW_MS
-      ) {
-        // A freshly refreshed token was refused again: stop and let the
-        // foundation route to login.
-        this.lastAuthCloseAt = null;
-        return;
-      }
-      this.lastAuthCloseAt = now;
+    if (this.wasOpen) {
+      // It opened, so this is a live connection that dropped: the counters of
+      // the previous failure run mean nothing any more.
+      this.failedOpens = 0;
+      this.checked = false;
+      this.attempt = 0;
+    } else {
+      this.failedOpens += 1;
     }
 
-    void this.refreshThenReconnect();
+    const authClose = this.sawAuthError || code === AUTH_CLOSE_CODE;
+    this.sawAuthError = false;
+    if (authClose) {
+      const now = Date.now();
+      const refreshed =
+        this.lastAuthCloseAt !== null &&
+        now - this.lastAuthCloseAt < AUTH_RETRY_WINDOW_MS;
+      this.lastAuthCloseAt = refreshed ? null : now;
+      if (!refreshed) {
+        this.store.getState().setStatus("reconnecting");
+        void this.refreshThenReconnect();
+        return;
+      }
+      // A freshly refreshed token was refused again. Either this browser's
+      // authentication is really gone, or it is fine and the refusal belongs
+      // to this session alone — a revoked account and a session read failing
+      // inside the socket's re-authorization close identically. REST is the
+      // one place that tells them apart.
+      this.store.getState().setStatus("reconnecting");
+      void this.checkSession("stop", REFUSED);
+      return;
+    }
+
+    this.retryOrCheck();
+  }
+
+  /**
+   * The bound on reconnection: back off while attempts are cheap, ask REST
+   * once they are not, and stop with something the reader can act on rather
+   * than retrying at the 30 s cap until the tab is closed.
+   */
+  private retryOrCheck(): void {
+    if (this.disposed) return;
+    if (this.failedOpens >= ATTEMPTS_BEFORE_OFFLINE) {
+      this.giveUp(UNREACHABLE);
+      return;
+    }
+    if (this.failedOpens >= ATTEMPTS_BEFORE_CHECK && !this.checked) {
+      this.store.getState().setStatus("reconnecting");
+      void this.checkSession("retry", UNREACHABLE);
+      return;
+    }
+    this.store.getState().setStatus("reconnecting");
+    this.scheduleRetry();
+  }
+
+  /**
+   * Reads the session once over REST to decide what the closes mean.
+   *
+   * `onAlive` is what a session that still reads means here: `retry` for a
+   * connection that never opened — the orchestrator is there, so waiting is
+   * worth something — and `stop` for a refusal that survived a token
+   * rotation, where waiting is not.
+   */
+  private async checkSession(onAlive: Alive, fallback: string): Promise<void> {
+    if (this.checking || this.disposed) return;
+    this.checking = true;
+    this.checked = true;
+    try {
+      await getSession(this.sessionId);
+    } catch (error) {
+      if (this.disposed) return;
+      if (isNotFound(error)) {
+        this.giveUp(GONE);
+        return;
+      }
+      if (isForbidden(error)) {
+        this.giveUp(FORBIDDEN);
+        return;
+      }
+      if (isUnauthorized(error)) {
+        // `apiClient` has already rotated once and failed; `services/auth`
+        // has cleared this browser's authentication and is routing to login.
+        this.giveUp(SIGNED_OUT);
+        return;
+      }
+      // Nothing answered: that is a reason to keep trying, under the same
+      // bound as any other attempt.
+      console.warn("session check failed:", reason(error));
+      this.scheduleRetry();
+      return;
+    } finally {
+      this.checking = false;
+    }
+    if (this.disposed) return;
+    if (onAlive === "stop") {
+      this.giveUp(fallback);
+      return;
+    }
+    this.scheduleRetry();
+  }
+
+  /**
+   * The end of the line: no timer, no rotation, no pretence that a reconnect
+   * is underway — a sentence saying why and a `reconnect()` for the reader to
+   * press (`SPEC.md`, "Frontend", "Session state").
+   */
+  private giveUp(message: string): void {
+    this.cancelRetry();
+    this.lastAuthCloseAt = null;
+    this.teardown(1000);
+    this.store.getState().setStatus("offline", message);
   }
 
   private async refreshThenReconnect(): Promise<void> {
@@ -284,9 +458,11 @@ export class SessionSocket {
       // A 401 already cleared local authentication and routed to login, and a
       // stale completion belongs to a session that is gone; only transient
       // failures are worth retrying.
-      if (!isUnauthorized(error) && !isStaleRefreshError(error)) {
-        this.scheduleRetry();
+      if (isUnauthorized(error) || isStaleRefreshError(error)) {
+        this.giveUp(SIGNED_OUT);
+        return;
       }
+      this.retryOrCheck();
       return;
     } finally {
       this.refreshing = false;
@@ -297,7 +473,7 @@ export class SessionSocket {
       this.connect();
     } else {
       // The last attempt never opened: back off rather than spin.
-      this.scheduleRetry();
+      this.retryOrCheck();
     }
   }
 
@@ -328,17 +504,31 @@ export class SessionSocket {
    */
   private onCredentialsReplaced(): void {
     if (this.disposed || this.refreshing) return;
-    this.cancelRetry();
-    this.attempt = 0;
-    this.teardown(1000);
-    this.store.getState().setStatus("reconnecting");
-    this.connect();
+    this.reconnect();
   }
 
   private onSignOut(): void {
     this.cancelRetry();
     this.teardown(1000);
+    this.store.getState().setStatus("offline", SIGNED_OUT);
+  }
+
+  /**
+   * Start again from nothing: the reader's way out of `offline`, and the path
+   * a genuine credential replacement takes. Every count the last run left
+   * behind is dropped, so a socket that gave up gets the full schedule again
+   * rather than one attempt at the cap.
+   */
+  reconnect(): void {
+    if (this.disposed) return;
+    this.cancelRetry();
+    this.attempt = 0;
+    this.failedOpens = 0;
+    this.checked = false;
+    this.lastAuthCloseAt = null;
+    this.teardown(1000);
     this.store.getState().setStatus("reconnecting");
+    this.connect();
   }
 
   private sendJson(message: ClientMessage): boolean {
@@ -474,6 +664,7 @@ export function useSessionSocket(
 ): SessionSocketApi {
   const ref = useRef<SessionSocket | null>(null);
   const status = useSessionStore(sessionId, (state) => state.status);
+  const error = useSessionStore(sessionId, (state) => state.connectionError);
 
   const socketFor = useCallback(
     (id: string): SessionSocket => {
@@ -503,6 +694,9 @@ export function useSessionSocket(
   const stop = useCallback(() => {
     socketFor(sessionId).stop();
   }, [sessionId, socketFor]);
+  const reconnect = useCallback(() => {
+    socketFor(sessionId).reconnect();
+  }, [sessionId, socketFor]);
   const loadOlder = useCallback(
     () => socketFor(sessionId).loadOlder(),
     [sessionId, socketFor],
@@ -527,5 +721,5 @@ export function useSessionSocket(
     [sessionId, socketFor],
   );
 
-  return { status, send, stop, loadOlder, terminal };
+  return { status, error, send, stop, reconnect, loadOlder, terminal };
 }

@@ -8,6 +8,7 @@
 
 import { useCallback, useState } from "react";
 
+import { Alert, SubmitButton } from "../components";
 import type { Session } from "../types";
 import { Composer } from "./Composer";
 import { SessionHeader } from "./SessionHeader";
@@ -44,6 +45,23 @@ export function SessionView({ session, socket }: SessionViewProps) {
           status={socket.status}
           onStop={stop}
         />
+
+        {socket.status === "offline" && (
+          <div className="border-console-border border-b px-4 py-2">
+            <Alert kind="error">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>{socket.error}</span>
+                <SubmitButton
+                  type="button"
+                  variant="ghost"
+                  onClick={socket.reconnect}
+                >
+                  Reconnect
+                </SubmitButton>
+              </div>
+            </Alert>
+          </div>
+        )}
 
         <div className="flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">

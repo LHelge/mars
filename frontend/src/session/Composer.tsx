@@ -121,6 +121,12 @@ export function Composer({
   // Until the `session` frame arrives the kind is unknown, so nothing renders.
   if (!session || session.kind === "ephemeral") return null;
 
+  // A socket that gave up sends over HTTP exactly as a reconnecting one does
+  // (`send`, below): the difference is in the banner above the transcript,
+  // not here.
+  const disconnected =
+    socket.status === "reconnecting" || socket.status === "offline";
+
   const hint =
     state === "parked"
       ? "Sending will relaunch the session"
@@ -177,8 +183,8 @@ export function Composer({
       <div className="mt-2 flex items-center gap-3">
         <p className="text-console-muted min-w-0 flex-1 text-xs">
           {hint}
-          {hint !== null && socket.status === "reconnecting" && " — "}
-          {socket.status === "reconnecting" && "Offline, sending over HTTP"}
+          {hint !== null && disconnected && " — "}
+          {disconnected && "Offline, sending over HTTP"}
         </p>
         {running && (
           <SubmitButton

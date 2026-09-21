@@ -35,7 +35,12 @@ export type {
   SharedDir,
   SharedDirInput,
 } from "./projects";
-export type { Profile, ProfileInput, ProfileKind } from "./profiles";
+export type {
+  Profile,
+  ProfileInput,
+  ProfileKind,
+  ProfileTemplate,
+} from "./profiles";
 export { PROFILE_GATED_TOOLS } from "./profiles";
 export type {
   EventsPage,

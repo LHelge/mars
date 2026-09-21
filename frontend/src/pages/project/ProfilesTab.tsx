@@ -111,6 +111,9 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
         projectId={project.id}
         profile={editing}
         defaultImage={defaultImageOf(rows)}
+        // For the `<name>-2` suffix a role template's name takes when the
+        // project already has that role (`SPEC.md`, "Frontend").
+        existingNames={rows.map((profile) => profile.name)}
         onClose={() => {
           openEditor(null);
         }}

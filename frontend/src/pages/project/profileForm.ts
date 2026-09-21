@@ -15,6 +15,7 @@ import type {
   Profile,
   ProfileInput,
   ProfileKind,
+  ProfileTemplate,
   SecretMeta,
 } from "../../types";
 
@@ -164,6 +165,84 @@ export function toggleMember(list: string[], value: string): string[] {
   return list.includes(value)
     ? list.filter((entry) => entry !== value)
     : [...list, value];
+}
+
+/** The value the `Start from` select carries for "no template". */
+export const BLANK_TEMPLATE = "";
+
+/**
+ * `base`, or the first `base-<n>` nobody has taken. Profile names are unique
+ * within a project and are what the launch form shows, so a second `reviewer`
+ * becomes `reviewer-2` rather than a 409 on save.
+ */
+export function nextFreeName(base: string, taken: string[]): string {
+  const used = new Set(taken);
+  if (!used.has(base)) {
+    return base;
+  }
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base}-${String(suffix)}`;
+    if (!used.has(candidate)) {
+      return candidate;
+    }
+  }
+}
+
+/** What a template filled in, and what of it had to be left out. */
+export interface TemplatePrefill {
+  form: ProfileFormState;
+  /**
+   * Served states of the template that this project has no queue state for,
+   * dropped rather than sent — they would be the 400 of `SPEC.md`, "Agent
+   * profiles". The editor names them beside the select.
+   */
+  droppedStates: string[];
+}
+
+/** What the project contributes to a pre-fill. */
+export interface TemplateContext {
+  /** Prefilled as the image, like any new profile. */
+  defaultImage: string;
+  /** The names already taken in this project, for the suffix. */
+  existingNames: string[];
+  /**
+   * The names of this project's `queue` states, or `null` while they are
+   * unknown — the list has not arrived, or reading it failed. Unknown keeps
+   * the template's states, which the editor already flags one by one.
+   */
+  queueStates: string[] | null;
+}
+
+/**
+ * A role template as the form that would create it (`SPEC.md`, "Role profile
+ * templates"). Everything the template does not carry is the ordinary default
+ * of a new profile, and `is_default` is never applied: the flag is moved by
+ * its own action, not by creating a profile.
+ */
+export function prefillFromTemplate(
+  template: ProfileTemplate,
+  context: TemplateContext,
+): TemplatePrefill {
+  const known = context.queueStates;
+  const kept =
+    known === null
+      ? [...template.serves_states]
+      : template.serves_states.filter((state) => known.includes(state));
+  const droppedStates =
+    known === null
+      ? []
+      : template.serves_states.filter((state) => !known.includes(state));
+
+  return {
+    form: toFormState({
+      ...defaultInputForKind(template.kind, context.defaultImage),
+      name: nextFreeName(template.name, context.existingNames),
+      system_prompt: template.system_prompt,
+      mcp_tools: [...template.mcp_tools],
+      serves_states: kept,
+    }),
+    droppedStates,
+  };
 }
 
 /** One offer of the editor's secrets picker. */

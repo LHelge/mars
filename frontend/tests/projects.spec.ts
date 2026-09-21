@@ -29,7 +29,7 @@ import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
 
-import type { Project, Session, SharedDir } from "../src/types";
+import type { Profile, Project, Session, SharedDir } from "../src/types";
 import { PROFILE_GATED_TOOLS } from "../src/types";
 import { expect, test } from "./utils/fixtures";
 import {
@@ -335,6 +335,74 @@ test("the default profile is edited and an ephemeral one is created beside it", 
   await oneshotRow.getByRole("button", { name: "Delete" }).click();
   await expect(oneshotRow).toHaveCount(0);
   await expect(architectRow).toBeVisible();
+});
+
+test("a profile started from the reviewer template is saved as reviewer-2", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+}) => {
+  await loginViaToken(context, user);
+
+  // Nothing is deleted first: the project still has its seeded `reviewer`, so
+  // the template's name is the one already taken (`SPEC.md`, "Frontend",
+  // Role templates).
+  await page.goto(`/projects/${project.id}?tab=profiles&profile=new`);
+  const editor = page.getByRole("form", { name: "New profile" });
+
+  await editor.locator("#profile-template").selectOption("reviewer");
+
+  await expect(editor.locator("#profile-name")).toHaveValue("reviewer-2");
+  await expect(editor.locator("#profile-system-prompt")).toHaveValue(
+    /^You are a reviewer of this project\./,
+  );
+  await expect(
+    editor.getByRole("checkbox", { name: "review", exact: true }),
+  ).toBeChecked();
+  await expect(
+    editor.getByRole("checkbox", {
+      name: "list_session_branches",
+      exact: true,
+    }),
+  ).toBeChecked();
+
+  // `Blank` puts the defaults back: the pre-fill is a starting point, and
+  // choosing it again is not an instantiation of anything.
+  await editor.locator("#profile-template").selectOption("");
+  await expect(editor.locator("#profile-name")).toHaveValue("");
+  await expect(editor.locator("#profile-system-prompt")).toHaveValue("");
+  await expect(
+    editor.getByRole("checkbox", { name: "review", exact: true }),
+  ).not.toBeChecked();
+
+  await editor.locator("#profile-template").selectOption("reviewer");
+  await editor.getByRole("button", { name: "Create profile" }).click();
+
+  const row = page
+    .getByRole("row")
+    .filter({ has: page.getByText("reviewer-2", { exact: true }) });
+  await expect(row).toBeVisible();
+  await expect(row.getByText("review", { exact: true })).toBeVisible();
+
+  // The reload is the real check that the ordinary `POST` stored it.
+  await page.reload();
+  await expect(row).toBeVisible();
+
+  const profiles = await api.get<Profile[]>(`/projects/${project.id}/profiles`);
+  const stored = profiles.find((candidate) => candidate.name === "reviewer-2");
+  expect(stored?.serves_states).toEqual(["review"]);
+  expect(stored?.mcp_tools).toEqual(["list_session_branches"]);
+  expect(stored?.system_prompt).toMatch(
+    /^You are a reviewer of this project\./,
+  );
+  // `is_default` is informational on the template and never applied here:
+  // the seeded `implementer` is still the project's default.
+  expect(stored?.is_default).toBe(false);
+  expect(profiles.find((candidate) => candidate.is_default)?.name).toBe(
+    "implementer",
+  );
 });
 
 test("an unknown served state or tool is a 400 the editor cannot produce", async ({

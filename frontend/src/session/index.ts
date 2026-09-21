@@ -38,7 +38,9 @@ export {
   emptySessionState,
   foldEvent,
   getSessionStore,
+  isInFlight,
   isNewerSession,
+  isOptimisticId,
   MAX_RETAINED_SESSIONS,
   onSessionStoreCleared,
   optimisticId,
@@ -52,6 +54,7 @@ export {
 export type {
   AssistantTextMessage,
   ConnectionStatus,
+  Delivery,
   Message,
   RawMessage,
   ResultMessage,
@@ -83,6 +86,19 @@ export type {
 
 export { SubagentGroup } from "./SubagentGroup";
 export type { SubagentGroupProps } from "./SubagentGroup";
+// The one fold of a transcript row, and the per-session UI state behind it
+// (`SPEC.md`, "Transcript rendering").
+export { Disclosure } from "./Disclosure";
+export type { DisclosureProps } from "./Disclosure";
+export {
+  disclosureKey,
+  requestResend,
+  SessionUiContext,
+  toggleDisclosure,
+  useDisclosure,
+  useResendRequest,
+} from "./sessionUi";
+export type { ResendRequest } from "./sessionUi";
 export { Transcript } from "./Transcript";
 export type { TranscriptProps } from "./Transcript";
 export { useStickToBottom } from "./useStickToBottom";

@@ -137,10 +137,14 @@ export function summaryLine(name: string, input: unknown): string {
     const path = inputString(input, "file_path") ?? "";
     const offset = inputNumber(input, "offset");
     const limit = inputNumber(input, "limit");
+    // `limit` is a count of lines, not the last one: offset 100 with limit 50
+    // reads lines 100 to 150, and printing it as `100-50` read like a range
+    // that runs backwards.
+    const start = offset ?? 0;
     const range =
       offset === undefined && limit === undefined
         ? ""
-        : ` :${offset ?? 0}-${limit ?? ""}`;
+        : ` :${String(start)}-${limit === undefined ? "" : String(start + limit)}`;
     return `Read ${path}${range}`;
   }
   if (key === "glob" || key === "grep") {

@@ -2,14 +2,14 @@
 // text at all and is only its header (`SPEC.md`, "Transcript rendering").
 
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { ThinkingMessage } from "./ThinkingMessage";
 
 afterEach(cleanup);
 
 describe("ThinkingMessage", () => {
-  it("renders the text as markdown", () => {
+  it("renders the text as markdown once it is opened", () => {
     render(
       <ThinkingMessage
         message={{
@@ -20,6 +20,12 @@ describe("ThinkingMessage", () => {
         }}
       />,
     );
+
+    // Folded, the body does not exist at all: the markdown is parsed when the
+    // reader asks for it.
+    expect(document.querySelectorAll("li")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Thinking" }));
 
     expect(document.querySelectorAll("li")).toHaveLength(2);
     expect(screen.getByText("read the router")).toBeDefined();

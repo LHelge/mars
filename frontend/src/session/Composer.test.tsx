@@ -3,11 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Session, SessionInput, SessionKind, SessionState } from "../types";
 import { Composer } from "./Composer";
+import { SessionSocketContext } from "./SessionSocketContext";
 import {
   disposeSessionStore,
   getSessionStore,
   optimisticId,
 } from "./sessionStore";
+import { requestResend } from "./sessionUi";
 import type { SessionSocketApi } from "./useSessionSocket";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -90,8 +92,13 @@ function fakeSocket(status: SessionSocketApi["status"] = "live"): FakeSocket {
   };
 }
 
+/** The composer reads its socket from the page's context, as it is mounted. */
 function mount(socket: FakeSocket) {
-  render(<Composer sessionId={SESSION_ID} socket={socket.api} />);
+  render(
+    <SessionSocketContext.Provider value={socket.api}>
+      <Composer sessionId={SESSION_ID} />
+    </SessionSocketContext.Provider>,
+  );
 }
 
 function area(): HTMLTextAreaElement {
@@ -363,7 +370,7 @@ describe("Composer rejection", () => {
     expect(store().messages[optimisticId("client-1")]).toMatchObject({
       kind: "user",
       text: "relaunch please",
-      rejected: "session is ephemeral",
+      delivery: { state: "rejected", reason: "session is ephemeral" },
     });
   });
 
@@ -401,22 +408,44 @@ describe("Composer rejection", () => {
 });
 
 describe("Composer extras", () => {
-  it("takes initialText from a transcript resend", () => {
-    const onConsumed = vi.fn();
+  it("takes the text of a transcript resend and focuses the box", () => {
     act(() => {
       store().setSession(session("running"));
     });
-    render(
-      <Composer
-        sessionId={SESSION_ID}
-        socket={fakeSocket().api}
-        initialText="resent text"
-        onConsumedInitialText={onConsumed}
-      />,
-    );
+    mount(fakeSocket());
+
+    act(() => {
+      requestResend(SESSION_ID, "resent text");
+    });
 
     expect(area().value).toBe("resent text");
-    expect(onConsumed).toHaveBeenCalled();
+    expect(document.activeElement).toBe(area());
+  });
+
+  it("takes a resend made before it was mounted", () => {
+    act(() => {
+      store().setSession(session("running"));
+      requestResend(SESSION_ID, "asked for elsewhere");
+    });
+    mount(fakeSocket());
+
+    expect(area().value).toBe("asked for elsewhere");
+  });
+
+  it("does not submit the Enter that confirms an IME candidate on Safari", () => {
+    const socket = fakeSocket();
+    act(() => {
+      store().setSession(session("running"));
+    });
+    mount(socket);
+
+    type("にほん");
+    // `compositionend` has already fired, so `isComposing` is false: the
+    // legacy key code is all that is left of the composition.
+    fireEvent.keyDown(area(), { key: "Enter", keyCode: 229 });
+
+    expect(socket.send).not.toHaveBeenCalled();
+    expect(area().value).toBe("にほん");
   });
 
   it("says when input is going over HTTP instead of the socket", () => {

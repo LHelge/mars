@@ -15,6 +15,8 @@ interface HarnessProps {
   contentHeight?: number;
   /** Called inside the scroll handler with the rendered and the live flag. */
   onHandled?: (rendered: boolean, live: boolean) => void;
+  /** The transcript's own answer: an id this browser invented is our send. */
+  isOwnAppend?: (id: string) => boolean;
 }
 
 function Harness({
@@ -22,12 +24,14 @@ function Harness({
   tailLength,
   contentHeight,
   onHandled,
+  isOwnAppend,
 }: HarnessProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stick = useStickToBottom(scrollRef, {
     order,
     tailLength,
     contentHeight,
+    isOwnAppend,
   });
   return (
     <div
@@ -213,6 +217,58 @@ describe("useStickToBottom", () => {
       [true, true],
       [true, false],
     ]);
+  });
+
+  // The user sends while scrolled up: the tail is `client:<id>`, and the
+  // `user_message` that follows renames it to `e<seq>` in place. Reading the
+  // vanished id as "the whole list is new" is what made the pill say 413.
+  it("counts nothing when the tail id is renamed in place", () => {
+    const { rerender } = render(
+      <Harness order={["e1", "e2", "e3"]} tailLength={1} />,
+    );
+    const scroller = screen.getByTestId("scroller");
+    setGeometry(scroller, 1000, 400);
+    fireEvent.scroll(scroller);
+    setGeometry(scroller, 1000, 0);
+    fireEvent.scroll(scroller);
+    expect(pinned()).toBe("false");
+
+    rerender(
+      <Harness order={["e1", "e2", "e3", "client:c-1"]} tailLength={1} />,
+    );
+    expect(count()).toBe("1");
+
+    // The echo replaces the optimistic id at the same position.
+    rerender(<Harness order={["e1", "e2", "e3", "e4"]} tailLength={1} />);
+
+    expect(count()).toBe("1");
+  });
+
+  it("follows the reader's own send back down to the tail", () => {
+    const own = (id: string) => id.startsWith("client:");
+    const { rerender } = render(
+      <Harness order={["e1"]} tailLength={1} isOwnAppend={own} />,
+    );
+    const scroller = screen.getByTestId("scroller");
+    setGeometry(scroller, 1000, 400);
+    fireEvent.scroll(scroller);
+    setGeometry(scroller, 1000, 0);
+    fireEvent.scroll(scroller);
+    rerender(<Harness order={["e1", "e2"]} tailLength={1} isOwnAppend={own} />);
+    expect(pinned()).toBe("false");
+    expect(count()).toBe("1");
+
+    rerender(
+      <Harness
+        order={["e1", "e2", "client:c-1"]}
+        tailLength={1}
+        isOwnAppend={own}
+      />,
+    );
+
+    expect(pinned()).toBe("true");
+    expect(count()).toBe("0");
+    expect(scroller.scrollTop).toBe(1000);
   });
 
   it("re-pins as streaming text grows the tail message", () => {

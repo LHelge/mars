@@ -10,8 +10,8 @@
 // architecture"), so every re-render boundary here is explicit: this component
 // subscribes to `tailLength` and therefore re-renders on every `text_delta`,
 // and what keeps that from costing the viewport is `MessageRow` being
-// `memo()`-wrapped and the two things it is handed per row — the id and
-// `onResend` — being stable. `getItemKey` is stable per `order` for the same
+// `memo()`-wrapped and what it is handed per row — the session id and the
+// message id — being stable. `getItemKey` is stable per `order` for the same
 // reason: a fresh identity resets the virtualizer's measurement cache, which
 // would re-measure every row on every delta.
 
@@ -22,7 +22,8 @@ import { EmptyState } from "../components/EmptyState";
 import { TRANSCRIPT_SCROLL } from "../utils/testIds";
 import { Spinner } from "../components/Spinner";
 import { MessageRow } from "./messages/MessageRow";
-import { useSessionStore } from "./sessionStore";
+import { isOptimisticId, useSessionStore } from "./sessionStore";
+import { SessionUiContext } from "./sessionUi";
 import { useStickToBottom } from "./useStickToBottom";
 
 /** How close to the top asks for the next page of history. */
@@ -34,11 +35,9 @@ export interface TranscriptProps {
   sessionId: string;
   /** Fetches the page before `oldestSeq` and prepends it to the store. */
   loadOlder?: () => void;
-  /** Called with the text of a rejected message the user wants to resend. */
-  onResend?: (text: string) => void;
 }
 
-export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) {
+export function Transcript({ sessionId, loadOlder }: TranscriptProps) {
   const order = useSessionStore(sessionId, (state) => state.order);
   const hasMore = useSessionStore(sessionId, (state) => state.hasMore);
   const oldestSeq = useSessionStore(sessionId, (state) => state.oldestSeq);
@@ -83,6 +82,8 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
     order,
     tailLength,
     contentHeight: totalSize,
+    // A message this browser added itself is the reader's own send.
+    isOwnAppend: isOptimisticId,
   });
 
   // The page already asked for, so one scroll gesture near the top does not
@@ -202,79 +203,81 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
   const items = virtualizer.getVirtualItems();
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
-      {/* Outside the scroller on purpose: anything above the virtual container
-          inside it would shift every row's offset away from what the
-          virtualizer positions rows at. */}
-      {historyStatus === "loading" && (
-        <div className="text-console-muted flex shrink-0 items-center justify-center gap-2 py-2 text-xs">
-          <Spinner className="size-3" />
-          <span>Loading earlier messages</span>
-        </div>
-      )}
-      {historyStatus === "error" && (
-        <div className="text-state-failed flex shrink-0 items-center justify-center gap-2 py-2 text-xs">
-          <span>
-            Could not load earlier messages
-            {historyError === null ? "" : `: ${historyError}`}
-          </span>
-          <button
-            type="button"
-            onClick={retry}
-            className="border-console-border text-console-text rounded border px-2 py-0.5"
-          >
-            Retry
-          </button>
-        </div>
-      )}
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        data-testid={TRANSCRIPT_SCROLL}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-2"
-      >
-        {order.length === 0 ? (
-          <EmptyState
-            title="Nothing has happened yet"
-            description="Send a message to start the session."
-          />
-        ) : (
-          <div style={{ height: totalSize, position: "relative" }}>
-            {items.map((item) => (
-              <div
-                key={item.key}
-                data-index={item.index}
-                ref={virtualizer.measureElement}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  transform: `translateY(${item.start}px)`,
-                }}
-              >
-                <MessageRow
-                  sessionId={sessionId}
-                  id={order[item.index]}
-                  onResend={onResend}
-                />
-              </div>
-            ))}
+    // Every row below this point is a row of this session: what the reader
+    // opens is keyed by the session and the message id, and a tool renderer
+    // deep in a row reaches that key without the id being threaded through the
+    // registry's props (`sessionUi`).
+    <SessionUiContext.Provider value={sessionId}>
+      <div className="relative flex h-full min-h-0 flex-col">
+        {/* Outside the scroller on purpose: anything above the virtual container
+            inside it would shift every row's offset away from what the
+            virtualizer positions rows at. */}
+        {historyStatus === "loading" && (
+          <div className="text-console-muted flex shrink-0 items-center justify-center gap-2 py-2 text-xs">
+            <Spinner className="size-3" />
+            <span>Loading earlier messages</span>
           </div>
         )}
-      </div>
-      {!stick.pinned && (
-        <button
-          type="button"
-          onClick={stick.jumpToLatest}
-          className="border-console-border bg-console-raised text-console-text absolute inset-x-0 bottom-3 mx-auto w-fit rounded-full border px-3 py-1 text-xs shadow"
+        {historyStatus === "error" && (
+          <div className="text-state-failed flex shrink-0 items-center justify-center gap-2 py-2 text-xs">
+            <span>
+              Could not load earlier messages
+              {historyError === null ? "" : `: ${historyError}`}
+            </span>
+            <button
+              type="button"
+              onClick={retry}
+              className="border-console-border text-console-text rounded border px-2 py-0.5"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          data-testid={TRANSCRIPT_SCROLL}
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-2"
         >
-          Jump to latest
-          {stick.newCount > 0 && (
-            <span className="text-console-accent pl-2">{stick.newCount}</span>
+          {order.length === 0 ? (
+            <EmptyState
+              title="Nothing has happened yet"
+              description="Send a message to start the session."
+            />
+          ) : (
+            <div style={{ height: totalSize, position: "relative" }}>
+              {items.map((item) => (
+                <div
+                  key={item.key}
+                  data-index={item.index}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    transform: `translateY(${item.start}px)`,
+                  }}
+                >
+                  <MessageRow sessionId={sessionId} id={order[item.index]} />
+                </div>
+              ))}
+            </div>
           )}
-        </button>
-      )}
-    </div>
+        </div>
+        {!stick.pinned && (
+          <button
+            type="button"
+            onClick={stick.jumpToLatest}
+            className="border-console-border bg-console-raised text-console-text absolute inset-x-0 bottom-3 mx-auto w-fit rounded-full border px-3 py-1 text-xs shadow"
+          >
+            Jump to latest
+            {stick.newCount > 0 && (
+              <span className="text-console-accent pl-2">{stick.newCount}</span>
+            )}
+          </button>
+        )}
+      </div>
+    </SessionUiContext.Provider>
   );
 }

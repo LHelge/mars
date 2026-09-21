@@ -885,9 +885,11 @@ describe("optimistic input", () => {
     store.getState().addOptimisticUser("c-9", { kind: "message", text: "Hello" });
     store.getState().inputAccepted("c-9", 3);
     expect(store.getState().order).toEqual([optimisticId("c-9")]);
+    // Accepted at the `seq` the echo will carry, and still on its way: the
+    // message is not delivered until that echo arrives (ADR 0020).
     expect(store.getState().messages[optimisticId("c-9")]).toMatchObject({
       kind: "user",
-      pending: true,
+      delivery: { state: "accepted", seq: 3 },
     });
 
     store.getState().applyEvent({
@@ -902,8 +904,11 @@ describe("optimistic input", () => {
 
     expect(state.order).toEqual(["e4"]);
     expect(state.messages[optimisticId("c-9")]).toBeUndefined();
-    expect(state.messages.e4).toMatchObject({ kind: "user", text: "Hello" });
-    expect((state.messages.e4 as { pending?: boolean }).pending).toBeUndefined();
+    expect(state.messages.e4).toMatchObject({
+      kind: "user",
+      text: "Hello",
+      delivery: { state: "confirmed" },
+    });
   });
 
   it("keeps a rejected message visible so it can be resent", () => {
@@ -915,10 +920,39 @@ describe("optimistic input", () => {
     expect(message).toMatchObject({
       kind: "user",
       text: "Nope",
-      pending: false,
-      rejected: "session is done",
+      delivery: { state: "rejected", reason: "session is done" },
     });
     expect(store.getState().order).toEqual([optimisticId("c-x")]);
+  });
+
+  it("marks an unacknowledged send resendable when the connection ends", () => {
+    const store = createSessionStore();
+    store.getState().addOptimisticUser("c-1", { kind: "message", text: "One" });
+    store.getState().addOptimisticUser("c-2", { kind: "message", text: "Two" });
+    // The second one was answered: the orchestrator has it, whatever becomes
+    // of this connection.
+    store.getState().inputAccepted("c-2", 7);
+
+    store.getState().connectionLost("the connection closed");
+
+    expect(store.getState().messages[optimisticId("c-1")]).toMatchObject({
+      delivery: { state: "rejected", reason: "the connection closed" },
+    });
+    expect(store.getState().messages[optimisticId("c-2")]).toMatchObject({
+      delivery: { state: "accepted", seq: 7 },
+    });
+    // Not a refusal the composer explains: no banner, and nothing restored.
+    expect(store.getState().lastRejection).toBeNull();
+  });
+
+  it("leaves a transcript with nothing in flight untouched", () => {
+    const store = createSessionStore();
+    applyAll(store, simpleTurn.slice(0, 3));
+    const before = store.getState().messages;
+
+    store.getState().connectionLost("the connection closed");
+
+    expect(store.getState().messages).toBe(before);
   });
 
   it("records the last rejection for the composer", () => {
@@ -954,7 +988,7 @@ describe("optimistic input", () => {
     expect(store.getState().lastRejection).toBeNull();
     // The rejected message keeps its own marking; only the banner is cleared.
     expect(store.getState().messages[optimisticId("c-x")]).toMatchObject({
-      rejected: "session is done",
+      delivery: { state: "rejected", reason: "session is done" },
     });
   });
 

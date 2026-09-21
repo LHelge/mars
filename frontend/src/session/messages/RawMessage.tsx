@@ -4,6 +4,7 @@
 // the reader came for.
 
 import { JsonTree } from "../../components/JsonTree";
+import { Disclosure } from "../Disclosure";
 import type { RawMessage as RawMessageData } from "../sessionStore";
 
 export interface RawMessageProps {
@@ -12,13 +13,14 @@ export interface RawMessageProps {
 
 export function RawMessage({ message }: RawMessageProps) {
   return (
-    <details>
-      <summary className="text-console-muted cursor-pointer font-mono text-xs select-none">
-        raw
-      </summary>
-      <div className="mt-1">
-        <JsonTree value={message.native} />
-      </div>
-    </details>
+    <Disclosure
+      rowId={message.id}
+      slot="raw"
+      summaryClassName="text-console-muted flex items-center gap-1 font-mono text-xs select-none"
+      bodyClassName="mt-1"
+      summary={<span>raw</span>}
+    >
+      <JsonTree value={message.native} />
+    </Disclosure>
   );
 }

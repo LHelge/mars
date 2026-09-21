@@ -8,7 +8,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { EditToolRenderer } from "./EditToolRenderer";
 import { JsonToolRenderer } from "./JsonToolRenderer";
 import { ShellToolRenderer } from "./ShellToolRenderer";
-import { SubagentGroup } from "../SubagentGroup";
 import { SummaryToolRenderer } from "./SummaryToolRenderer";
 import {
   byName,
@@ -47,9 +46,12 @@ describe("toolRendererFor", () => {
     }
   });
 
-  it("resolves both names of the subagent family", () => {
-    expect(toolRendererFor("Task")).toBe(SubagentGroup);
-    expect(toolRendererFor("Agent")).toBe(SubagentGroup);
+  it("leaves the subagent family to the JSON tree", () => {
+    // No family claims `Task` or `Agent`: a call a `subagent_start` has
+    // announced is drawn by `ToolFrame` from the message itself, and until
+    // that event arrives the input and the result are all there is to show.
+    expect(toolRendererFor("Task")).toBe(JsonToolRenderer);
+    expect(toolRendererFor("Agent")).toBe(JsonToolRenderer);
   });
 
   it("falls back to the JSON tree for anything else", () => {

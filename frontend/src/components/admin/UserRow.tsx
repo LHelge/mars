@@ -13,21 +13,30 @@
 // Both actions clear each other's answer before they start, so the one line
 // this row keeps always describes the press the user is waiting on
 // (`CLAUDE.md`, "Frontend conventions", Submitting a form).
+//
+// Both also ask first, in the row's own spanning cell rather than in a
+// `window.confirm` over the whole tab (`components/ConfirmPanel.tsx`), and the
+// confirming button names the user it is about: a table of them offers the
+// same verb on every line.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { queryKeys } from "../../services/queryKeys";
 import { deleteUser, updateUser } from "../../services/users";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import type { User } from "../../types";
 import { formatRelative } from "../../utils/format";
 import { Alert } from "../Alert";
+import { ConfirmPanel } from "../ConfirmPanel";
 import { SubmitButton } from "../SubmitButton";
-import { CELL, ROW } from "./tableStyles";
-
-/** The number of columns the users table has, for the answer row's span. */
-const COLUMNS = 7;
+import { CELL, ROW, SPAN_CELL_BARE } from "../tableStyles";
+import { USER_COLUMNS } from "./columns";
 
 const SELF_DELETE_HINT = "You cannot delete your own account";
+
+/** What losing the role costs, said before it is lost. */
+const ADMIN_EXIT_HINT =
+  "The administration page closes at its next request and you cannot open it again yourself.";
 
 /** A boolean column: present, or the em dash every other missing value uses. */
 function Flag({ on, label }: { on: boolean; label: string }) {
@@ -48,6 +57,8 @@ export interface UserRowProps {
 
 export function UserRow({ user, isSelf }: UserRowProps) {
   const queryClient = useQueryClient();
+  /** Which of the two actions has been asked about and not yet answered. */
+  const [confirming, setConfirming] = useState<"admin" | "delete" | null>(null);
 
   // Both outcomes refetch: when two administrators demote each other, the one
   // that got the 409 needs the truth back, not its own optimistic reading.
@@ -80,26 +91,24 @@ export function UserRow({ user, isSelf }: UserRowProps) {
   const busy = toggleAdmin.isPending || remove.isPending;
   const failure = toggleAdmin.error ?? remove.error;
 
+  /** Stepping down is the only toggle worth asking about. */
   function onToggle() {
-    if (
-      isSelf &&
-      user.admin &&
-      !window.confirm("Remove your own administrator role?")
-    ) {
+    if (isSelf && user.admin) {
+      setConfirming("admin");
       return;
     }
     remove.reset();
     toggleAdmin.mutate();
   }
 
-  function onDelete() {
-    if (
-      !window.confirm(
-        `Delete user ${user.username}? Their sessions and secrets remain attributed to a removed user.`,
-      )
-    ) {
-      return;
-    }
+  function confirmToggle() {
+    setConfirming(null);
+    remove.reset();
+    toggleAdmin.mutate();
+  }
+
+  function confirmDelete() {
+    setConfirming(null);
     toggleAdmin.reset();
     remove.mutate();
   }
@@ -140,16 +149,47 @@ export function UserRow({ user, isSelf }: UserRowProps) {
             loading={remove.isPending}
             disabled={isSelf || busy}
             title={isSelf ? SELF_DELETE_HINT : undefined}
-            onClick={onDelete}
+            onClick={() => {
+              setConfirming("delete");
+            }}
           >
             Delete
           </SubmitButton>
         </td>
       </tr>
 
+      {confirming !== null && (
+        <tr className={ROW}>
+          <td colSpan={USER_COLUMNS.length} className={SPAN_CELL_BARE}>
+            {confirming === "admin" ? (
+              <ConfirmPanel
+                tone="caution"
+                message={`Remove your own administrator role? ${ADMIN_EXIT_HINT}`}
+                confirmLabel="Step down as administrator"
+                pending={toggleAdmin.isPending}
+                onConfirm={confirmToggle}
+                onCancel={() => {
+                  setConfirming(null);
+                }}
+              />
+            ) : (
+              <ConfirmPanel
+                message={`Delete user ${user.username}? Their sessions and secrets remain attributed to a removed user.`}
+                confirmLabel={`Delete user ${user.username}`}
+                pending={remove.isPending}
+                onConfirm={confirmDelete}
+                onCancel={() => {
+                  setConfirming(null);
+                }}
+              />
+            )}
+          </td>
+        </tr>
+      )}
+
       {failure !== null && (
         <tr className={ROW}>
-          <td colSpan={COLUMNS} className="px-0 pb-2">
+          <td colSpan={USER_COLUMNS.length} className={SPAN_CELL_BARE}>
             <Alert kind="error">{errorMessage(failure)}</Alert>
           </td>
         </tr>

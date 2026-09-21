@@ -9,7 +9,6 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MockInstance } from "vitest";
 import { ApiError } from "../services/apiClient";
 import { clearAuth, installSession } from "../services/auth";
 import {
@@ -125,12 +124,16 @@ function rowFor(table: HTMLElement, text: string): HTMLElement {
   return row;
 }
 
-// Held rather than reached for through `window`, so the assertions never
-// pull an unbound method off it.
-let confirmed: MockInstance<(message?: string) => boolean>;
+/**
+ * Press a row's action and then the `ConfirmPanel` it opens, by the confirming
+ * button's own name — which names its target, so a table of rows offering the
+ * same verb still has one button per row.
+ */
+function confirm(name: string): void {
+  fireEvent.click(screen.getByRole("button", { name }));
+}
 
 beforeEach(() => {
-  confirmed = vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.mocked(listUsers).mockResolvedValue([me(), other()]);
   vi.mocked(listInvites).mockResolvedValue([invite()]);
   installSession({ user: me(), access_token: "test-access-token" });
@@ -195,7 +198,6 @@ describe("AdminPage", () => {
   });
 
   it("confirms before the administrator demotes themselves", async () => {
-    confirmed.mockReturnValue(false);
     renderAdmin();
 
     await sectionTable("Users");
@@ -203,10 +205,24 @@ describe("AdminPage", () => {
       screen.getByRole("checkbox", { name: "Administrator: admin" }),
     );
 
-    expect(confirmed).toHaveBeenCalledWith(
-      "Remove your own administrator role?",
-    );
+    // Nothing is sent until the panel's own button is pressed.
     expect(vi.mocked(updateUser)).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      screen.queryByRole("button", { name: "Step down as administrator" }),
+    ).toBeNull();
+    expect(vi.mocked(updateUser)).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Administrator: admin" }),
+    );
+    confirm("Step down as administrator");
+    await waitFor(() => {
+      expect(vi.mocked(updateUser)).toHaveBeenCalledWith(ME_ID, {
+        username: "admin",
+        admin: false,
+      });
+    });
   });
 
   it("shows the refusal and leaves the checkbox alone when a toggle is rejected", async () => {
@@ -238,10 +254,8 @@ describe("AdminPage", () => {
     fireEvent.click(
       within(rowFor(users, "operator")).getByRole("button", { name: "Delete" }),
     );
+    confirm("Delete user operator");
 
-    expect(confirmed).toHaveBeenCalledWith(
-      "Delete user operator? Their sessions and secrets remain attributed to a removed user.",
-    );
     await waitFor(() => {
       expect(vi.mocked(deleteUser)).toHaveBeenCalledWith(OTHER_ID);
     });
@@ -269,10 +283,12 @@ describe("AdminPage", () => {
       within(rowFor(users, username)).getByRole("button", { name: "Delete" });
 
     fireEvent.click(deleteIn("operator"));
+    confirm("Delete user operator");
     await waitFor(() => {
       expect(finish.has(OTHER_ID)).toBe(true);
     });
     fireEvent.click(deleteIn("zoe"));
+    confirm("Delete user zoe");
     await waitFor(() => {
       expect(finish.has(THIRD_ID)).toBe(true);
     });
@@ -359,11 +375,11 @@ describe("AdminPage", () => {
     renderAdmin();
 
     const invites = await sectionTable("Invitations");
-    fireEvent.click(within(invites).getByRole("button", { name: "Revoke" }));
-
-    expect(confirmed).toHaveBeenCalledWith(
-      "Revoke the invitation for newcomer@example.invalid?",
+    fireEvent.click(
+      within(invites).getByRole("button", { name: "Revoke" }),
     );
+    confirm("Revoke the invitation for newcomer@example.invalid");
+
     await waitFor(() => {
       expect(vi.mocked(revokeInvite)).toHaveBeenCalledWith(INVITE_ID);
     });

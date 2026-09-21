@@ -9,18 +9,18 @@
 // before it starts (`CLAUDE.md`, "Frontend conventions", Submitting a form).
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { queryKeys } from "../../services/queryKeys";
 import { resendInvite, revokeInvite } from "../../services/users";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import type { Invite } from "../../types";
 import { formatRelative, PLACEHOLDER } from "../../utils/format";
 import { Alert } from "../Alert";
+import { ConfirmPanel } from "../ConfirmPanel";
 import { SubmitButton } from "../SubmitButton";
+import { CELL, ROW, SPAN_CELL_BARE } from "../tableStyles";
+import { INVITE_COLUMNS } from "./columns";
 import { Expiry } from "./Expiry";
-import { CELL, ROW } from "./tableStyles";
-
-/** The number of columns the invitations table has, for the answer row. */
-const COLUMNS = 6;
 
 export interface InviteRowProps {
   invite: Invite;
@@ -30,6 +30,7 @@ export interface InviteRowProps {
 
 export function InviteRow({ invite, invitedBy }: InviteRowProps) {
   const queryClient = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
 
   /** The row the server answered with, before the refetch arrives. */
   function writeRows(next: (rows: Invite[]) => Invite[]) {
@@ -73,9 +74,7 @@ export function InviteRow({ invite, invitedBy }: InviteRowProps) {
   }
 
   function onRevoke() {
-    if (!window.confirm(`Revoke the invitation for ${invite.email}?`)) {
-      return;
-    }
+    setConfirming(false);
     resend.reset();
     revoke.mutate();
   }
@@ -115,8 +114,10 @@ export function InviteRow({ invite, invitedBy }: InviteRowProps) {
               type="button"
               variant="danger"
               loading={revoke.isPending}
-              disabled={busy}
-              onClick={onRevoke}
+              disabled={busy || confirming}
+              onClick={() => {
+                setConfirming(true);
+              }}
             >
               Revoke
             </SubmitButton>
@@ -124,9 +125,25 @@ export function InviteRow({ invite, invitedBy }: InviteRowProps) {
         </td>
       </tr>
 
+      {confirming && (
+        <tr className={ROW}>
+          <td colSpan={INVITE_COLUMNS.length} className={SPAN_CELL_BARE}>
+            <ConfirmPanel
+              message={`Revoke the invitation for ${invite.email}? The link already sent stops working.`}
+              confirmLabel={`Revoke the invitation for ${invite.email}`}
+              pending={revoke.isPending}
+              onConfirm={onRevoke}
+              onCancel={() => {
+                setConfirming(false);
+              }}
+            />
+          </td>
+        </tr>
+      )}
+
       {(failure !== null || resend.isSuccess) && (
         <tr className={ROW}>
-          <td colSpan={COLUMNS} className="px-0 pb-2">
+          <td colSpan={INVITE_COLUMNS.length} className={SPAN_CELL_BARE}>
             {failure !== null ? (
               <Alert kind="error">{errorMessage(failure)}</Alert>
             ) : (

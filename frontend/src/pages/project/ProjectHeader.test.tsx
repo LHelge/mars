@@ -4,7 +4,13 @@
 // invalidation is a refetch, and the project is gone.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deleteProject } from "../../services/projects";
@@ -73,14 +79,18 @@ describe("ProjectHeader", () => {
     queryClient.setQueryData(["projects", "list"], [project()]);
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete project" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete project mars" }),
+    );
 
     await waitFor(() => {
       expect(vi.mocked(deleteProject)).toHaveBeenCalledWith(PROJECT_ID);
     });
 
     await waitFor(() => {
-      expect(queryClient.getQueryState(["projects", PROJECT_ID])).toBeUndefined();
+      expect(
+        queryClient.getQueryState(["projects", PROJECT_ID]),
+      ).toBeUndefined();
     });
     expect(
       queryClient.getQueryState(["projects", PROJECT_ID, "sessions"]),

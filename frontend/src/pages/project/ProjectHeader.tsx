@@ -3,14 +3,16 @@
 //
 // `Fetch now` and `Retry clone` both answer the updated `Project`, so they
 // write it straight into the page's query cache instead of asking for it
-// again. `Delete` is two-step and names everything that goes with the project
-// before it does; its 409 while a session is live is shown where the button
-// is, without leaving the page.
+// again. `Delete` asks first, in the console's one confirmation panel
+// (`components/ConfirmPanel.tsx`), naming everything that goes with the
+// project; its 409 while a session is live is shown where the button is,
+// without leaving the page.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Alert } from "../../components/Alert";
+import { ConfirmPanel } from "../../components/ConfirmPanel";
 import { SubmitButton } from "../../components/SubmitButton";
 import {
   deleteProject,
@@ -208,37 +210,23 @@ export function ProjectHeader({
       )}
 
       {confirmingDelete && (
-        <Alert kind="warning">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <span>
+        <ConfirmPanel
+          message={
+            <>
               Delete <span className="font-mono">{project.name}</span>? Its
               sessions, tasks, secrets, shared directories and git mirror are
               removed with it. This cannot be undone.
-            </span>
-            <span className="flex shrink-0 items-center gap-2">
-              <SubmitButton
-                type="button"
-                variant="danger"
-                loading={remove.isPending}
-                onClick={() => {
-                  remove.mutate();
-                }}
-              >
-                Delete project
-              </SubmitButton>
-              <SubmitButton
-                type="button"
-                variant="ghost"
-                disabled={remove.isPending}
-                onClick={() => {
-                  setConfirmingDelete(false);
-                }}
-              >
-                Cancel
-              </SubmitButton>
-            </span>
-          </div>
-        </Alert>
+            </>
+          }
+          confirmLabel={`Delete project ${project.name}`}
+          pending={remove.isPending}
+          onConfirm={() => {
+            remove.mutate();
+          }}
+          onCancel={() => {
+            setConfirmingDelete(false);
+          }}
+        />
       )}
     </section>
   );

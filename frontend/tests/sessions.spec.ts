@@ -518,8 +518,8 @@ test("end moves to done and disables the composer", async ({
   await waitForTurn(api, sessionId, 0);
 
   const actions = header(page);
-  await actions.getByRole("button", { name: "End" }).click();
-  await actions.getByRole("button", { name: "Confirm end" }).click();
+  await actions.getByRole("button", { name: "End", exact: true }).click();
+  await actions.getByRole("button", { name: "End the session" }).click();
 
   await expectState(page, "done");
   const done = await waitForSessionState(api, sessionId, "done");
@@ -564,8 +564,8 @@ test("ending a session right after launch leaves no container", async ({
   // (`SPEC.md`, "Sessions"; `ARCHITECTURE.md`, "Session lifecycle", "A session
   // ended while it is creating").
   const actions = header(page);
-  await actions.getByRole("button", { name: "End" }).click();
-  await actions.getByRole("button", { name: "Confirm end" }).click();
+  await actions.getByRole("button", { name: "End", exact: true }).click();
+  await actions.getByRole("button", { name: "End the session" }).click();
 
   await expectState(page, "done");
   const done = await waitForSessionState(api, sessionId, "done");

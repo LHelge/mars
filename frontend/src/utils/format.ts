@@ -56,6 +56,9 @@ export function formatDateTime(iso: string | null | undefined): string {
   return date === null ? PLACEHOLDER : DATE_TIME.format(date);
 }
 
+/** What a single session's spend is shown to: four decimals, in one place. */
+export const COST_DECIMALS = 4;
+
 /**
  * Accumulated cost, at a fixed number of decimals so a column of them lines
  * up. Two decimals read best in a cross-project roll-up; a single session's

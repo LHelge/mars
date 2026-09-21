@@ -18,12 +18,14 @@ import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { Alert } from "../components/Alert";
+import { ConfirmPanel } from "../components/ConfirmPanel";
 import { SubmitButton } from "../components/SubmitButton";
 import { errorMessage } from "../services/errorMessage";
 import type { TaskDetail } from "../types";
 import { useDrawerEscape } from "./drawerEscape";
 import { LaunchForTask } from "./LaunchForTask";
 import { MoveToState } from "./MoveToState";
+import { boardPath } from "./taskLink";
 import { useDeleteTask, useReleaseTask } from "./taskWrites";
 
 export interface TaskActionsProps {
@@ -63,9 +65,7 @@ export function TaskActions({
   const held = task.lease_holder_session_id !== null;
 
   function backToBoard() {
-    const params = new URLSearchParams(search);
-    params.set("tab", "board");
-    void navigate(`/projects/${projectId}?${params.toString()}`);
+    void navigate(boardPath(projectId, search));
   }
 
   return (
@@ -129,37 +129,24 @@ export function TaskActions({
       )}
 
       {confirmingDelete && (
-        <div className="border-state-failed/60 bg-console-bg flex flex-col gap-2 rounded border p-2">
-          <p className="text-console-text max-w-prose text-sm">
-            Delete #{task.number} &ldquo;{task.title}&rdquo;? Dependants are
-            unblocked and its hand-off refs removed.
-          </p>
-          {remove.isError && (
-            <Alert kind="error">{errorMessage(remove.error)}</Alert>
-          )}
-          <div className="flex justify-end gap-2">
-            <SubmitButton
-              type="button"
-              variant="ghost"
-              disabled={remove.isPending}
-              onClick={() => {
-                setConfirmingDelete(false);
-              }}
-            >
-              Keep the task
-            </SubmitButton>
-            <SubmitButton
-              type="button"
-              variant="danger"
-              loading={remove.isPending}
-              onClick={() => {
-                remove.mutate(undefined, { onSuccess: backToBoard });
-              }}
-            >
-              Delete task
-            </SubmitButton>
-          </div>
-        </div>
+        <ConfirmPanel
+          message={
+            <>
+              Delete #{task.number} &ldquo;{task.title}&rdquo;? Dependants are
+              unblocked and its hand-off refs removed.
+            </>
+          }
+          confirmLabel={`Delete task #${String(task.number)}`}
+          cancelLabel="Keep the task"
+          pending={remove.isPending}
+          error={remove.isError ? errorMessage(remove.error) : null}
+          onConfirm={() => {
+            remove.mutate(undefined, { onSuccess: backToBoard });
+          }}
+          onCancel={() => {
+            setConfirmingDelete(false);
+          }}
+        />
       )}
     </div>
   );

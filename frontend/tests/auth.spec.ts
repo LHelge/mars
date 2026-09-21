@@ -301,11 +301,16 @@ test("a revoked invitation cannot be accepted", async ({
 
   const link = await readLoggedLink("invite", email, offset);
 
-  // The panel confirms a revoke with `window.confirm`.
-  page.once("dialog", (dialog) => {
-    void dialog.accept();
-  });
-  await inviteRow(page, email).getByRole("button", { name: "Revoke" }).click();
+  // The panel confirms a revoke inline, under the row it belongs to.
+  await inviteRow(page, email)
+    .getByRole("button", { name: "Revoke", exact: true })
+    .click();
+  await page
+    .getByRole("button", {
+      name: `Revoke the invitation for ${email}`,
+      exact: true,
+    })
+    .click();
   await expect(inviteRow(page, email)).toHaveCount(0);
 
   const invitee = await newAnonymousPage(browser);

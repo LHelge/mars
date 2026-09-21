@@ -270,7 +270,6 @@ describe("TaskStatesEditor", () => {
   });
 
   it("lets a row's answer describe its last action, not an older one", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.mocked(updateTaskState).mockRejectedValueOnce(
       new ApiError(409, "positions changed"),
     );
@@ -289,13 +288,13 @@ describe("TaskStatesEditor", () => {
     fireEvent.click(
       within(await row("review")).getByRole("button", { name: "Remove" }),
     );
+    fireEvent.click(screen.getByRole("button", { name: "Remove review" }));
     await waitFor(() => {
       expect(screen.queryByText("positions changed")).toBeNull();
     });
   });
 
   it("surfaces a delete conflict that arrives anyway", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.mocked(deleteTaskState).mockRejectedValueOnce(
       new ApiError(409, "state is in use by tasks"),
     );
@@ -304,6 +303,7 @@ describe("TaskStatesEditor", () => {
     fireEvent.click(
       within(await row("review")).getByRole("button", { name: "Remove" }),
     );
+    fireEvent.click(screen.getByRole("button", { name: "Remove review" }));
 
     await screen.findByText("state is in use by tasks");
     // Both lists are read again, so the row tells the truth next time.

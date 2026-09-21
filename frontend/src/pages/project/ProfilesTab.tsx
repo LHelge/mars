@@ -7,13 +7,24 @@
 // being written, and still gives an open editor a link.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { useSearchParams } from "react-router";
 import { Alert } from "../../components/Alert";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingState } from "../../components/LoadingState";
 import { QueryErrorAlert } from "../../components/QueryErrorAlert";
 import { SectionHeader } from "../../components/SectionHeader";
+import { ConfirmPanel } from "../../components/ConfirmPanel";
 import { SubmitButton } from "../../components/SubmitButton";
+import { TableHead } from "../../components/TableHead";
+import {
+  CELL_TOP,
+  ROW,
+  SPAN_CELL_BARE,
+  TABLE,
+  X_SCROLLER,
+  type TableColumn,
+} from "../../components/tableStyles";
 import { deleteProfile } from "../../services/profiles";
 import { queryKeys } from "../../services/queryKeys";
 import { projectQueries } from "../../services/queryOptions";
@@ -22,8 +33,15 @@ import { ProfileEditorPage } from "../ProfileEditorPage";
 import { errorMessage } from "../../services/errorMessage";
 import type { ProjectTabPanelProps } from "./tabs";
 
-const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
-const CELL = "py-1.5 pr-3 align-top";
+const COLUMNS: readonly TableColumn[] = [
+  { label: "Name" },
+  { label: "Kind" },
+  { label: "Model" },
+  { label: "Image", className: "hidden lg:table-cell" },
+  { label: "Serves" },
+  { label: "Idle timeout", className: "hidden md:table-cell" },
+  { label: "Actions", className: "pr-0 text-right" },
+];
 
 /** The image a new profile starts on: the one the project's default uses. */
 function defaultImageOf(profiles: Profile[]): string {
@@ -66,14 +84,12 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
   // editor with a system prompt half written in it — is a banner and nothing
   // more (`SPEC.md`, "Frontend", Read failures).
   const staleWarning = profiles.isError ? (
-    <QueryErrorAlert
-      query={profiles}
-      message={errorMessage(profiles.error)}
-    />
+    <QueryErrorAlert query={profiles} message={errorMessage(profiles.error)} />
   ) : null;
 
   if (selected !== null) {
-    const editing = selected === "new" ? null : rows.find((p) => p.id === selected);
+    const editing =
+      selected === "new" ? null : rows.find((p) => p.id === selected);
 
     // The id in the URL names no profile of this project — deleted in another
     // tab, or simply wrong. Say so rather than opening an empty create form.
@@ -138,33 +154,9 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
           action={newProfile}
         />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-console-border border-b">
-                <th scope="col" className={HEAD}>
-                  Name
-                </th>
-                <th scope="col" className={HEAD}>
-                  Kind
-                </th>
-                <th scope="col" className={HEAD}>
-                  Model
-                </th>
-                <th scope="col" className={`${HEAD} hidden lg:table-cell`}>
-                  Image
-                </th>
-                <th scope="col" className={HEAD}>
-                  Serves
-                </th>
-                <th scope="col" className={`${HEAD} hidden md:table-cell`}>
-                  Idle timeout
-                </th>
-                <th scope="col" className={`${HEAD} pr-0 text-right`}>
-                  Actions
-                </th>
-              </tr>
-            </thead>
+        <div className={X_SCROLLER}>
+          <table className={TABLE}>
+            <TableHead columns={COLUMNS} />
             <tbody>
               {rows.map((profile) => (
                 <ProfileRow
@@ -192,6 +184,7 @@ interface ProfileRowProps {
 
 function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
   const queryClient = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
 
   const remove = useMutation({
     mutationFn: () => deleteProfile(projectId, profile.id),
@@ -203,20 +196,14 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
   });
 
   function onDelete() {
-    if (
-      !window.confirm(
-        `Delete ${profile.name}? Sessions already running keep their configuration.`,
-      )
-    ) {
-      return;
-    }
+    setConfirming(false);
     remove.mutate();
   }
 
   return (
     <>
-      <tr className="border-console-border/60 border-b last:border-b-0">
-        <td className={`${CELL} font-mono text-xs`}>
+      <tr className={ROW}>
+        <td className={`${CELL_TOP} font-mono text-xs`}>
           <span className="text-console-text">{profile.name}</span>
           {profile.is_default && (
             <span className="border-console-border text-console-muted ml-2 rounded border px-1.5 py-0.5">
@@ -225,21 +212,21 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
           )}
         </td>
 
-        <td className={`${CELL} text-console-muted font-mono text-xs`}>
+        <td className={`${CELL_TOP} text-console-muted font-mono text-xs`}>
           {profile.kind}
         </td>
 
-        <td className={`${CELL} text-console-muted font-mono text-xs`}>
+        <td className={`${CELL_TOP} text-console-muted font-mono text-xs`}>
           {profile.model ?? "CLI default"}
         </td>
 
         <td
-          className={`${CELL} text-console-muted hidden font-mono text-xs break-all lg:table-cell`}
+          className={`${CELL_TOP} text-console-muted hidden font-mono text-xs break-all lg:table-cell`}
         >
           {profile.image}
         </td>
 
-        <td className={CELL}>
+        <td className={CELL_TOP}>
           <div className="flex flex-wrap gap-1">
             {profile.serves_states.length === 0 ? (
               <span className="text-console-muted text-xs">nothing</span>
@@ -257,12 +244,12 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
         </td>
 
         <td
-          className={`${CELL} text-console-muted hidden font-mono text-xs whitespace-nowrap md:table-cell`}
+          className={`${CELL_TOP} text-console-muted hidden font-mono text-xs whitespace-nowrap md:table-cell`}
         >
           {String(profile.idle_timeout_secs)}s
         </td>
 
-        <td className={`${CELL} pr-0`}>
+        <td className={`${CELL_TOP} pr-0`}>
           <div className="flex flex-wrap justify-end gap-1.5">
             <SubmitButton
               type="button"
@@ -278,9 +265,11 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
               type="button"
               variant="danger"
               loading={remove.isPending}
-              disabled={profile.is_default}
+              disabled={profile.is_default || confirming}
               title={profile.is_default ? "default profile" : undefined}
-              onClick={onDelete}
+              onClick={() => {
+                setConfirming(true);
+              }}
             >
               Delete
             </SubmitButton>
@@ -288,9 +277,25 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
         </td>
       </tr>
 
+      {confirming && (
+        <tr className={ROW}>
+          <td colSpan={COLUMNS.length} className={SPAN_CELL_BARE}>
+            <ConfirmPanel
+              message={`Delete ${profile.name}? Sessions already running keep their configuration.`}
+              confirmLabel={`Delete ${profile.name}`}
+              pending={remove.isPending}
+              onConfirm={onDelete}
+              onCancel={() => {
+                setConfirming(false);
+              }}
+            />
+          </td>
+        </tr>
+      )}
+
       {remove.isError && (
-        <tr className="border-console-border/60 border-b last:border-b-0">
-          <td colSpan={7} className="px-0 py-2">
+        <tr className={ROW}>
+          <td colSpan={COLUMNS.length} className={SPAN_CELL_BARE}>
             <Alert kind="error">{errorMessage(remove.error)}</Alert>
           </td>
         </tr>

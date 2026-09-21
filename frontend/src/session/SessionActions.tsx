@@ -6,9 +6,9 @@
 // tested; this file is what the buttons do.
 //
 // Ephemeral sessions run one prompt and end; they are never retried, so the
-// button is not there to be refused. Destructive actions confirm in place —
-// the second press is the confirmation — rather than in a modal, because the
-// header is already the place the operator is looking.
+// button is not there to be refused. Destructive actions confirm in place, in
+// the console's one confirmation panel (`components/ConfirmPanel.tsx`), rather
+// than in a modal: the header is already the place the operator is looking.
 //
 // Every refusal is the server's own sentence: `SPEC.md` phrases why a sync on a
 // `creating` session or a delete of a running one cannot happen better than the
@@ -22,6 +22,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 
 import { Alert } from "../components/Alert";
+import { ConfirmPanel } from "../components/ConfirmPanel";
 import { SubmitButton } from "../components/SubmitButton";
 import { errorMessage, logUnexpected } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
@@ -50,7 +51,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  /** `end` or `delete` once pressed; the next press carries it out. */
+  /** `end` or `delete` once pressed; the panel below carries it out. */
   const [confirming, setConfirming] = useState<"end" | "delete" | null>(null);
   const [retryOpen, setRetryOpen] = useState(false);
   const [retryMessage, setRetryMessage] = useState("");
@@ -152,16 +153,13 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
             type="button"
             variant="ghost"
             loading={end.isPending}
+            disabled={confirming === "end"}
             onClick={() => {
               begin();
-              if (confirming === "end") {
-                end.mutate();
-              } else {
-                setConfirming("end");
-              }
+              setConfirming("end");
             }}
           >
-            {confirming === "end" ? "Confirm end" : "End"}
+            End
           </SubmitButton>
         )}
 
@@ -197,19 +195,42 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
             type="button"
             variant="danger"
             loading={remove.isPending}
+            disabled={confirming === "delete"}
             onClick={() => {
               begin();
-              if (confirming === "delete") {
-                remove.mutate();
-              } else {
-                setConfirming("delete");
-              }
+              setConfirming("delete");
             }}
           >
-            {confirming === "delete" ? "Confirm delete" : "Delete"}
+            Delete
           </SubmitButton>
         )}
       </div>
+
+      {confirming !== null && (
+        <div className="w-full max-w-md">
+          <ConfirmPanel
+            message={
+              confirming === "end"
+                ? "End this session? The container stops and the agent cannot be given anything more to do."
+                : "Delete this session? Its transcript and events go with it; the branch it left in the git mirror stays."
+            }
+            confirmLabel={
+              confirming === "end" ? "End the session" : "Delete the session"
+            }
+            pending={confirming === "end" ? end.isPending : remove.isPending}
+            onConfirm={() => {
+              if (confirming === "end") {
+                end.mutate();
+              } else {
+                remove.mutate();
+              }
+            }}
+            onCancel={() => {
+              setConfirming(null);
+            }}
+          />
+        </div>
+      )}
 
       {retryOpen && can.retry && (
         <form

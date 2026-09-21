@@ -27,6 +27,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 
 import { Alert } from "../components/Alert";
+import { ConfirmPanel } from "../components/ConfirmPanel";
 import { SubmitButton } from "../components/SubmitButton";
 import { errorMessage } from "../services/errorMessage";
 import type { Task } from "../types";
@@ -112,44 +113,32 @@ export function MoveToState({ projectId, task }: MoveToStateProps) {
       </div>
 
       {confirming && !unchanged && (
-        <div className="border-console-border bg-console-bg flex flex-col gap-2 rounded border p-2">
-          <p className="text-console-text max-w-prose text-sm">
-            {task.lease_holder_session_id === null
+        <ConfirmPanel
+          tone="caution"
+          message={
+            task.lease_holder_session_id === null
               ? `Move #${String(task.number)} to ${target}.`
-              : `Moving hands the task off: the lease held by session ${shortId(task.lease_holder_session_id, 8)} is cleared and attempts reset.`}
-          </p>
-          <div className="flex justify-end gap-2">
-            <SubmitButton
-              type="button"
-              variant="ghost"
-              disabled={update.isPending}
-              onClick={() => {
-                setConfirming(false);
-              }}
-            >
-              Cancel
-            </SubmitButton>
-            <SubmitButton
-              type="button"
-              loading={update.isPending}
-              onClick={() => {
-                update.mutate(
-                  { state: target },
-                  {
-                    onSuccess: () => {
-                      setConfirming(false);
-                      // The move landed: the task's own state is the answer
-                      // again, and the select follows it.
-                      setChoice(null);
-                    },
-                  },
-                );
-              }}
-            >
-              Move to {target}
-            </SubmitButton>
-          </div>
-        </div>
+              : `Moving hands the task off: the lease held by session ${shortId(task.lease_holder_session_id, 8)} is cleared and attempts reset.`
+          }
+          confirmLabel={`Move to ${target}`}
+          pending={update.isPending}
+          onConfirm={() => {
+            update.mutate(
+              { state: target },
+              {
+                onSuccess: () => {
+                  setConfirming(false);
+                  // The move landed: the task's own state is the answer
+                  // again, and the select follows it.
+                  setChoice(null);
+                },
+              },
+            );
+          }}
+          onCancel={() => {
+            setConfirming(false);
+          }}
+        />
       )}
 
       {update.isError && (

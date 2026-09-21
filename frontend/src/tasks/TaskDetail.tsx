@@ -58,7 +58,7 @@ import { taskKeys } from "./queryKeys";
 import { TaskActions } from "./TaskActions";
 import { TaskEditForm } from "./TaskEditForm";
 import { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
-import { taskPath } from "./taskLink";
+import { boardPath, taskPath } from "./taskLink";
 import { selectTaskById, useTaskStore } from "./taskStore";
 import { useUsername } from "./useUsername";
 
@@ -91,9 +91,7 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
   // Back to the board this drawer opened over, keeping whatever the board was
   // showing — the search field among it — rather than resetting the view.
   const close = useCallback(() => {
-    const params = new URLSearchParams(search);
-    params.set("tab", "board");
-    void navigate(`/projects/${projectId}?${params.toString()}`);
+    void navigate(boardPath(projectId, search));
   }, [navigate, projectId, search]);
 
   // Modal for as long as the drawer is mounted. Closing it is a navigation,
@@ -223,11 +221,7 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
                 label="Task link"
               />
             )}
-            <SubmitButton
-              type="button"
-              variant="ghost"
-              onClick={close}
-            >
+            <SubmitButton type="button" variant="ghost" onClick={close}>
               Close
             </SubmitButton>
           </div>
@@ -428,7 +422,13 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
  * What the task is, as a key/value grid. Everything here is either a fact the
  * board also shows or a timestamp; nothing here is an action.
  */
-function Meta({ projectId, task }: { projectId: string; task: TaskDetailData }) {
+function Meta({
+  projectId,
+  task,
+}: {
+  projectId: string;
+  task: TaskDetailData;
+}) {
   const parent = useTaskStore(
     task.parent_id === null ? selectNothing : selectTaskById(task.parent_id),
   );
@@ -607,7 +607,9 @@ function ChildRow({ projectId, child }: { projectId: string; child: Task }) {
 function Sessions({ task }: { task: TaskDetailData }) {
   if (task.sessions.length === 0) {
     return (
-      <p className="text-console-muted text-sm">No session has touched this task.</p>
+      <p className="text-console-muted text-sm">
+        No session has touched this task.
+      </p>
     );
   }
 

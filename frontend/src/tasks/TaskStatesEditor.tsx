@@ -28,8 +28,18 @@ import { CONTROL } from "../components/fieldStyles";
 import { FormField } from "../components/FormField";
 import { LoadingState } from "../components/LoadingState";
 import { QueryErrorAlert } from "../components/QueryErrorAlert";
+import { ConfirmPanel } from "../components/ConfirmPanel";
 import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
+import { TableHead } from "../components/TableHead";
+import {
+  CELL,
+  ROW,
+  SPAN_CELL,
+  TABLE,
+  X_SCROLLER,
+  type TableColumn,
+} from "../components/tableStyles";
 import { ApiError } from "../services/apiClient";
 import { errorMessage } from "../services/errorMessage";
 import { listTasks } from "../services/tasks";
@@ -61,8 +71,13 @@ const STATES_HELP =
 const COUNTS_UNKNOWN = "Task counts are not loaded";
 
 
-const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
-const CELL = "py-1.5 pr-3 align-middle";
+const COLUMNS: readonly TableColumn[] = [
+  { label: "#", className: "w-8" },
+  { label: "Name" },
+  { label: "Kind" },
+  { label: "Tasks", className: "text-right" },
+  { label: "Actions", className: "pr-0 text-right" },
+];
 
 export interface TaskStatesEditorProps {
   projectId: string;
@@ -155,27 +170,9 @@ export function TaskStatesEditor({ projectId }: TaskStatesEditorProps) {
           />
         )
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-console-border border-b">
-                <th scope="col" className={`${HEAD} w-8`}>
-                  #
-                </th>
-                <th scope="col" className={HEAD}>
-                  Name
-                </th>
-                <th scope="col" className={HEAD}>
-                  Kind
-                </th>
-                <th scope="col" className={`${HEAD} text-right`}>
-                  Tasks
-                </th>
-                <th scope="col" className={`${HEAD} pr-0 text-right`}>
-                  Actions
-                </th>
-              </tr>
-            </thead>
+        <div className={X_SCROLLER}>
+          <table className={TABLE}>
+            <TableHead columns={COLUMNS} />
             <tbody>
               {rows.map((state, index) => (
                 <StateRow
@@ -349,6 +346,7 @@ function StateRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(state.name);
   const [draftError, setDraftError] = useState<string | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
   const rename = useFormSubmit(async (next: string) => {
     await updateTaskState(projectId, state.name, { name: next });
@@ -426,19 +424,13 @@ function StateRow({
   }
 
   function onRemove() {
-    if (
-      !window.confirm(
-        `Remove ${state.name}? The board loses the column, and agents stop seeing it as a place work can be.`,
-      )
-    ) {
-      return;
-    }
+    setConfirmingRemove(false);
     run({ kind: "remove" });
   }
 
   return (
     <>
-      <tr className="border-console-border/60 border-b last:border-b-0">
+      <tr className={ROW}>
         <td className={`${CELL} text-console-muted font-mono text-xs`}>
           {index}
         </td>
@@ -544,8 +536,10 @@ function StateRow({
                 type="button"
                 variant="danger"
                 loading={act.loading && acting === "remove"}
-                disabled={busy || refusal !== null}
-                onClick={onRemove}
+                disabled={busy || refusal !== null || confirmingRemove}
+                onClick={() => {
+                  setConfirmingRemove(true);
+                }}
               >
                 Remove
               </SubmitButton>
@@ -557,17 +551,33 @@ function StateRow({
       {/* The rename's answers belong to the rename: leaving edit mode takes
           them with it, rather than leaving a refusal under a row nobody is
           editing. */}
+      {confirmingRemove && (
+        <tr className={ROW}>
+          <td colSpan={COLUMNS.length} className={SPAN_CELL}>
+            <ConfirmPanel
+              message={`Remove ${state.name}? The board loses the column, and agents stop seeing it as a place work can be.`}
+              confirmLabel={`Remove ${state.name}`}
+              pending={act.loading && acting === "remove"}
+              onConfirm={onRemove}
+              onCancel={() => {
+                setConfirmingRemove(false);
+              }}
+            />
+          </td>
+        </tr>
+      )}
+
       {editing && (draftError !== null || rename.error !== null) && (
-        <tr className="border-console-border/60 border-b last:border-b-0">
-          <td colSpan={5} className="bg-console-surface/60 px-3 py-2">
+        <tr className={ROW}>
+          <td colSpan={COLUMNS.length} className={SPAN_CELL}>
             <Alert kind="error">{draftError ?? rename.error}</Alert>
           </td>
         </tr>
       )}
 
       {act.error !== null && (
-        <tr className="border-console-border/60 border-b last:border-b-0">
-          <td colSpan={5} className="bg-console-surface/60 px-3 py-2">
+        <tr className={ROW}>
+          <td colSpan={COLUMNS.length} className={SPAN_CELL}>
             <Alert kind="error">{act.error}</Alert>
           </td>
         </tr>

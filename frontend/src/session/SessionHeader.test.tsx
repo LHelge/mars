@@ -111,7 +111,9 @@ describe("SessionHeader", () => {
   it("confirms a delete before sending it", () => {
     mount(session("done"));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    expect(screen.getByRole("button", { name: "Confirm delete" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Delete the session" }),
+    ).toBeTruthy();
   });
 
   it("shows the metadata the operator reads the session by", () => {

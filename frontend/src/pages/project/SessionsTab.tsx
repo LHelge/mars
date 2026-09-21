@@ -18,12 +18,21 @@
 // refusal is shown on the row it belongs to rather than at the top of the page.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingState } from "../../components/LoadingState";
 import { QueryErrorAlert } from "../../components/QueryErrorAlert";
+import { ConfirmPanel } from "../../components/ConfirmPanel";
 import { SessionStatePill } from "../../components/SessionStatePill";
+import { TableHead } from "../../components/TableHead";
+import {
+  CELL,
+  ROW,
+  SPAN_CELL,
+  TABLE,
+  type TableColumn,
+} from "../../components/tableStyles";
 import { GitActionsPanel } from "../../components/git/GitActionsPanel";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import { LaunchSourceTag } from "../../session/LaunchSourceTag";
@@ -31,7 +40,13 @@ import { queryKeys } from "../../services/queryKeys";
 import { projectQueries } from "../../services/queryOptions";
 import { deleteSession } from "../../services/sessions";
 import type { Session, SessionState } from "../../types";
-import { formatRelative, formatUsd, PLACEHOLDER } from "../../utils/format";
+import {
+  COST_DECIMALS,
+  formatRelative,
+  formatUsd,
+  PLACEHOLDER,
+  shortId,
+} from "../../utils/format";
 import { LaunchSessionForm } from "./LaunchSessionForm";
 import type { ProjectTabPanelProps } from "./tabs";
 
@@ -39,9 +54,6 @@ import type { ProjectTabPanelProps } from "./tabs";
 const BUSY_POLL_MS = 10_000;
 /** Once everything has settled, the list only has to stay roughly current. */
 const IDLE_POLL_MS = 60_000;
-
-/** A session's spend is often a fraction of a cent. */
-const COST_DECIMALS = 4;
 
 type Filter = SessionState | "all";
 
@@ -53,12 +65,28 @@ const FILTERS: { value: Filter; label: string }[] = [
   { value: "failed", label: "Failed" },
 ];
 
-const CELL = "py-1.5 pr-3 align-middle";
-const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
-const ROW = "border-console-border/60 border-b last:border-b-0";
+const COLUMNS: readonly TableColumn[] = [
+  { label: "State" },
+  { label: "Session" },
+  { label: "Kind", className: "hidden sm:table-cell" },
+  { label: "Profile", className: "hidden md:table-cell" },
+  { label: "Branch", className: "hidden lg:table-cell" },
+  { label: "Activity", className: "hidden sm:table-cell" },
+  { label: "Cost", className: "text-right" },
+  { label: "Actions", className: "pr-0 text-right", srOnly: true },
+];
 
 function isBusy(session: Session): boolean {
   return session.state === "creating" || session.state === "running";
+}
+
+/**
+ * How a confirmation names the session it is about: the row's own title where
+ * there is one, its short id otherwise. An untitled session under a `Delete`
+ * that said nothing else was the accessible-name problem this replaced.
+ */
+function sessionLabel(session: Session): string {
+  return session.title ?? `session ${shortId(session.id, 8)}`;
 }
 
 export function SessionsTab({ project }: ProjectTabPanelProps) {
@@ -179,35 +207,8 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
             />
           )
         ) : (
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-console-border border-b">
-                <th scope="col" className={HEAD}>
-                  State
-                </th>
-                <th scope="col" className={HEAD}>
-                  Session
-                </th>
-                <th scope="col" className={`${HEAD} hidden sm:table-cell`}>
-                  Kind
-                </th>
-                <th scope="col" className={`${HEAD} hidden md:table-cell`}>
-                  Profile
-                </th>
-                <th scope="col" className={`${HEAD} hidden lg:table-cell`}>
-                  Branch
-                </th>
-                <th scope="col" className={`${HEAD} hidden sm:table-cell`}>
-                  Activity
-                </th>
-                <th scope="col" className={`${HEAD} text-right`}>
-                  Cost
-                </th>
-                <th scope="col" className={`${HEAD} pr-0 text-right`}>
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
+          <table className={TABLE}>
+            <TableHead columns={COLUMNS} />
             <tbody>
               {rows.map((session) => {
                 const finished =
@@ -216,78 +217,96 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
                   rowError?.id === session.id ? rowError.message : null;
 
                 return (
-                  <tr key={session.id} className={ROW}>
-                    <td className={CELL}>
-                      <SessionStatePill
-                        state={session.state}
-                        error={session.error}
-                      />
-                    </td>
-                    <td className={`${CELL} min-w-0`}>
-                      {/* Who launched it, where its name is: a row with no tag
-                          was launched by a person (`SPEC.md`, "Sessions"). */}
-                      <span className="flex flex-wrap items-center gap-2">
-                        <Link
-                          to={`/sessions/${session.id}`}
-                          className="text-console-text hover:text-console-accent"
-                        >
-                          {session.title ?? (
-                            <span className="text-console-muted">untitled</span>
-                          )}
-                        </Link>
-                        <LaunchSourceTag source={session.launch_source} />
-                      </span>
-                      {error !== null && (
-                        <p className="text-state-failed text-xs">{error}</p>
-                      )}
-                    </td>
-                    <td
-                      className={`${CELL} text-console-muted hidden sm:table-cell`}
-                    >
-                      {session.kind}
-                    </td>
-                    <td
-                      className={`${CELL} text-console-muted hidden md:table-cell`}
-                    >
-                      {profileNames.get(session.profile_id) ?? PLACEHOLDER}
-                    </td>
-                    <td
-                      className={`${CELL} text-console-muted hidden font-mono text-xs lg:table-cell`}
-                    >
-                      {session.branch ?? PLACEHOLDER}
-                    </td>
-                    <td
-                      className={`${CELL} text-console-muted hidden font-mono text-xs whitespace-nowrap sm:table-cell`}
-                    >
-                      {formatRelative(session.last_activity_at)}
-                    </td>
-                    <td
-                      className={`${CELL} text-console-muted text-right font-mono text-xs`}
-                    >
-                      {formatUsd(session.cost_usd, COST_DECIMALS)}
-                    </td>
-                    <td className={`${CELL} pr-0 text-right`}>
-                      {finished && (
-                        <button
-                          type="button"
-                          disabled={remove.isPending}
-                          onClick={() => {
-                            setRowError(null);
-                            if (confirming === session.id) {
-                              remove.mutate(session.id);
-                            } else {
-                              setConfirming(session.id);
+                  <Fragment key={session.id}>
+                    <tr className={ROW}>
+                      <td className={CELL}>
+                        <SessionStatePill
+                          state={session.state}
+                          error={session.error}
+                        />
+                      </td>
+                      <td className={`${CELL} min-w-0`}>
+                        {/* Who launched it, where its name is: a row with no
+                            tag was launched by a person (`SPEC.md`,
+                            "Sessions"). */}
+                        <span className="flex flex-wrap items-center gap-2">
+                          <Link
+                            to={`/sessions/${session.id}`}
+                            className="text-console-text hover:text-console-accent"
+                          >
+                            {session.title ?? (
+                              <span className="text-console-muted">untitled</span>
+                            )}
+                          </Link>
+                          <LaunchSourceTag source={session.launch_source} />
+                        </span>
+                        {error !== null && (
+                          <p className="text-state-failed text-xs">{error}</p>
+                        )}
+                      </td>
+                      <td
+                        className={`${CELL} text-console-muted hidden sm:table-cell`}
+                      >
+                        {session.kind}
+                      </td>
+                      <td
+                        className={`${CELL} text-console-muted hidden md:table-cell`}
+                      >
+                        {profileNames.get(session.profile_id) ?? PLACEHOLDER}
+                      </td>
+                      <td
+                        className={`${CELL} text-console-muted hidden font-mono text-xs lg:table-cell`}
+                      >
+                        {session.branch ?? PLACEHOLDER}
+                      </td>
+                      <td
+                        className={`${CELL} text-console-muted hidden font-mono text-xs whitespace-nowrap sm:table-cell`}
+                      >
+                        {formatRelative(session.last_activity_at)}
+                      </td>
+                      <td
+                        className={`${CELL} text-console-muted text-right font-mono text-xs`}
+                      >
+                        {formatUsd(session.cost_usd, COST_DECIMALS)}
+                      </td>
+                      <td className={`${CELL} pr-0 text-right`}>
+                        {finished && (
+                          <button
+                            type="button"
+                            aria-label={`Delete ${sessionLabel(session)}`}
+                            disabled={
+                              remove.isPending || confirming === session.id
                             }
-                          }}
-                          className="text-console-muted hover:text-state-failed font-mono text-xs disabled:opacity-50"
-                        >
-                          {confirming === session.id
-                            ? "Confirm delete"
-                            : "Delete"}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
+                            onClick={() => {
+                              setRowError(null);
+                              setConfirming(session.id);
+                            }}
+                            className="text-console-muted hover:text-state-failed font-mono text-xs disabled:opacity-50"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+
+                    {confirming === session.id && (
+                      <tr className={ROW}>
+                        <td colSpan={COLUMNS.length} className={SPAN_CELL}>
+                          <ConfirmPanel
+                            message={`Delete ${sessionLabel(session)}? Its transcript and events go with it; the branch it left in the git mirror stays.`}
+                            confirmLabel={`Delete ${sessionLabel(session)}`}
+                            pending={remove.isPending}
+                            onConfirm={() => {
+                              remove.mutate(session.id);
+                            }}
+                            onCancel={() => {
+                              setConfirming(null);
+                            }}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>

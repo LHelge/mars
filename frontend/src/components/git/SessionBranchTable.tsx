@@ -13,6 +13,8 @@ import type { ReactNode } from "react";
 import { Link } from "react-router";
 import type { SessionBranch } from "../../types";
 import { formatRelative, shortSha } from "../../utils/format";
+import { TableHead } from "../TableHead";
+import { CELL, ROW, TABLE, type TableColumn } from "../tableStyles";
 
 /** Which form a row has open. */
 export type RowAction = "merge" | "rebase" | "push";
@@ -35,9 +37,14 @@ export interface SessionBranchTableProps {
   disabled: boolean;
 }
 
-const CELL = "py-1.5 pr-3 align-middle";
-const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
-const ROW = "border-console-border/60 border-b last:border-b-0";
+const COLUMNS: readonly TableColumn[] = [
+  { label: "Session" },
+  { label: "Ref", className: "hidden lg:table-cell" },
+  { label: "Commit" },
+  { label: "Ahead / behind" },
+  { label: "Updated", className: "hidden sm:table-cell" },
+  { label: "Actions", className: "pr-0 text-right", srOnly: true },
+];
 
 const ACTIONS: { action: RowAction; label: string }[] = [
   { action: "merge", label: "Merge into…" },
@@ -55,34 +62,14 @@ export function SessionBranchTable({
   disabled,
 }: SessionBranchTableProps) {
   return (
-    <table className="w-full border-collapse text-sm">
-      <thead>
-        <tr className="border-console-border border-b">
-          <th scope="col" className={HEAD}>
-            Session
-          </th>
-          <th scope="col" className={`${HEAD} hidden lg:table-cell`}>
-            Ref
-          </th>
-          <th scope="col" className={HEAD}>
-            Commit
-          </th>
-          <th scope="col" className={HEAD}>
-            Ahead / behind
-          </th>
-          <th scope="col" className={`${HEAD} hidden sm:table-cell`}>
-            Updated
-          </th>
-          <th scope="col" className={`${HEAD} pr-0 text-right`}>
-            <span className="sr-only">Actions</span>
-          </th>
-        </tr>
-      </thead>
+    <table className={TABLE}>
+      <TableHead columns={COLUMNS} />
       <tbody>
         {rows.map((row) => {
           const compare = compareLinks[row.session_id];
           const title = titles.get(row.session_id);
-          const opened = open?.sessionId === row.session_id ? open.action : null;
+          const opened =
+            open?.sessionId === row.session_id ? open.action : null;
 
           return (
             <BranchRows
@@ -206,7 +193,7 @@ function BranchRows({
 
       {opened !== null && (
         <tr className={ROW}>
-          <td colSpan={6} className="pt-1 pb-3">
+          <td colSpan={COLUMNS.length} className="pt-1 pb-3">
             <div className="border-console-border bg-console-surface rounded border px-3 py-3">
               {renderForm(row)}
             </div>

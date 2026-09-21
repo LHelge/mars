@@ -19,6 +19,8 @@ import { LoadingState } from "../components/LoadingState";
 import { PageLayout } from "../components/PageLayout";
 import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { SubmitButton } from "../components/SubmitButton";
+import { TableHead } from "../components/TableHead";
+import { TABLE, type TableColumn } from "../components/tableStyles";
 import { errorMessage } from "../services/errorMessage";
 import { listProjects } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
@@ -29,7 +31,13 @@ import { ProjectRow } from "./projects/ProjectRow";
 /** How often a project that is still cloning is asked about. */
 const PROJECTS_REFETCH_MS = 3_000;
 
-const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
+const COLUMNS: readonly TableColumn[] = [
+  { label: "Status" },
+  { label: "Project" },
+  { label: "Remote", className: "hidden md:table-cell" },
+  { label: "Branch", className: "hidden sm:table-cell" },
+  { label: "Fetched", className: "pr-0 text-right" },
+];
 
 /**
  * Work first: anything cloning or failed is what the operator came for, then
@@ -104,26 +112,8 @@ export function ProjectsPage() {
             />
           )
         ) : (
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-console-border border-b">
-                <th scope="col" className={HEAD}>
-                  Status
-                </th>
-                <th scope="col" className={HEAD}>
-                  Project
-                </th>
-                <th scope="col" className={`${HEAD} hidden md:table-cell`}>
-                  Remote
-                </th>
-                <th scope="col" className={`${HEAD} hidden sm:table-cell`}>
-                  Branch
-                </th>
-                <th scope="col" className={`${HEAD} pr-0 text-right`}>
-                  Fetched
-                </th>
-              </tr>
-            </thead>
+          <table className={TABLE}>
+            <TableHead columns={COLUMNS} />
             <tbody>
               {rows.map((project) => (
                 <ProjectRow key={project.id} project={project} />

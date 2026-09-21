@@ -80,7 +80,10 @@ function renderManager(scope: "project" | "user" = "project"): QueryClient {
         {scope === "project" ? (
           <SecretsManager scope="project" scopeId={PROJECT_ID} />
         ) : (
-          <SecretsManager scope="user" scopeId="00000000-0000-0000-0000-00000000beef" />
+          <SecretsManager
+            scope="user"
+            scopeId="00000000-0000-0000-0000-00000000beef"
+          />
         )}
       </MemoryRouter>
     </QueryClientProvider>,
@@ -161,9 +164,9 @@ describe("SecretsManager", () => {
     });
 
     await waitFor(() => {
-      expect(
-        screen.getByLabelText<HTMLTextAreaElement>(/^Value/).value,
-      ).toBe("");
+      expect(screen.getByLabelText<HTMLTextAreaElement>(/^Value/).value).toBe(
+        "",
+      );
     });
     expect(screen.getByLabelText<HTMLInputElement>(/^Name/).value).toBe("");
 
@@ -307,7 +310,8 @@ describe("SecretsManager", () => {
 
     fireEvent.click(open);
     expect(
-      screen.getByLabelText<HTMLTextAreaElement>("New value for MY_TOKEN").value,
+      screen.getByLabelText<HTMLTextAreaElement>("New value for MY_TOKEN")
+        .value,
     ).toBe("");
 
     // So does switching to another panel of the same row.
@@ -319,7 +323,8 @@ describe("SecretsManager", () => {
 
     fireEvent.click(open);
     expect(
-      screen.getByLabelText<HTMLTextAreaElement>("New value for MY_TOKEN").value,
+      screen.getByLabelText<HTMLTextAreaElement>("New value for MY_TOKEN")
+        .value,
     ).toBe("");
     expect(vi.mocked(replaceSecretValue)).not.toHaveBeenCalled();
   });
@@ -357,18 +362,19 @@ describe("SecretsManager", () => {
   it("deletes only after the confirmation", async () => {
     vi.mocked(listSecrets).mockResolvedValue([secret()]);
     vi.mocked(deleteSecret).mockResolvedValue(undefined);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
 
     renderManager();
 
+    // The row's button opens the panel; nothing is sent by it.
     fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
-    expect(confirm).toHaveBeenCalledWith(
-      "Delete MY_TOKEN? Sessions launched later will not receive it.",
-    );
     expect(vi.mocked(deleteSecret)).not.toHaveBeenCalled();
 
-    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("button", { name: "Delete MY_TOKEN" })).toBeNull();
+    expect(vi.mocked(deleteSecret)).not.toHaveBeenCalled();
+
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete MY_TOKEN" }));
     await waitFor(() => {
       expect(vi.mocked(deleteSecret)).toHaveBeenCalledWith(SECRET_ID);
     });
@@ -380,11 +386,11 @@ describe("SecretsManager", () => {
     // can take the row off screen — and the row must not outlive its secret.
     vi.mocked(listSecrets).mockReturnValue(new Promise(() => {}));
     vi.mocked(deleteSecret).mockResolvedValue(undefined);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderManager();
 
     fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete MY_TOKEN" }));
 
     await waitFor(() => {
       expect(screen.queryByText("MY_TOKEN")).toBeNull();

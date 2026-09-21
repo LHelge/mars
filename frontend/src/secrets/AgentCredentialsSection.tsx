@@ -25,7 +25,17 @@ import { FieldShell } from "../components/FieldShell";
 import { CONTROL } from "../components/fieldStyles";
 import { LoadingState } from "../components/LoadingState";
 import { SectionHeader } from "../components/SectionHeader";
+import { ConfirmPanel } from "../components/ConfirmPanel";
 import { SubmitButton } from "../components/SubmitButton";
+import { TableHead } from "../components/TableHead";
+import {
+  CELL,
+  ROW,
+  SPAN_CELL_ROOMY,
+  TABLE,
+  X_SCROLLER,
+  type TableColumn,
+} from "../components/tableStyles";
 import { secretErrorMessage } from "../components/secrets/messages";
 import { logUnexpected } from "../services/errorMessage";
 import { useAuth } from "../hooks/useAuth";
@@ -42,8 +52,12 @@ import { labelForCredential } from "./agentCredentials";
 import { AddAgentCredentialForm } from "./AddAgentCredentialForm";
 import { invalidateSecretQueries } from "./invalidate";
 
-const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
-const CELL = "py-1.5 pr-3 align-middle";
+const COLUMNS: readonly TableColumn[] = [
+  { label: "Credential" },
+  { label: "Applies to" },
+  { label: "Last used" },
+  { label: "Actions", className: "pr-0 text-right" },
+];
 
 /** `SPEC.md`, "Frontend": a credential is what makes a session authenticate. */
 const NOTHING_HERE =
@@ -143,24 +157,9 @@ export function AgentCredentialsSection({
           description={NOTHING_HERE}
         />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-console-border border-b">
-                <th scope="col" className={HEAD}>
-                  Credential
-                </th>
-                <th scope="col" className={HEAD}>
-                  Applies to
-                </th>
-                <th scope="col" className={HEAD}>
-                  Last used
-                </th>
-                <th scope="col" className={`${HEAD} pr-0 text-right`}>
-                  Actions
-                </th>
-              </tr>
-            </thead>
+        <div className={X_SCROLLER}>
+          <table className={TABLE}>
+            <TableHead columns={COLUMNS} />
             <tbody>
               {rows.map(({ secret, view }) => (
                 <AgentCredentialRow
@@ -194,6 +193,7 @@ function AgentCredentialRow({
   const label = labelForCredential(secret.name);
 
   const [replacing, setReplacing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -242,20 +242,14 @@ function AgentCredentialRow({
   }
 
   function onDelete() {
-    if (
-      !window.confirm(
-        `Delete the ${label} that applies to ${appliesTo}? Sessions launched later will have to authenticate some other way.`,
-      )
-    ) {
-      return;
-    }
+    setConfirmingDelete(false);
     setError(null);
     remove.mutate();
   }
 
   return (
     <>
-      <tr className="border-console-border/60 border-b last:border-b-0">
+      <tr className={ROW}>
         <td className={`${CELL} text-console-text`}>{label}</td>
 
         <td className={`${CELL} text-console-muted`}>{appliesTo}</td>
@@ -281,6 +275,7 @@ function AgentCredentialRow({
               disabled={busy}
               onClick={() => {
                 setError(null);
+                setConfirmingDelete(false);
                 // Closing this way used to keep the typed value for the next
                 // time the panel was opened (`CLAUDE.md`, rule 3).
                 setValue("");
@@ -294,7 +289,11 @@ function AgentCredentialRow({
               variant="danger"
               loading={remove.isPending}
               disabled={busy}
-              onClick={onDelete}
+              aria-expanded={confirmingDelete}
+              onClick={() => {
+                setError(null);
+                setConfirmingDelete((open) => !open);
+              }}
             >
               Delete
             </SubmitButton>
@@ -302,11 +301,23 @@ function AgentCredentialRow({
         </td>
       </tr>
 
-      {(replacing || error !== null) && (
-        <tr className="border-console-border/60 border-b last:border-b-0">
-          <td colSpan={4} className="bg-console-surface/60 px-3 py-3">
+      {(replacing || confirmingDelete || error !== null) && (
+        <tr className={ROW}>
+          <td colSpan={COLUMNS.length} className={SPAN_CELL_ROOMY}>
             <div className="flex flex-col gap-3">
               {error !== null && <Alert kind="error">{error}</Alert>}
+
+              {confirmingDelete && (
+                <ConfirmPanel
+                  message={`Delete the ${label} that applies to ${appliesTo}? Sessions launched later will have to authenticate some other way.`}
+                  confirmLabel={`Delete the ${label} that applies to ${appliesTo}`}
+                  pending={remove.isPending}
+                  onConfirm={onDelete}
+                  onCancel={() => {
+                    setConfirmingDelete(false);
+                  }}
+                />
+              )}
 
               {replacing && (
                 <form

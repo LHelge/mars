@@ -183,12 +183,13 @@ test("an administrator may step down but never delete itself", async ({
   expect(refused.text).toContain("yourself");
 
   // Stepping down is allowed while other administrators remain — which they
-  // do, the seeded one among them. It is confirmed, and takes the page with
-  // it: the refetch that follows answers 403 and the guard closes.
-  page.on("dialog", (dialog) => {
-    void dialog.accept();
-  });
+  // do, the seeded one among them. It is confirmed in the row's own panel, and
+  // takes the page with it: the refetch that follows answers 403 and the guard
+  // closes.
   await own.getByLabel(`Administrator: ${admin.username}`).click();
+  await page
+    .getByRole("button", { name: "Step down as administrator", exact: true })
+    .click();
 
   await expect(page.getByText(FORBIDDEN)).toBeVisible({
     timeout: NEXT_REQUEST_MS,
@@ -220,12 +221,15 @@ test("a deleted user is signed out at its next request and cannot sign in again"
     ).toBeVisible();
 
     await page.goto("/admin");
-    page.on("dialog", (dialog) => {
-      void dialog.accept();
-    });
     const row = userRow(page, doomed.username);
     await expect(row).toBeVisible();
-    await row.getByRole("button", { name: "Delete" }).click();
+    await row.getByRole("button", { name: "Delete", exact: true }).click();
+    await page
+      .getByRole("button", {
+        name: `Delete user ${doomed.username}`,
+        exact: true,
+      })
+      .click();
     await expect(userRow(page, doomed.username)).toHaveCount(0);
 
     // The access token names a user that no longer exists, so the next request

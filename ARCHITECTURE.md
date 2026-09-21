@@ -92,6 +92,16 @@ User access tokens include `auth_version`, matched against the current user on e
 
 Open WebSocket and SSE connections retain the existing rule that ordinary JWT expiry does not interrupt them. They recheck account existence, login version and the password-change gate at their existing heartbeat ticks; WebSocket also checks before accepting application messages or terminal input. Invalid authorization closes the connection and its terminal attachment, without stopping agent sessions. Revocation may take one heartbeat interval to end passive streaming. Failed authorization refresh returns the browser to login; a self-service password change reconnects using its replacement credentials, while a plain token rotation reconnects nothing — the browser installs the new pair and leaves the open connection and its terminal in place. This uses database checks, with no token blacklist or revocation broadcast service.
 
+### Content-Security-Policy
+
+nginx sends a Content-Security-Policy with every response it serves (`nginx/default.conf.template`; the policy value and the reason for each directive are in the comment above it). It is a second layer, not the first one: the frontend already refuses to render what the policy forbids, and the policy is what holds when a rendering rule is missed or regressed.
+
+The threat it answers is the one ADR 0027 accepts: agent output, task text and comments are displayed unredacted, so a prompt-injected agent writes text that the operator's browser then renders. `frontend/src/components/Markdown.tsx` never renders an image element — `![alt](url)` becomes a link reading `[image: alt]` (`SPEC.md`, "Frontend", "Markdown") — and there is no `rehype-raw` and no `dangerouslySetInnerHTML` anywhere in the application, so injected text reaches the DOM as text. `img-src 'self' data:` and `connect-src 'self'` plus the browser's own WebSocket origin are what make that hold anyway: no zero-click beacon, and no address for exfiltrated text to be sent to, even with the session container's egress unrestricted.
+
+The same policy carries the access token. The token lives in memory mirrored to `localStorage` (`SPEC.md`, "Frontend"), which is mandated there for the reload path and cannot be made unreadable by script in the page; `script-src 'self'` (no `'unsafe-inline'`, no `'unsafe-eval'`) and `connect-src 'self'` are the second layer for it, closing both the script that would read it and the origin it would be sent to. `frame-ancestors 'none'` keeps the console out of a foreign frame, and `base-uri 'self'` keeps an injected `<base>` from repointing the application's own script URLs.
+
+Two allowances are deliberate and documented in the template: `style-src 'unsafe-inline'`, which xterm.js's generated `<style>` element and React's style attributes require, and `img-src data:`, which keeps inline data-URL images usable. Neither lets a page fetch or reach anything remote. The Vite dev server serves the application in development and sends no such header — it needs inline script and `eval` for hot reload — so this is the deployed image's behaviour; `.github/workflows/deploy.yml` asserts the header on the built nginx image.
+
 ### Known v1 vulnerability: git execution outside the session container
 
 The agent can edit its checkout's local git configuration. When the orchestrator runs git against that checkout, execution-capable settings such as `core.fsmonitor` can cause agent-controlled commands to run with orchestrator privileges, potentially exposing application secrets, project data and the engine socket. This is an accepted, unresolved v1 vulnerability (ADR 0019). Git operations remain in the orchestrator; a restricted helper container or equivalent isolation is deferred until after v1. Reference clones and subprocess argument arrays are not a complete mitigation. The ordinary audited REST/MCP flows describe intended operations, not a guarantee that exploitation of this path would be audited.
@@ -708,7 +718,8 @@ nginx configuration requirements:
 - `location /ws/` additionally passes `Upgrade` and `Connection` headers and sets `proxy_read_timeout` to at least 1 hour; the orchestrator sends WebSocket pings every 30 seconds;
 - `location /api/projects/` paths ending in `/tasks/stream` set `proxy_buffering off`, `proxy_cache off`, and `Connection ''`;
 - both of those locations use a log format without `$request` or `$args` (or `access_log off`), because they receive the access token as a query parameter;
-- everything else serves `index.html` for client-side routing.
+- everything else serves `index.html` for client-side routing;
+- every response carries the Content-Security-Policy of "Content-Security-Policy" above, including the two locations that set their own `Cache-Control` (an `add_header` in a location replaces the inherited set rather than adding to it).
 
 ## Background jobs
 

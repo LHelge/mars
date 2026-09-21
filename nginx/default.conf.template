@@ -29,6 +29,44 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # Content-Security-Policy (ARCHITECTURE.md, "Content-Security-Policy").
+    #
+    # The second layer under the frontend's own rules: agent output and user
+    # text are displayed unredacted (ADR 0027), so a prompt-injected agent
+    # must not be able to make the operator's browser fetch anything, and the
+    # access token's localStorage mirror (SPEC.md, "Frontend") must not
+    # be reachable by injected script.
+    #
+    #   default-src 'self'      one origin serves the application, and
+    #                           `worker-src`, `frame-src` and `media-src` fall
+    #                           back to it; nothing here uses them.
+    #   script-src 'self'       Vite emits every script as a hashed file under
+    #                           /assets/; no inline script, no eval.
+    #   style-src  'unsafe-inline'  unavoidable: xterm.js writes its theme and
+    #                           dimensions into a <style> element it creates,
+    #                           and React (react-virtual's rows, GFM table
+    #                           alignment) sets style attributes.
+    #   img-src 'self' data:    markdown images are never loaded as images at
+    #                           all (frontend/src/components/Markdown.tsx);
+    #                           this stops any other remote fetch, and `data:`
+    #                           keeps inline SVG data URLs usable.
+    #   connect-src             /api, the task SSE stream and the session
+    #                           WebSocket, all same-origin ($ws_origins is in
+    #                           nginx/nginx.conf).
+    #   object-src/frame-ancestors/base-uri/form-action  no plugins, no
+    #                           framing of this app, no <base> rewrite and no
+    #                           form post to a foreign origin.
+    #
+    # Nothing sets this header in development: the Vite dev server serves the
+    # application itself and needs inline scripts and eval for HMR, so a policy
+    # here cannot reach it. It is the deployed image's header.
+    set $csp "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' $ws_origins; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+
+    # `add_header` does not merge across levels: a location with one of its own
+    # replaces every inherited header, so the two locations that set
+    # Cache-Control below repeat this line.
+    add_header Content-Security-Policy $csp always;
+
     # Session WebSocket: GET /ws/sessions/{id}?after=&token=
     location /ws/ {
         proxy_pass http://${ORCHESTRATOR_HOST}:${API_PORT};
@@ -79,11 +117,13 @@ server {
 
     # Hashed Vite build output.
     location /assets/ {
+        add_header Content-Security-Policy $csp always;
         add_header Cache-Control "public, max-age=31536000, immutable";
         try_files $uri =404;
     }
 
     location = /index.html {
+        add_header Content-Security-Policy $csp always;
         add_header Cache-Control "no-cache";
     }
 

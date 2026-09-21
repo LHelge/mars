@@ -195,6 +195,56 @@ jobs:
       - name: The nginx configuration renders and parses
         run: ${{ matrix.engine }} run --rm -e ORCHESTRATOR_HOST=127.0.0.1 -e API_PORT=7000 mars-nginx:ci nginx -t
 
+      # The Content-Security-Policy of ARCHITECTURE.md,
+      # "Content-Security-Policy", asserted on responses rather than on the
+      # configuration: `nginx -t` would pass a policy that no response carries,
+      # and `add_header` does not merge across levels, so each location that
+      # sets a header of its own is checked separately. /assets/ is checked
+      # through a 404 because the file names there are content-hashed.
+      - name: The frontend is served with a Content-Security-Policy
+        run: |
+          ${{ matrix.engine }} run -d --name mars-nginx-csp \
+            -e ORCHESTRATOR_HOST=127.0.0.1 -e API_PORT=7000 \
+            -p 8099:80 mars-nginx:ci
+          # `if`, not `curl && break`: the step shell is `bash -e`, where a
+          # failing AND-list at the end of a loop body ends the whole step.
+          for _ in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:8099/; then break; fi
+            sleep 1
+          done
+          status=0
+          for path in / /index.html /assets/not-a-real-file.js; do
+            policy="$(curl -sS -D - -o /dev/null "http://127.0.0.1:8099${path}" |
+              tr -d '\r' | sed -n 's/^[Cc]ontent-[Ss]ecurity-[Pp]olicy: //p')"
+            echo "${path}: ${policy:-<none>}"
+            for directive in "default-src 'self'" \
+              "img-src 'self' data:;" "connect-src 'self' ws://127.0.0.1:8099 wss://127.0.0.1:8099;" \
+              "object-src 'none'" "frame-ancestors 'none'"; do
+              case "$policy" in
+              *"$directive"*) ;;
+              *)
+                echo "::error::${path} is served without \"${directive}\" in its Content-Security-Policy"
+                status=1
+                ;;
+              esac
+            done
+            # The access token is mirrored to localStorage (SPEC.md,
+            # "Frontend"), so script-src must stay exactly 'self': neither
+            # 'unsafe-inline' nor 'unsafe-eval' may creep into it, and
+            # style-src's documented 'unsafe-inline' must not be read as it.
+            script_src="$(printf '%s\n' "$policy" | tr ';' '\n' |
+              sed -n "s/^ *script-src //p")"
+            if [ "$script_src" != "'self'" ]; then
+              echo "::error::${path} has script-src \"${script_src}\", expected 'self'"
+              status=1
+            fi
+          done
+          exit "$status"
+
+      - name: Stop the nginx container
+        if: always()
+        run: ${{ matrix.engine }} rm -f mars-nginx-csp || true
+
   compose:
     name: Validate the compose files
     runs-on: ubuntu-latest

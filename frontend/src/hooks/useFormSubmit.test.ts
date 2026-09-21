@@ -128,6 +128,38 @@ describe("useFormSubmit", () => {
     expect(result.current.loading).toBe(false);
   });
 
+  it("says a submission succeeded until the next one, or a reset", async () => {
+    let fail = false;
+    const action = () =>
+      fail ? Promise.reject(new ApiError(409, "already there")) : Promise.resolve();
+
+    const { result } = renderHook(() => useFormSubmit(action));
+    expect(result.current.succeeded).toBe(false);
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(result.current.succeeded).toBe(true);
+
+    act(() => {
+      result.current.reset();
+    });
+    expect(result.current.succeeded).toBe(false);
+
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(result.current.succeeded).toBe(true);
+
+    // A failure is never also a success, whatever the last attempt said.
+    fail = true;
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(result.current.succeeded).toBe(false);
+    expect(result.current.error).toBe("already there");
+  });
+
   it("clears the error on request and on the next submit", async () => {
     let fail = true;
     const action = () =>
@@ -140,7 +172,7 @@ describe("useFormSubmit", () => {
     expect(result.current.error).toBe("username is taken");
 
     act(() => {
-      result.current.clearError();
+      result.current.reset();
     });
     expect(result.current.error).toBeNull();
 

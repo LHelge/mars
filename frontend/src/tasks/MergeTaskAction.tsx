@@ -36,7 +36,6 @@ import { merge } from "../services/git";
 import { getProject, listBranches } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
 import type { Branch, Handoff, TaskDetail } from "../types";
-import { taskKeys } from "./queryKeys";
 import {
   MERGE_ACTION,
   MERGE_BLOCKED,
@@ -48,7 +47,7 @@ import {
   mergedMessage,
 } from "./mergeRules";
 import type { MergeConflict } from "./mergeRules";
-import { useTaskStore } from "./taskStore";
+import { useRefetchTask, useSettleTask } from "./taskWrites";
 
 export interface MergeTaskActionProps {
   projectId: string;
@@ -111,6 +110,8 @@ function MergeHandoffForm({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const settle = useSettleTask(projectId, task.number);
+  const refetchTask = useRefetchTask(projectId, task.number);
 
   const project = useQuery({
     queryKey: queryKeys.projects.detail(projectId),
@@ -154,13 +155,10 @@ function MergeHandoffForm({
       setOutcome({ kind: "merged", commit: result.commit });
       // The merge moved an integration head and left the task where it was,
       // so the board's snapshot and the branch list are what went stale.
-      void queryClient.invalidateQueries({
-        queryKey: taskKeys.detail(projectId, task.number),
-      });
+      await settle();
       void queryClient.invalidateQueries({
         queryKey: queryKeys.projects.branches(projectId),
       });
-      useTaskStore.getState().invalidate();
     } catch (caught) {
       const conflicts = mergeConflict(caught);
       if (conflicts !== null) {
@@ -169,9 +167,7 @@ function MergeHandoffForm({
       }
       if (isStaleMerge(caught)) {
         setOutcome({ kind: "refused", message: mergeErrorMessage(caught) });
-        void queryClient.invalidateQueries({
-          queryKey: taskKeys.detail(projectId, task.number),
-        });
+        await refetchTask();
         return;
       }
       throw caught;
@@ -252,7 +248,7 @@ function MergeHandoffForm({
         <Alert kind="error">{outcome.message}</Alert>
       )}
       {form.error !== null && (
-        <Alert kind="error" onDismiss={form.clearError}>
+        <Alert kind="error" onDismiss={form.reset}>
           {form.error}
         </Alert>
       )}

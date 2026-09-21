@@ -1,5 +1,13 @@
-// Loading and error state for every form in the app (`CLAUDE.md`, "Frontend
-// conventions": "`useFormSubmit()` for form loading and error state").
+// The one owner of a form's submission (`CLAUDE.md`, "Frontend conventions",
+// "Submitting a form"): the in-flight guard, `loading`, the one error string
+// and `succeeded`, for every form in the app.
+//
+// What it deliberately does not own is what the submission *means*: the
+// request, the validation before it and the cache work after it all live in
+// the action, written out at the call site. A form therefore never keeps its
+// own `useState` for loading, for an error or for "saved", and never reads
+// those from a TanStack mutation beside it — two lifecycles for one
+// submission is what this hook exists to prevent.
 //
 // Generic over the action's arguments, so a page can wire it to either
 // `submit(event)` or `submit(values)`.
@@ -11,7 +19,14 @@ export interface UseFormSubmit<TArgs extends unknown[]> {
   submit: (...args: TArgs) => Promise<void>;
   loading: boolean;
   error: string | null;
-  clearError: () => void;
+  /**
+   * The last submission finished without throwing. It is what a form says
+   * "Saved" from, and it is cleared by the next submission and by `reset`, so
+   * the word never outlives the thing it describes.
+   */
+  succeeded: boolean;
+  /** Drops a stale refusal and a stale success: an edit invalidates both. */
+  reset: () => void;
 }
 
 export interface UseFormSubmitOptions {
@@ -30,6 +45,7 @@ export function useFormSubmit<TArgs extends unknown[] = []>(
 ): UseFormSubmit<TArgs> {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [succeeded, setSucceeded] = useState(false);
 
   // A ref, not `loading`: a double-click dispatches both handlers before React
   // has re-rendered with the new state.
@@ -51,8 +67,10 @@ export function useFormSubmit<TArgs extends unknown[] = []>(
     inFlight.current = true;
     setLoading(true);
     setError(null);
+    setSucceeded(false);
     try {
       await actionRef.current(...args);
+      setSucceeded(true);
     } catch (caught) {
       // The one place this failure is logged: a formatter called from render
       // would log again on every keystroke while the alert is up.
@@ -65,9 +83,10 @@ export function useFormSubmit<TArgs extends unknown[] = []>(
     }
   }, []);
 
-  const clearError = useCallback(() => {
+  const reset = useCallback(() => {
     setError(null);
+    setSucceeded(false);
   }, []);
 
-  return { submit, loading, error, clearError };
+  return { submit, loading, error, succeeded, reset };
 }

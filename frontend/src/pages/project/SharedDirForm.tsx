@@ -12,16 +12,17 @@
 // notes". They fill the form rather than submitting it, so a name can be
 // adjusted before it becomes a directory.
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { Alert } from "../../components/Alert";
 import { FormField } from "../../components/FormField";
 import { SubmitButton } from "../../components/SubmitButton";
-import { errorMessage, logUnexpected } from "../../services/errorMessage";
+import { useFormSubmit } from "../../hooks/useFormSubmit";
+import { errorMessage } from "../../services/errorMessage";
 import { queryKeys } from "../../services/queryKeys";
 import { createSharedDir } from "../../services/projects";
-import type { SharedDir, SharedDirInput } from "../../types";
+import type { SharedDir } from "../../types";
 import { SHARED_DIR_PRESETS, validateSharedDir } from "../../utils/sharedDir";
 import { sharedDirErrorField } from "./sharedDirMessages";
 
@@ -37,29 +38,35 @@ export function SharedDirForm({ projectId }: SharedDirFormProps) {
   const [containerPath, setContainerPath] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [pathError, setPathError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
-  const create = useMutation({
-    mutationFn: (input: SharedDirInput) => createSharedDir(projectId, input),
-    onSuccess: (created: SharedDir) => {
-      queryClient.setQueryData<SharedDir[]>(listKey, (rows) =>
-        rows === undefined ? [created] : [...rows, created],
-      );
-      void queryClient.invalidateQueries({ queryKey: listKey });
-      setName("");
-      setContainerPath("");
-      setError(null);
-    },
-    onError: (caught: unknown) => {
-      logUnexpected(caught);
-      const message = errorMessage(caught);
+  // One owner for the submission (`CLAUDE.md`, "Frontend conventions",
+  // "Submitting a form"); the two field checks stay the form's own, and a
+  // refusal that names a field is moved beside it and swallowed, so the page
+  // never says the same thing twice.
+  const create = useFormSubmit(async () => {
+    let created: SharedDir;
+    try {
+      created = await createSharedDir(projectId, {
+        name: name.trim(),
+        container_path: containerPath.trim(),
+      });
+    } catch (caught) {
       const field = sharedDirErrorField(caught);
-      // A refusal that names a field belongs beside that field; anything else
-      // goes above the form, where nothing else can explain it.
-      setNameError(field === "name" ? message : null);
-      setPathError(field === "containerPath" ? message : null);
-      setError(field === null ? message : null);
-    },
+      if (field !== null) {
+        const message = errorMessage(caught);
+        setNameError(field === "name" ? message : null);
+        setPathError(field === "containerPath" ? message : null);
+        return;
+      }
+      throw caught;
+    }
+
+    queryClient.setQueryData<SharedDir[]>(listKey, (rows) =>
+      rows === undefined ? [created] : [...rows, created],
+    );
+    await queryClient.invalidateQueries({ queryKey: listKey });
+    setName("");
+    setContainerPath("");
   });
 
   function applyPreset(preset: (typeof SHARED_DIR_PRESETS)[number]) {
@@ -67,7 +74,7 @@ export function SharedDirForm({ projectId }: SharedDirFormProps) {
     setContainerPath(preset.container_path);
     setNameError(null);
     setPathError(null);
-    setError(null);
+    create.reset();
   }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -78,8 +85,7 @@ export function SharedDirForm({ projectId }: SharedDirFormProps) {
     if (invalid.name !== null || invalid.containerPath !== null) {
       return;
     }
-    setError(null);
-    create.mutate({ name: name.trim(), container_path: containerPath.trim() });
+    void create.submit();
   }
 
   return (
@@ -135,10 +141,10 @@ export function SharedDirForm({ projectId }: SharedDirFormProps) {
         ))}
       </div>
 
-      {error !== null && <Alert kind="error">{error}</Alert>}
+      {create.error !== null && <Alert kind="error">{create.error}</Alert>}
 
       <div className="flex justify-end">
-        <SubmitButton loading={create.isPending}>Add directory</SubmitButton>
+        <SubmitButton loading={create.loading}>Add directory</SubmitButton>
       </div>
     </form>
   );

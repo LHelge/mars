@@ -245,6 +245,53 @@ describe("TaskStatesEditor", () => {
     });
   });
 
+  it("takes the rename's refusal with it when the rename is cancelled", async () => {
+    vi.mocked(updateTaskState).mockRejectedValueOnce(
+      new ApiError(409, "state name is taken"),
+    );
+    renderEditor();
+
+    fireEvent.click(
+      within(await row("review")).getByRole("button", { name: "Rename" }),
+    );
+    fireEvent.change(screen.getByLabelText("New name"), {
+      target: { value: "ready" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await screen.findByText("state name is taken");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(screen.queryByText("state name is taken")).toBeNull();
+    });
+  });
+
+  it("lets a row's answer describe its last action, not an older one", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(updateTaskState).mockRejectedValueOnce(
+      new ApiError(409, "positions changed"),
+    );
+    vi.mocked(deleteTaskState).mockResolvedValueOnce(undefined);
+    renderEditor();
+
+    fireEvent.click(
+      within(await row("review")).getByRole("button", {
+        name: /Move review up/,
+      }),
+    );
+    await screen.findByText("positions changed");
+
+    // A different action on the same row, and it worked: the row has nothing
+    // left to complain about.
+    fireEvent.click(
+      within(await row("review")).getByRole("button", { name: "Remove" }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByText("positions changed")).toBeNull();
+    });
+  });
+
   it("surfaces a delete conflict that arrives anyway", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.mocked(deleteTaskState).mockRejectedValueOnce(

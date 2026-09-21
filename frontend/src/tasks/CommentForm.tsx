@@ -6,7 +6,6 @@
 // authoritative read — the same path the `commented` event takes, whichever
 // arrives first (ADR 0022; `SPEC.md`, "Board refresh ordering").
 
-import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { FormEvent } from "react";
 
@@ -15,8 +14,7 @@ import { FieldShell } from "../components/FieldShell";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { addComment } from "../services/tasks";
-import { taskKeys } from "./queryKeys";
-import { useTaskStore } from "./taskStore";
+import { useSettleTask } from "./taskWrites";
 
 // A comment is prose, not code, so this one control is deliberately not the
 // monospace `CONTROL` of `components/fieldStyles`.
@@ -31,15 +29,12 @@ export interface CommentFormProps {
 
 export function CommentForm({ projectId, number }: CommentFormProps) {
   const [body, setBody] = useState("");
-  const queryClient = useQueryClient();
+  const settle = useSettleTask(projectId, number);
 
   const { submit, loading, error } = useFormSubmit(async () => {
     await addComment(projectId, number, body.trim());
     setBody("");
-    await queryClient.invalidateQueries({
-      queryKey: taskKeys.detail(projectId, number),
-    });
-    useTaskStore.getState().invalidate();
+    await settle();
   });
 
   const empty = body.trim() === "";

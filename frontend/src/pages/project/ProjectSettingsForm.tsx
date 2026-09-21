@@ -8,7 +8,7 @@
 // being in the list yet. Changing the branch while sessions exist is allowed
 // by the API, so the form does not refuse it either.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import {
@@ -19,10 +19,10 @@ import {
   SectionHeader,
   SubmitButton,
 } from "../../components";
+import { useFormSubmit } from "../../hooks/useFormSubmit";
 import { listBranches, updateProject } from "../../services/projects";
 import { queryKeys } from "../../services/queryKeys";
 import type { Project } from "../../types";
-import { errorMessage, logUnexpected } from "../../services/errorMessage";
 
 export interface ProjectSettingsFormProps {
   project: Project;
@@ -37,8 +37,6 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
   const [name, setName] = useState(project.name);
   const [branch, setBranch] = useState(project.default_branch ?? "");
   const [attempts, setAttempts] = useState(String(project.max_attempts));
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
 
   // Only a cloned mirror has refs to list; while cloning the field is free
   // text with no suggestions.
@@ -50,26 +48,20 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
 
   const heads = (branches.data ?? []).filter((ref) => ref.kind === "head");
 
-  const save = useMutation({
-    mutationFn: () =>
-      updateProject(project.id, {
-        name,
-        ...(branch === "" ? {} : { default_branch: branch }),
-        max_attempts: Number(attempts),
-      }),
-    onSuccess: (updated: Project) => {
-      queryClient.setQueryData(queryKeys.projects.detail(project.id), updated);
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.projects.list(),
-      });
-      setError(null);
-      setSaved(true);
-    },
-    onError: (caught: unknown) => {
-      setSaved(false);
-      logUnexpected(caught);
-      setError(errorMessage(caught));
-    },
+  // One owner for the save: pending, the refusal and "Saved" all come from
+  // here (`CLAUDE.md`, "Frontend conventions", "Submitting a form"). Editing a
+  // field resets it, so the banner never describes values that are no longer
+  // the ones on screen.
+  const save = useFormSubmit(async () => {
+    const updated = await updateProject(project.id, {
+      name,
+      ...(branch === "" ? {} : { default_branch: branch }),
+      max_attempts: Number(attempts),
+    });
+    queryClient.setQueryData(queryKeys.projects.detail(project.id), updated);
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.projects.list(),
+    });
   });
 
   const attemptsNumber = Number(attempts);
@@ -83,7 +75,7 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
     if (attemptsInvalid || name.trim() === "") {
       return;
     }
-    save.mutate();
+    void save.submit();
   }
 
   return (
@@ -97,14 +89,9 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
         description="Name, the integration branch sessions are based on, and the attempt limit that escalates a task."
       />
 
-      {error !== null && <Alert kind="error">{error}</Alert>}
-      {saved && error === null && (
-        <Alert
-          kind="success"
-          onDismiss={() => {
-            setSaved(false);
-          }}
-        >
+      {save.error !== null && <Alert kind="error">{save.error}</Alert>}
+      {save.succeeded && (
+        <Alert kind="success" onDismiss={save.reset}>
           Settings saved.
         </Alert>
       )}
@@ -116,10 +103,10 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
           value={name}
           onChange={(next) => {
             setName(next);
-            setSaved(false);
+            save.reset();
           }}
           required
-          disabled={save.isPending}
+          disabled={save.loading}
         />
 
         <FieldShell
@@ -139,9 +126,9 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
                 value={branch}
                 onChange={(event) => {
                   setBranch(event.target.value);
-                  setSaved(false);
+                  save.reset();
                 }}
-                disabled={save.isPending}
+                disabled={save.loading}
                 className={FIELD}
               />
               <datalist id="project-default-branch-options">
@@ -173,9 +160,9 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
               value={attempts}
               onChange={(event) => {
                 setAttempts(event.target.value);
-                setSaved(false);
+                save.reset();
               }}
-              disabled={save.isPending}
+              disabled={save.loading}
               className={FIELD}
             />
           )}
@@ -184,7 +171,7 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
 
       <div className="flex items-center gap-2">
         <SubmitButton
-          loading={save.isPending}
+          loading={save.loading}
           disabled={attemptsInvalid || name.trim() === ""}
         >
           Save settings

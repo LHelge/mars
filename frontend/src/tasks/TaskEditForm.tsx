@@ -37,10 +37,10 @@ import { CONTROL } from "../components/fieldStyles";
 import { FormField } from "../components/FormField";
 import { SubmitButton } from "../components/SubmitButton";
 import { useAuth } from "../hooks/useAuth";
-import { errorMessage } from "../services/errorMessage";
+import { useFormSubmit } from "../hooks/useFormSubmit";
 import { queryKeys } from "../services/queryKeys";
 import { listUsers } from "../services/users";
-import type { TaskDetail, TaskPriority } from "../types";
+import type { TaskDetail, TaskPriority, UpdateTaskInput } from "../types";
 import { PRIORITIES, PRIORITY_MEANING } from "./taskChrome";
 import {
   diffTaskInput,
@@ -51,7 +51,7 @@ import {
 } from "./taskEdit";
 import { labelsError, parseLabels } from "./taskLabels";
 import { useTaskStore } from "./taskStore";
-import { useTaskMutations } from "./useTaskMutations";
+import { useUpdateTask } from "./taskWrites";
 import { useUsername } from "./useUsername";
 
 const TITLE_MAX = 200;
@@ -70,7 +70,7 @@ export interface TaskEditFormProps {
 export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
   const { user, isAdmin } = useAuth();
   const snapshot = useTaskStore((state) => state.tasks);
-  const { update } = useTaskMutations(projectId, task.number);
+  const updateTask = useUpdateTask(projectId, task.number);
 
   // Captured once, with the drafts below: the baseline of a diff has to be the
   // reading the drafts were taken from, not whatever the prop holds by the
@@ -85,6 +85,14 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
   const [parent, setParent] = useState(original.parent_id ?? NONE);
   const [titleError, setTitleError] = useState<string | null>(null);
   const [labelError, setLabelError] = useState<string | null>(null);
+
+  // One owner for the save: the in-flight guard, the pending flag and the
+  // refusal, in the API's own words (`CLAUDE.md`, "Frontend conventions",
+  // "Submitting a form"). The field checks above stay the form's own.
+  const save = useFormSubmit(async (input: UpdateTaskInput) => {
+    await updateTask(input);
+    onDone();
+  });
 
   // Admin only; anyone else gets the short list below without a failed read.
   const users = useQuery({
@@ -174,7 +182,7 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
       return;
     }
 
-    update.mutate(input, { onSuccess: onDone });
+    void save.submit(input);
   }
 
   return (
@@ -312,20 +320,18 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
         </Alert>
       )}
 
-      {update.isError && (
-        <Alert kind="error">{errorMessage(update.error)}</Alert>
-      )}
+      {save.error !== null && <Alert kind="error">{save.error}</Alert>}
 
       <div className="flex justify-end gap-2">
         <SubmitButton
           type="button"
           variant="ghost"
-          disabled={update.isPending}
+          disabled={save.loading}
           onClick={onDone}
         >
           Cancel
         </SubmitButton>
-        <SubmitButton loading={update.isPending}>Save changes</SubmitButton>
+        <SubmitButton loading={save.loading}>Save changes</SubmitButton>
       </div>
     </form>
   );

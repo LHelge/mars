@@ -33,6 +33,12 @@ pub mod engine_contract;
 /// stays ungated like `common::db`.
 pub mod git;
 
+/// The tracker-product names no agent-facing text of ours may contain. Plain
+/// string constants, so it stays ungated like `common::db`; `mcp_descriptions`
+/// pulls it in with `#[path]` rather than `mod common;` so that it keeps
+/// needing neither a database nor a container engine.
+pub mod tracker_products;
+
 /// Locks, counts and timings for the concurrency suites. Plain SQL and the
 /// crate's advisory-lock key, so it needs no mock and stays ungated.
 pub mod races;

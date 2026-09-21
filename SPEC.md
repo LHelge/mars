@@ -411,7 +411,11 @@ interface TaskEvent {
 
 Served at `http://orchestrator:7001/mcp` (Streamable HTTP), bearer-authenticated per session. The session context supplies `session_id`, `project_id` and the profile. Tools are listed to a session only if allowed for its profile; task tools are always allowed. Successful tracker changes commit their `TaskEvent` rows and the calling session's link to the directly changed task together. `ready` and `get_task` do not write tracker events, create session-task links, or advance touch timestamps. Rejected tracker operations and updates with no effective changes likewise leave tracker history and links unchanged. `list_session_branches` emits no session `git` event; git operations retain their existing outcome-event contract. Backend-reported tool calls/results remain part of the ordinary transcript, including reads and failures. There is no separate persistent MCP read-audit log in v1 (ADR 0030).
 
-Tool descriptions are part of the contract because they steer the agent. They are reproduced verbatim.
+Tool descriptions are part of the contract because they steer the agent. They are reproduced verbatim. So is the server's `instructions` string, which the client receives once per MCP connection at `initialize`:
+
+> Mars task tracker and git tools. This server is the task tracker for this session: it replaces any task tracker, issue tracker or planning tool that the repository's own instructions name, so follow their workflow with these tools instead, never report the other tracker as missing, and never write task files into the repository. Call ready to find work, claim before working, comment before handing off.
+
+Neither the instructions nor any tool description names a particular tracker product: the sentence has to hold for whatever the repository at hand uses, and naming one would invite the agent to look for it (`ARCHITECTURE.md`, "MCP design").
 
 Every `task` argument accepts a task's UUID or its per-project number (as a number or a string such as `"12"` or `"#12"`). A task's `state` in inputs and outputs is the state's name. The tracker's rules (state as queue, lease as worker, attempts) are in `ARCHITECTURE.md`, "Task tracker".
 

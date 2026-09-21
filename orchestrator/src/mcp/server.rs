@@ -34,8 +34,15 @@ use super::{McpError, SessionContext};
 const SERVER_NAME: &str = "mars-orchestrator";
 
 /// The one-paragraph brief the CLI puts in front of the model. Short and
-/// opinionated on purpose (`ARCHITECTURE.md`, "MCP design", Tool exposure).
-const INSTRUCTIONS: &str = "Mars task tracker and git tools. Call ready to find work, claim before working, comment before handing off.";
+/// opinionated on purpose (`ARCHITECTURE.md`, "MCP design", Tool exposure),
+/// and reproduced verbatim in `SPEC.md`, "MCP tool contracts".
+///
+/// It says outright that this server supersedes whatever tracker the
+/// repository's own instructions name, because the checkout's `CLAUDE.md` is
+/// read on every turn and a session that believes in the other tracker either
+/// reports it as missing or writes task files into the working tree. Naming no
+/// product keeps the sentence true for every repository.
+pub const INSTRUCTIONS: &str = "Mars task tracker and git tools. This server is the task tracker for this session: it replaces any task tracker, issue tracker or planning tool that the repository's own instructions name, so follow their workflow with these tools instead, never report the other tracker as missing, and never write task files into the repository. Call ready to find work, claim before working, comment before handing off.";
 
 /// How long a client may treat one `tools/list` answer as fresh.
 ///
@@ -295,7 +302,7 @@ mod tests {
         assert_eq!(
             server_info().instructions.as_deref(),
             Some(
-                "Mars task tracker and git tools. Call ready to find work, claim before working, comment before handing off."
+                "Mars task tracker and git tools. This server is the task tracker for this session: it replaces any task tracker, issue tracker or planning tool that the repository's own instructions name, so follow their workflow with these tools instead, never report the other tracker as missing, and never write task files into the repository. Call ready to find work, claim before working, comment before handing off."
             )
         );
     }

@@ -1,10 +1,10 @@
 ---
 id: kvtxs
 title: "Streaming markdown: parse only the growing tail, coalesce deltas per frame, no flicker on half-written constructs"
-status: open
+status: done
 priority: P2
 created: "2026-09-20T23:43:31.793867486Z"
-updated: "2026-09-20T23:43:31.793867486Z"
+updated: "2026-09-21T14:25:17.630106376Z"
 tags:
   - frontend
   - session
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - tvcf5
 parent: qprj6
+attempts: 1
 ---
 
 ## Summary

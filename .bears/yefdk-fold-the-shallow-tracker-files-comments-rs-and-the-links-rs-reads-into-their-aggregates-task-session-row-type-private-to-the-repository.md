@@ -1,10 +1,10 @@
 ---
 id: yefdk
 title: "Fold the shallow tracker files: comments.rs and the links.rs reads into their aggregates, task_session row type private to the repository"
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-17T20:02:11.431896282Z"
-updated: "2026-09-21T02:24:59.851871808Z"
+updated: "2026-09-21T03:15:51.571849911Z"
 tags:
   - orchestrator
   - tracker

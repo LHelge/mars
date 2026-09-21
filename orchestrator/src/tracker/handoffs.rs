@@ -17,7 +17,7 @@
 //!    tip to equal the requested commit, and pin it at `refs/handoffs/<new
 //!    id>`;
 //! 3. `TrackerMutation::begin` — the **project row** lock;
-//! 4. the task row `FOR UPDATE`, recheck, write the comment, the
+//! 4. the task row `FOR NO KEY UPDATE`, recheck, write the comment, the
 //!    `task_handoffs` row, the state change and the events;
 //! 5. commit;
 //! 6. release the git lock.
@@ -608,7 +608,7 @@ impl HandoffService {
     /// 5. the project **git lock**;
     /// 6. [`prepare`]: sync, tip check, `refs/handoffs/<id>`;
     /// 7. [`TrackerMutation::begin`]: the project row lock;
-    /// 8. the task again, `FOR UPDATE`, and [`publish_in_transaction`];
+    /// 8. the task again, `FOR NO KEY UPDATE`, and [`publish_in_transaction`];
     /// 9. the commit, with the escalation mail it may owe;
     /// 10. the git lock is released — the guard lives across the whole
     ///     transaction, and the transaction never waits for it (ADR 0021);
@@ -782,7 +782,7 @@ impl HandoffService {
 ///    end, so that a publication or a task merge for this task either finishes
 ///    before the deletion or finds the task gone;
 /// 2. [`TrackerMutation::begin`]: the project row lock;
-/// 3. the task, `FOR UPDATE` — [`Error::NotFound`] for an unknown one;
+/// 3. the task, `FOR NO KEY UPDATE` — [`Error::NotFound`] for an unknown one;
 /// 4. its `task_handoffs` rows, whose ids name the refs, read before the
 ///    deletion cascades them away;
 /// 5. [`delete_task`](crate::tracker::tasks::delete_task): the row, its

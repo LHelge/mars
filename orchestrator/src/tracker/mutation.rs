@@ -131,7 +131,7 @@ impl MutationOutcome {
 /// without either rolls the transaction back, which is the correct answer to
 /// an error path: no rows, no events, no notification, no email.
 pub struct TrackerMutation<'a> {
-    /// The transaction holding `SELECT ... FOR UPDATE` on the project row.
+    /// The transaction holding `SELECT ... FOR NO KEY UPDATE` on the project row.
     tx: Transaction<'a, Postgres>,
     /// The project every id in this mutation is scoped to.
     project_id: Uuid,

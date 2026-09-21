@@ -65,7 +65,7 @@ pub(crate) const DEPENDENCY_NOT_FOUND: &str = "dependency not found";
 /// that [`add_dependency`] refuses it with the documented 400 rather than
 /// pretending it does not exist (`SPEC.md`, "Tasks").
 ///
-/// Resolved under the lock, and `FOR UPDATE` for the in-project case, because
+/// Resolved under the lock, and `FOR NO KEY UPDATE` for the in-project case, because
 /// the caller is about to act on the row it gets back.
 pub async fn resolve_dependency(m: &mut TrackerMutation<'_>, reference: TaskRef) -> Result<Task> {
     let repository = TaskRepository::new(m.pool());

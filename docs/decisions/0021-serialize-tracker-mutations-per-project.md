@@ -1,6 +1,6 @@
 # 0021. Serialize tracker mutations per project
 
-Status: accepted. Extends ADR 0016's atomic claims and ADR 0018's hand-off transaction rules.
+Status: accepted. Extends ADR 0016's atomic claims and ADR 0018's hand-off transaction rules. The lock strength named below is refined by ADR 0041: `FOR NO KEY UPDATE`.
 
 ## Context
 

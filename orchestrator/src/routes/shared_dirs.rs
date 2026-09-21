@@ -22,7 +22,7 @@
 //! reason these two handlers open a transaction at all:
 //!
 //! ```text
-//! BEGIN → lock_project (missing → 404) → find_shared_dir (none → 404)
+//! BEGIN → lock_project_exclusive (missing → 404) → find_shared_dir (none → 404)
 //!       → count_live_for_project (> 0 → rollback, 409)
 //!       → delete_shared_dir (delete only) → COMMIT → filesystem
 //! ```
@@ -236,7 +236,7 @@ enum Removal {
 /// filesystem work with no database lock held.
 ///
 /// The order is the documented one and each step owns one answer: an unknown
-/// project is [`ProjectRepository::lock_project`]'s 404, an unknown name is the
+/// project is [`ProjectRepository::lock_project_exclusive`]'s 404, an unknown name is the
 /// lookup's, and a live session is the 409 — so a clear of a name that does not
 /// exist is 404 whether or not a session is running.
 ///
@@ -256,7 +256,7 @@ async fn live_check(
     let projects = ProjectRepository::new(&state.pool);
 
     let mut tx = state.pool.begin().await?;
-    projects.lock_project(&mut tx, pid).await?;
+    projects.lock_project_exclusive(&mut tx, pid).await?;
 
     if projects
         .find_shared_dir(pid, name.as_str())

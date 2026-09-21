@@ -102,7 +102,7 @@ async fn delete_rows(state: &AppState, id: Uuid) -> Result<Vec<Uuid>> {
 
     // `Error::NotFound` for an unknown project, which is the documented 404.
     // The transaction is rolled back as it is dropped on the way out.
-    projects.lock_project(&mut tx, id).await?;
+    projects.lock_project_exclusive(&mut tx, id).await?;
 
     if sessions.count_live_for_project(&mut tx, id).await? > 0 {
         tx.rollback().await?;

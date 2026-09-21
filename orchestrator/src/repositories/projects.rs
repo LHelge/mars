@@ -458,16 +458,26 @@ impl<'a> ProjectRepository<'a> {
         Ok(deleted)
     }
 
-    /// Lock the project row `FOR UPDATE`, the first statement of every tracker
-    /// mutation.
+    /// Lock the project row `FOR NO KEY UPDATE`, the first statement of every
+    /// tracker mutation.
     ///
     /// "Every tracker writer starts a database transaction, locks the project
-    /// row with `SELECT ... FOR UPDATE`, and only then reads authoritative
-    /// state and validates the operation in subsequent statements under `READ
-    /// COMMITTED`" (`ARCHITECTURE.md`, "Task tracker"; ADR 0021). Task,
-    /// state, dependency, comment, claim, release, hand-off and deletion paths
-    /// all go through here, and anything they read before taking this lock is
-    /// not authoritative.
+    /// row with `SELECT ... FOR NO KEY UPDATE`, and only then reads
+    /// authoritative state and validates the operation in subsequent
+    /// statements under `READ COMMITTED`" (`ARCHITECTURE.md`, "Task tracker";
+    /// ADR 0021). Task, state, dependency, comment, claim, release, hand-off
+    /// and deletion paths all go through here, and anything they read before
+    /// taking this lock is not authoritative.
+    ///
+    /// **Why not `FOR UPDATE`.** The two conflict with themselves and with each
+    /// other, so mutations serialise either way; the difference is that this
+    /// one lets a foreign-key check (`FOR KEY SHARE`) on the project through.
+    /// A session-only writer that updates its `sessions` row twice in one
+    /// transaction makes Postgres check that row's foreign keys again, the
+    /// project among them, while a mutation holding the project waits for the
+    /// same session row for a foreign key of its own: with `FOR UPDATE` here
+    /// that was a deadlock (`ARCHITECTURE.md`, "Task tracker", the lock
+    /// strength). No mutation changes a project's key, so none needs more.
     ///
     /// The lock is held until the caller's transaction commits or rolls back.
     /// An unknown project is [`Error::NotFound`] rather than a silent success,
@@ -480,7 +490,7 @@ impl<'a> ProjectRepository<'a> {
     /// row lock, never the other way round.
     pub async fn lock_project(&self, tx: &mut PgConnection, project_id: Uuid) -> Result<()> {
         let locked = sqlx::query_scalar!(
-            "SELECT id FROM projects WHERE id = $1 FOR UPDATE",
+            "SELECT id FROM projects WHERE id = $1 FOR NO KEY UPDATE",
             project_id
         )
         .fetch_optional(&mut *tx)
@@ -491,6 +501,41 @@ impl<'a> ProjectRepository<'a> {
         }
 
         debug!(project_id = %project_id, "project row locked");
+
+        Ok(())
+    }
+
+    /// Lock the project row `FOR UPDATE`: [`Self::lock_project`] for a caller
+    /// that must also keep new rows from referencing the project.
+    ///
+    /// Project deletion and the shared-directory clear and delete refuse while
+    /// a session is live, and a launch without a task inserts its session
+    /// outside any project lock. What makes their count authoritative is that
+    /// the insert's foreign-key check (`FOR KEY SHARE`) waits for this lock,
+    /// which the weaker tracker lock would let through. It conflicts with
+    /// [`Self::lock_project`] as well, so these callers still serialise with
+    /// tracker mutations.
+    ///
+    /// Not for a transaction that goes on to wait for a `sessions` row of a
+    /// live session: that is the deadlock [`Self::lock_project`] describes.
+    /// Both callers refuse before they would.
+    pub async fn lock_project_exclusive(
+        &self,
+        tx: &mut PgConnection,
+        project_id: Uuid,
+    ) -> Result<()> {
+        let locked = sqlx::query_scalar!(
+            "SELECT id FROM projects WHERE id = $1 FOR UPDATE",
+            project_id
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if locked.is_none() {
+            return Err(Error::NotFound);
+        }
+
+        debug!(project_id = %project_id, "project row locked exclusively");
 
         Ok(())
     }

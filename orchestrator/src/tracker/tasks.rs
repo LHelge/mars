@@ -609,7 +609,7 @@ pub async fn delete_task(m: &mut TrackerMutation<'_>, task: &Task) -> Result<()>
 ///
 /// Used for the parent an update re-nests under: the scope is in the `WHERE`
 /// clause, so a task of another project is indistinguishable from one that
-/// does not exist, and the row is held `FOR UPDATE` because the re-parenting
+/// does not exist, and the row is held `FOR NO KEY UPDATE` because the re-parenting
 /// is about to depend on whether it has a parent of its own.
 ///
 /// A reference that names nothing is the same 400 the repository gives a

@@ -75,7 +75,7 @@ pub async fn begin_mutation<'a>(
 /// Both halves matter. The *scope* is the calling session's project, in the
 /// `WHERE` clause rather than in a check afterwards, so a task of another
 /// project is indistinguishable from one that does not exist. The *lock* is
-/// `SELECT ... FOR UPDATE` on the row, taken after the project row, which is
+/// `SELECT ... FOR NO KEY UPDATE` on the row, taken after the project row, which is
 /// the documented order (ADR 0021): the row a tool validates against is then
 /// the row it changes, and a per-project number resolved outside the lock
 /// cannot name a different task by the time the change lands.
@@ -92,7 +92,7 @@ pub async fn resolve_task_for_mutation(
 /// `update` parses every task argument it was given *before* it opens a
 /// mutation — a malformed reference needs no lock to refuse — and then has a
 /// [`TaskRef`] rather than the argument it came from. The resolution is
-/// unchanged: project-scoped and `FOR UPDATE`, inside the caller's lock.
+/// unchanged: project-scoped and `FOR NO KEY UPDATE`, inside the caller's lock.
 pub async fn resolve_ref_for_mutation(
     m: &mut TrackerMutation<'_>,
     ctx: &SessionContext,

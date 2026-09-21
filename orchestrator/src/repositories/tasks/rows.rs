@@ -340,6 +340,14 @@ impl TaskRepository<'_> {
     /// compares "what is stored" against "what was asked for" — which is what
     /// [`TaskRepository::update_task`] does to decide whether anything
     /// changed — starts here.
+    ///
+    /// `FOR NO KEY UPDATE`, the strength an ordinary `UPDATE` of the row takes
+    /// anyway, and for the reason [`ProjectRepository::lock_project`] gives: a
+    /// session launched for this task carries it in `sessions.task_id`, and a
+    /// foreign-key check from that session's own writer must not wait for a
+    /// mutation that is in turn waiting for the session row.
+    ///
+    /// [`ProjectRepository::lock_project`]: crate::repositories::ProjectRepository::lock_project
     pub async fn find_task_for_update(
         &self,
         mut tx: Locked<'_>,
@@ -358,7 +366,7 @@ impl TaskRepository<'_> {
                            closed_at
                     FROM tasks
                     WHERE id = $1 AND project_id = $2
-                    FOR UPDATE
+                    FOR NO KEY UPDATE
                     "#,
                     id,
                     project_id,
@@ -377,7 +385,7 @@ impl TaskRepository<'_> {
                            closed_at
                     FROM tasks
                     WHERE project_id = $1 AND number = $2
-                    FOR UPDATE
+                    FOR NO KEY UPDATE
                     "#,
                     project_id,
                     number,
@@ -438,7 +446,7 @@ impl TaskRepository<'_> {
     /// `updated` event and creates no session link. Anything else is
     /// `Ok(Some(row))` with the stored row as it now is.
     ///
-    /// "Nothing changed" is decided against the row read under `FOR UPDATE`
+    /// "Nothing changed" is decided against the row read under `FOR NO KEY UPDATE`
     /// here, not against the number of rows the statement touched: an `UPDATE`
     /// that sets a column to the value it already has still reports one row,
     /// and would bump `updated_at` and produce an event for a request that
@@ -978,12 +986,37 @@ impl TaskRepository<'_> {
     /// The `deleted` event keeps the original UUID; history is never
     /// rewritten, and `task_events` has no foreign key to `tasks` precisely so
     /// that it survives this (ADR 0022).
+    ///
+    /// **The sessions first.** The delete clears `sessions.task_id` and, through
+    /// the task's hand-offs, `sessions.handoff_id`, so it has to wait for any
+    /// transaction holding one of those session rows — and once the delete
+    /// holds the task row, that transaction's foreign-key check on the task
+    /// waits for the delete. The session rows are therefore locked before the
+    /// task row is touched, in id order, while this transaction holds nothing
+    /// a session-only writer can want (`ARCHITECTURE.md`, "Task tracker", the
+    /// lock strength).
     pub async fn delete_task(
         &self,
         mut tx: Locked<'_>,
         project_id: Uuid,
         id: Uuid,
     ) -> Result<bool> {
+        sqlx::query!(
+            r#"
+            SELECT id
+            FROM sessions
+            WHERE project_id = $2
+              AND (task_id = $1
+                   OR handoff_id IN (SELECT id FROM task_handoffs WHERE task_id = $1))
+            ORDER BY id
+            FOR NO KEY UPDATE
+            "#,
+            id,
+            project_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
         let deleted = sqlx::query!(
             "DELETE FROM tasks WHERE id = $1 AND project_id = $2",
             id,

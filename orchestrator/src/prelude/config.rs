@@ -24,8 +24,10 @@ use crate::prelude::debug;
 const REDACTED: &str = "<redacted>";
 
 /// The default value of `SESSION_IMAGE_DEFAULT`: the `latest` alias of the
-/// image built from `images/claude/` (`README.md`, "Session image").
-const SESSION_IMAGE_DEFAULT: &str = "mars-session-claude:latest";
+/// dev image built from `images/claude-dev/`, which layers a Rust and Node
+/// toolchain on the base image built from `images/claude/` (`README.md`,
+/// "Session image").
+const SESSION_IMAGE_DEFAULT: &str = "mars-session-claude-dev:latest";
 
 /// The default value of `API_PORT` (`README.md`, "Configuration").
 ///
@@ -651,7 +653,10 @@ mod tests {
         assert_eq!(config.mcp_port, 7001);
         assert_eq!(config.stop_grace_secs, 20);
         assert_eq!(config.mirror_fetch_interval_secs, 600);
-        assert_eq!(config.session_image_default, "mars-session-claude:latest");
+        assert_eq!(
+            config.session_image_default,
+            "mars-session-claude-dev:latest"
+        );
         assert_eq!(config.resend_api_key, None);
         assert_eq!(config.mail_from, None);
         assert_eq!(config.rust_log, "info");
@@ -691,7 +696,10 @@ mod tests {
     #[test]
     fn session_image_default_is_optional_and_overridable() {
         let config = load(&required_only()).expect("no image name is fine");
-        assert_eq!(config.session_image_default, "mars-session-claude:latest");
+        assert_eq!(
+            config.session_image_default,
+            "mars-session-claude-dev:latest"
+        );
 
         let mut vars = required_only();
         vars.insert(

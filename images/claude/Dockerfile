@@ -5,8 +5,9 @@
 # version recorded in the image tag, `git` plus a modest base toolchain, and
 # /usr/local/bin/mars-entrypoint as the entrypoint.
 #
-# Build (README.md, "Session image"), tagged with the pinned CLI version and
-# the `latest` alias that SESSION_IMAGE_DEFAULT names:
+# Build (README.md, "Session image"), tagged with the pinned CLI version and a
+# `latest` alias, which is what the dev image's BASE_IMAGE names (the dev
+# image's own `latest` is what SESSION_IMAGE_DEFAULT names by default):
 #   podman build -t mars-session-claude:$(sed -n 's/^ARG CLAUDE_CODE_VERSION=//p' images/claude/Dockerfile) -t mars-session-claude:latest images/claude
 #
 # The CLI is installed from npm rather than the curl installer: that installer

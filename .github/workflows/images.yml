@@ -1,12 +1,13 @@
 # The session container images (ARCHITECTURE.md, "Session image"): the real
-# `images/claude` and the credential-free `images/stub` that Playwright and the
+# `images/claude`, the `images/claude-dev` toolchain layer on top of it
+# (ADR 0039) and the credential-free `images/stub` that Playwright and the
 # session-owner tests run against.
 #
 # Two jobs. `lint` checks what can be checked without an engine: the two
-# entrypoint copies are byte-identical, both Dockerfiles pass hadolint, the
-# stub's unit tests pass, every fixture is valid JSONL and nothing under
+# entrypoint copies are byte-identical, all three Dockerfiles pass hadolint,
+# the stub's unit tests pass, every fixture is valid JSONL and nothing under
 # `images/` looks like a credential (CLAUDE.md, rule 3). `build-and-smoke`
-# builds both images and runs `images/smoke-test.sh` against them, once on
+# builds all three images and runs `images/smoke-test.sh` against them, once on
 # Docker and once on rootless Podman: ADR 0004 makes rootless Podman the target
 # engine and Docker the one that must keep working, so the image contract is
 # proven on both. Nothing is pushed to a registry in v1 and no secret is
@@ -53,13 +54,13 @@ jobs:
             exit 1
           fi
 
-      # DL3008 (pin apt versions) is ignored by policy: both images are rebuilt
+      # DL3008 (pin apt versions) is ignored by policy: the images are rebuilt
       # on every `images/**` change and a pinned apt version would rot faster
       # than it protects. Every other suppression is an inline
       # `# hadolint ignore=` comment in the Dockerfile that explains itself.
       - name: Hadolint the Dockerfiles
         run: |
-          for dockerfile in images/claude/Dockerfile images/stub/Dockerfile; do
+          for dockerfile in images/claude/Dockerfile images/claude-dev/Dockerfile images/stub/Dockerfile; do
             echo "== ${dockerfile}"
             docker run --rm -i hadolint/hadolint:v2.15.1 \
               hadolint --ignore DL3008 - < "${dockerfile}"
@@ -105,7 +106,9 @@ jobs:
     name: Build and smoke (${{ matrix.engine }})
     needs: lint
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The dev image installs a Rust toolchain and asserts it with an offline
+    # cargo build, which is several minutes on top of the other two builds.
+    timeout-minutes: 45
     strategy:
       # Each engine is its own evidence; a Docker failure must not hide the
       # Podman result or the other way round.
@@ -224,6 +227,32 @@ jobs:
           push: false
           cache-from: type=gha
 
+      # Plain `docker build`, not buildx, and deliberately so: the dev image is
+      # `FROM ${BASE_IMAGE}`, and the base exists only in the daemon's image
+      # store, where the `load: true` above put it. The buildx builder that
+      # `setup-buildx-action` creates runs in its own container with its own
+      # store, so a `FROM mars-session-claude:ci` there would miss it and go to
+      # a registry, where no such image exists. `docker build` resolves it from
+      # the daemon, the same path the stub build below already relies on
+      # (`setup-buildx-action` is used with its default `install: false`, so it
+      # does not alias `docker build` to buildx). The cost is that the layers
+      # are not in the Actions cache; this workflow only runs on `images/**`.
+      # rustup and the crates.io downloads make a registry hiccup as likely
+      # here as for the npm install above, so the same retry-once applies.
+      - name: Build the dev session image
+        if: matrix.engine == 'docker'
+        run: |
+          for attempt in 1 2; do
+            if docker build --build-arg BASE_IMAGE=mars-session-claude:ci \
+              -t mars-session-claude-dev:ci images/claude-dev; then
+              exit 0
+            fi
+            echo "::warning::dev image build attempt ${attempt} failed; a rustup or crates.io download is the usual cause"
+            [ "${attempt}" = 2 ] || sleep 15
+          done
+          echo "::error::the dev session image failed to build twice"
+          exit 1
+
       # Plain `docker build`, so the E2E workflow can reuse this one line to
       # get the stub image it needs without any reusable-workflow plumbing.
       - name: Build the stub session image
@@ -243,6 +272,22 @@ jobs:
           echo "::error::the claude session image failed to build twice"
           exit 1
 
+      # The base is in the same local store, so `FROM ${BASE_IMAGE}` resolves
+      # without a registry lookup.
+      - name: Build the dev session image
+        if: matrix.engine == 'podman'
+        run: |
+          for attempt in 1 2; do
+            if podman build --build-arg BASE_IMAGE=mars-session-claude:ci \
+              -t mars-session-claude-dev:ci images/claude-dev; then
+              exit 0
+            fi
+            echo "::warning::dev image build attempt ${attempt} failed; a rustup or crates.io download is the usual cause"
+            [ "${attempt}" = 2 ] || sleep 15
+          done
+          echo "::error::the dev session image failed to build twice"
+          exit 1
+
       - name: Build the stub session image
         if: matrix.engine == 'podman'
         run: podman build -t mars-session-stub:ci images/stub
@@ -255,6 +300,7 @@ jobs:
           ENGINE: ${{ matrix.engine }}
           CLAUDE_IMAGE: mars-session-claude:ci
           STUB_IMAGE: mars-session-stub:ci
+          DEV_IMAGE: mars-session-claude-dev:ci
 
       # The per-session stream.jsonl and stderr.log of a failed run, which is
       # what a `FAIL:` line is diagnosed from. The smoke mcp.json is

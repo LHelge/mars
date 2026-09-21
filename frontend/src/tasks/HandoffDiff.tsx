@@ -33,7 +33,8 @@ export interface HandoffDiffProps {
 export function HandoffDiff({ projectId, handoff, onClose }: HandoffDiffProps) {
   const diff = useQuery({
     queryKey: queryKeys.projects.handoffDiff(projectId, handoff.id),
-    queryFn: () => getDiff(projectId, { handoff_id: handoff.id }),
+    queryFn: ({ signal }) =>
+      getDiff(projectId, { handoff_id: handoff.id }, undefined, signal),
     // A retained commit never moves, so neither does its diff.
     staleTime: Infinity,
   });

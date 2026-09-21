@@ -41,7 +41,8 @@ export function ChangesPanel({ session }: SessionPanelProps) {
 
   const diff = useQuery({
     queryKey: queryKeys.projects.diff(projectId, session.id, base ?? undefined),
-    queryFn: () => getDiff(projectId, { head: session.id }, base ?? undefined),
+    queryFn: ({ signal }) =>
+      getDiff(projectId, { head: session.id }, base ?? undefined, signal),
     // A refetch replaces the diff in place instead of blanking the panel.
     placeholderData: keepPreviousData,
   });

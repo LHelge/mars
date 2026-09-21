@@ -22,8 +22,8 @@ import {
   SessionStatePill,
 } from "../components";
 import { errorMessage, logUnexpected } from "../services/errorMessage";
-import { getProject } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
+import { projectQueries } from "../services/queryOptions";
 import { updateSession } from "../services/sessions";
 import type { Session } from "../types";
 import {
@@ -144,10 +144,7 @@ function BranchSection({ session }: { session: Session }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const project = useQuery({
-    queryKey: queryKeys.projects.detail(session.project_id),
-    queryFn: () => getProject(session.project_id),
-  });
+  const project = useQuery(projectQueries.detail(session.project_id));
 
   const sync = useSyncSession(session.id, session.project_id, {
     onSuccess: (result) => {

@@ -66,11 +66,3 @@ export function launchDisabledReason(
   }
   return null;
 }
-
-/** How much of a hand-off commit the drawer shows; the full id is in a `title`. */
-const SHORT_COMMIT = 10;
-
-/** The leading characters of a commit id, as the launch form abbreviates one. */
-export function shortCommit(commit: string): string {
-  return commit.slice(0, SHORT_COMMIT);
-}

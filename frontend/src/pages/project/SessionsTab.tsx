@@ -31,9 +31,9 @@ import {
 } from "../../components";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import { LaunchSourceTag } from "../../session/LaunchSourceTag";
-import { listProfiles } from "../../services/profiles";
 import { queryKeys } from "../../services/queryKeys";
-import { deleteSession, listProjectSessions } from "../../services/sessions";
+import { projectQueries } from "../../services/queryOptions";
+import { deleteSession } from "../../services/sessions";
 import type { Session, SessionState } from "../../types";
 import { formatRelative, formatUsd, PLACEHOLDER } from "../../utils/format";
 import { LaunchSessionForm } from "./LaunchSessionForm";
@@ -75,12 +75,11 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
     message: string;
   } | null>(null);
 
-  const base = queryKeys.projects.sessions(project.id);
-
   const sessions = useQuery({
-    queryKey: filter === "all" ? base : [...base, filter],
-    queryFn: () =>
-      listProjectSessions(project.id, filter === "all" ? undefined : filter),
+    ...projectQueries.sessions(
+      project.id,
+      filter === "all" ? undefined : filter,
+    ),
     placeholderData: keepPreviousData,
     refetchIntervalInBackground: false,
     refetchInterval: (query) =>
@@ -88,10 +87,7 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
   });
 
   // Only for the profile column; the launch form reads the same cached list.
-  const profiles = useQuery({
-    queryKey: queryKeys.projects.profiles(project.id),
-    queryFn: () => listProfiles(project.id),
-  });
+  const profiles = useQuery(projectQueries.profiles(project.id));
 
   const profileNames = useMemo(
     () =>
@@ -114,7 +110,10 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
     onSuccess: () => {
       setConfirming(null);
       setRowError(null);
-      void queryClient.invalidateQueries({ queryKey: base });
+      // The unfiltered key, which every filtered list extends.
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.sessions(project.id),
+      });
     },
     onError: (caught: unknown, id: string) => {
       setConfirming(null);

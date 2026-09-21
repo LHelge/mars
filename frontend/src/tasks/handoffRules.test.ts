@@ -74,13 +74,13 @@ describe("reviewLabel", () => {
 
   it("names the commit an approval covers", () => {
     expect(reviewLabel(handoff({ review_status: "approved" })).text).toBe(
-      "Approved · 0123456789",
+      "Approved · 0123456",
     );
   });
 
   it("names the commit changes were requested on", () => {
     const label = reviewLabel(handoff({ review_status: "changes_requested" }));
-    expect(label.text).toBe("Changes requested · 0123456789");
+    expect(label.text).toBe("Changes requested · 0123456");
     expect(label.tone).toBe("text-state-parked");
   });
 });
@@ -162,13 +162,13 @@ describe("reviewErrorMessage", () => {
 describe("reviewCoverLine", () => {
   it("names the commit each decision covers", () => {
     expect(reviewCoverLine("approved", COMMIT)).toBe(
-      "Approving commit 0123456789",
+      "Approving commit 0123456",
     );
     expect(reviewCoverLine("changes_requested", COMMIT)).toBe(
-      "Requesting changes on commit 0123456789",
+      "Requesting changes on commit 0123456",
     );
     expect(reviewCoverLine("none", COMMIT)).toBe(
-      "Forwarding commit 0123456789 with no review decision",
+      "Forwarding commit 0123456 with no review decision",
     );
   });
 });

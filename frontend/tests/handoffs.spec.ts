@@ -367,7 +367,7 @@ test("publishing a revision pins the commit and moves the task to review", async
   await expect(current.getByText(`session/${session}`)).toBeVisible({
     timeout: LIVE_TIMEOUT,
   });
-  await expect(current.getByText(commit.slice(0, 10)).first()).toBeVisible();
+  await expect(current.getByText(commit.slice(0, 7)).first()).toBeVisible();
   await expect(current.getByTitle(commit).first()).toBeVisible();
   await expect(current.getByText("Unreviewed").first()).toBeVisible();
   await expect(current.getByRole("link", { name: session.slice(0, 8) }).first()).toBeVisible();
@@ -460,7 +460,7 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
   let form = await openLaunchForm(panel);
   await expect(
     form.getByText(
-      `Base: hand-off ${commit.slice(0, 10)} from session/${session} (unreviewed)`,
+      `Base: hand-off ${commit.slice(0, 7)} from session/${session} (unreviewed)`,
     ),
   ).toBeVisible();
   await expect(form.getByText(/Base overridden/)).toHaveCount(0);
@@ -508,7 +508,7 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
   const again = await openTask(second.page, project);
   form = await openLaunchForm(again);
   await form.locator("summary").click();
-  await form.getByLabel("Override base ref").fill("main");
+  await form.getByLabel("Base ref").selectOption("main");
   await expect(
     form.getByText(
       "Base overridden: the session will not start from the hand-off commit and this grants no review approval",
@@ -570,7 +570,7 @@ test("approving forwards the hand-off to merge and unlocks the task merge", asyn
   const form = await openReviewForm(panel, "Approve");
   // The decision is about a commit, and the form says which one.
   await expect(
-    form.getByText(`Approving commit ${commit.slice(0, 10)}`),
+    form.getByText(`Approving commit ${commit.slice(0, 7)}`),
   ).toBeVisible();
   // An approval with an empty comment is refused by the form, as the API
   // requires one.
@@ -580,7 +580,7 @@ test("approving forwards the hand-off to merge and unlocks the task merge", asyn
   await submitReview(form, "Approve", "merge", "LGTM");
 
   await expect(
-    handoffSection(panel).getByText(`Approved · ${commit.slice(0, 10)}`).first(),
+    handoffSection(panel).getByText(`Approved · ${commit.slice(0, 7)}`).first(),
   ).toBeVisible({ timeout: LIVE_TIMEOUT });
   // The reviewer is named, by username (`GET /users/{id}`).
   await expect(
@@ -652,7 +652,7 @@ test("the task merge lands the pinned commit even after the branch advanced", as
   await expect(form).toBeVisible();
   await expect(
     form.getByText(
-      `Merges commit ${approved.slice(0, 10)} exactly; later commits on session/${session} are not included`,
+      `Merges commit ${approved.slice(0, 7)} exactly; later commits on session/${session} are not included`,
     ),
   ).toBeVisible();
   await expect(form.getByLabel("Target")).toHaveValue("main");
@@ -734,7 +734,7 @@ test("the merge control is shut without an approval and a superseded review is r
   });
 
   await expect(
-    handoffSection(panel).getByText(second.slice(0, 10)).first(),
+    handoffSection(panel).getByText(second.slice(0, 7)).first(),
   ).toBeVisible({ timeout: LIVE_TIMEOUT });
   await expect(handoffSection(panel).getByText("Unreviewed").first()).toBeVisible();
   // Both revisions are in the history, and only the newer one is current.
@@ -771,7 +771,7 @@ test("the merge control is shut without an approval and a superseded review is r
   const review = await openReviewForm(panel, "Approve");
   await submitReview(review, "Approve", "merge", "Looks right now");
   await expect(
-    handoffSection(panel).getByText(`Approved · ${second.slice(0, 10)}`).first(),
+    handoffSection(panel).getByText(`Approved · ${second.slice(0, 7)}`).first(),
   ).toBeVisible({ timeout: LIVE_TIMEOUT });
   await expect(mergeButton(panel)).toBeEnabled();
 });
@@ -800,13 +800,13 @@ test("requesting changes sends the task back and a new revision resets the revie
   const reviewPanel = await openTask(second.page, project);
   const form = await openReviewForm(reviewPanel, "Request changes");
   await expect(
-    form.getByText(`Requesting changes on commit ${commit.slice(0, 10)}`),
+    form.getByText(`Requesting changes on commit ${commit.slice(0, 7)}`),
   ).toBeVisible();
   await submitReview(form, "Request changes", "ready", "Please rename");
 
   await expect(
     handoffSection(reviewPanel)
-      .getByText(`Changes requested · ${commit.slice(0, 10)}`)
+      .getByText(`Changes requested · ${commit.slice(0, 7)}`)
       .first(),
   ).toBeVisible({ timeout: LIVE_TIMEOUT });
 
@@ -819,7 +819,7 @@ test("requesting changes sends the task back and a new revision resets the revie
   const launch = await openLaunchForm(reviewPanel);
   await expect(
     launch.getByText(
-      `Base: hand-off ${commit.slice(0, 10)} from session/${session} (changes_requested)`,
+      `Base: hand-off ${commit.slice(0, 7)} from session/${session} (changes_requested)`,
     ),
   ).toBeVisible();
   await launch.getByRole("button", { name: "Cancel" }).click();
@@ -842,7 +842,7 @@ test("requesting changes sends the task back and a new revision resets the revie
 
   const after = await waitForTaskState(fixture, "review");
   await expect(
-    handoffSection(panel).getByText(fixed.slice(0, 10)).first(),
+    handoffSection(panel).getByText(fixed.slice(0, 7)).first(),
   ).toBeVisible({ timeout: LIVE_TIMEOUT });
   await expect(handoffSection(panel).getByText("Unreviewed").first()).toBeVisible();
   expect(after.handoff?.commit).toBe(fixed);
@@ -884,7 +884,7 @@ test("the revision diff is read by hand-off id without syncing anything", async 
     .click();
 
   const diff = panel.getByRole("region", {
-    name: `Diff of hand-off ${commit.slice(0, 10)}`,
+    name: `Diff of hand-off ${commit.slice(0, 7)}`,
   });
   await expect(diff).toBeVisible();
   await expect(
@@ -1009,7 +1009,7 @@ test("a review of a superseded revision says the hand-off changed", async ({
   const panel = await openTask(page, project);
   const form = await openReviewForm(panel, "Approve");
   await expect(
-    form.getByText(`Approving commit ${first.slice(0, 10)}`),
+    form.getByText(`Approving commit ${first.slice(0, 7)}`),
   ).toBeVisible();
 
   const second = commitInSessionWorkClone(

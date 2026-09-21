@@ -33,8 +33,8 @@ import { chosenOr, refsOfKind } from "../components/git/formState";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { merge } from "../services/git";
-import { getProject, listBranches } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
+import { projectQueries } from "../services/queryOptions";
 import type { Branch, Handoff, TaskDetail } from "../types";
 import {
   MERGE_ACTION,
@@ -113,14 +113,8 @@ function MergeHandoffForm({
   const settle = useSettleTask(projectId, task.number);
   const refetchTask = useRefetchTask(projectId, task.number);
 
-  const project = useQuery({
-    queryKey: queryKeys.projects.detail(projectId),
-    queryFn: () => getProject(projectId),
-  });
-  const branches = useQuery({
-    queryKey: queryKeys.projects.branches(projectId),
-    queryFn: () => listBranches(projectId),
-  });
+  const project = useQuery(projectQueries.detail(projectId));
+  const branches = useQuery(projectQueries.branches(projectId));
 
   const heads: Branch[] = refsOfKind(branches.data ?? [], "head");
   const [chosenTarget, setChosenTarget] = useState("");

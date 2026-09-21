@@ -4,11 +4,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Profile, ProfileKind, Task } from "../types";
-import {
-  defaultProfile,
-  launchDisabledReason,
-  shortCommit,
-} from "./launchRules";
+import { defaultProfile, launchDisabledReason } from "./launchRules";
 
 const PROJECT = "11111111-1111-4111-8111-111111111111";
 
@@ -121,13 +117,5 @@ describe("launchDisabledReason", () => {
 
   it("does not assume an unknown state is terminal", () => {
     expect(launchDisabledReason(task(), undefined, "ready")).toBeNull();
-  });
-});
-
-describe("shortCommit", () => {
-  it("keeps the first ten characters", () => {
-    expect(shortCommit("0123456789abcdef0123456789abcdef01234567")).toBe(
-      "0123456789",
-    );
   });
 });

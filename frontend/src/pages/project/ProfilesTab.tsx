@@ -16,8 +16,9 @@ import {
   SectionHeader,
   SubmitButton,
 } from "../../components";
-import { deleteProfile, listProfiles } from "../../services/profiles";
+import { deleteProfile } from "../../services/profiles";
 import { queryKeys } from "../../services/queryKeys";
+import { projectQueries } from "../../services/queryOptions";
 import type { Profile } from "../../types";
 import { ProfileEditorPage } from "../ProfileEditorPage";
 import { errorMessage } from "../../services/errorMessage";
@@ -35,10 +36,7 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
   const [search, setSearch] = useSearchParams();
   const selected = search.get("profile");
 
-  const profiles = useQuery({
-    queryKey: queryKeys.projects.profiles(project.id),
-    queryFn: () => listProfiles(project.id),
-  });
+  const profiles = useQuery(projectQueries.profiles(project.id));
 
   /** `null` closes the editor; `"new"` or an id opens it. */
   function openEditor(profile: string | null) {

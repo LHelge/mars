@@ -46,10 +46,14 @@ export interface DependencyEdge {
  *
  * The one settle rule of the drawer, in one place — every caller that writes a
  * task awaits this rather than spelling the two invalidations out again.
+ *
+ * `number` is `null` for a write that names no task at all — the project
+ * page's launch form before a task is typed into it — where the board is still
+ * what goes stale and there is no drawer copy to reread.
  */
 export function useSettleTask(
   projectId: string,
-  number: number,
+  number: number | null,
 ): () => Promise<void> {
   const refetchTask = useRefetchTask(projectId, number);
 
@@ -63,18 +67,23 @@ export function useSettleTask(
  * The drawer's own read of the task, and nothing else: the answer to a refusal
  * that means what is on screen is already out of date, where the board has the
  * stream to tell it the same thing.
+ *
+ * With `null` there is no such copy — nothing on screen claims to be that
+ * task — and this does nothing.
  */
 export function useRefetchTask(
   projectId: string,
-  number: number,
+  number: number | null,
 ): () => Promise<void> {
   const queryClient = useQueryClient();
 
   return useCallback(
     () =>
-      queryClient.invalidateQueries({
-        queryKey: taskKeys.detail(projectId, number),
-      }),
+      number === null
+        ? Promise.resolve()
+        : queryClient.invalidateQueries({
+            queryKey: taskKeys.detail(projectId, number),
+          }),
     [queryClient, projectId, number],
   );
 }

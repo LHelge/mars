@@ -14,9 +14,9 @@
 // project's default branch — is asked for.
 
 import { useState } from "react";
-import { FieldShell } from "../../components/FieldShell";
-import { FIELD } from "../../components/fieldStyles";
-import type { Branch } from "../../types";
+import { FieldShell } from "../components/FieldShell";
+import { FIELD } from "../components/fieldStyles";
+import type { Branch } from "../types";
 
 /** The select entry that opens the free-text field. */
 const CUSTOM = "\u0000custom";
@@ -31,6 +31,11 @@ export interface BaseRefSelectProps {
   disabled?: boolean;
   /** Shown under the control; the hand-off override notice goes here. */
   hint?: string;
+  /**
+   * The field's name, and the stem of the ids it hands its two controls. Both
+   * launch forms use this control, so it is not a constant.
+   */
+  name?: string;
 }
 
 const GROUPS: { kind: Branch["kind"]; label: string }[] = [
@@ -46,6 +51,7 @@ export function BaseRefSelect({
   defaultLabel,
   disabled,
   hint,
+  name = "session-base-ref",
 }: BaseRefSelectProps) {
   // Sticky once asked for: a ref the list does not know is custom by
   // definition, and clearing the field back to the default should not close
@@ -55,7 +61,7 @@ export function BaseRefSelect({
   const custom = customRequested || (value !== "" && !known);
 
   return (
-    <FieldShell label="Base ref" name="session-base-ref" hint={hint}>
+    <FieldShell label="Base ref" name={name} hint={hint}>
       {(control) => (
         <>
           <select
@@ -100,7 +106,7 @@ export function BaseRefSelect({
           {custom && (
             <input
               id={`${control.id}-custom`}
-              name="session-base-ref-custom"
+              name={`${name}-custom`}
               value={value}
               disabled={disabled}
               placeholder="A tag or commit id"

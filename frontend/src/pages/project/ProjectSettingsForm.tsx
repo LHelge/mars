@@ -27,8 +27,9 @@ import {
   SubmitButton,
 } from "../../components";
 import { useFormSubmit } from "../../hooks/useFormSubmit";
-import { listBranches, updateProject } from "../../services/projects";
+import { updateProject } from "../../services/projects";
 import { queryKeys } from "../../services/queryKeys";
+import { projectQueries } from "../../services/queryOptions";
 import type { Project } from "../../types";
 import {
   MAX_ATTEMPTS,
@@ -56,8 +57,7 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
   // Only a cloned mirror has refs to list; while cloning the field is free
   // text with no suggestions.
   const branches = useQuery({
-    queryKey: queryKeys.projects.branches(project.id),
-    queryFn: () => listBranches(project.id),
+    ...projectQueries.branches(project.id),
     enabled: project.status === "ready",
   });
 

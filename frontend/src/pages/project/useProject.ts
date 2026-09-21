@@ -2,26 +2,15 @@
 // tabs share (`SPEC.md`, "Projects"). Tab panels take the `Project` as a prop
 // instead of calling this again, so a tab switch never re-fetches.
 //
-// A `cloning` project is still being set up in the background
-// (`ARCHITECTURE.md`, "Git model", Project clone), so the query polls while it
-// is and stops the moment the status settles on `ready` or `error`.
+// The query itself — key, request and the poll a `cloning` project needs — is
+// `projectQueries.detail` in `services/queryOptions.ts`, so the views that
+// cannot take the project as a prop (the session view, the task drawer) read
+// it exactly as this page does rather than with their own spelling of the same
+// key.
 
 import { useQuery } from "@tanstack/react-query";
-import { getProject } from "../../services/projects";
-import { queryKeys } from "../../services/queryKeys";
-import type { Project } from "../../types";
-
-/** How often a project that is still cloning is re-read. */
-const CLONING_POLL_MS = 3000;
+import { projectQueries } from "../../services/queryOptions";
 
 export function useProject(id: string) {
-  return useQuery<Project>({
-    queryKey: queryKeys.projects.detail(id),
-    queryFn: () => getProject(id),
-    // A 404 is an answer, not a transient failure, and the shared policy never
-    // retries one (`queryClient.ts`); a 502 from a restarting orchestrator is
-    // retried once there, and the page keeps what it has meanwhile.
-    refetchInterval: (query) =>
-      query.state.data?.status === "cloning" ? CLONING_POLL_MS : false,
-  });
+  return useQuery(projectQueries.detail(id));
 }

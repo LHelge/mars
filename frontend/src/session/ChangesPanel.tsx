@@ -18,8 +18,8 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, LoadingState } from "../components";
 import { DiffBody } from "../components/git/DiffBody";
 import { getDiff } from "../services/git";
-import { getProject, listBranches } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
+import { projectQueries } from "../services/queryOptions";
 import { formatRelative, shortSha } from "../utils/format";
 import { useSessionStore } from "./sessionStore";
 import type { SessionPanelProps } from "./sidePanels";
@@ -30,14 +30,8 @@ export function ChangesPanel({ session }: SessionPanelProps) {
   /** `null` is "whatever the project's default branch is", chosen server-side. */
   const [base, setBase] = useState<string | null>(null);
 
-  const project = useQuery({
-    queryKey: queryKeys.projects.detail(projectId),
-    queryFn: () => getProject(projectId),
-  });
-  const branches = useQuery({
-    queryKey: queryKeys.projects.branches(projectId),
-    queryFn: () => listBranches(projectId),
-  });
+  const project = useQuery(projectQueries.detail(projectId));
+  const branches = useQuery(projectQueries.branches(projectId));
 
   const diff = useQuery({
     queryKey: queryKeys.projects.diff(projectId, session.id, base ?? undefined),

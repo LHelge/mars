@@ -7,15 +7,19 @@
 // features", Agent profiles), so the form becomes "Run with a message" and
 // insists on something to run — a message, a task, or both.
 //
-// Everything else is a default the user may override: the base ref starts at
-// the project's integration head, and naming a task that carries a hand-off
-// clears it again so the server starts from the hand-off commit instead
+// Everything else is left to the server. The base ref starts empty, which is
+// how "whatever the server would choose" is asked for — the task's hand-off
+// commit when the named task has one, otherwise the project's default branch,
+// decided when the request arrives and not when this form was rendered
 // (`SPEC.md`, "Sessions": with no `base_ref`, selection and claim happen
 // atomically). Optional fields that are left blank are not sent at all, so the
 // server's own defaults — including the title rule — apply.
+//
+// The launch itself — create, the two caches it invalidates and the navigation
+// — is `useLaunchSession`, shared with the task drawer's form.
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router";
 import {
@@ -27,15 +31,17 @@ import {
   SubmitButton,
 } from "../../components";
 import { useFormSubmit } from "../../hooks/useFormSubmit";
+import {
+  BaseRefSelect,
+  HandoffBaseNote,
+  ProfileSelect,
+  baseRefDefaultLabel,
+  useLaunchSession,
+} from "../../launch";
 import { AgentCredentialNotice } from "../../secrets/AgentCredentialNotice";
 import { useAgentCredential } from "../../secrets/useAgentCredential";
-import { listProfiles } from "../../services/profiles";
-import { listBranches } from "../../services/projects";
-import { queryKeys } from "../../services/queryKeys";
-import { createSession } from "../../services/sessions";
+import { projectQueries } from "../../services/queryOptions";
 import type { Profile, Project, SessionCreateInput } from "../../types";
-import { shortSha } from "../../utils/format";
-import { BaseRefSelect } from "./BaseRefSelect";
 import { useTaskLookup } from "./useTaskLookup";
 import type { TaskLookup } from "./useTaskLookup";
 
@@ -70,24 +76,21 @@ function profileLabel(profile: Profile): string {
 
 export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
 
   const ready = project.status === "ready";
 
   const profiles = useQuery({
-    queryKey: queryKeys.projects.profiles(project.id),
-    queryFn: () => listProfiles(project.id),
+    ...projectQueries.profiles(project.id),
     enabled: ready,
   });
 
   const branches = useQuery({
-    queryKey: queryKeys.projects.branches(project.id),
-    queryFn: () => listBranches(project.id),
+    ...projectQueries.branches(project.id),
     enabled: ready,
   });
 
   const [profileId, setProfileId] = useState("");
-  const [baseRef, setBaseRef] = useState(project.default_branch ?? "");
+  const [baseRef, setBaseRef] = useState("");
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState("");
   const [taskRef, setTaskRef] = useState("");
@@ -115,40 +118,26 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
   const task = lookup.status === "found" ? lookup.task : null;
   const handoff = task?.handoff ?? null;
 
-  // A hand-off is the better base than anything the form had preselected, so
-  // naming such a task clears the explicit base once — and only once, so the
-  // user can still choose one afterwards.
-  const clearedFor = useRef<string | null>(null);
-  useEffect(() => {
-    if (handoff !== null && clearedFor.current !== handoff.id) {
-      clearedFor.current = handoff.id;
-      setBaseRef("");
-    }
-  }, [handoff]);
-
   const trimmedMessage = message.trim();
   const trimmedTitle = title.trim();
+  const trimmedBase = baseRef.trim();
   const taskUnresolved = taskRef.trim() !== "" && lookup.status !== "found";
   const needsInput = ephemeral && trimmedMessage === "" && task === null;
+
+  const launchSession = useLaunchSession(project.id, task?.number ?? null);
 
   const launch = useFormSubmit(async () => {
     if (selected === undefined) {
       return;
     }
-    const input: SessionCreateInput = {
+    await launchSession({
       profile_id: selected.id,
-      ...(baseRef.trim() === "" ? {} : { base_ref: baseRef.trim() }),
+      ...(trimmedBase === "" ? {} : { base_ref: trimmedBase }),
       ...(trimmedTitle === "" ? {} : { title: trimmedTitle }),
       ...(trimmedMessage === "" ? {} : { message: trimmedMessage }),
       // Always the UUID, even when the user typed a number.
       ...(task === null ? {} : { task_id: task.id }),
-    };
-
-    const session = await createSession(project.id, input);
-    await queryClient.invalidateQueries({
-      queryKey: queryKeys.projects.sessions(project.id),
-    });
-    void navigate(`/sessions/${session.id}`);
+    } satisfies SessionCreateInput);
   });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -191,39 +180,27 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
       )}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <FieldShell label="Agent profile" name="session-profile">
-          {(control) => (
-            <select
-              {...control}
-              value={selected?.id ?? ""}
-              disabled={disabled || rows.length === 0}
-              onChange={(event) => {
-                setProfileId(event.target.value);
-              }}
-              className={FIELD}
-            >
-              {rows.length === 0 && <option value="">No profiles</option>}
-              {rows.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profileLabel(profile)}
-                </option>
-              ))}
-            </select>
-          )}
-        </FieldShell>
+        <ProfileSelect
+          name="session-profile"
+          profiles={rows}
+          selected={selected}
+          onChange={setProfileId}
+          optionLabel={profileLabel}
+          emptyLabel="No profiles"
+          disabled={disabled}
+        />
 
         <BaseRefSelect
           branches={branches.data ?? []}
           value={baseRef}
           onChange={setBaseRef}
           disabled={disabled}
-          defaultLabel={
-            handoff === null
-              ? `Project default${project.default_branch === null ? "" : ` (${project.default_branch})`}`
-              : `Hand-off commit ${shortSha(handoff.commit)}`
-          }
+          defaultLabel={baseRefDefaultLabel(
+            handoff,
+            project.default_branch ?? null,
+          )}
           hint={
-            handoff !== null && baseRef.trim() !== ""
+            handoff !== null && trimmedBase !== ""
               ? "Overrides the hand-off base."
               : undefined
           }
@@ -255,34 +232,25 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
         />
       </div>
 
-      {(lookup.status === "loading" || task !== null) && (
-        <p className="text-console-muted text-xs">
-          {task === null ? (
-            "Looking up the task…"
-          ) : (
-            <>
-              <span className="text-console-text">
-                #{task.number} {task.title}
-              </span>
-              {handoff !== null && (
-                <>
-                  {" · "}
-                  Base: hand-off commit{" "}
-                  <span className="font-mono">{shortSha(handoff.commit)}</span>
-                  {handoff.source_session_id !== null && (
-                    <>
-                      {" (from session "}
-                      <span className="font-mono">
-                        {handoff.source_session_id.slice(0, 8)}
-                      </span>
-                      )
-                    </>
-                  )}
-                </>
-              )}
-            </>
-          )}
-        </p>
+      {lookup.status === "loading" && (
+        <p className="text-console-muted text-xs">Looking up the task…</p>
+      )}
+
+      {task !== null && (
+        <>
+          <p className="text-console-muted text-xs">
+            <span className="text-console-text">
+              #{task.number} {task.title}
+            </span>
+          </p>
+          {/* The same base disclosure the drawer's launch shows, because it is
+              the same launch (`SPEC.md`, "Frontend", "Hand-off controls"). */}
+          <HandoffBaseNote
+            handoff={handoff}
+            defaultBranch={project.default_branch ?? null}
+            override={trimmedBase}
+          />
+        </>
       )}
 
       <FieldShell

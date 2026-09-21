@@ -21,7 +21,6 @@ import { errorMessage } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import type { Handoff } from "../types";
 import { shortSha } from "../utils/format";
-import { shortCommit } from "./launchRules";
 
 export interface HandoffDiffProps {
   projectId: string;
@@ -41,12 +40,12 @@ export function HandoffDiff({ projectId, handoff, onClose }: HandoffDiffProps) {
 
   return (
     <section
-      aria-label={`Diff of hand-off ${shortCommit(handoff.commit)}`}
+      aria-label={`Diff of hand-off ${shortSha(handoff.commit)}`}
       className="border-console-border bg-console-bg space-y-3 rounded border p-3"
     >
       <header className="text-console-muted flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono text-xs">
         <span title={handoff.commit}>
-          {diff.data?.base ?? "base"} → {shortCommit(handoff.commit)}
+          {diff.data?.base ?? "base"} → {shortSha(handoff.commit)}
         </span>
         {diff.data && (
           <span title={diff.data.merge_base}>

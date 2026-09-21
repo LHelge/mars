@@ -113,8 +113,9 @@ impl CapacityRefusal {
 /// true when the session row is inserted, and that is deliberate:
 ///
 /// - **The jobs are single-flight.** A dispatcher or scheduler tick never
-///   overlaps its own previous run, so the only launches that can race this
-///   answer are a person's — and a person's launch is not something these caps
+///   overlaps its own previous run — nor, for the dispatcher, a wake-up of its
+///   own, which runs on that very loop (`cron::scheduler::spawn_woken_job`) —
+///   so the only launches that can race this answer are a person's — and a person's launch is not something these caps
 ///   may refuse or delay in the first place.
 /// - **Holding the count would cost the wrong lock.** Making it exact means
 ///   locking every project on the instance, or serialising the instance's

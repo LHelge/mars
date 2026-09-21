@@ -40,21 +40,56 @@
 //! projects therefore never holds one project's lock while another's rows are
 //! written.
 //!
-//! **The timer is the fallback.** `DISPATCHER_INTERVAL_SECS` bounds how long a
-//! missed wake-up goes unnoticed; the `task_events` wake-up that makes the job
-//! prompt is the next task of the epic. Either way a tick never overlaps its
-//! own previous run (`cron::scheduler`), which is what lets
+//! **The timer is the fallback, the wake-up is what makes it prompt.**
+//! [`spawn_waker`] subscribes to the one Postgres listener's fan-out and asks
+//! the job to run shortly after a notification that may have made work
+//! dispatchable — a `task_events` notice anywhere, a session reaching a
+//! terminal state, or the listener's own `Resync`. Wake-ups are coalesced and
+//! the job still never overlaps itself, because the waker does not spawn
+//! anything: it signals the one loop that also owns the timer
+//! (`cron::scheduler::spawn_woken_job`), which is what lets
 //! [`unattended_capacity`] be advisory.
+//!
+//! **A lagging or reconnecting listener loses nothing that matters.** A notice
+//! is a wake signal and nothing else, so a dropped one costs at most
+//! promptness: the timer run is the resync, `DISPATCHER_INTERVAL_SECS` bounds
+//! how long a missed wake-up goes unnoticed, and a run is a full scan
+//! whichever side asked for it — the waker reads no id out of a notice and the
+//! job takes no filter. A lagged broadcast receiver is therefore treated
+//! exactly like a notice, and a reconnection's `Resync` is one more wake-up.
+//!
+//! **A run does not wake itself forever.** Every launch writes task events of
+//! its own (`claimed`), so a run that dispatched something wakes the job once
+//! more. That follow-up run finds the tasks it just claimed held and launches
+//! nothing, writes no events, and the job goes quiet: one extra empty run per
+//! burst of real work, not a run per own event. The same holds for the
+//! `session_state` notices a launch writes — `creating` and `running` are not
+//! terminal and wake nobody.
+
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
+use super::scheduler::JobWaker;
 use super::{CronService, JobReport};
+use crate::events::{AnyNotice, EventFanout, Notice};
+use crate::models::session::SessionState;
 use crate::models::{AgentProfile, ProfileKind, Project, ProjectStatus, TaskRef, TaskStateKind};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::secrets::has_unattended_credential;
 use crate::session::{LaunchActor, LaunchRequest, create_session, unattended_capacity};
 use crate::tracker::leases::{READY_DEFAULT_LIMIT, ready_summaries};
+
+/// How long a wake-up waits for the rest of its burst before the job runs.
+///
+/// Short enough that a queue is picked up as it fills — the whole point of the
+/// wake-up — and long enough that a planner filing twenty tasks in one
+/// transaction, or twenty transactions in a row, is one run and not twenty.
+pub const WAKE_DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// Why a candidate or a whole profile was passed over, as the fixed word the
 /// `reason` log field carries.
@@ -314,6 +349,93 @@ impl CronService {
     }
 }
 
+/// Whether this notice may have made work dispatchable.
+///
+/// Three kinds of thing can, and the fan-out carries all three
+/// (`docs/data-model.md`, "Notifications (LISTEN/NOTIFY channels)"):
+///
+/// - a **task event** — a task filed, moved into a served state, released or
+///   unblocked. Which project it names is not read: a run is a full scan;
+/// - a **session reaching `done` or `failed`** — the slot it held against the
+///   three caps is free, and a queue that was capped a moment ago is not any
+///   more. A session that held a task also releases it, which is a task event
+///   too, but a session that held none frees a slot with no task event at all,
+///   and this is the only signal of it;
+/// - a **resync** — the listener reconnected and whatever it missed is gone
+///   (ADR 0005). Running is the cheapest way to find out whether it mattered.
+///
+/// Session *events* are the transcript and say nothing about dispatchable
+/// work; `creating`, `running` and `parked` are not a freed slot.
+fn wakes_the_dispatcher(notice: &Notice) -> bool {
+    match notice {
+        Notice::TaskEvents { .. } | Notice::Resync => true,
+        Notice::SessionState { state } => {
+            matches!(state, SessionState::Done | SessionState::Failed)
+        }
+        Notice::SessionEvents { .. } => false,
+    }
+}
+
+/// Wake the dispatcher job from the shared listener's fan-out.
+///
+/// One more subscriber of the fan-out `ARCHITECTURE.md`, "Event delivery"
+/// describes, never a second `LISTEN` connection: it takes
+/// [`EventFanout::subscribe_all`], because the ids it would have to subscribe
+/// to are whatever the notifications turn out to name.
+///
+/// It decides nothing and reads no rows. Every notice that
+/// [`wakes_the_dispatcher`] accepts becomes one [`JobWaker::wake`], which the
+/// job's loop coalesces and debounces; the loop is the only thing that runs
+/// the job, so this task cannot make two runs overlap.
+///
+/// Stops with the rest of [`CronService::start`](super::CronService::start):
+/// the same `shutdown` watch, and a dropped sender is shutdown too.
+pub fn spawn_waker(
+    fanout: EventFanout,
+    waker: JobWaker,
+    mut shutdown: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    let mut notices = fanout.subscribe_all();
+
+    tokio::spawn(async move {
+        loop {
+            if *shutdown.borrow_and_update() {
+                break;
+            }
+
+            let received = tokio::select! {
+                biased;
+                changed = shutdown.changed() => {
+                    // Every sender gone is shutdown too: nothing is left that
+                    // could ask this waker to stop, or to do anything else.
+                    if changed.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                received = notices.recv() => received,
+            };
+
+            match received {
+                Ok(AnyNotice { notice, .. }) if wakes_the_dispatcher(&notice) => waker.wake(),
+                Ok(_) => {}
+                // A notice is a wake signal, so a dropped one is a wake-up
+                // that has to happen and not information that is gone: wake
+                // once for however many were missed.
+                Err(RecvError::Lagged(missed)) => {
+                    debug!(missed, "the dispatcher waker lagged behind the fan-out");
+                    waker.wake();
+                }
+                // The fan-out was dropped, which only the process going away
+                // does. Nothing will ever arrive again.
+                Err(RecvError::Closed) => break,
+            }
+        }
+
+        debug!(job = "dispatcher", "waker stopped");
+    })
+}
+
 /// How far a capacity refusal reaches.
 ///
 /// A profile cap is one profile's business and the next profile of the same
@@ -344,6 +466,35 @@ impl Halt {
 mod tests {
     use super::*;
     use crate::session::CapacityRefusal;
+
+    /// The three signals that may have made work dispatchable, and the two
+    /// that cannot.
+    #[test]
+    fn a_task_event_a_dead_session_and_a_resync_wake_the_dispatcher() {
+        assert!(wakes_the_dispatcher(&Notice::TaskEvents { seq: 1 }));
+        assert!(wakes_the_dispatcher(&Notice::Resync));
+        for freed in [SessionState::Done, SessionState::Failed] {
+            assert!(
+                wakes_the_dispatcher(&Notice::SessionState { state: freed }),
+                "{freed:?} frees a slot",
+            );
+        }
+
+        // The transcript is not work.
+        assert!(!wakes_the_dispatcher(&Notice::SessionEvents { seq: 9 }));
+        // A session that is starting or alive holds its slot; a parked one is
+        // a conversational session that may still be resumed.
+        for holding in [
+            SessionState::Creating,
+            SessionState::Running,
+            SessionState::Parked,
+        ] {
+            assert!(
+                !wakes_the_dispatcher(&Notice::SessionState { state: holding }),
+                "{holding:?} frees nothing",
+            );
+        }
+    }
 
     /// Only the profile's own cap leaves the rest of the project worth asking.
     #[test]

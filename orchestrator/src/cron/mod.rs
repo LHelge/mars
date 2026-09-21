@@ -5,7 +5,10 @@
 //! `async fn` on it that a test can call directly with the `now` it wants.
 //! [`scheduler::spawn_job`] is the only thing that knows about time: it owns
 //! the tick, the panic and error isolation and the outcome logging, which is
-//! why a job body never has to think about any of them.
+//! why a job body never has to think about any of them. A job that is also
+//! woken between ticks is the same body on the same loop
+//! ([`scheduler::spawn_woken_job`]), which is what keeps one run at a time
+//! true across both ways of asking for one.
 //!
 //! The bodies live in their own files as further `impl CronService` blocks,
 //! one per job:
@@ -14,7 +17,8 @@
 //! - `cron/idle_reaper.rs` — delegating to `session/idle_reaper.rs`;
 //! - `cron/stuck_tasks.rs` — release tasks held by ended sessions;
 //! - `cron/dispatcher.rs` — launch an ephemeral session for the best
-//!   claimable task of each `auto_launch` profile;
+//!   claimable task of each `auto_launch` profile, on its timer and woken by
+//!   the event fan-out in between (the one job that is more than a loop);
 //! - `cron/token_cleanup.rs` — expired credentials and orphaned secret rows;
 //! - `cron/secret_rotation.rs` — re-wrap rows behind the newest master key;
 //! - `cron/orphan_cleanup.rs` — leftover containers, `/data/tmp` and refs.
@@ -194,21 +198,45 @@ impl CronService {
     pub fn start(self: Arc<Self>, shutdown: watch::Receiver<bool>) -> Vec<JoinHandle<()>> {
         JobName::ALL
             .into_iter()
-            .map(|job| {
-                let service = Arc::clone(&self);
-                spawn_job(
-                    job.as_str(),
-                    job.period(&self.state.config),
-                    shutdown.clone(),
-                    move || {
-                        let service = Arc::clone(&service);
-                        // `Utc::now()` per tick, not per loop: a job's `now` is
-                        // the moment it runs, which is what every timeout in a
-                        // job body is measured against.
-                        async move { service.run_once(job, Utc::now()).await }
-                    },
-                )
-            })
+            .flat_map(|job| Arc::clone(&self).start_job(job, shutdown.clone()))
             .collect()
+    }
+
+    /// Start one job's loop, and whatever else that job needs running.
+    ///
+    /// What [`CronService::start`] does per entry of [`JobName::ALL`], exposed
+    /// on its own because one job is more than its loop — the dispatcher's
+    /// wake-up is a second task — and because a test that wants a job running
+    /// on its timer wants that job and not the other six.
+    ///
+    /// The handles are the caller's to await within the drain grace, exactly
+    /// as [`CronService::start`]'s are.
+    pub fn start_job(
+        self: Arc<Self>,
+        job: JobName,
+        shutdown: watch::Receiver<bool>,
+    ) -> Vec<JoinHandle<()>> {
+        let period = job.period(&self.state.config);
+        let service = Arc::clone(&self);
+        let run = move || {
+            let service = Arc::clone(&service);
+            // `Utc::now()` per tick, not per loop: a job's `now` is the moment
+            // it runs, which is what every timeout in a job body is measured
+            // against.
+            async move { service.run_once(job, Utc::now()).await }
+        };
+
+        // The dispatcher is the one job that is also woken between ticks
+        // (`ARCHITECTURE.md`, "Dispatcher"). The waker only signals this very
+        // loop, so the timer and the wake-up share its single-flight guard.
+        let JobName::Dispatcher = job else {
+            return vec![spawn_job(job.as_str(), period, shutdown, run)];
+        };
+
+        let (waker, wake) = scheduler::job_wake(dispatcher::WAKE_DEBOUNCE);
+        vec![
+            scheduler::spawn_woken_job(job.as_str(), period, Some(wake), shutdown.clone(), run),
+            dispatcher::spawn_waker(self.state.fanout.clone(), waker, shutdown),
+        ]
     }
 }

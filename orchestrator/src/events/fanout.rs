@@ -6,6 +6,12 @@
 //! `tokio::sync::broadcast` fan-out mirrors the notification so that
 //! in-process subscribers do not each hold a Postgres listener connection".
 //!
+//! Most subscribers watch one session or one project. One does not: a
+//! consumer whose interest is a kind of event rather than an id — the
+//! dispatcher's waker (`cron/dispatcher.rs`) — takes
+//! [`EventFanout::subscribe_all`] and sees every notice, under exactly the
+//! same rules.
+//!
 //! Nothing here carries event content. A [`Notice`] is an identifier and a
 //! cursor, exactly like the notification payloads in `docs/data-model.md`,
 //! "Notifications (LISTEN/NOTIFY channels)", and a subscriber that receives
@@ -177,15 +183,44 @@ fn parse_state(raw: &str) -> std::result::Result<SessionState, PayloadError> {
     SessionState::deserialize(deserializer).map_err(|_| PayloadError::InvalidState)
 }
 
-/// The channels, one per subscribed id.
+/// A notice together with the id it concerns, for a subscriber that watches
+/// every session and project rather than one of them.
+///
+/// `id` is `None` for [`Notice::Resync`], which concerns all of them at once:
+/// the listener reconnected and every subscriber owes itself a read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnyNotice {
+    /// The session id or project id the notice is about.
+    pub id: Option<Uuid>,
+    /// The notice itself; its variant says which of the two `id` is.
+    pub notice: Notice,
+}
+
+/// The channels, one per subscribed id, plus the one that carries everything.
 ///
 /// Both maps are lazily filled by `subscribe_*` and emptied again by the first
 /// `publish_*` that finds no receivers left, so the fan-out is proportional to
 /// what is being watched now, not to everything ever watched.
-#[derive(Default)]
 struct Inner {
     sessions: HashMap<Uuid, broadcast::Sender<Notice>>,
     projects: HashMap<Uuid, broadcast::Sender<Notice>>,
+    /// Every notice, whichever id it concerns ([`EventFanout::subscribe_all`]).
+    ///
+    /// One channel rather than a map, created with the fan-out rather than on
+    /// the first subscriber: a `broadcast::Sender` with no receivers costs one
+    /// allocation and makes every `send` an ignored error, which is cheaper
+    /// than the `Option` that would avoid it.
+    all: broadcast::Sender<AnyNotice>,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Inner {
+            sessions: HashMap::new(),
+            projects: HashMap::new(),
+            all: broadcast::Sender::new(CHANNEL_CAPACITY),
+        }
+    }
 }
 
 /// The in-process broadcast fan-out `AppState` holds.
@@ -221,13 +256,30 @@ impl EventFanout {
         subscribe(&mut inner.projects, project_id)
     }
 
+    /// A receiver for *every* notice, whichever session or project it names.
+    ///
+    /// For a subscriber that is not a stream: it watches no particular id and
+    /// cannot subscribe to one, because the ids it cares about are whatever
+    /// the notifications turn out to name. The dispatcher's waker is the one
+    /// in v2 (`cron/dispatcher.rs`).
+    ///
+    /// Nothing here is different in kind from the per-id channels: the notices
+    /// are still wake signals, a receiver still treats
+    /// [`RecvError::Lagged`](broadcast::error::RecvError::Lagged) exactly like
+    /// a notice, and a subscriber that wants content reads rows.
+    pub fn subscribe_all(&self) -> broadcast::Receiver<AnyNotice> {
+        self.lock().all.subscribe()
+    }
+
     /// Publish to this session's subscribers; a no-op when nobody subscribes.
     pub fn publish_session(&self, session_id: Uuid, notice: Notice) {
+        self.publish_all(Some(session_id), notice.clone());
         self.publish(Map::Sessions, session_id, notice);
     }
 
     /// Publish to this project's subscribers; a no-op when nobody subscribes.
     pub fn publish_project(&self, project_id: Uuid, notice: Notice) {
+        self.publish_all(Some(project_id), notice.clone());
         self.publish(Map::Projects, project_id, notice);
     }
 
@@ -237,6 +289,10 @@ impl EventFanout {
     /// issued while it was away are lost, and only the subscribers' own reads
     /// can recover them. A no-op on an empty fan-out.
     pub fn publish_resync(&self) {
+        // Once, not once per id: a resync says "read now" and the whole-fanout
+        // subscriber has one thing to read.
+        self.publish_all(None, Notice::Resync);
+
         let (sessions, projects) = {
             let inner = self.lock();
             let sessions: Vec<_> = inner.sessions.keys().copied().collect();
@@ -294,6 +350,16 @@ impl EventFanout {
         }
 
         debug!(channel = %map, id = %id, "notice published");
+    }
+
+    /// Send on the whole-fan-out channel, ignoring "nobody is listening".
+    ///
+    /// The sender is cloned out and the guard dropped before the send, for the
+    /// same reason [`EventFanout::publish`] does it. The channel is never
+    /// removed: it belongs to the fan-out and not to a subscriber.
+    fn publish_all(&self, id: Option<Uuid>, notice: Notice) {
+        let sender = self.lock().all.clone();
+        let _ = sender.send(AnyNotice { id, notice });
     }
 
     /// The map guard, recovering a poisoned mutex: the only code under the
@@ -581,6 +647,56 @@ mod tests {
     #[test]
     fn a_resync_on_an_empty_fanout_is_a_no_op() {
         EventFanout::new().publish_resync();
+    }
+
+    #[test]
+    fn a_whole_fanout_subscriber_sees_every_id_and_every_channel() {
+        let fanout = EventFanout::new();
+        let session = Uuid::new_v4();
+        let project = Uuid::new_v4();
+
+        let mut all = fanout.subscribe_all();
+        // Nobody subscribes to either id: the whole-fan-out receiver is not a
+        // second subscriber of theirs, it is its own.
+        fanout.publish_session(session, Notice::SessionEvents { seq: 3 });
+        fanout.publish_project(project, Notice::TaskEvents { seq: 8 });
+        fanout.publish_resync();
+
+        assert_eq!(
+            all.try_recv(),
+            Ok(AnyNotice {
+                id: Some(session),
+                notice: Notice::SessionEvents { seq: 3 },
+            })
+        );
+        assert_eq!(
+            all.try_recv(),
+            Ok(AnyNotice {
+                id: Some(project),
+                notice: Notice::TaskEvents { seq: 8 },
+            })
+        );
+        // A resync names no id and arrives once, however many ids are watched.
+        assert_eq!(
+            all.try_recv(),
+            Ok(AnyNotice {
+                id: None,
+                notice: Notice::Resync,
+            })
+        );
+        assert_eq!(all.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn publishing_with_no_whole_fanout_subscriber_is_a_no_op() {
+        let fanout = EventFanout::new();
+        let session = Uuid::new_v4();
+        let mut receiver = fanout.subscribe_session(session);
+
+        fanout.publish_session(session, Notice::SessionEvents { seq: 1 });
+
+        // The per-id subscriber is unaffected by there being no other one.
+        assert_eq!(receiver.try_recv(), Ok(Notice::SessionEvents { seq: 1 }));
     }
 
     #[test]

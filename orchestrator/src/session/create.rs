@@ -3,7 +3,7 @@
 //! [`create_session`] is the whole of `POST /projects/{pid}/sessions` that is
 //! not HTTP, and it is here rather than in [`crate::routes::sessions`] because
 //! a launch is not a request: the dispatcher and the scheduled agents planned
-//! in `ARCHITECTURE.md`, "After v1: dispatcher and scheduled agents", launch
+//! in `ARCHITECTURE.md`, "Unattended launches", launch
 //! "through the same path as a user launch", and that path must therefore need
 //! neither an HTTP request nor a user. The route above it parses a body, calls
 //! this and answers 201.
@@ -130,8 +130,8 @@ pub const UNRESOLVED_BASE: &str = "base_ref does not resolve";
 ///
 /// Three variants because those are the three things that launch a session: a
 /// person pressing a button, the dispatcher putting an agent on a claimable
-/// task, or a schedule ticking (`ARCHITECTURE.md`, "After v1: dispatcher and
-/// scheduled agents"). Only the first has a user to attribute the launch to.
+/// task, or a schedule ticking (`ARCHITECTURE.md`, "Unattended
+/// launches"). Only the first has a user to attribute the launch to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchActor {
     /// A signed-in user, through `POST /projects/{pid}/sessions`.

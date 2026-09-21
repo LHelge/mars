@@ -11,7 +11,7 @@
 //! base checks, the task claim that commits with the session row and the first
 //! message, behind one entry point that needs no HTTP request and no user, so
 //! that a dispatcher or a schedule launches through the same path as a person
-//! (`ARCHITECTURE.md`, "After v1: dispatcher and scheduled agents").
+//! (`ARCHITECTURE.md`, "Unattended launches").
 //!
 //! [`prepare`] is what a launch does before it asks the engine for anything:
 //! the session's directories under `DATA_DIR/sessions/<sid>/`, a fresh MCP

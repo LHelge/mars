@@ -210,6 +210,60 @@ describe("SecretsManager", () => {
     ).toBeDefined();
   });
 
+  it("shows the agent-credential 409 in the server's own words", async () => {
+    // `SPEC.md`, "Secrets": the other 409 of `POST /secrets` names the
+    // credential in the way and says what to do about it, so it is not the
+    // duplicate-name sentence.
+    vi.mocked(createSecret).mockRejectedValue(
+      new ApiError(
+        409,
+        "this scope already has an agent credential (CLAUDE_CODE_OAUTH_TOKEN); replace or delete it first",
+      ),
+    );
+
+    renderManager();
+    await screen.findByRole("button", { name: "Add secret" });
+
+    fillCreateForm("ANTHROPIC_API_KEY", FAKE_VALUE);
+
+    expect(
+      await screen.findByText(
+        "this scope already has an agent credential (CLAUDE_CODE_OAUTH_TOKEN); replace or delete it first",
+      ),
+    ).toBeDefined();
+    expect(
+      screen.queryByText(
+        "A secret with that name already exists in this scope.",
+      ),
+    ).toBeNull();
+  });
+
+  it("shows the agent-credential 409 of a rename too", async () => {
+    vi.mocked(listSecrets).mockResolvedValue([secret()]);
+    vi.mocked(patchSecret).mockRejectedValue(
+      new ApiError(
+        409,
+        "this scope already has an agent credential (CLAUDE_CODE_OAUTH_TOKEN); replace or delete it first",
+      ),
+    );
+
+    renderManager();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Rename" }));
+    fireEvent.change(screen.getByLabelText("New name for MY_TOKEN"), {
+      target: { value: "ANTHROPIC_API_KEY" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+
+    expect(
+      await screen.findByText(
+        "this scope already has an agent credential (CLAUDE_CODE_OAUTH_TOKEN); replace or delete it first",
+      ),
+    ).toBeDefined();
+    // The editor stays open so the name can be corrected.
+    expect(screen.getByLabelText("New name for MY_TOKEN")).toBeDefined();
+  });
+
   it("replaces a value through `PUT /secrets/{id}`", async () => {
     vi.mocked(listSecrets).mockResolvedValue([secret()]);
     vi.mocked(replaceSecretValue).mockResolvedValue(secret());
@@ -234,6 +288,40 @@ describe("SecretsManager", () => {
     await waitFor(() => {
       expect(screen.queryByLabelText("New value for MY_TOKEN")).toBeNull();
     });
+  });
+
+  it("keeps no typed value once the replace panel is closed", async () => {
+    vi.mocked(listSecrets).mockResolvedValue([secret()]);
+
+    renderManager();
+
+    const open = await screen.findByRole("button", { name: "Replace value" });
+    fireEvent.click(open);
+    fireEvent.change(screen.getByLabelText("New value for MY_TOKEN"), {
+      target: { value: FAKE_VALUE },
+    });
+
+    // Closing the panel with the same button unmounts the form.
+    fireEvent.click(open);
+    expect(screen.queryByLabelText("New value for MY_TOKEN")).toBeNull();
+
+    fireEvent.click(open);
+    expect(
+      screen.getByLabelText<HTMLTextAreaElement>("New value for MY_TOKEN").value,
+    ).toBe("");
+
+    // So does switching to another panel of the same row.
+    fireEvent.change(screen.getByLabelText("New value for MY_TOKEN"), {
+      target: { value: FAKE_VALUE },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    expect(screen.queryByLabelText("New value for MY_TOKEN")).toBeNull();
+
+    fireEvent.click(open);
+    expect(
+      screen.getByLabelText<HTMLTextAreaElement>("New value for MY_TOKEN").value,
+    ).toBe("");
+    expect(vi.mocked(replaceSecretValue)).not.toHaveBeenCalled();
   });
 
   it("renames and toggles the orchestrator-only flag through `PATCH`", async () => {
@@ -283,6 +371,62 @@ describe("SecretsManager", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => {
       expect(vi.mocked(deleteSecret)).toHaveBeenCalledWith(SECRET_ID);
+    });
+  });
+
+  it("takes a deleted row out of the list before the refetch lands", async () => {
+    vi.mocked(listSecrets).mockResolvedValueOnce([secret()]);
+    // The refetch the delete triggers never answers, so only the cache write
+    // can take the row off screen — and the row must not outlive its secret.
+    vi.mocked(listSecrets).mockReturnValue(new Promise(() => {}));
+    vi.mocked(deleteSecret).mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderManager();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("MY_TOKEN")).toBeNull();
+    });
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  });
+
+  it("keeps the rows on screen while a larger page of uses loads", async () => {
+    vi.mocked(listSecrets).mockResolvedValue([secret()]);
+    const page: SecretUse[] = Array.from({ length: 20 }, (_, index) => ({
+      session_id: null,
+      user_id: null,
+      purpose: "git",
+      at: `2026-03-01T10:${String(index).padStart(2, "0")}:00Z`,
+    }));
+    let answerLarger: (uses: SecretUse[]) => void = () => {};
+    vi.mocked(listSecretUses).mockImplementation((_id, limit) =>
+      limit === 20
+        ? Promise.resolve(page)
+        : new Promise<SecretUse[]>((resolve) => {
+            answerLarger = resolve;
+          }),
+    );
+
+    renderManager();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Uses" }));
+    await waitFor(() => {
+      expect(screen.getAllByRole("listitem").length).toBe(20);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    await waitFor(() => {
+      expect(vi.mocked(listSecretUses)).toHaveBeenCalledWith(SECRET_ID, 40);
+    });
+    // The first page is still there, not a loading state in its place.
+    expect(screen.getAllByRole("listitem").length).toBe(20);
+    expect(screen.queryByText("Loading uses")).toBeNull();
+
+    answerLarger([...page, { ...page[0], at: "2026-03-01T09:00:00Z" }]);
+    await waitFor(() => {
+      expect(screen.getAllByRole("listitem").length).toBe(21);
     });
   });
 

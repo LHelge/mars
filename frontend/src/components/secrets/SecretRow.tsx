@@ -3,8 +3,10 @@
 // delete (`DELETE`) and the recent uses (`GET /secrets/{id}/uses`).
 //
 // The metadata is everything the manager can show — `SPEC.md`, "Secrets":
-// "The value is never shown after entry." A replacement value lives in this
-// component's state until the mutation settles and nowhere else.
+// "The value is never shown after entry." A replacement value lives in
+// `SecretReplaceForm`'s state and nowhere else, and that form is mounted only
+// while its panel is the open one, so closing the panel — by any route — is
+// what drops the plaintext (`CLAUDE.md`, rule 3).
 
 import {
   ChevronDownIcon,
@@ -13,24 +15,18 @@ import {
 } from "@heroicons/react/24/outline";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import type { FormEvent } from "react";
 import { invalidateSecretQueries } from "../../secrets/invalidate";
+import { logUnexpected } from "../../services/errorMessage";
 import { queryKeys } from "../../services/queryKeys";
-import {
-  deleteSecret,
-  patchSecret,
-  replaceSecretValue,
-} from "../../services/secrets";
-import type { PatchSecretRequest, SecretMeta, SecretScope } from "../../types";
+import { deleteSecret, patchSecret } from "../../services/secrets";
+import type { SecretMeta, SecretScope } from "../../types";
 import { formatDateTime, formatRelative, PLACEHOLDER } from "../../utils/format";
-import { validateSecretName } from "../../utils/secretName";
 import { Alert } from "../Alert";
-import { FieldShell } from "../FieldShell";
-import { CONTROL } from "../fieldStyles";
 import { SubmitButton } from "../SubmitButton";
+import { SecretRenameForm } from "./SecretRenameForm";
+import { SecretReplaceForm } from "./SecretReplaceForm";
 import { SecretUsesList } from "./SecretUsesList";
 import { secretErrorMessage } from "./messages";
-import { logUnexpected } from "../../services/errorMessage";
 
 /** The project credential of `SPEC.md`, "Projects". */
 const GIT_CREDENTIAL = "GIT_CREDENTIAL";
@@ -57,9 +53,7 @@ export function SecretRow({
   const listKey = queryKeys.secrets.list(scope, scopeId);
 
   const [panel, setPanel] = useState<Panel | null>(null);
-  const [value, setValue] = useState("");
-  const [name, setName] = useState(secret.name);
-  const [nameError, setNameError] = useState<string | null>(null);
+  const [panelPending, setPanelPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   /** The returned metadata replaces the row before the refetch arrives. */
@@ -73,39 +67,28 @@ export function SecretRow({
     invalidateSecretQueries(queryClient);
   }
 
-  const replace = useMutation({
-    mutationFn: (next: string) => replaceSecretValue(secret.id, next),
+  /** Closing unmounts the panel's form, which is what drops its draft. */
+  function closePanel() {
+    setPanel(null);
+    // The form that was reporting it is gone; nothing is in flight here.
+    setPanelPending(false);
+  }
+
+  /** A panel form saved: apply the new metadata and close the panel. */
+  function onSaved(updated: SecretMeta) {
+    applyUpdate(updated);
+    setError(null);
+    closePanel();
+  }
+
+  const flag = useMutation({
+    mutationFn: (next: boolean) =>
+      patchSecret(secret.id, { orchestrator_only: next }),
     onSuccess: (updated) => {
       applyUpdate(updated);
       setError(null);
-      // The textarea goes away with the panel.
-      setPanel(null);
     },
     onError: (caught: unknown) => {
-      logUnexpected(caught);
-      setError(secretErrorMessage(caught));
-    },
-    // The mutation cache keeps `variables` — here the plaintext — for as long
-    // as the mutation lives, so it is dropped the moment the request settles.
-    gcTime: 0,
-    onSettled: () => {
-      setValue("");
-      replace.reset();
-    },
-  });
-
-  const patch = useMutation({
-    mutationFn: (body: PatchSecretRequest) => patchSecret(secret.id, body),
-    onSuccess: (updated, body) => {
-      applyUpdate(updated);
-      setError(null);
-      // A rename closes its editor; a flag toggle has none open.
-      if (body.name !== undefined) {
-        setPanel(null);
-      }
-    },
-    onError: (caught: unknown) => {
-      // A duplicate name keeps the editor open so the name can be corrected.
       logUnexpected(caught);
       setError(secretErrorMessage(caught));
     },
@@ -114,6 +97,11 @@ export function SecretRow({
   const remove = useMutation({
     mutationFn: () => deleteSecret(secret.id),
     onSuccess: () => {
+      // The row goes now rather than when the refetch lands: until it does,
+      // every action on it would answer 404.
+      queryClient.setQueryData<SecretMeta[]>(listKey, (rows) =>
+        rows?.filter((row) => row.id !== secret.id),
+      );
       void queryClient.invalidateQueries({ queryKey: listKey });
       invalidateSecretQueries(queryClient);
     },
@@ -125,24 +113,8 @@ export function SecretRow({
 
   function togglePanel(next: Panel) {
     setError(null);
+    setPanelPending(false);
     setPanel((current) => (current === next ? null : next));
-  }
-
-  function onReplace(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
-    replace.mutate(value);
-  }
-
-  function onRename(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const invalid = validateSecretName(name);
-    setNameError(invalid);
-    if (invalid !== null) {
-      return;
-    }
-    setError(null);
-    patch.mutate({ name });
   }
 
   function onDelete() {
@@ -162,7 +134,7 @@ export function SecretRow({
       ? PLACEHOLDER
       : (usernames.get(secret.created_by) ?? PLACEHOLDER);
 
-  const busy = replace.isPending || patch.isPending || remove.isPending;
+  const busy = panelPending || flag.isPending || remove.isPending;
   const isGitCredential = scope === "project" && secret.name === GIT_CREDENTIAL;
 
   return (
@@ -189,7 +161,7 @@ export function SecretRow({
               aria-label={`Orchestrator only: ${secret.name}`}
               onChange={(event) => {
                 setError(null);
-                patch.mutate({ orchestrator_only: event.target.checked });
+                flag.mutate(event.target.checked);
               }}
               className="accent-console-accent size-3.5"
             />
@@ -253,8 +225,6 @@ export function SecretRow({
               disabled={busy}
               aria-expanded={panel === "rename"}
               onClick={() => {
-                setName(secret.name);
-                setNameError(null);
                 togglePanel("rename");
               }}
             >
@@ -298,90 +268,23 @@ export function SecretRow({
               {error !== null && <Alert kind="error">{error}</Alert>}
 
               {panel === "replace" && (
-                <form
-                  onSubmit={onReplace}
-                  aria-label={`Replace the value of ${secret.name}`}
-                  className="flex flex-col gap-2"
-                >
-                  <FieldShell
-                    label={`New value for ${secret.name}`}
-                    name={`replace-${secret.id}`}
-                  >
-                    {(control) => (
-                      <textarea
-                        {...control}
-                        rows={3}
-                        value={value}
-                        onChange={(event) => {
-                          setValue(event.target.value);
-                        }}
-                        autoComplete="off"
-                        spellCheck={false}
-                        required
-                        className={CONTROL}
-                      />
-                    )}
-                  </FieldShell>
-                  <div className="flex gap-2">
-                    <SubmitButton loading={replace.isPending}>
-                      Save value
-                    </SubmitButton>
-                    <SubmitButton
-                      type="button"
-                      variant="ghost"
-                      onClick={() => {
-                        setValue("");
-                        setPanel(null);
-                      }}
-                    >
-                      Cancel
-                    </SubmitButton>
-                  </div>
-                </form>
+                <SecretReplaceForm
+                  secret={secret}
+                  onSaved={onSaved}
+                  onError={setError}
+                  onPendingChange={setPanelPending}
+                  onCancel={closePanel}
+                />
               )}
 
               {panel === "rename" && (
-                <form
-                  onSubmit={onRename}
-                  aria-label={`Rename ${secret.name}`}
-                  className="flex flex-col gap-2"
-                >
-                  <FieldShell
-                    label={`New name for ${secret.name}`}
-                    name={`rename-${secret.id}`}
-                    error={nameError ?? undefined}
-                  >
-                    {(control) => (
-                      <input
-                        {...control}
-                        type="text"
-                        value={name}
-                        onChange={(event) => {
-                          setName(event.target.value.toUpperCase());
-                          setNameError(null);
-                        }}
-                        autoComplete="off"
-                        spellCheck={false}
-                        required
-                        className={`${CONTROL} max-w-sm`}
-                      />
-                    )}
-                  </FieldShell>
-                  <div className="flex gap-2">
-                    <SubmitButton loading={patch.isPending}>
-                      Save name
-                    </SubmitButton>
-                    <SubmitButton
-                      type="button"
-                      variant="ghost"
-                      onClick={() => {
-                        setPanel(null);
-                      }}
-                    >
-                      Cancel
-                    </SubmitButton>
-                  </div>
-                </form>
+                <SecretRenameForm
+                  secret={secret}
+                  onSaved={onSaved}
+                  onError={setError}
+                  onPendingChange={setPanelPending}
+                  onCancel={closePanel}
+                />
               )}
 
               {panel === "uses" && (

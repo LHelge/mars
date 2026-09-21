@@ -4,17 +4,20 @@
 // the orchestrator fetched a mirror on its own schedule.
 //
 // There is no pagination endpoint, so "Show more" doubles the limit and asks
-// again, up to the 500 the server would cap at anyway.
+// again, up to the 500 the server would cap at anyway. Each limit is a query
+// of its own, so the larger page is loaded with the rows of the smaller one
+// still on screen (`SPEC.md`, "Frontend", Read failures: a view that has data
+// keeps showing it).
 
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router";
 import { queryKeys } from "../../services/queryKeys";
 import { listSecretUses } from "../../services/secrets";
 import type { SecretUse } from "../../types";
 import { formatDateTime, formatRelative } from "../../utils/format";
-import { Alert } from "../Alert";
 import { LoadingState } from "../LoadingState";
+import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SubmitButton } from "../SubmitButton";
 import { secretErrorMessage } from "./messages";
 
@@ -57,14 +60,23 @@ export function SecretUsesList({ secretId, usernames }: SecretUsesListProps) {
   const uses = useQuery({
     queryKey: queryKeys.secrets.uses(secretId, limit),
     queryFn: () => listSecretUses(secretId, limit),
+    // `limit` is part of the key, so a larger page is a different query: with
+    // no placeholder the list would blank out and the scroll would jump while
+    // it loads. The rows already on screen stay, and `isFetching` is what the
+    // button spins on.
+    placeholderData: keepPreviousData,
   });
 
+  // `isPending` is false while the kept rows stand in for a larger page, so
+  // the loading state is only ever the first read of this secret's uses.
   if (uses.isPending) {
     return <LoadingState label="Loading uses" />;
   }
 
   if (uses.isError) {
-    return <Alert kind="error">{secretErrorMessage(uses.error)}</Alert>;
+    return (
+      <QueryErrorAlert query={uses} message={secretErrorMessage(uses.error)} />
+    );
   }
 
   const rows = uses.data;
@@ -94,7 +106,9 @@ export function SecretUsesList({ secretId, usernames }: SecretUsesListProps) {
         ))}
       </ul>
 
-      {rows.length >= limit && limit < USES_MAX_LIMIT && (
+      {/* While the larger page is on its way the kept rows are one page
+          behind the limit, so the button stays on its own spinner. */}
+      {(uses.isFetching || rows.length >= limit) && limit < USES_MAX_LIMIT && (
         <SubmitButton
           type="button"
           variant="ghost"

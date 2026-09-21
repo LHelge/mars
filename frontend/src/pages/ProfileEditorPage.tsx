@@ -35,6 +35,7 @@ import {
 import { queryKeys } from "../services/queryKeys";
 import { listSecrets } from "../services/secrets";
 import { listTaskStates } from "../services/taskStates";
+import { parseProfileKind } from "../types";
 import type { Profile, ProfileKind } from "../types";
 import { PROFILE_GATED_TOOLS } from "../types";
 import { SECRET_NAME_RE, validateSecretName } from "../utils/secretName";
@@ -407,7 +408,12 @@ export function ProfileEditorPage({
                 {...control}
                 value={form.kind}
                 onChange={(event) => {
-                  onKindChange(event.target.value as ProfileKind);
+                  // The two options below are the whole of `ProfileKind`,
+                  // so an unparsed value cannot come back from this select.
+                  const chosen = parseProfileKind(event.target.value);
+                  if (chosen !== undefined) {
+                    onKindChange(chosen);
+                  }
                 }}
                 disabled={save.loading}
                 className={FIELD}

@@ -137,7 +137,8 @@ export function orderSessionsForPicker(
  */
 export function defaultSourceSession(sessions: readonly Session[]): string {
   const usable = sessions.filter((session) => session.branch !== null);
-  return usable.length === 1 ? usable[0].id : "";
+  const only = usable.length === 1 ? usable[0] : undefined;
+  return only?.id ?? "";
 }
 
 /** The exact 409 that means the hand-off moved while the review form was open. */

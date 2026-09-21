@@ -111,26 +111,26 @@ new file mode 100644
 describe("parseUnifiedPatch", () => {
   it("splits a two-file patch into files and hunks", () => {
     const files = parseUnifiedPatch(TWO_FILE_PATCH);
-    expect(files.map((file) => file.path)).toEqual([
+    expect(files.map((file) => file?.path)).toEqual([
       "src/one.ts",
       "src/two.ts",
     ]);
-    expect(files[0].hunks).toHaveLength(2);
-    expect(files[1].hunks).toHaveLength(1);
+    expect(files[0]?.hunks).toHaveLength(2);
+    expect(files[1]?.hunks).toHaveLength(1);
   });
 
   it("keeps the hunk header and numbers the lines from it", () => {
     const [first] = parseUnifiedPatch(TWO_FILE_PATCH);
-    expect(first.hunks[0].header).toBe(
+    expect(first?.hunks[0]?.header).toBe(
       "@@ -1,3 +1,3 @@ export function one()",
     );
-    expect(first.hunks[0].lines).toEqual([
+    expect(first?.hunks[0]?.lines).toEqual([
       { type: "context", text: "const a = 1;", oldNo: 1, newNo: 1 },
       { type: "del", text: "const b = 2;", oldNo: 2 },
       { type: "add", text: "const b = 3;", newNo: 2 },
       { type: "context", text: "const c = 4;", oldNo: 3, newNo: 3 },
     ]);
-    expect(first.hunks[1].lines).toEqual([
+    expect(first?.hunks[1]?.lines).toEqual([
       { type: "context", text: "tail", oldNo: 10, newNo: 10 },
       { type: "add", text: "extra", newNo: 11 },
     ]);
@@ -138,7 +138,7 @@ describe("parseUnifiedPatch", () => {
 
   it("reads a new file whose old side is /dev/null", () => {
     const files = parseUnifiedPatch(TWO_FILE_PATCH);
-    expect(files[1].hunks[0].lines).toEqual([
+    expect(files[1]?.hunks[0]?.lines).toEqual([
       { type: "add", text: "first", newNo: 1 },
       { type: "add", text: "second", newNo: 2 },
     ]);
@@ -149,7 +149,7 @@ describe("parseUnifiedPatch", () => {
   });
 
   it("marks a text file as not binary", () => {
-    expect(parseUnifiedPatch(TWO_FILE_PATCH).map((file) => file.binary)).toEqual(
+    expect(parseUnifiedPatch(TWO_FILE_PATCH).map((file) => file?.binary)).toEqual(
       [false, false],
     );
   });
@@ -175,7 +175,7 @@ GIT binary patch
 literal 8
 `,
     );
-    expect(file.binary).toBe(true);
+    expect(file?.binary).toBe(true);
   });
 
   it("names a renamed file by its new path", () => {
@@ -191,8 +191,8 @@ rename to src/new.ts
 +const a = 2;
 `,
     );
-    expect(files.map((file) => file.path)).toEqual(["src/new.ts"]);
-    expect(files[0].hunks[0].lines).toEqual([
+    expect(files.map((file) => file?.path)).toEqual(["src/new.ts"]);
+    expect(files[0]?.hunks[0]?.lines).toEqual([
       { type: "del", text: "const a = 1;", oldNo: 1 },
       { type: "add", text: "const a = 2;", newNo: 1 },
     ]);
@@ -213,8 +213,8 @@ index 1111111..2222222 100644
  SELECT 1;
 `,
     );
-    expect(file.path).toBe("migrations/0001_init.sql");
-    expect(file.hunks[0].lines).toEqual([
+    expect(file?.path).toBe("migrations/0001_init.sql");
+    expect(file?.hunks[0]?.lines).toEqual([
       { type: "context", text: "CREATE TABLE t (id uuid);", oldNo: 1, newNo: 1 },
       { type: "del", text: "-- old comment", oldNo: 2 },
       { type: "add", text: "-- new comment", newNo: 2 },
@@ -234,8 +234,8 @@ index 1111111..2222222 100644
 +++ b
 `,
     );
-    expect(file.path).toBe("notes.txt");
-    expect(file.hunks[0].lines).toEqual([
+    expect(file?.path).toBe("notes.txt");
+    expect(file?.hunks[0]?.lines).toEqual([
       { type: "context", text: "a", oldNo: 1, newNo: 1 },
       { type: "add", text: "++ b", newNo: 2 },
     ]);
@@ -256,7 +256,7 @@ diff --git a/after.txt b/after.txt
 new file mode 100644
 `,
     );
-    expect(file.hunks[0].lines).toEqual([
+    expect(file?.hunks[0]?.lines).toEqual([
       { type: "del", text: "old", oldNo: 1 },
       { type: "add", text: "new", newNo: 1 },
     ]);
@@ -272,7 +272,7 @@ new file mode 100644
 +new
 `,
     );
-    expect(file.hunks[0].lines).toEqual([
+    expect(file?.hunks[0]?.lines).toEqual([
       { type: "del", text: "old", oldNo: 3 },
       { type: "add", text: "new", newNo: 3 },
     ]);
@@ -306,9 +306,9 @@ new mode 100755
         "-two\r\n" +
         "+three\r\n",
     );
-    expect(file.path).toBe("crlf.txt");
-    expect(file.hunks[0].header).toBe("@@ -1,2 +1,2 @@");
-    expect(file.hunks[0].lines).toEqual([
+    expect(file?.path).toBe("crlf.txt");
+    expect(file?.hunks[0]?.header).toBe("@@ -1,2 +1,2 @@");
+    expect(file?.hunks[0]?.lines).toEqual([
       { type: "context", text: "one\r", oldNo: 1, newNo: 1 },
       { type: "del", text: "two\r", oldNo: 2 },
       { type: "add", text: "three\r", newNo: 2 },
@@ -326,8 +326,8 @@ index 1111111..2222222 100644
 +new
 `,
     );
-    expect(file.path).toBe("docs/föo.md");
-    expect(file.hunks[0].lines).toHaveLength(2);
+    expect(file?.path).toBe("docs/föo.md");
+    expect(file?.hunks[0]?.lines).toHaveLength(2);
   });
 
   it("marks the binary file after a text file, not the text file", () => {
@@ -345,12 +345,12 @@ index 0000000..3333333
 Binary files /dev/null and "b/img/f\\303\\266o.png" differ
 `,
     );
-    expect(files.map((file) => [file.path, file.binary])).toEqual([
+    expect(files.map((file) => [file?.path, file?.binary])).toEqual([
       ["a.txt", false],
       ["img/föo.png", true],
     ]);
-    expect(files[0].hunks).toHaveLength(1);
-    expect(files[1].hunks).toEqual([]);
+    expect(files[0]?.hunks).toHaveLength(1);
+    expect(files[1]?.hunks).toEqual([]);
   });
 
   it("starts a new file on a `diff --git` line whose paths it cannot read", () => {
@@ -366,8 +366,8 @@ Binary files a/nonsense and b/nonsense differ
 `,
     );
     expect(files).toHaveLength(2);
-    expect(files[0].binary).toBe(false);
-    expect(files[1].binary).toBe(true);
+    expect(files[0]?.binary).toBe(false);
+    expect(files[1]?.binary).toBe(true);
   });
 
   it("splits a plain `diff -u` patch that has no `diff --git` lines", () => {
@@ -384,8 +384,8 @@ Binary files a/nonsense and b/nonsense differ
 +TWO
 `,
     );
-    expect(files.map((file) => file.path)).toEqual(["one.txt", "two.txt"]);
-    expect(files[1].hunks[0].lines).toEqual([
+    expect(files.map((file) => file?.path)).toEqual(["one.txt", "two.txt"]);
+    expect(files[1]?.hunks[0]?.lines).toEqual([
       { type: "del", text: "two", oldNo: 1 },
       { type: "add", text: "TWO", newNo: 1 },
     ]);
@@ -401,6 +401,6 @@ Binary files a/nonsense and b/nonsense differ
 +two
 `,
     );
-    expect(files.map((file) => file.path)).toEqual(["my notes.txt"]);
+    expect(files.map((file) => file?.path)).toEqual(["my notes.txt"]);
   });
 });

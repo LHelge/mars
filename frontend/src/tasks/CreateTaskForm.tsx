@@ -20,6 +20,7 @@ import { FieldShell } from "../components/FieldShell";
 import { FormField } from "../components/FormField";
 import { SubmitButton } from "../components/SubmitButton";
 import { createTask } from "../services/tasks";
+import { parseTaskPriority } from "../types";
 import type { Task, TaskPriority, TaskState } from "../types";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { CONTROL } from "../components/fieldStyles";
@@ -166,7 +167,13 @@ export function CreateTaskForm({
               {...control}
               value={String(priority)}
               onChange={(event) => {
-                setPriority(Number(event.target.value) as TaskPriority);
+                // Every option comes from the same list `parseTaskPriority`
+                // reads back, so `undefined` is unreachable; it leaves the
+                // priority where it is rather than inventing a P0.
+                const chosen = parseTaskPriority(event.target.value);
+                if (chosen !== undefined) {
+                  setPriority(chosen);
+                }
               }}
               className={CONTROL}
             >

@@ -39,6 +39,7 @@ import {
   listTaskStates,
   updateTaskState,
 } from "../services/taskStates";
+import { parseTaskStateKind, TASK_STATE_KINDS } from "../types";
 import type { TaskState, TaskStateKind } from "../types";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { taskKeys, taskStateKeys } from "./queryKeys";
@@ -59,7 +60,6 @@ const STATES_HELP =
 /** Shown instead of a count while the task list has not been read. */
 const COUNTS_UNKNOWN = "Task counts are not loaded";
 
-const KINDS: TaskStateKind[] = ["queue", "human", "terminal"];
 
 const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
 const CELL = "py-1.5 pr-3 align-middle";
@@ -277,11 +277,16 @@ function AddStateForm({
               {...control}
               value={kind}
               onChange={(event) => {
-                setKind(event.target.value as TaskStateKind);
+                // The options are `TASK_STATE_KINDS` itself, so nothing
+                // else can arrive; an unknown value leaves the kind alone.
+                const chosen = parseTaskStateKind(event.target.value);
+                if (chosen !== undefined) {
+                  setKind(chosen);
+                }
               }}
               className={CONTROL}
             >
-              {KINDS.map((option) => (
+              {TASK_STATE_KINDS.map((option) => (
                 <option
                   key={option}
                   value={option}
@@ -329,7 +334,7 @@ interface StateRowProps {
   index: number;
   states: TaskState[];
   /** Undefined while the task list is unread; see `TaskStatesEditor`. */
-  counts: Record<string, number> | undefined;
+  counts: ReadonlyMap<string, number> | undefined;
   afterMutation: () => Promise<void>;
 }
 
@@ -382,7 +387,7 @@ function StateRow({
   }
 
   const busy = rename.loading || act.loading;
-  const count = counts?.[state.name] ?? 0;
+  const count = counts?.get(state.name) ?? 0;
 
   // No counts, no removal: the structural reasons are knowable without them,
   // but "nothing is in it" is not.

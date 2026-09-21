@@ -91,13 +91,13 @@ function harness(): Harness {
       return next.promise;
     },
     settle: async (index, states, tasks) => {
-      stateCalls[index].resolve(states);
-      taskCalls[index].resolve(tasks);
+      stateCalls[index]?.resolve(states);
+      taskCalls[index]?.resolve(tasks);
       await flush();
     },
     failBoth: async (index, error) => {
-      stateCalls[index].reject(error);
-      taskCalls[index].reject(error);
+      stateCalls[index]?.reject(error);
+      taskCalls[index]?.reject(error);
       await flush();
     },
   };
@@ -417,11 +417,11 @@ describe("the board's reads through the query cache", () => {
     expect(listTasks).toHaveBeenCalledTimes(2);
 
     // The older read answers first, and with the older board.
-    responses[0].resolve([task(1, "ready")]);
+    responses[0]?.resolve([task(1, "ready")]);
     await flush();
     expect(store.getState().loaded).toBe(false);
 
-    responses[1].resolve([task(1, "ready"), task(2, "ready")]);
+    responses[1]?.resolve([task(1, "ready"), task(2, "ready")]);
     await flush();
     expect(store.getState().tasks.map((t) => t.number)).toEqual([1, 2]);
   });
@@ -454,9 +454,9 @@ describe("selectColumns", () => {
 
     expect(columns.map((c) => c.name)).toEqual(["backlog", "ready"]);
     expect(columns.map((c) => c.key)).toEqual(["state-backlog", "state-ready"]);
-    expect(columns[0].state).toBe(BACKLOG);
+    expect(columns[0]?.state).toBe(BACKLOG);
     // The API orders by priority, then number; the column does not re-sort.
-    expect(columns[1].tasks.map((t) => t.number)).toEqual([9, 4]);
+    expect(columns[1]?.tasks.map((t) => t.number)).toEqual([9, 4]);
   });
 
   it("has no unknown column while every task is in a current state", () => {
@@ -482,9 +482,9 @@ describe("selectColumns", () => {
     ]);
     const unknown = columns[columns.length - 1];
     // Not a fabricated state row: nothing can mistake it for a real column.
-    expect(unknown.state).toBeNull();
-    expect(unknown.key).toBe(UNKNOWN_COLUMN);
-    expect(unknown.tasks.map((t) => t.number)).toEqual([2, 3]);
+    expect(unknown?.state).toBeNull();
+    expect(unknown?.key).toBe(UNKNOWN_COLUMN);
+    expect(unknown?.tasks.map((t) => t.number)).toEqual([2, 3]);
   });
 
   it("keeps an empty board's columns", () => {
@@ -523,8 +523,8 @@ describe("selectVisibleColumns", () => {
     const visible = selectVisibleColumns({ ...SNAPSHOT, query: "login" });
 
     expect(visible.map((c) => c.name)).toEqual(["backlog", "ready"]);
-    expect(visible[0].tasks).toEqual([]);
-    expect(visible[1].tasks.map((t) => t.number)).toEqual([42, 7]);
+    expect(visible[0]?.tasks).toEqual([]);
+    expect(visible[1]?.tasks.map((t) => t.number)).toEqual([42, 7]);
   });
 
   it("matches an exact number across all columns", () => {

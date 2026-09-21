@@ -10,15 +10,10 @@ import type {
   TaskDetail,
   UpdateTaskInput,
 } from "../types";
-import { apiDelete, apiGet, apiPost, apiPut } from "./apiClient";
+import { apiDelete, apiGet, apiPost, apiPut, seg } from "./apiClient";
 
 /** A task's UUID or its per-project number, as `{id}` in the paths below. */
 export type TaskPathRef = string | number;
-
-function withQuery(path: string, params: URLSearchParams): string {
-  const query = params.toString();
-  return query.length > 0 ? `${path}?${query}` : path;
-}
 
 /**
  * `GET /tasks?state_kind=human` — every task sitting in its project's human
@@ -26,7 +21,7 @@ function withQuery(path: string, params: URLSearchParams): string {
  * `number`, so a caller keys and links by `project_id` too.
  */
 export function listHumanTasks(): Promise<Task[]> {
-  return apiGet<Task[]>("/tasks?state_kind=human");
+  return apiGet<Task[]>("/tasks", { query: { state_kind: "human" } });
 }
 
 /**
@@ -38,12 +33,12 @@ export function listHumanTasks(): Promise<Task[]> {
  * argument would be a parameter no caller ever passes.
  */
 export function listTasks(pid: string): Promise<Task[]> {
-  return apiGet<Task[]>(`/projects/${pid}/tasks`);
+  return apiGet<Task[]>(`/projects/${seg(pid)}/tasks`);
 }
 
 /** `POST /projects/{pid}/tasks` → 201. */
 export function createTask(pid: string, input: CreateTaskInput): Promise<Task> {
-  return apiPost<Task>(`/projects/${pid}/tasks`, input);
+  return apiPost<Task>(`/projects/${seg(pid)}/tasks`, input);
 }
 
 /**
@@ -51,8 +46,11 @@ export function createTask(pid: string, input: CreateTaskInput): Promise<Task> {
  * children and touching sessions. `idOrNumber` is the task's UUID or its
  * per-project number.
  */
-export function getTask(pid: string, idOrNumber: TaskPathRef): Promise<TaskDetail> {
-  return apiGet<TaskDetail>(`/projects/${pid}/tasks/${idOrNumber}`);
+export function getTask(
+  pid: string,
+  idOrNumber: TaskPathRef,
+): Promise<TaskDetail> {
+  return apiGet<TaskDetail>(`/projects/${seg(pid)}/tasks/${seg(idOrNumber)}`);
 }
 
 /** `PUT /projects/{pid}/tasks/{id}` — the state move and hand-off path too. */
@@ -61,12 +59,12 @@ export function updateTask(
   ref: TaskPathRef,
   input: UpdateTaskInput,
 ): Promise<Task> {
-  return apiPut<Task>(`/projects/${pid}/tasks/${ref}`, input);
+  return apiPut<Task>(`/projects/${seg(pid)}/tasks/${seg(ref)}`, input);
 }
 
 /** `DELETE /projects/{pid}/tasks/{id}` → 204; children survive as top-level. */
 export function deleteTask(pid: string, ref: TaskPathRef): Promise<void> {
-  return apiDelete(`/projects/${pid}/tasks/${ref}`);
+  return apiDelete(`/projects/${seg(pid)}/tasks/${seg(ref)}`);
 }
 
 /**
@@ -78,7 +76,10 @@ export function addDependency(
   ref: TaskPathRef,
   input: { depends_on: string; kind?: TaskDependencyKind },
 ): Promise<Task> {
-  return apiPost<Task>(`/projects/${pid}/tasks/${ref}/dependencies`, input);
+  return apiPost<Task>(
+    `/projects/${seg(pid)}/tasks/${seg(ref)}/dependencies`,
+    input,
+  );
 }
 
 /**
@@ -92,9 +93,9 @@ export function removeDependency(
   dep: TaskPathRef,
   kind: TaskDependencyKind,
 ): Promise<Task> {
-  const params = new URLSearchParams({ kind });
   return apiDelete<Task>(
-    withQuery(`/projects/${pid}/tasks/${ref}/dependencies/${dep}`, params),
+    `/projects/${seg(pid)}/tasks/${seg(ref)}/dependencies/${seg(dep)}`,
+    { query: { kind } },
   );
 }
 
@@ -104,7 +105,10 @@ export function addComment(
   ref: TaskPathRef,
   body: string,
 ): Promise<TaskComment> {
-  return apiPost<TaskComment>(`/projects/${pid}/tasks/${ref}/comments`, { body });
+  return apiPost<TaskComment>(
+    `/projects/${seg(pid)}/tasks/${seg(ref)}/comments`,
+    { body },
+  );
 }
 
 /**
@@ -112,7 +116,7 @@ export function addComment(
  * state; a user release never escalates. 409 when nobody holds it.
  */
 export function releaseTask(pid: string, ref: TaskPathRef): Promise<Task> {
-  return apiPost<Task>(`/projects/${pid}/tasks/${ref}/release`);
+  return apiPost<Task>(`/projects/${seg(pid)}/tasks/${seg(ref)}/release`);
 }
 
 /**
@@ -130,5 +134,5 @@ export function releaseTask(pid: string, ref: TaskPathRef): Promise<Task> {
  */
 export function taskStreamUrl(pid: string, token: string, after = 0): string {
   const from = after > 0 ? String(after) : "latest";
-  return `/api/projects/${pid}/tasks/stream?token=${encodeURIComponent(token)}&after=${from}`;
+  return `/api/projects/${seg(pid)}/tasks/stream?token=${encodeURIComponent(token)}&after=${from}`;
 }

@@ -23,7 +23,24 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    /*
+     * `record[key]` and `array[i]` are `T | undefined`. The frontend is full of
+     * `Record<string, Message>` and `Record<string, string[]>` indexes whose
+     * keys come off the wire, and the code already hand-wrote `=== undefined`
+     * checks against types that claimed the value could not be undefined —
+     * which is the tell that the type was wrong rather than the check.
+     *
+     * `exactOptionalPropertyTypes` is deliberately NOT on. The code already
+     * keeps its discipline (an optional field is omitted, never set to
+     * `undefined`; `ApiError` builds `conflicts` conditionally for exactly that
+     * reason), so it would buy almost nothing here, while React's own prop
+     * types — `title?: string`, `disabled?: boolean` — are written the other
+     * way, so every `title={maybe}` spread would need a conditional-spread
+     * dance. The friction lands on UI code and the defect it prevents is one
+     * this codebase does not have.
+     */
+    "noUncheckedIndexedAccess": true
   },
   "include": ["src"]
 }

@@ -52,7 +52,7 @@ function validateProjectForm(
     errors.remoteUrl = "A remote URL is required.";
   } else if (!url.startsWith("https://")) {
     errors.remoteUrl = "The remote URL must start with https://.";
-  } else if (url.slice("https://".length).split("/")[0].includes("@")) {
+  } else if ((url.slice("https://".length).split("/")[0] ?? "").includes("@")) {
     errors.remoteUrl = "Put the token in the credential field, not the URL.";
   }
 

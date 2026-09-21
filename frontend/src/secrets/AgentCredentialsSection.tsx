@@ -105,10 +105,13 @@ export function AgentCredentialsSection({
     })),
   });
 
-  const rows = lists.flatMap((list, index) =>
-    (list.data ?? [])
+  // Driven by `scopes`, so each row carries the scope it came from: `lists` is
+  // built from `scopes` and is the same length, and an absent query answers
+  // with no rows exactly as an unread one does.
+  const rows = scopes.flatMap((view, index) =>
+    (lists[index]?.data ?? [])
       .filter((secret) => secret.credential_for !== null)
-      .map((secret) => ({ secret, view: scopes[index] })),
+      .map((secret) => ({ secret, view })),
   );
 
   const pending = projects.isPending || lists.some((list) => list.isPending);

@@ -7,10 +7,14 @@
 // patch below rather than a static line.
 
 import { EmptyState } from "../EmptyState";
-import type { Diff } from "../../types";
+import type { Diff, DiffStatus } from "../../types";
 
-/** The letters `git diff --name-status` prints (`SPEC.md`, "Git"). */
-const STATUS_TINT: Record<string, string> = {
+/**
+ * The letters `git diff --name-status` prints (`SPEC.md`, "Git"). Keyed by the
+ * union, so every status the endpoint can answer has a tint and a word and a
+ * seventh letter would not compile.
+ */
+const STATUS_TINT: Record<DiffStatus, string> = {
   A: "text-state-running",
   M: "text-console-accent",
   D: "text-state-failed",
@@ -19,7 +23,7 @@ const STATUS_TINT: Record<string, string> = {
   T: "text-state-parked",
 };
 
-const STATUS_LABEL: Record<string, string> = {
+const STATUS_LABEL: Record<DiffStatus, string> = {
   A: "added",
   M: "modified",
   D: "deleted",
@@ -79,10 +83,8 @@ export function ChangesFileList({
                   className="hover:bg-console-raised/40 flex w-full items-baseline gap-2 px-2 py-1 text-left font-mono text-xs"
                 >
                   <span
-                    title={STATUS_LABEL[file.status] ?? file.status}
-                    className={`w-3 shrink-0 ${
-                      STATUS_TINT[file.status] ?? "text-console-muted"
-                    }`}
+                    title={STATUS_LABEL[file.status]}
+                    className={`w-3 shrink-0 ${STATUS_TINT[file.status]}`}
                   >
                     {file.status}
                   </span>

@@ -40,6 +40,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { queryKeys } from "../services/queryKeys";
 import { listUsers } from "../services/users";
+import { parseTaskPriority } from "../types";
 import type { TaskDetail, TaskPriority, UpdateTaskInput } from "../types";
 import { useDrawerEscape } from "./drawerEscape";
 import { PRIORITIES, PRIORITY_MEANING } from "./taskChrome";
@@ -235,7 +236,13 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
               {...control}
               value={String(priority)}
               onChange={(event) => {
-                setPriority(Number(event.target.value) as TaskPriority);
+                // Every option comes from the same list `parseTaskPriority`
+                // reads back, so `undefined` is unreachable; it leaves the
+                // priority where it is rather than inventing a P0.
+                const chosen = parseTaskPriority(event.target.value);
+                if (chosen !== undefined) {
+                  setPriority(chosen);
+                }
               }}
               className={CONTROL}
             >

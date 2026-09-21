@@ -86,7 +86,8 @@ export function DiffBody({ diff }: DiffBodyProps) {
           <PatchFileBlock
             key={file.path}
             file={file}
-            changed={changed[index]}
+            // `changed` is `files.map`, so it answers for every file.
+            changed={changed[index] ?? 0}
             startCollapsed={overBudget}
           />
         ))}

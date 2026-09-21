@@ -12,8 +12,11 @@
 // (`react-refresh/only-export-components`).
 
 import type {
+  AgentBackend,
   AgentCredential,
+  PermissionMode,
   Profile,
+  ProfileGatedTool,
   ProfileInput,
   ProfileKind,
   ProfileTemplate,
@@ -39,10 +42,10 @@ export const MIN_MAX_CONCURRENT = 1;
 export const DEFAULT_SERVES_STATES = ["ready"];
 
 /** The only backend in v1 (`docs/data-model.md`, `agent_backend`). */
-export const PROFILE_BACKEND = "claude";
+export const PROFILE_BACKEND: AgentBackend = "claude";
 
 /** `SPEC.md`: `permission_mode` must be `bypass`. */
-export const PROFILE_PERMISSION_MODE = "bypass";
+export const PROFILE_PERMISSION_MODE: PermissionMode = "bypass";
 
 /**
  * The kind's `partial_messages` default: on for a conversation the user
@@ -128,7 +131,7 @@ export interface ProfileFormState {
   system_prompt: string;
   image: string;
   runtime: string;
-  mcp_tools: string[];
+  mcp_tools: ProfileGatedTool[];
   secrets: string[];
   serves_states: string[];
   partial_messages: boolean;
@@ -238,8 +241,13 @@ export function idleTimeoutError(raw: string): string | null {
   return null;
 }
 
-/** Adds or removes one entry of a checkbox group, keeping the rest in order. */
-export function toggleMember(list: string[], value: string): string[] {
+/**
+ * Adds or removes one entry of a checkbox group, keeping the rest in order.
+ *
+ * Generic over the entry, so a group whose members are a union — the gated MCP
+ * tools — stays that union instead of widening to `string` on the way through.
+ */
+export function toggleMember<T extends string>(list: T[], value: T): T[] {
   return list.includes(value)
     ? list.filter((entry) => entry !== value)
     : [...list, value];

@@ -4,10 +4,15 @@
 export type SecretScope = "global" | "user" | "project";
 
 /**
- * An agent backend, as `SPEC.md`, "Secrets", spells it. v1 has one; a second
- * one adds its name here and its credential table in `src/secrets/`.
+ * The agent backends, as `SPEC.md`, "Secrets" and "Agent profiles", spell
+ * them. A closed set, unlike a session's state or an event's kind: v1 has one,
+ * and a second one adds its name here and its credential table in
+ * `src/secrets/` rather than arriving from an orchestrator a browser tab has
+ * to survive.
  */
-export type AgentBackend = "claude";
+export const AGENT_BACKENDS = ["claude"] as const;
+
+export type AgentBackend = (typeof AGENT_BACKENDS)[number];
 
 export interface SecretMeta {
   id: string;

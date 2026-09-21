@@ -81,20 +81,23 @@ function summarise(value: Json): string {
   return "";
 }
 
+/** What a branch draws: `Node` has already established it is one of these. */
+type Branchable = Json[] | Record<string, Json>;
+
 function Branch({
   name,
   value,
   depth,
 }: {
   name: string | null;
-  value: Json;
+  value: Branchable;
   depth: number;
 }) {
   const [open, setOpen] = useState(depth < OPEN_DEPTH);
   const [showAll, setShowAll] = useState(false);
   const entries: [string, Json][] = Array.isArray(value)
     ? value.map((item, index) => [String(index), item])
-    : Object.entries(value as Record<string, Json>);
+    : Object.entries(value);
   const shown = showAll ? entries : entries.slice(0, ENTRY_LIMIT);
   const held = entries.length - shown.length;
 

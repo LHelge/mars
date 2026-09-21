@@ -1,5 +1,10 @@
 // Barrel for the API shape mirrors of `SPEC.md`, "REST API".
-// Every consumer imports these with `import type` (`verbatimModuleSyntax`).
+//
+// Mostly types, imported with `import type` (`verbatimModuleSyntax`). The few
+// values here belong to a type rather than beside it: the `const` array a union
+// is derived from, when a picker renders the same list, and the
+// `parseX(value): X | undefined` that reads a DOM string back into it
+// (`ARCHITECTURE.md`, "Frontend architecture", Types at the edges).
 
 export type { ApiErrorBody } from "./api";
 export type {
@@ -14,6 +19,7 @@ export type {
   UpdateUserRequest,
   User,
 } from "./users";
+export { AGENT_BACKENDS } from "./secrets";
 export type {
   AgentBackend,
   AgentCredential,
@@ -34,12 +40,14 @@ export type {
   SharedDirInput,
 } from "./projects";
 export type {
+  PermissionMode,
   Profile,
+  ProfileGatedTool,
   ProfileInput,
   ProfileKind,
   ProfileTemplate,
 } from "./profiles";
-export { PROFILE_GATED_TOOLS } from "./profiles";
+export { parseProfileKind, PROFILE_GATED_TOOLS } from "./profiles";
 export type {
   EventsPage,
   LaunchSource,
@@ -50,11 +58,17 @@ export type {
   SessionState,
   SyncResult,
 } from "./sessions";
-export type { AgentEvent, AgentEventKind, GitDetail } from "./agentEvent";
+export type {
+  AgentEvent,
+  AgentEventKind,
+  GitDetail,
+  WorkTreeOutcome,
+} from "./agentEvent";
 export type { ClientMessage, ServerMessage } from "./sessionSocket";
 export type {
   CommitResult,
   Diff,
+  DiffStatus,
   DiffTarget,
   MergeInput,
   PushInput,
@@ -68,6 +82,7 @@ export type {
   TaskStateKind,
   UpdateTaskStateInput,
 } from "./taskStates";
+export { parseTaskStateKind, TASK_STATE_KINDS } from "./taskStates";
 export type {
   CreateTaskInput,
   ForwardHandoffInput,
@@ -85,4 +100,10 @@ export type {
   TaskPriority,
   TaskSessionTouch,
   UpdateTaskInput,
+} from "./tasks";
+export {
+  parseTaskDependencyKind,
+  parseTaskPriority,
+  TASK_DEPENDENCY_KINDS,
+  TASK_PRIORITIES,
 } from "./tasks";

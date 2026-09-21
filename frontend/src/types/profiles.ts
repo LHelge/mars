@@ -1,7 +1,22 @@
 // Mirrors `SPEC.md`, "Agent profiles (`/api/projects/{pid}/profiles`)";
 // `ProfileKind` is the `profile_kind` enum of `docs/data-model.md`, "Enums".
 
-export type ProfileKind = "conversational" | "ephemeral";
+import type { AgentBackend } from "./secrets";
+
+/** `docs/data-model.md`, "Enums", `profile_kind`. */
+export const PROFILE_KINDS = ["conversational", "ephemeral"] as const;
+
+export type ProfileKind = (typeof PROFILE_KINDS)[number];
+
+/** The kind a select's string is, or `undefined` for anything else. */
+export function parseProfileKind(value: string): ProfileKind | undefined {
+  return PROFILE_KINDS.find((kind) => kind === value);
+}
+
+/** `SPEC.md`, "Agent profiles": `permission_mode` must be `bypass`. */
+export const PERMISSION_MODES = ["bypass"] as const;
+
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
  * The MCP tools a profile can be granted (`SPEC.md`, "MCP tool contracts":
@@ -16,19 +31,21 @@ export const PROFILE_GATED_TOOLS = [
   "push",
 ] as const;
 
+/** One entry of `mcp_tools`; a misspelled one no longer type-checks. */
+export type ProfileGatedTool = (typeof PROFILE_GATED_TOOLS)[number];
+
 export interface Profile {
   id: string;
   project_id: string;
   name: string;
   kind: ProfileKind;
-  backend: string;
+  backend: AgentBackend;
   model: string | null;
   system_prompt: string | null;
-  /** Must be `bypass` in v1; typed as a string so a new mode needs no change here. */
-  permission_mode: string;
+  permission_mode: PermissionMode;
   image: string;
   runtime: string | null;
-  mcp_tools: string[];
+  mcp_tools: ProfileGatedTool[];
   secrets: string[];
   /** Names of the project's `queue` task states this profile picks work up from. */
   serves_states: string[];
@@ -64,10 +81,10 @@ export interface Profile {
 export interface ProfileTemplate {
   name: string;
   kind: ProfileKind;
-  backend: string;
+  backend: AgentBackend;
   /** Names of the seeded queue states; a project may have renamed them away. */
   serves_states: string[];
-  mcp_tools: string[];
+  mcp_tools: ProfileGatedTool[];
   system_prompt: string;
   is_default: boolean;
 }
@@ -81,13 +98,13 @@ export interface ProfileTemplate {
 export interface ProfileInput {
   name: string;
   kind?: ProfileKind;
-  backend?: string;
+  backend?: AgentBackend;
   model?: string | null;
   system_prompt?: string | null;
-  permission_mode?: string;
+  permission_mode?: PermissionMode;
   image?: string;
   runtime?: string | null;
-  mcp_tools?: string[];
+  mcp_tools?: ProfileGatedTool[];
   secrets?: string[];
   serves_states?: string[];
   partial_messages?: boolean;

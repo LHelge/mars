@@ -128,7 +128,7 @@ describe("SecretsManager", () => {
     const names = within(table)
       .getAllByRole("row")
       .slice(1)
-      .map((row) => within(row).getAllByRole("cell")[0].textContent);
+      .map((row) => within(row).getAllByRole("cell")[0]?.textContent);
     // Sorted by name, not by the order the API answered in.
     expect(names[0]).toContain("ALPHA");
     expect(names[1]).toContain("ZULU");
@@ -424,7 +424,15 @@ describe("SecretsManager", () => {
     expect(screen.getAllByRole("listitem").length).toBe(20);
     expect(screen.queryByText("Loading uses")).toBeNull();
 
-    answerLarger([...page, { ...page[0], at: "2026-03-01T09:00:00Z" }]);
+    answerLarger([
+      ...page,
+      {
+        session_id: null,
+        user_id: null,
+        purpose: "git",
+        at: "2026-03-01T09:00:00Z",
+      },
+    ]);
     await waitFor(() => {
       expect(screen.getAllByRole("listitem").length).toBe(21);
     });

@@ -69,7 +69,11 @@ try {
 const firstPaint = [
   ...html.matchAll(/<script[^>]+src="\/([^"]+\.js)"/g),
   ...html.matchAll(/<link[^>]+rel="modulepreload"[^>]+href="\/([^"]+\.js)"/g),
-].map((m) => m[1]);
+]
+  .map((m) => m[1])
+  // Both patterns capture, so the filter never drops a real match; it is what
+  // keeps a `join(dist, undefined)` out of the read below.
+  .filter((rel) => rel !== undefined);
 
 if (firstPaint.length === 0) {
   fail(["no entry script found in dist/index.html"]);

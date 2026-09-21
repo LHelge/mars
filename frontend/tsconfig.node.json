@@ -18,7 +18,9 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    /* As `tsconfig.app.json`. */
+    "noUncheckedIndexedAccess": true
   },
   "include": ["vite.config.ts"]
 }

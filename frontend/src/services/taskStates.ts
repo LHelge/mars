@@ -7,11 +7,11 @@ import type {
   TaskState,
   UpdateTaskStateInput,
 } from "../types";
-import { apiDelete, apiGet, apiPost, apiPut } from "./apiClient";
+import { apiDelete, apiGet, apiPost, apiPut, seg } from "./apiClient";
 
 /** Ordered by `position`. */
 export function listTaskStates(pid: string): Promise<TaskState[]> {
-  return apiGet<TaskState[]>(`/projects/${pid}/task-states`);
+  return apiGet<TaskState[]>(`/projects/${seg(pid)}/task-states`);
 }
 
 /** `POST /projects/{pid}/task-states` → 201; 409 on a taken name. */
@@ -19,7 +19,7 @@ export function createTaskState(
   pid: string,
   input: CreateTaskStateInput,
 ): Promise<TaskState> {
-  return apiPost<TaskState>(`/projects/${pid}/task-states`, input);
+  return apiPost<TaskState>(`/projects/${seg(pid)}/task-states`, input);
 }
 
 /** `PUT /projects/{pid}/task-states/{name}` — rename and reorder only. */
@@ -29,12 +29,12 @@ export function updateTaskState(
   input: UpdateTaskStateInput,
 ): Promise<TaskState> {
   return apiPut<TaskState>(
-    `/projects/${pid}/task-states/${encodeURIComponent(name)}`,
+    `/projects/${seg(pid)}/task-states/${seg(name)}`,
     input,
   );
 }
 
 /** `DELETE /projects/{pid}/task-states/{name}` → 204; 409 under the API's rules. */
 export function deleteTaskState(pid: string, name: string): Promise<void> {
-  return apiDelete(`/projects/${pid}/task-states/${encodeURIComponent(name)}`);
+  return apiDelete(`/projects/${seg(pid)}/task-states/${seg(name)}`);
 }

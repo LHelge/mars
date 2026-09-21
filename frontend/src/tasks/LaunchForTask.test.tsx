@@ -270,7 +270,7 @@ describe("LaunchForTask", () => {
     // Nothing the user did not choose: the server picks the base, which is how
     // a default branch changed a moment ago is still the one that applies
     // (`SPEC.md`, "Sessions").
-    expect(vi.mocked(createSession).mock.calls[0][1]).toEqual({
+    expect(vi.mocked(createSession).mock.calls[0]?.[1]).toEqual({
       profile_id: PROFILE_ID,
       task_id: TASK_ID,
     } satisfies SessionCreateInput);

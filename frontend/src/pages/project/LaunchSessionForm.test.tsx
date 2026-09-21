@@ -207,7 +207,7 @@ describe("LaunchSessionForm", () => {
     await waitFor(() => {
       expect(createSession).toHaveBeenCalledTimes(1);
     });
-    expect(vi.mocked(createSession).mock.calls[0][1]).toEqual({
+    expect(vi.mocked(createSession).mock.calls[0]?.[1]).toEqual({
       profile_id: PROFILE_ID,
     } satisfies SessionCreateInput);
   });
@@ -222,7 +222,7 @@ describe("LaunchSessionForm", () => {
     await waitFor(() => {
       expect(createSession).toHaveBeenCalledTimes(1);
     });
-    expect(vi.mocked(createSession).mock.calls[0][1]).toEqual({
+    expect(vi.mocked(createSession).mock.calls[0]?.[1]).toEqual({
       profile_id: PROFILE_ID,
       base_ref: "develop",
     } satisfies SessionCreateInput);

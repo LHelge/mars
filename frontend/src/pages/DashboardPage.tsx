@@ -295,13 +295,13 @@ export function DashboardPage() {
 
   const running = useQuery({
     queryKey: queryKeys.sessions.list("running"),
-    queryFn: () => listSessions({ state: "running" }),
+    queryFn: () => listSessions("running"),
     ...polled,
   });
 
   const parked = useQuery({
     queryKey: queryKeys.sessions.list("parked"),
-    queryFn: () => listSessions({ state: "parked" }),
+    queryFn: () => listSessions("parked"),
     ...polled,
   });
 

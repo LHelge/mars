@@ -411,7 +411,10 @@ describe("useTaskStream", () => {
       last().accept();
       await settle();
     });
-    const handler = onCredentialsReplaced.mock.calls[0][0];
+    const [handler] = onCredentialsReplaced.mock.calls[0] ?? [];
+    if (handler === undefined) {
+      throw new Error("no credentials-replaced handler was registered");
+    }
 
     getAccessToken.mockReturnValue("token-two");
     act(() => {

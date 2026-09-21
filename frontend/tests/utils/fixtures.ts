@@ -37,7 +37,9 @@ import {
   createProject,
   endSession,
   launchSession,
+  listProjectSessions,
   seedAgentCredential,
+  setAutomationPaused,
 } from "./resources";
 import type { LaunchSessionOptions } from "./resources";
 
@@ -50,6 +52,14 @@ export { apiClient };
  * down` would remove it, so every launch goes through here — including one
  * made from the UI, whose id the spec learns from the URL and hands to
  * [`SessionTracker.track`].
+ *
+ * Not every session in a run has a launch call to register, though: the
+ * dispatcher starts one on its own as soon as a task lands in a state an
+ * `auto_launch` profile serves (`SPEC.md`, "User-facing features" →
+ * "Automatic dispatch"), and one that arrives after the scenario's last
+ * assertion has no id anybody here ever saw. [`SessionTracker.sweep`] is the
+ * answer to that: a project registered with it is asked for *its* sessions at
+ * teardown and every one of them is ended.
  */
 export interface SessionTracker {
   /** [`launchSession`], registered for clean-up. */
@@ -60,6 +70,15 @@ export interface SessionTracker {
   ): Promise<Session>;
   /** Registers a session launched some other way, by id. */
   track(client: Api, sessionId: string): string;
+  /**
+   * Registers a whole project: at teardown its automation is paused and every
+   * session it has is ended, launched by this scenario or not.
+   *
+   * For a scenario that leaves automation on — only `dispatcher.spec.ts` does
+   * today — where ending the sessions one by one would race the job that
+   * launches the next.
+   */
+  sweep(client: Api, projectId: string): void;
 }
 
 export interface E2EOptions {
@@ -137,6 +156,7 @@ export const test = base.extend<E2EOptions & E2EFixtures>({
 
   sessions: async ({}, use) => {
     const launched: { client: Api; id: string }[] = [];
+    const swept: { client: Api; id: string }[] = [];
     const tracker: SessionTracker = {
       async launch(client, projectId, opts = {}) {
         const session = await launchSession(client, projectId, opts);
@@ -147,9 +167,28 @@ export const test = base.extend<E2EOptions & E2EFixtures>({
         launched.push({ client, id: sessionId });
         return sessionId;
       },
+      sweep(client, projectId) {
+        swept.push({ client, id: projectId });
+      },
     };
 
     await use(tracker);
+
+    // The swept projects first, and paused before they are read: while
+    // automation is on, a session ended here frees the cap that was holding
+    // the next one back, so the list could refill behind the loop.
+    for (const project of swept) {
+      await setAutomationPaused(project.client, project.id, true).catch(
+        () => undefined,
+      );
+      const sessions = await listProjectSessions(
+        project.client,
+        project.id,
+      ).catch(() => []);
+      for (const session of sessions) {
+        await endSession(project.client, session.id).catch(() => undefined);
+      }
+    }
 
     for (const session of launched) {
       // Best effort: a scenario that already ended its session is fine, and one

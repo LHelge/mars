@@ -72,6 +72,35 @@ export async function createProject(
   );
 }
 
+/**
+ * Every session of a project (`SPEC.md`, "Sessions"), whoever launched it.
+ *
+ * What the `sessions` fixture's sweep reads: a session the dispatcher started
+ * has no launch call to register for clean-up, so the only way to find it is
+ * to ask the project (`tests/utils/fixtures.ts`).
+ */
+export function listProjectSessions(
+  client: Api,
+  projectId: string,
+): Promise<Session[]> {
+  return client.get<Session[]>(`/projects/${projectId}/sessions`);
+}
+
+/**
+ * The project's automation pause (`SPEC.md`, "Projects": `PUT` with
+ * `automation_paused`), which stops every unattended launch there while it is
+ * set and refuses nothing a person does.
+ */
+export function setAutomationPaused(
+  client: Api,
+  projectId: string,
+  paused: boolean,
+): Promise<Project> {
+  return client.put<Project>(`/projects/${projectId}`, {
+    automation_paused: paused,
+  });
+}
+
 /** The project's branches (`SPEC.md`, "Projects"). */
 export function listBranches(
   client: Api,

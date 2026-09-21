@@ -18,7 +18,7 @@ import { ApiError } from "../services/apiClient";
 import { errorMessage } from "../services/errorMessage";
 import { isGitConflict } from "../services/git";
 import type { Handoff, TaskDetail } from "../types";
-import { shortCommit } from "./launchRules";
+import { shortSha } from "../utils/format";
 
 /** Why the merge button is disabled, in the words it carries in its `title`. */
 export const MERGE_BLOCKED = "Requires an approved current hand-off";
@@ -72,7 +72,7 @@ export function mergeErrorMessage(caught: unknown): string {
 export function mergeCoverLine(
   handoff: Pick<Handoff, "commit" | "source_branch">,
 ): string {
-  return `Merges commit ${shortCommit(handoff.commit)} exactly; later commits on ${handoff.source_branch} are not included`;
+  return `Merges commit ${shortSha(handoff.commit)} exactly; later commits on ${handoff.source_branch} are not included`;
 }
 
 /**
@@ -81,5 +81,5 @@ export function mergeCoverLine(
  * waits for a card to travel.
  */
 export function mergedMessage(commit: string): string {
-  return `Merged as ${shortCommit(commit)} · Task state unchanged`;
+  return `Merged as ${shortSha(commit)} · Task state unchanged`;
 }

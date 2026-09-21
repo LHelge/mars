@@ -19,7 +19,7 @@
 import type { Comment, Handoff, ReviewStatus, Session } from "../types";
 import { ApiError } from "../services/apiClient";
 import { errorMessage } from "../services/errorMessage";
-import { shortCommit } from "./launchRules";
+import { shortSha } from "../utils/format";
 
 /** The commit id the API accepts: a full, lowercase, hexadecimal object id. */
 export const COMMIT_RULE = /^[0-9a-f]{40}$/;
@@ -68,7 +68,7 @@ const TONE: Record<ReviewStatus, string> = {
 export function reviewLabel(
   handoff: Pick<Handoff, "commit" | "review_status">,
 ): ReviewLabel {
-  const short = shortCommit(handoff.commit);
+  const short = shortSha(handoff.commit);
   switch (handoff.review_status) {
     case "approved":
       return {
@@ -185,7 +185,7 @@ export function reviewCoverLine(
   decision: ReviewDecision,
   commit: string,
 ): string {
-  const short = shortCommit(commit);
+  const short = shortSha(commit);
   switch (decision) {
     case "approved":
       return `Approving commit ${short}`;

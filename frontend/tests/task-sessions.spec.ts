@@ -461,10 +461,13 @@ test("the launch form discloses the base the session will start from", async ({
   ).toBeVisible();
   await expect(form.getByText(/Base overridden/)).toHaveCount(0);
 
-  // Typing one is what discloses it, and it is deliberately behind a
-  // disclosure the user has to open first (`tasks/LaunchForTask.tsx`).
+  // Choosing one is what discloses it, and the picker is deliberately behind
+  // a disclosure the user has to open first (`tasks/LaunchForTask.tsx`). It is
+  // the project page's control: the mirror's refs, plus a custom entry for a
+  // tag or a commit id.
   await form.locator("summary").click();
-  await form.getByLabel("Override base ref").fill("origin/main");
+  await form.getByLabel("Base ref").selectOption({ label: "Custom ref\u2026" });
+  await form.getByLabel("Custom base ref").fill("origin/main");
   await expect(form.getByText(/Base overridden/)).toBeVisible();
 });
 

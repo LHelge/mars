@@ -24,8 +24,7 @@ import { FieldShell } from "../components/FieldShell";
 import { FIELD } from "../components/fieldStyles";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
-import { queryKeys } from "../services/queryKeys";
-import { listProjectSessions } from "../services/sessions";
+import { projectQueries } from "../services/queryOptions";
 import type { TaskDetail } from "../types";
 import { shortId } from "../utils/format";
 import {
@@ -49,10 +48,7 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
   const states = useTaskStore((store) => store.states);
   const updateTask = useUpdateTask(projectId, task.number);
 
-  const sessions = useQuery({
-    queryKey: queryKeys.projects.sessions(projectId),
-    queryFn: () => listProjectSessions(projectId),
-  });
+  const sessions = useQuery(projectQueries.sessions(projectId));
 
   const rows = orderSessionsForPicker(
     sessions.data ?? [],

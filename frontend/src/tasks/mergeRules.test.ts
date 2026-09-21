@@ -107,13 +107,13 @@ describe("mergeErrorMessage", () => {
 describe("wording", () => {
   it("names the commit and the branch whose later commits are left out", () => {
     expect(mergeCoverLine(handoff("approved"))).toBe(
-      "Merges commit abcdef0123 exactly; later commits on sessions/fix-login are not included",
+      "Merges commit abcdef0 exactly; later commits on sessions/fix-login are not included",
     );
   });
 
   it("says the merge did not move the task", () => {
     expect(mergedMessage(COMMIT)).toBe(
-      "Merged as abcdef0123 · Task state unchanged",
+      "Merged as abcdef0 · Task state unchanged",
     );
   });
 });

@@ -32,7 +32,12 @@ import { Link } from "react-router";
 import { MarkdownBody } from "../components/Markdown";
 import { SubmitButton } from "../components/SubmitButton";
 import type { Comment, Handoff, TaskDetail } from "../types";
-import { formatDateTime, formatRelative, shortId } from "../utils/format";
+import {
+  formatDateTime,
+  formatRelative,
+  shortId,
+  shortSha,
+} from "../utils/format";
 import { HandoffDiff } from "./HandoffDiff";
 import { MergeTaskAction } from "./MergeTaskAction";
 import {
@@ -42,7 +47,6 @@ import {
   reviewLabel,
 } from "./handoffRules";
 import type { ReviewDecision } from "./handoffRules";
-import { shortCommit } from "./launchRules";
 import { ReviewForm } from "./ReviewForm";
 import { RevisionForm } from "./RevisionForm";
 import { CHIP } from "./taskChrome";
@@ -334,7 +338,7 @@ function HistoryRow({
           </span>
         )}
         <span className="font-mono text-[0.6875rem]" title={handoff.commit}>
-          {shortCommit(handoff.commit)}
+          {shortSha(handoff.commit)}
         </span>
         <span className={`font-mono text-[0.6875rem] ${label.tone}`}>
           {label.text}
@@ -421,7 +425,7 @@ function CopyCommit({ commit }: { commit: string }) {
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5">
       <span className="text-console-text font-mono text-xs" title={commit}>
-        {shortCommit(commit)}
+        {shortSha(commit)}
       </span>
       <button
         type="button"

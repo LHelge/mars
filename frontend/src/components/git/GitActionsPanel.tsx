@@ -14,9 +14,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 
 import { listSessionBranches } from "../../services/git";
-import { listBranches } from "../../services/projects";
 import { queryKeys } from "../../services/queryKeys";
-import { listProjectSessions } from "../../services/sessions";
+import { projectQueries } from "../../services/queryOptions";
 import type { Project, PushResult, SessionBranch } from "../../types";
 import { Alert } from "../Alert";
 import { EmptyState } from "../EmptyState";
@@ -64,16 +63,12 @@ export function GitActionsPanel({
     refetchOnWindowFocus: true,
   });
 
-  const branches = useQuery({
-    queryKey: queryKeys.projects.branches(project.id),
-    queryFn: () => listBranches(project.id),
-  });
+  const branches = useQuery(projectQueries.branches(project.id));
 
   // Only for the session column's titles, and only where the project page has
   // the list anyway; the session view knows which session it is showing.
   const sessions = useQuery({
-    queryKey: queryKeys.projects.sessions(project.id),
-    queryFn: () => listProjectSessions(project.id),
+    ...projectQueries.sessions(project.id),
     enabled: sessionId === undefined,
   });
 

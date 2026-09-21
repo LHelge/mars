@@ -5,6 +5,15 @@
 // Rows have wildly different heights — a one-line state change, a long tool
 // result, a whole nested subagent — so the virtualizer measures them instead of
 // estimating, and nothing here caps a row's height.
+//
+// There is no React Compiler in this build (`ARCHITECTURE.md`, "Frontend
+// architecture"), so every re-render boundary here is explicit: this component
+// subscribes to `tailLength` and therefore re-renders on every `text_delta`,
+// and what keeps that from costing the viewport is `MessageRow` being
+// `memo()`-wrapped and the two things it is handed per row — the id and
+// `onResend` — being stable. `getItemKey` is stable per `order` for the same
+// reason: a fresh identity resets the virtualizer's measurement cache, which
+// would re-measure every row on every delta.
 
 import { useCallback, useLayoutEffect, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -45,15 +54,25 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  // `SPEC.md` names this library for the transcript; the React Compiler skips
-  // components that use it, which costs this one file its auto-memoisation.
+  // Stable per `order`: the virtualizer memoises its measurements on this
+  // function's identity, so an inline one would throw the measurement cache
+  // away on every delta and re-measure the whole list.
+  const getItemKey = useCallback(
+    (index: number) => order[index] ?? index,
+    [order],
+  );
+
+  // The virtualizer returns functions the hooks plugin cannot prove safe to
+  // memoise. `SPEC.md` names this library for the transcript, nothing here
+  // memoises what it returns, and the boundaries that matter are the explicit
+  // ones above.
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: order.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATED_ROW_PX,
     overscan: 8,
-    getItemKey: (index) => order[index] ?? index,
+    getItemKey,
   });
 
   // Rows are measured after they are rendered, so the list's height keeps

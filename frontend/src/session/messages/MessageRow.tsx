@@ -3,6 +3,17 @@
 // The row subscribes to its own `messages[id]` rather than receiving the
 // message from the list, so a `text_delta` that grows one message re-renders
 // one row and leaves the rest of the transcript alone.
+//
+// The subscription is only half of that: `Transcript` itself re-renders on
+// every delta — it follows the tail — and would rebuild the element for every
+// row in the viewport. Nothing in this build memoises for us (there is no
+// React Compiler; `ARCHITECTURE.md`, "Frontend architecture"), so the row is
+// `memo()`-wrapped by hand. Its props are stable across those re-renders: the
+// id comes from `order`, `depth` is a number, and `onResend` is the `setResend`
+// state setter of `SessionView`. A prop that is a fresh object or closure per
+// render would silently undo this.
+
+import { memo } from "react";
 
 import { SubagentGroup } from "../SubagentGroup";
 import { useSessionStore } from "../sessionStore";
@@ -33,7 +44,7 @@ export interface MessageRowProps {
   onResend?: (text: string) => void;
 }
 
-export function MessageRow({
+export const MessageRow = memo(function MessageRow({
   sessionId,
   id,
   depth = 0,
@@ -103,4 +114,4 @@ export function MessageRow({
       <div className="min-w-0 flex-1">{body}</div>
     </div>
   );
-}
+});

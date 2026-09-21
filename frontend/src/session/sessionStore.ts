@@ -133,6 +133,14 @@ export interface SessionState {
   messages: Record<string, Message>;
   /** `tool_use_id` -> message id awaiting a result. */
   pendingTools: Record<string, string>;
+  /**
+   * `tool_use_id` -> message id, kept after the result lands. `pendingTools`
+   * answers only for a tool still running, and the fold asks for a tool that is
+   * not running all the time — a `tool_call` for a message that does not exist
+   * yet, a late duplicate result, a subagent event — so without this every such
+   * question was a scan of every message held.
+   */
+  toolIndex: Record<string, string>;
   /** `parent_tool_use_id` -> message ids nested under it. */
   subagents: Record<string, string[]>;
   /** Lowest `seq` held; the REST history cursor (`?before=`). */
@@ -214,6 +222,7 @@ export function emptySessionState(): SessionState {
     order: [],
     messages: {},
     pendingTools: {},
+    toolIndex: {},
     subagents: {},
     oldestSeq: null,
     hasMore: false,
@@ -234,19 +243,42 @@ function isPlaceholderTool(message: ToolMessage): boolean {
   return message.name === UNKNOWN_TOOL || message.name === PLACEHOLDER_AGENT;
 }
 
-/** The message id of the tool message carrying `toolUseId`, if one exists. */
+/**
+ * The message id of the tool message carrying `toolUseId`, if one exists.
+ *
+ * `toolIndex` holds every tool message the fold has placed, running or not, so
+ * the usual answer — including "there is no such message yet", which is what a
+ * fresh `tool_call` asks — costs one lookup. The scan behind it is the
+ * insurance: an index entry pointing at a message a merge dropped falls back to
+ * it rather than to a wrong answer.
+ */
 function findToolMessageId(
   state: SessionState,
   toolUseId: string,
 ): string | undefined {
   const pending = state.pendingTools[toolUseId];
   if (pending !== undefined && state.messages[pending]) return pending;
+  const indexed = state.toolIndex[toolUseId];
+  if (indexed !== undefined) {
+    if (state.messages[indexed]) return indexed;
+  } else if (pending === undefined) {
+    return undefined;
+  }
   for (const message of Object.values(state.messages)) {
     if (message.kind === "tool" && message.tool_use_id === toolUseId) {
       return message.id;
     }
   }
   return undefined;
+}
+
+/** Records a tool message in `toolIndex`; every placement goes through this. */
+function indexTool(
+  index: Record<string, string>,
+  message: Message,
+): Record<string, string> {
+  if (message.kind !== "tool") return index;
+  return { ...index, [message.tool_use_id]: message.id };
 }
 
 function updateMessage(
@@ -281,6 +313,7 @@ function ensureParentTool(state: SessionState, toolUseId: string): SessionState 
     order: [...state.order, id],
     subagents: { ...state.subagents, [toolUseId]: state.subagents[toolUseId] ?? [] },
     pendingTools: { ...state.pendingTools, [toolUseId]: id },
+    toolIndex: indexTool(state.toolIndex, message),
   };
 }
 
@@ -295,6 +328,7 @@ function placeMessage(
       ...state,
       messages: { ...state.messages, [message.id]: message },
       order: [...state.order, message.id],
+      toolIndex: indexTool(state.toolIndex, message),
     };
   }
   const withParent = ensureParentTool(state, parent);
@@ -314,6 +348,7 @@ function placeMessage(
     ...withParent,
     messages,
     subagents: { ...withParent.subagents, [parent]: [...nested, message.id] },
+    toolIndex: indexTool(withParent.toolIndex, message),
   };
 }
 
@@ -887,6 +922,7 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
     subagents[key] = [...(subagents[key] ?? []), ...ids];
   }
   const pendingTools = { ...older.pendingTools, ...live.pendingTools };
+  const toolIndex = { ...older.toolIndex, ...live.toolIndex };
   const dropped = new Set<string>();
 
   for (const liveMessage of Object.values(live.messages)) {
@@ -898,6 +934,9 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
 
     const merged = mergeToolMessages(olderMessage, liveMessage);
     messages[olderId] = merged;
+    // One `tool_use_id` is one message, and after a merge that message is the
+    // older half: the index has to say so too.
+    toolIndex[merged.tool_use_id] = olderId;
     // Both halves may have invented the same `tool:<id>` placeholder, in which
     // case there is nothing to drop and only the duplicate entries to compact.
     if (liveMessage.id !== olderId) dropped.add(liveMessage.id);
@@ -925,6 +964,9 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
   for (const [toolUseId, id] of Object.entries(pendingTools)) {
     if (dropped.has(id)) delete pendingTools[toolUseId];
   }
+  for (const [toolUseId, id] of Object.entries(toolIndex)) {
+    if (dropped.has(id)) delete toolIndex[toolUseId];
+  }
 
   return {
     ...live,
@@ -932,6 +974,7 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
     order,
     subagents,
     pendingTools,
+    toolIndex,
     gitEventSeq: live.gitEventSeq || older.gitEventSeq,
     // The earliest close held: the older page's, when it has one.
     streamEndSeq: older.streamEndSeq || live.streamEndSeq,

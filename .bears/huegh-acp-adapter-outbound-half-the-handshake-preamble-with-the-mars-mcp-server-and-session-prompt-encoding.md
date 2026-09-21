@@ -2,9 +2,9 @@
 id: huegh
 title: "ACP adapter, outbound half: the handshake preamble with the Mars MCP server, and session/prompt encoding"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:21:03.686056Z"
-updated: "2026-09-21T12:21:03.686056Z"
+updated: "2026-09-21T20:26:15.061965120Z"
 tags:
   - orchestrator
   - agent

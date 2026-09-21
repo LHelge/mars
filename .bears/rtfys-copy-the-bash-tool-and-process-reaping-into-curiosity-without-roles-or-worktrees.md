@@ -2,9 +2,9 @@
 id: rtfys
 title: Copy the bash tool and process reaping into curiosity, without roles or worktrees
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:18:46.046864Z"
-updated: "2026-09-21T12:18:46.046864Z"
+updated: "2026-09-21T20:26:14.866541859Z"
 tags:
   - curiosity
   - tools

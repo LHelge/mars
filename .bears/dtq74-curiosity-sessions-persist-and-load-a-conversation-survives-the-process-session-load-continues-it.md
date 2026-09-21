@@ -2,9 +2,9 @@
 id: dtq74
 title: "Curiosity sessions persist and load: a conversation survives the process, session/load continues it"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:19:46.122775Z"
-updated: "2026-09-21T12:19:46.122775Z"
+updated: "2026-09-21T20:26:14.978152496Z"
 tags:
   - curiosity
   - acp

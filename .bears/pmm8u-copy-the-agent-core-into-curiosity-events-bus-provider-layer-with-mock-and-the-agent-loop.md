@@ -2,9 +2,9 @@
 id: pmm8u
 title: "Copy the agent core into curiosity: events, bus, provider layer with mock, and the agent loop"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:18:21.375056Z"
-updated: "2026-09-21T12:18:21.375056Z"
+updated: "2026-09-21T20:26:14.810465531Z"
 tags:
   - curiosity
   - core

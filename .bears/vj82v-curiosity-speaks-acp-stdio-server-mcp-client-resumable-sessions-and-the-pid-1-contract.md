@@ -3,9 +3,9 @@ id: vj82v
 title: "Curiosity speaks ACP: stdio server, MCP client, resumable sessions and the PID 1 contract"
 type: epic
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:12:18.681440Z"
-updated: "2026-09-21T12:12:18.681440Z"
+updated: "2026-09-21T20:26:14.562315307Z"
 tags:
   - curiosity
   - agent

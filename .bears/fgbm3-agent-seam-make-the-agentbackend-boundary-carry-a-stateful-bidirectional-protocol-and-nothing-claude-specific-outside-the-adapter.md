@@ -3,9 +3,9 @@ id: fgbm3
 title: "Agent seam: make the AgentBackend boundary carry a stateful, bidirectional protocol and nothing Claude-specific outside the adapter"
 type: epic
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:11:58.671687Z"
-updated: "2026-09-21T12:11:58.671687Z"
+updated: "2026-09-21T20:26:14.502535763Z"
 tags:
   - orchestrator
   - agent

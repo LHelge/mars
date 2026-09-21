@@ -2,9 +2,9 @@
 id: p7ghm
 title: "images/curiosity: the Curiosity session image, tagged by the crate version and pinned against the adapter"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:22:05.529079Z"
-updated: "2026-09-21T12:22:05.529079Z"
+updated: "2026-09-21T20:26:15.171717892Z"
 tags:
   - images
   - curiosity

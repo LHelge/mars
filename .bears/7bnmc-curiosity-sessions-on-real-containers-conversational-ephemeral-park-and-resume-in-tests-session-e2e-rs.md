@@ -2,9 +2,9 @@
 id: "7bnmc"
 title: "Curiosity sessions on real containers: conversational, ephemeral, park and resume in tests/session_e2e.rs"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:22:27.662334Z"
-updated: "2026-09-21T12:22:27.662334Z"
+updated: "2026-09-21T20:26:15.201248893Z"
 tags:
   - orchestrator
   - tests

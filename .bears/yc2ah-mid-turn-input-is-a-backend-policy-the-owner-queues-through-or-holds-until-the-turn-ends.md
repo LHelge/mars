@@ -2,9 +2,9 @@
 id: yc2ah
 title: "Mid-turn input is a backend policy: the owner queues through or holds until the turn ends"
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:16:51.108773Z"
-updated: "2026-09-21T12:17:24.512722Z"
+updated: "2026-09-21T20:26:14.699360102Z"
 tags:
   - orchestrator
   - agent

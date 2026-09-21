@@ -2,9 +2,9 @@
 id: b2vuk
 title: Profile editor selects the backend; the credential notice, the guided secret form and the launch form follow it
 status: open
-priority: P1
+priority: P2
 created: "2026-09-21T12:22:42.596740Z"
-updated: "2026-09-21T12:22:42.596740Z"
+updated: "2026-09-21T20:26:15.229474428Z"
 tags:
   - frontend
   - profiles

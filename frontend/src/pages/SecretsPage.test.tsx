@@ -9,9 +9,14 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../services/apiClient";
 import { clearAuth, installSession } from "../services/auth";
 import { listProjects } from "../services/projects";
-import { createSecret, listSecrets } from "../services/secrets";
+import {
+  createSecret,
+  listSecrets,
+  replaceSecretValue,
+} from "../services/secrets";
 import { listUsers } from "../services/users";
 import type { Project, SecretMeta, User } from "../types";
 import { SecretsPage } from "./SecretsPage";
@@ -244,6 +249,73 @@ describe("SecretsPage", () => {
         within(form).getByLabelText<HTMLInputElement>(/^Value/).value,
       ).toBe("");
     });
+  });
+
+  it("shows the agent-credential 409 of the guided form in the server's own words", async () => {
+    const refusal =
+      "this scope already has an agent credential (CLAUDE_CODE_OAUTH_TOKEN); replace or delete it first";
+    vi.mocked(createSecret).mockRejectedValue(new ApiError(409, refusal));
+
+    renderPage();
+    const form = await screen.findByRole("form", {
+      name: "Add agent credential",
+    });
+
+    fireEvent.click(within(form).getByLabelText("Anthropic API key"));
+    fireEvent.change(within(form).getByLabelText(/^Value/), {
+      target: { value: "fake-api-key-for-tests" },
+    });
+    fireEvent.submit(form);
+
+    expect(await within(form).findByText(refusal)).not.toBeNull();
+  });
+
+  it("shows the agent-credential 409 of a row's replacement too", async () => {
+    const refusal =
+      "this scope already has an agent credential (ANTHROPIC_API_KEY); replace or delete it first";
+    vi.mocked(listSecrets).mockImplementation((params) =>
+      Promise.resolve(
+        params.scope === "user" && params.scope_id === undefined
+          ? [
+              secret({
+                scope: "user",
+                scope_id: USER_ID,
+                name: "CLAUDE_CODE_OAUTH_TOKEN",
+                credential_for: "claude",
+              }),
+            ]
+          : [],
+      ),
+    );
+    vi.mocked(replaceSecretValue).mockRejectedValue(new ApiError(409, refusal));
+
+    renderPage();
+
+    const row = await screen.findByRole("row", {
+      name: /Claude subscription token/,
+    });
+    fireEvent.click(within(row).getByRole("button", { name: "Replace value" }));
+    fireEvent.change(
+      screen.getByLabelText("New value", { selector: "input" }),
+      { target: { value: "fake-token-for-tests" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save value" }));
+
+    expect(await screen.findByText(refusal)).not.toBeNull();
+
+    // Closing the panel with the same button drops what was typed into it.
+    const toggle = within(row).getByRole("button", { name: "Replace value" });
+    fireEvent.change(
+      screen.getByLabelText("New value", { selector: "input" }),
+      { target: { value: "fake-token-for-tests" } },
+    );
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+    expect(
+      screen.getByLabelText<HTMLInputElement>("New value", {
+        selector: "input",
+      }).value,
+    ).toBe("");
   });
 
   it("offers another user only to an administrator", async () => {

@@ -164,6 +164,7 @@ export function AgentCredentialsSection({
                   key={secret.id}
                   secret={secret}
                   appliesTo={view.appliesTo}
+                  listKey={queryKeys.secrets.list(view.scope, view.scopeId)}
                 />
               ))}
             </tbody>
@@ -177,9 +178,15 @@ export function AgentCredentialsSection({
 interface AgentCredentialRowProps {
   secret: SecretMeta;
   appliesTo: string;
+  /** The list this row came out of, so a delete can take it out of it. */
+  listKey: readonly unknown[];
 }
 
-function AgentCredentialRow({ secret, appliesTo }: AgentCredentialRowProps) {
+function AgentCredentialRow({
+  secret,
+  appliesTo,
+  listKey,
+}: AgentCredentialRowProps) {
   const queryClient = useQueryClient();
   const label = labelForCredential(secret.name);
 
@@ -210,6 +217,11 @@ function AgentCredentialRow({ secret, appliesTo }: AgentCredentialRowProps) {
   const remove = useMutation({
     mutationFn: () => deleteSecret(secret.id),
     onSuccess: () => {
+      // The row goes with the request that deleted it rather than with the
+      // refetch behind it: until then its own actions would answer 404.
+      queryClient.setQueryData<SecretMeta[]>(listKey, (rows) =>
+        rows?.filter((row) => row.id !== secret.id),
+      );
       invalidateSecretQueries(queryClient);
     },
     onError: (caught: unknown) => {
@@ -266,6 +278,9 @@ function AgentCredentialRow({ secret, appliesTo }: AgentCredentialRowProps) {
               disabled={busy}
               onClick={() => {
                 setError(null);
+                // Closing this way used to keep the typed value for the next
+                // time the panel was opened (`CLAUDE.md`, rule 3).
+                setValue("");
                 setReplacing((open) => !open);
               }}
             >

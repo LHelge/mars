@@ -1,14 +1,15 @@
 ---
 id: tvcf5
 title: "MarkdownBody: add remark-gfm and style every element (headings, tables, quotes, rules, inline code, task lists)"
-status: open
+status: done
 priority: P1
 created: "2026-09-20T23:42:39.268671297Z"
-updated: "2026-09-20T23:42:39.268671297Z"
+updated: "2026-09-21T13:34:35.837558889Z"
 tags:
   - frontend
   - markdown
 parent: qprj6
+attempts: 1
 ---
 
 ## Summary

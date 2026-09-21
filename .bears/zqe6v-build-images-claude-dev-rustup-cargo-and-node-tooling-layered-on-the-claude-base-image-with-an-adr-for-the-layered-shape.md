@@ -1,14 +1,15 @@
 ---
 id: zqe6v
 title: "Build images/claude-dev: rustup, cargo and Node tooling layered on the claude base image, with an ADR for the layered shape"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:00:44.691569881Z"
-updated: "2026-09-21T10:00:44.691569881Z"
+updated: "2026-09-21T11:13:12.835631719Z"
 tags:
   - images
   - docs
 parent: qpshf
+attempts: 1
 ---
 
 ## Summary

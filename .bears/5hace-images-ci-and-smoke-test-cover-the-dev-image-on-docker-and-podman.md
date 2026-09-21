@@ -1,16 +1,17 @@
 ---
 id: "5hace"
 title: Images CI and smoke test cover the dev image on Docker and Podman
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-21T10:01:18.377029657Z"
-updated: "2026-09-21T10:01:18.377029657Z"
+updated: "2026-09-21T11:13:17.871416874Z"
 tags:
   - images
   - ci
 depends_on:
   - zqe6v
 parent: qpshf
+attempts: 1
 ---
 
 ## Summary

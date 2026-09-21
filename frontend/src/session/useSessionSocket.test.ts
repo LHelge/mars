@@ -321,30 +321,71 @@ describe("SessionSocket", () => {
     );
   });
 
-  it("signs nothing out but stops when the session was deleted", async () => {
-    // A refused upgrade never opens and never says why: after enough of them
-    // the session is read over REST, which answers in words.
+  it("picks up the token the REST read rotated when an attempt cannot open", async () => {
+    // The common wake-from-sleep: the access token expired while the tab
+    // slept, so the upgrade is refused *before* it happens — a 401 to an HTTP
+    // request, which the browser hands JavaScript as a bare 1006 close. The
+    // socket does not guess at that; it reads the session, and that read goes
+    // through `apiClient`, which rotates only a token that really is expired.
     vi.useFakeTimers();
-    listEvents.mockResolvedValueOnce({ events: [], has_more: false });
-    const socket = track(new SessionSocket(SESSION_ID, factory));
-    await socket.start();
+    track(await startLive([textEvent(3, "three")]));
+    getSession.mockImplementation(() => {
+      getAccessToken.mockReturnValue("token-two");
+      return Promise.resolve(session("running"));
+    });
+
+    // The live connection drops: nothing is read and nothing is rotated for
+    // it, because it had opened with a token the server accepted.
+    last().serverClose(1006);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(getSession).not.toHaveBeenCalled();
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(last().url).toContain("token=token-one");
+
+    // That attempt never opens. Now the read happens, and the attempt after
+    // it carries what the read left current — with no attempt wasted in
+    // between and no rotation of this socket's own.
+    last().serverClose(1006);
+    await settle();
+
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(refreshAccessToken).not.toHaveBeenCalled();
+    expect(FakeSocket.instances).toHaveLength(3);
+    expect(last().url).toContain("token=token-two");
+    expect(last().url).toContain("after=3");
+    expect(store().status).toBe("reconnecting");
+
+    last().accept();
+    expect(store().status).toBe("live");
+  });
+
+  it("signs nothing out but stops at once when the session was deleted", async () => {
+    // The same first read, answering 404: there is no point in spending the
+    // rest of the schedule on a session that is gone.
+    vi.useFakeTimers();
+    track(await startLive());
     getSession.mockRejectedValue(new ApiError(404, "session not found"));
 
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      last().serverClose(1006);
-      await settle();
-      await vi.advanceTimersByTimeAsync(60_000);
-    }
+    // The drop of a connection that had opened: a plain retry, no read.
+    last().serverClose(1006);
+    await settle();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(getSession).not.toHaveBeenCalled();
+
+    last().serverClose(1006);
+    await settle();
+    await vi.advanceTimersByTimeAsync(60_000);
 
     expect(getSession).toHaveBeenCalledTimes(1);
     expect(refreshAccessToken).not.toHaveBeenCalled();
     expect(store().status).toBe("offline");
     expect(store().connectionError).toBe("This session no longer exists.");
 
-    // Nothing is pending: an hour later there is still no sixth socket.
-    const opened = FakeSocket.instances.length;
+    // Nothing is pending: an hour later there is still no third socket.
+    expect(FakeSocket.instances).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(3_600_000);
-    expect(FakeSocket.instances).toHaveLength(opened);
+    expect(FakeSocket.instances).toHaveLength(2);
   });
 
   it("stops when the session is no longer this user's", async () => {
@@ -354,11 +395,8 @@ describe("SessionSocket", () => {
     await socket.start();
     getSession.mockRejectedValue(new ApiError(403, "forbidden"));
 
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      last().serverClose(1006);
-      await settle();
-      await vi.advanceTimersByTimeAsync(60_000);
-    }
+    last().serverClose(1006);
+    await settle();
 
     expect(store().status).toBe("offline");
     expect(store().connectionError).toBe(
@@ -381,9 +419,10 @@ describe("SessionSocket", () => {
       await vi.advanceTimersByTimeAsync(60_000);
     }
 
-    // Ten attempts that never opened, one REST check, no token rotation.
+    // Ten attempts that never opened, two REST reads — the first close and
+    // `ATTEMPTS_BEFORE_CHECK` — and no token rotation.
     expect(FakeSocket.instances).toHaveLength(10);
-    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(getSession).toHaveBeenCalledTimes(2);
     expect(refreshAccessToken).not.toHaveBeenCalled();
     expect(store().status).toBe("offline");
     expect(store().connectionError).toBe(

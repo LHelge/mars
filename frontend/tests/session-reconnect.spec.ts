@@ -33,7 +33,12 @@
 // is no evidence about the access token — an open stream is not closed because
 // its token expired (`SPEC.md`, "Authentication") — so neither half rotates
 // anything, and the single-use refresh cookie is spent only on the
-// authentication close (1008) that says the credentials are the problem. That
+// authentication close (1008) that says the credentials are the problem. An
+// attempt that cannot open is a different matter, and half 1 has those: the
+// socket reads the session over REST, which is what settles an expired token
+// (through the HTTP client) and what tells a deleted session from an
+// unreachable one, so a session read there is the connection's work and not
+// the fingerprint of a remount. That
 // close cannot be staged from here: `WebSocket.close` refuses every reserved
 // code, 1008 among them, and the server sends it only for a revocation, which
 // ends in sign-out rather than in a rotation. What an installed pair does to
@@ -243,16 +248,22 @@ test("a reconnect keeps the session page mounted, terminal and all", async ({
   const reconnectTerminal = page.getByRole("button", { name: "Reconnect" });
   await expect(reconnectTerminal).toBeVisible();
 
-  // Nothing re-bootstrapped: the current user was never reloaded and the
-  // session was never re-read, which is what a remounted route would do.
+  // Nothing re-bootstrapped: `AuthBootstrap` reloads the current user whenever
+  // a remount finds it null, and it never ran. The session read is not a
+  // remount signal in this half — an attempt that cannot open reads the
+  // session itself, which is how the socket tells an expired token from a
+  // session that is gone (ntepg; `SPEC.md`, "Authentication") — so the marks
+  // above are what say the page is the same one.
   expect(countOf(calls, "GET", "/api/users/me")).toBe(0);
-  expect(countOf(calls, "GET", `/api/sessions/${session.id}`)).toBe(0);
 
   // --- 2. a close with the network up ---------------------------------------
 
   // A second attachment, so this half starts where the first one did.
   await reconnectTerminal.click();
   await openTerminal(page);
+
+  // What half 1's attempts read, so this half's own reads can be counted.
+  const readsBefore = countOf(calls, "GET", `/api/sessions/${session.id}`);
 
   expect(await closeSockets(page)).toBe(1);
 
@@ -274,7 +285,12 @@ test("a reconnect keeps the session page mounted, terminal and all", async ({
     page.getByText("Terminal disconnected", { exact: true }),
   ).toBeVisible();
   expect(countOf(calls, "GET", "/api/users/me")).toBe(0);
-  expect(countOf(calls, "GET", `/api/sessions/${session.id}`)).toBe(0);
+  // And this half read nothing at all: the connection that closed had opened,
+  // so it carried a token the server had accepted and there was nothing to
+  // ask — neither a rotation nor a REST read is owed for such a close.
+  expect(countOf(calls, "GET", `/api/sessions/${session.id}`)).toBe(
+    readsBefore,
+  );
 
   // And the reopened socket is a working one: the composer can still send.
   await messageBox(page).fill("after the reconnect");

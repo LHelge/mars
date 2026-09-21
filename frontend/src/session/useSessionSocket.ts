@@ -153,8 +153,14 @@ export class SessionSocket {
   private lastAuthCloseAt: number | null = null;
   /** Closes since the last one that had reached `open`; the loop's bound. */
   private failedOpens = 0;
-  /** The REST check has already been made for this run of failures. */
-  private checked = false;
+  /**
+   * `failedOpens` as it stood at the last REST read of this run, `0` for none.
+   * The read happens twice at most: once at the first close that never
+   * opened, where it is what settles an expired token, and once at
+   * `ATTEMPTS_BEFORE_CHECK`, where it is what tells a session that is gone
+   * from one that is merely unreachable.
+   */
+  private checkedAt = 0;
   /** A REST check is in flight; a second close must not start another. */
   private checking = false;
   /** The older-history request in flight, which later callers join. */
@@ -323,10 +329,11 @@ export class SessionSocket {
    *   closed because its token expired, so a close is no evidence about it —
    *   and simply comes back, on backoff when the attempt never opened;
    * - and either way the attempts are counted. A connection that never opens
-   *   is a refused upgrade whose status JavaScript never sees, so after
-   *   `ATTEMPTS_BEFORE_CHECK` of them the session is read over REST, which
-   *   does answer in words, and a deleted or forbidden session ends here
-   *   visibly instead of retrying at the backoff cap for ever.
+   *   is a refused upgrade whose status JavaScript never sees, so the session
+   *   is read over REST — which does answer in words — at the first such
+   *   close and again at `ATTEMPTS_BEFORE_CHECK`, and a deleted or forbidden
+   *   session ends here visibly instead of retrying at the backoff cap for
+   *   ever (`retryOrCheck`).
    */
   private handleClose(code: number): void {
     this.socket = null;
@@ -337,7 +344,7 @@ export class SessionSocket {
       // It opened, so this is a live connection that dropped: the counters of
       // the previous failure run mean nothing any more.
       this.failedOpens = 0;
-      this.checked = false;
+      this.checkedAt = 0;
       this.attempt = 0;
     } else {
       this.failedOpens += 1;
@@ -370,9 +377,24 @@ export class SessionSocket {
   }
 
   /**
-   * The bound on reconnection: back off while attempts are cheap, ask REST
-   * once they are not, and stop with something the reader can act on rather
-   * than retrying at the 30 s cap until the tab is closed.
+   * What to do after a close of a connection that never opened — and the
+   * bound on how long that may go on.
+   *
+   * The orchestrator refuses the upgrade *before* it happens: the token is
+   * answered 401 or 403 and a missing session 404, all of them invisible to
+   * JavaScript, which sees a close with code 1006 and no `open` either way
+   * (`ARCHITECTURE.md`, "Orchestrator internals"; `src/ws/mod.rs`). An access
+   * token that expired while the tab slept and a session somebody deleted are
+   * therefore the same event here, and the cheapest way to tell them apart is
+   * to read the session over REST: that read goes through `apiClient`, which
+   * rotates the access token if and only if it really is expired — and adopts
+   * one another caller has already installed rather than rotating again — so
+   * the next attempt carries a current token without this socket ever
+   * guessing that the credentials were the problem.
+   *
+   * So: the first close of a run asks, the schedule then backs off, and
+   * `ATTEMPTS_BEFORE_CHECK` asks a second time before `ATTEMPTS_BEFORE_OFFLINE`
+   * ends it.
    */
   private retryOrCheck(): void {
     if (this.disposed) return;
@@ -380,27 +402,42 @@ export class SessionSocket {
       this.giveUp(UNREACHABLE);
       return;
     }
-    if (this.failedOpens >= ATTEMPTS_BEFORE_CHECK && !this.checked) {
-      this.store.getState().setStatus("reconnecting");
+    this.store.getState().setStatus("reconnecting");
+    if (this.wantsCheck()) {
       void this.checkSession("retry", UNREACHABLE);
       return;
     }
-    this.store.getState().setStatus("reconnecting");
     this.scheduleRetry();
   }
 
+  /** Whether this close is one of the two a REST read answers. */
+  private wantsCheck(): boolean {
+    // A connection that opened settles nothing about the token: it had one
+    // the server accepted, and an open stream is not closed because that
+    // token later expired (`SPEC.md`, "Authentication").
+    if (this.failedOpens === 0) return false;
+    if (this.checkedAt === 0) return true;
+    return (
+      this.failedOpens >= ATTEMPTS_BEFORE_CHECK &&
+      this.checkedAt < ATTEMPTS_BEFORE_CHECK
+    );
+  }
+
   /**
-   * Reads the session once over REST to decide what the closes mean.
+   * Reads the session over REST to decide what the closes mean — and, by
+   * going through `apiClient`, to put a current access token in the hands of
+   * the attempt that follows (`retryOrCheck`).
    *
    * `onAlive` is what a session that still reads means here: `retry` for a
-   * connection that never opened — the orchestrator is there, so waiting is
-   * worth something — and `stop` for a refusal that survived a token
-   * rotation, where waiting is not.
+   * connection that never opened — the orchestrator is there and it answered
+   * us, so the next attempt is worth making — and `stop` for a refusal that
+   * survived a token rotation, where it is not.
    */
   private async checkSession(onAlive: Alive, fallback: string): Promise<void> {
     if (this.checking || this.disposed) return;
     this.checking = true;
-    this.checked = true;
+    const first = this.checkedAt === 0 && this.failedOpens === 1;
+    this.checkedAt = Math.max(this.failedOpens, 1);
     try {
       await getSession(this.sessionId);
     } catch (error) {
@@ -430,6 +467,14 @@ export class SessionSocket {
     if (this.disposed) return;
     if (onAlive === "stop") {
       this.giveUp(fallback);
+      return;
+    }
+    if (first) {
+      // The read just came back from the orchestrator with credentials it
+      // accepted, so there is nothing to wait for: reopen at once, carrying
+      // whatever token that read left current. A second failure right after
+      // this one falls through to the backoff below.
+      this.connect();
       return;
     }
     this.scheduleRetry();
@@ -471,10 +516,13 @@ export class SessionSocket {
     if (this.wasOpen) {
       this.attempt = 0;
       this.connect();
-    } else {
-      // The last attempt never opened: back off rather than spin.
-      this.retryOrCheck();
+      return;
     }
+    // The last attempt never opened: back off rather than spin. The rotation
+    // just answered the question the first REST read exists for, so that read
+    // is not owed; the one at `ATTEMPTS_BEFORE_CHECK` still is.
+    this.checkedAt = Math.max(this.checkedAt, 1);
+    this.retryOrCheck();
   }
 
   private scheduleRetry(): void {
@@ -524,7 +572,7 @@ export class SessionSocket {
     this.cancelRetry();
     this.attempt = 0;
     this.failedOpens = 0;
-    this.checked = false;
+    this.checkedAt = 0;
     this.lastAuthCloseAt = null;
     this.teardown(1000);
     this.store.getState().setStatus("reconnecting");

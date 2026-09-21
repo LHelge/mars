@@ -1,10 +1,10 @@
 ---
 id: qrk3x
 title: "Make the dev image the default session image: SESSION_IMAGE_DEFAULT names mars-session-claude-dev:latest"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-21T10:01:31.876022786Z"
-updated: "2026-09-21T11:13:16.255781772Z"
+updated: "2026-09-21T11:31:44.683062857Z"
 tags:
   - orchestrator
   - config

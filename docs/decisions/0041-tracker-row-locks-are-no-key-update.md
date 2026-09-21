@@ -25,5 +25,6 @@ Options considered:
 
 - The session owner's hidden foreign-key locks stay hidden and stay harmless; nothing in `session/` changed.
 - Inserting a row that references a project — a session, a profile — no longer waits for that project's tracker mutation.
-- User and profile deletion still hold their row exclusively and can, in principle, meet a live session's writer the same way; that is Bears `u9fvv` and is not reachable through the tracker.
-- `tests/tracker_mutation.rs` holds both interleavings deterministically; each failed with `40P01` before the change.
+- User deletion is a third caller that orders its locks (Bears `u9fvv`): the user row `FOR NO KEY UPDATE`, the tracker lock of every project with a row naming the user, the user's sessions, and the `DELETE` last. Profile deletion needs no ordering, because it refuses a profile with any session and a racing launch waits for nothing it holds.
+- The rows of `secrets`, `user_invites` and the two token tables that name a user are cleared or removed by the same `DELETE` without being locked first. Their writers hold one row briefly and none has been seen to meet a deletion; the ordering above is the pattern if one does.
+- `tests/tracker_mutation.rs` and `tests/users_delete_locks.rs` hold the interleavings deterministically; each failed with `40P01` before the change. `tests/repositories_profiles.rs` holds the launch racing a profile deletion.

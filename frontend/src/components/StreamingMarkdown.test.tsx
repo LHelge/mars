@@ -176,5 +176,7 @@ describe("StreamingMarkdown", () => {
       <StreamingMarkdown streaming={false}>{KITCHEN_SINK}</StreamingMarkdown>,
     );
     expect(container.innerHTML).toBe(atOnce.container.innerHTML);
-  });
+    // One render per character of the fixture is seconds of CPU on a quiet
+    // machine, and Vitest's 5 s default does not survive a loaded one.
+  }, 30_000);
 });

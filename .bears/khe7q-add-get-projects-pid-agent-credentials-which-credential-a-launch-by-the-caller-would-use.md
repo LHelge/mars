@@ -1,10 +1,10 @@
 ---
 id: khe7q
 title: "Add GET /projects/{pid}/agent-credentials: which credential a launch by the caller would use"
-status: open
+status: done
 priority: P1
 created: "2026-09-20T22:22:37.187539463Z"
-updated: "2026-09-20T22:22:37.187539463Z"
+updated: "2026-09-21T06:32:37.078302375Z"
 tags:
   - orchestrator
   - secrets
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - a8bga
 parent: rdkmk
+attempts: 1
 ---
 
 ## Summary

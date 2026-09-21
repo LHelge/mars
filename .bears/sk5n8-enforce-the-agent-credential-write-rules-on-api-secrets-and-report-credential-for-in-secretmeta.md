@@ -1,10 +1,10 @@
 ---
 id: sk5n8
 title: Enforce the agent-credential write rules on /api/secrets and report credential_for in SecretMeta
-status: open
+status: done
 priority: P1
 created: "2026-09-20T22:22:12.386070200Z"
-updated: "2026-09-20T22:22:12.386070200Z"
+updated: "2026-09-21T06:32:35.844106534Z"
 tags:
   - orchestrator
   - secrets
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - a8bga
 parent: rdkmk
+attempts: 1
 ---
 
 ## Summary

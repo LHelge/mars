@@ -1,16 +1,17 @@
 ---
 id: hy6c8
 title: "Secrets page: Agent credentials section with a guided form that never asks for the name"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-20T22:22:58.800817242Z"
-updated: "2026-09-20T22:22:58.800817242Z"
+updated: "2026-09-21T06:32:39.448463818Z"
 tags:
   - frontend
   - secrets
 depends_on:
   - sk5n8
 parent: rdkmk
+attempts: 1
 ---
 
 ## Summary

@@ -659,7 +659,7 @@ test("the task merge lands the pinned commit even after the branch advanced", as
 
   await form.getByRole("button", { name: "Merge", exact: true }).click();
   await expect(
-    form.getByText(/^Merged as [0-9a-f]{10} · Task state unchanged$/),
+    form.getByText(/^Merged as [0-9a-f]{7} · Task state unchanged$/),
   ).toBeVisible({ timeout: 60_000 });
 
   // The pinned commit landed and the one after it did not.

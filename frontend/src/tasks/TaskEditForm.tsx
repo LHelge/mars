@@ -344,8 +344,10 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
 }
 
 /**
- * Field ids are per task: the drawer can be replaced by another task's without
- * unmounting, and two forms sharing one `id` would point a label at the wrong
+ * Field ids are per task. The drawer keys this form's subtree by `task.id`
+ * (`TaskDetail`), so another task's form is a different mount; the per-task id
+ * keeps that true in the DOM as well, where two forms sharing one `id` — one
+ * being torn down as the next renders — would point a label at the wrong
  * control.
  */
 function taskFieldId(task: TaskDetail): string {

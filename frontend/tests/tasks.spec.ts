@@ -21,6 +21,7 @@ import type { Project } from "../src/types";
 import { expect, test } from "./utils/fixtures";
 import {
   baseUrl,
+  commentOnTask,
   createBareRepo,
   createProject,
   createTask,
@@ -185,6 +186,86 @@ test("an edit and a comment made in the drawer survive a reload", async ({
   await expect(
     reopened.getByTitle("Written by the tracker itself"),
   ).toHaveCount(0);
+});
+
+test("an edit open on one task is discarded when the drawer shows a cached other one", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+}) => {
+  // The child link is how A reaches B without typing a URL, and B is read once
+  // first so the second visit is served from the query cache — no loading
+  // state in between, which is the whole hazard (`SPEC.md`, "Frontend",
+  // "Task board").
+  const parent = await createTask(api, project.id, { title: "Alpha plan" });
+  await createTask(api, project.id, {
+    title: "Bravo plan",
+    parent_id: parent.id,
+  });
+  await loginViaToken(context, user);
+  await openBoard(page, project);
+
+  await openCard(page, 2);
+  await page.goBack();
+  const alpha = await openCard(page, 1);
+
+  await alpha.getByRole("button", { name: "Edit" }).click();
+  const alphaForm = alpha.getByRole("form", { name: "Edit task #1" });
+  await alphaForm.getByLabel("Title").fill("Alpha draft that must not travel");
+
+  await alpha.getByRole("link", { name: /Bravo plan/ }).click();
+
+  const bravo = drawer(page);
+  await expect(bravo).toHaveAttribute("aria-label", "Task #2");
+  // The edit belonged to #1: nothing is open on #2, and no field of #2 holds
+  // #1's words.
+  await expect(bravo.getByRole("form", { name: /^Edit task/ })).toHaveCount(0);
+  await expect(bravo.getByText("Alpha draft that must not travel")).toHaveCount(
+    0,
+  );
+
+  // Opening #2's own form starts from #2, so #1's draft cannot be saved here.
+  await bravo.getByRole("button", { name: "Edit" }).click();
+  const bravoForm = bravo.getByRole("form", { name: "Edit task #2" });
+  await expect(bravoForm.getByLabel("Title")).toHaveValue("Bravo plan");
+  await bravoForm.getByRole("button", { name: "Save changes" }).click();
+
+  expect((await getTask(api, project.id, 1)).title).toBe("Alpha plan");
+  expect((await getTask(api, project.id, 2)).title).toBe("Bravo plan");
+});
+
+test("a draft in the drawer survives a refresh of the same task", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+}) => {
+  await createTask(api, project.id, { title: "Alpha plan" });
+  await loginViaToken(context, user);
+  await openBoard(page, project);
+
+  const panel = await openCard(page, 1);
+  await panel.getByRole("button", { name: "Edit" }).click();
+  const form = panel.getByRole("form", { name: "Edit task #1" });
+  await form.getByLabel("Title").fill("Alpha plan, revised");
+
+  // A `commented` event invalidates the open detail, so the drawer refetches
+  // the very task being edited: the same resource, and therefore the same
+  // draft.
+  await commentOnTask(api, project.id, 1, "Landed from another client.");
+  await expect(panel.getByText("Landed from another client.")).toBeVisible({
+    timeout: LIVE_TIMEOUT,
+  });
+
+  await expect(form.getByLabel("Title")).toHaveValue("Alpha plan, revised");
+  await form.getByRole("button", { name: "Save changes" }).click();
+  await expect(
+    panel.getByRole("heading", { name: "Alpha plan, revised" }),
+  ).toBeVisible();
+  expect((await getTask(api, project.id, 1)).title).toBe("Alpha plan, revised");
 });
 
 test("the drawer moves a card across columns and closes and reopens it", async ({

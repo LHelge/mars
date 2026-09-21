@@ -151,7 +151,19 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
               </div>
             </Alert>
           ) : (
-            <TaskBody projectId={projectId} task={detail.data} />
+            // The task's id is the drawer's identity boundary: everything
+            // under `TaskBody` — edit mode and its draft, the comment box, an
+            // open confirmation, a half-written review — belongs to the task
+            // it was written for, and a cached neighbour renders with no
+            // loading state in between to unmount it. Keying by `task.id`
+            // makes "another task" a remount and "the same task, refetched"
+            // — which every task event causes — leave the draft alone
+            // (`SPEC.md`, "Frontend", "Task board").
+            <TaskBody
+              key={detail.data.id}
+              projectId={projectId}
+              task={detail.data}
+            />
           )}
         </div>
       </aside>

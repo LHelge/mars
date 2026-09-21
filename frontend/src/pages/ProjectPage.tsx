@@ -56,7 +56,14 @@ export function ProjectPage() {
   }
 
   return (
+    // The project's id is this page's identity boundary, as `task.id` is the
+    // task drawer's: `ProjectHeader`'s delete confirmation, the settings
+    // form's fields and every other piece of state below belongs to the
+    // project it was opened on, and a cached project renders with no loading
+    // state in between to unmount them. `key` makes another project a
+    // remount, while a refetch of the same one leaves an open form alone.
     <ProjectView
+      key={id}
       id={id}
       tab={tab}
       taskParam={taskParam}

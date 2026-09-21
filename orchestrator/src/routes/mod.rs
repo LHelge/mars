@@ -12,6 +12,7 @@ pub mod auth;
 pub mod extractors;
 pub mod git;
 pub mod health;
+pub mod profile_templates;
 pub mod profiles;
 pub mod projects;
 pub mod secrets;
@@ -48,6 +49,9 @@ pub fn routes() -> Router<AppState> {
     let router = Router::new()
         .merge(health::routes())
         .nest("/auth", auth::routes())
+        // Not under `/projects`: the role templates are the same four
+        // whatever project is open (`SPEC.md`, "Role profile templates").
+        .nest("/profile-templates", profile_templates::routes())
         // One `nest` per prefix — axum panics on two at the same path — so the
         // git, profile, secret, shared-directory and project-scoped session
         // routes,

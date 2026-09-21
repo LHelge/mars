@@ -22,6 +22,8 @@ A **template picker** in the profile editor — a list of role prompts a user ca
 
 A new project is usable as a four-role board immediately, and the prompts are reviewable prose in a diff, reproduced verbatim in `SPEC.md`, "Role profile templates" with a test comparing the two so they cannot drift.
 
+The templates are also offered when a profile is created, read-only over `GET /profile-templates` (`SPEC.md`, "Agent profiles"): the rejected picker was rejected as a *replacement* for seeding, and beside it is what reaches a project created before this decision and what brings a deleted role back.
+
 The seeded profiles are ordinary rows: editable, renameable, deletable except for the default, and untouched by upgrades. Improving a template therefore reaches new projects only; existing ones keep what they were given, which is the point.
 
 The prompts name the seeded state names. A project that renames or deletes `ready`, `review`, `merge`, `backlog` or `done` keeps the link (`profile_states` is by id) but leaves the prompt naming a state that no longer exists, and the text then needs a manual edit. That is accepted: the alternative is a prompt that rewrites itself, which is a template resolved live by another name.

@@ -22,6 +22,15 @@
 //! deliberately so: they arrive as a list like any other, and the warning that
 //! names the backend is the launcher's to write.
 //!
+//! **The same selection answers the preflight.** `GET
+//! /projects/{pid}/agent-credentials` says which credential a launch by the
+//! caller would use before anything is launched, and it does so by calling the
+//! very function a launch calls — [`select_credential`], from
+//! [`preview_credential`] — over the same rows read at the same three scopes,
+//! decrypting nothing and writing no audit row. A second implementation of the
+//! rule is the one way the two could ever disagree (`SPEC.md`, "Secrets";
+//! ADR 0036).
+//!
 //! **Precedence, then the flag.** `global`, then `project`, then `user`, last
 //! one found wins. The winner's `orchestrator_only` is only consulted once the
 //! winner is known, which is what makes a suppressed name genuinely absent: a
@@ -172,8 +181,29 @@ fn rank(scope: SecretScope) -> u8 {
     }
 }
 
-/// The credential row one launch uses, out of every row carrying one of
-/// `credential_names`.
+/// What the credential slot resolved to, for a launch or for the preflight
+/// that answers it without launching.
+///
+/// The three outcomes a caller has to tell apart: no row carries any of the
+/// names, the winning row is injectable, or the winning row is
+/// `orchestrator_only` and therefore withheld. [`select_credential`] is the
+/// one place that decides between them, so the launch and
+/// `GET /projects/{pid}/agent-credentials` cannot disagree about which
+/// credential a launch uses (`SPEC.md`, "Secrets").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialSlot {
+    /// No row at any of the three scopes carries one of the names.
+    Empty,
+    /// The winning row, which is injected.
+    Injectable(Secret),
+    /// The winning row, which is `orchestrator_only` and so is not injected.
+    /// No lower-precedence row takes its place: the more specific row already
+    /// overrode them.
+    Withheld(Secret),
+}
+
+/// The credential slot of one `(project, user)` pair, out of every row
+/// carrying one of `credential_names`.
 ///
 /// The names are one slot, so the comparison is the scope first: the most
 /// specific wins whatever name it carries. Two rows at the *same* scope can
@@ -182,6 +212,20 @@ fn rank(scope: SecretScope) -> u8 {
 /// backend's own order, which is the order `credential_names` arrived in, and
 /// logged with the names and the scope so an operator can delete one. No
 /// value, and no name that was not asked for, reaches that line (rule 3).
+///
+/// The `orchestrator_only` flag is read last and here rather than in the
+/// callers, because "which credential would a launch use" has to have one
+/// answer: [`resolve_for_launch`] and [`preview_credential`] both take it from
+/// this function.
+pub fn select_credential(credential_names: &[String], rows: Vec<Secret>) -> CredentialSlot {
+    match pick_credential(credential_names, rows) {
+        None => CredentialSlot::Empty,
+        Some(winner) if winner.orchestrator_only => CredentialSlot::Withheld(winner),
+        Some(winner) => CredentialSlot::Injectable(winner),
+    }
+}
+
+/// The highest-precedence row of the slot, before the flag is consulted.
 fn pick_credential(credential_names: &[String], rows: Vec<Secret>) -> Option<Secret> {
     // Lower is more preferred; a row whose name is not in the list cannot
     // reach here, and would sort last if it did.
@@ -329,7 +373,7 @@ pub async fn resolve_for_launch(
         }
     }
 
-    let credential_winner = pick_credential(&credential_names, credential_rows);
+    let credential_slot = select_credential(&credential_names, credential_rows);
 
     // Decide every name before anything is opened or written, so the two
     // outcomes that produce no audit row — missing and suppressed — are
@@ -359,33 +403,33 @@ pub async fn resolve_for_launch(
     // older than the write rule that forbids it — is skipped exactly like any
     // other suppressed name, and no lower-precedence credential takes its
     // place: the more specific row already overrode them.
-    if let Some(winner) = credential_winner {
-        if winner.orchestrator_only {
+    match credential_slot {
+        CredentialSlot::Empty => {}
+        CredentialSlot::Withheld(winner) => {
             info!(
                 secret_name = %winner.name,
                 scope = %winner.scope,
                 "orchestrator-only secret skipped at launch"
             );
             resolved.skipped.push(winner.name.clone());
-        } else {
-            match SecretName::parse(&winner.name) {
-                Ok(name) => {
-                    resolved.credential = Some(ResolvedCredential {
-                        name,
-                        scope: winner.scope,
-                    });
-                    injected.push(winner);
-                }
-                Err(_) => {
-                    // Unreachable: the row was found by one of the names the
-                    // caller passed as a `SecretName`.
-                    error!(
-                        secret_name = %winner.name,
-                        "a credential row carries a name that is not a valid secret name"
-                    );
-                }
-            }
         }
+        CredentialSlot::Injectable(winner) => match SecretName::parse(&winner.name) {
+            Ok(name) => {
+                resolved.credential = Some(ResolvedCredential {
+                    name,
+                    scope: winner.scope,
+                });
+                injected.push(winner);
+            }
+            Err(_) => {
+                // Unreachable: the row was found by one of the names the
+                // caller passed as a `SecretName`.
+                error!(
+                    secret_name = %winner.name,
+                    "a credential row carries a name that is not a valid secret name"
+                );
+            }
+        },
     }
 
     if injected.is_empty() {
@@ -451,6 +495,78 @@ pub async fn resolve_for_launch(
     );
 
     Ok(resolved)
+}
+
+/// The credential a preflight reports: which row, under which name, at which
+/// scope — never a value (`SPEC.md`, "Secrets", `AgentCredentialStatus`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialPreview {
+    pub secret_id: Uuid,
+    pub name: SecretName,
+    pub scope: SecretScope,
+}
+
+/// Which credential a launch of `project_id` by `user_id` would be given, out
+/// of `credentials`, without launching anything.
+///
+/// The preflight behind `GET /projects/{pid}/agent-credentials` (`SPEC.md`,
+/// "Secrets"): the same query at the same three scopes and the same
+/// [`select_credential`] as [`resolve_for_launch`], so the two cannot disagree
+/// about which row wins. `user_id` is the *caller*, which is what makes the
+/// answer "if I launch now" rather than "if anyone launches"; a user-scoped row
+/// in it is therefore always the caller's own.
+///
+/// Nothing is decrypted, no `secret_uses` row is written and no value or
+/// ciphertext leaves this function: a [`CredentialSlot::Withheld`] winner
+/// answers `None`, exactly as a launch would inject nothing, and so does an
+/// empty slot. Which backend the names belong to is the caller's knowledge,
+/// like everywhere else in this module: the caller passes one backend's names
+/// and labels the answer with it.
+#[instrument(skip_all, fields(project_id = %project_id, credentials = credentials.len()))]
+pub async fn preview_credential(
+    pool: &PgPool,
+    project_id: Uuid,
+    user_id: Uuid,
+    credentials: &[SecretName],
+) -> Result<Option<CredentialPreview>> {
+    let mut names: Vec<String> = Vec::with_capacity(credentials.len());
+    for name in credentials {
+        let name = name.as_str();
+        if names.iter().any(|seen| seen == name) {
+            continue;
+        }
+        names.push(name.to_string());
+    }
+
+    if names.is_empty() {
+        // A backend whose image carries its own authentication declares no
+        // name, which is an empty slot and not a query.
+        return Ok(None);
+    }
+
+    let rows = SecretRepository::new(pool)
+        .find_for_resolution(&names, project_id, Some(user_id))
+        .await?;
+
+    let CredentialSlot::Injectable(winner) = select_credential(&names, rows) else {
+        return Ok(None);
+    };
+
+    let Ok(name) = SecretName::parse(&winner.name) else {
+        // Unreachable: the row was found by one of the names the caller passed
+        // as a `SecretName`.
+        error!(
+            secret_name = %winner.name,
+            "a credential row carries a name that is not a valid secret name"
+        );
+        return Ok(None);
+    };
+
+    Ok(Some(CredentialPreview {
+        secret_id: winner.id,
+        name,
+        scope: winner.scope,
+    }))
 }
 
 #[cfg(test)]

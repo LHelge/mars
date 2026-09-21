@@ -46,6 +46,8 @@ const DOT: Record<ConnectionStatus, string> = {
   connecting: "bg-console-muted animate-pulse",
   live: "bg-state-running",
   reconnecting: "bg-state-parked animate-pulse",
+  // Not pulsing: nothing is being attempted (`SPEC.md`, "Session state").
+  offline: "bg-state-failed",
 };
 
 export interface SessionHeaderProps {

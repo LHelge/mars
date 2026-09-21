@@ -23,6 +23,7 @@ vi.mock("../services/auth", async (original) => {
 });
 
 vi.mock("../services/sessions", () => ({
+  getSession: vi.fn(),
   listEvents: vi.fn(),
   sendInput: vi.fn(),
   stopSession: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock("../services/sessions", () => ({
 const getAccessToken = vi.mocked(auth.getAccessToken);
 const refreshAccessToken = vi.mocked(auth.refreshAccessToken);
 const onCredentialsReplaced = vi.mocked(auth.onCredentialsReplaced);
+const getSession = vi.mocked(sessions.getSession);
 const listEvents = vi.mocked(sessions.listEvents);
 const sendInput = vi.mocked(sessions.sendInput);
 const stopSession = vi.mocked(sessions.stopSession);
@@ -161,6 +163,7 @@ beforeEach(() => {
   disposeSessionStore(SESSION_ID);
   vi.clearAllMocks();
   getAccessToken.mockReturnValue("token-one");
+  getSession.mockResolvedValue(session("running"));
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 
@@ -199,15 +202,16 @@ describe("SessionSocket", () => {
   });
 
   it("dedupes an event replayed after a reconnect", async () => {
+    vi.useFakeTimers();
     track(await startLive([textEvent(1, "one")]));
     const first = last();
     first.text({ type: "event", event: textEvent(2, "two") });
     expect(store().order).toHaveLength(2);
 
-    refreshAccessToken.mockResolvedValue(REFRESHED);
     getAccessToken.mockReturnValue("token-two");
     first.serverClose(1006);
     await settle();
+    await vi.advanceTimersByTimeAsync(2000);
 
     // The server may resend the tail; only the unseen event lands.
     last().accept();
@@ -218,34 +222,40 @@ describe("SessionSocket", () => {
     expect(store().lastSeq).toBe(3);
   });
 
-  it("refreshes the token and reopens at the current cursor", async () => {
+  it("reopens at the current cursor without rotating the token", async () => {
+    // A close is no evidence about the access token: an open stream is not
+    // closed because its token expired (`SPEC.md`, "Authentication"), so only
+    // an authentication close rotates anything.
+    vi.useFakeTimers();
     track(await startLive([textEvent(1, "one")]));
     last().text({ type: "event", event: textEvent(4, "four") });
 
-    refreshAccessToken.mockResolvedValue(REFRESHED);
     getAccessToken.mockReturnValue("token-two");
     last().serverClose(1006);
     expect(store().status).toBe("reconnecting");
     await settle();
+    await vi.advanceTimersByTimeAsync(2000);
 
-    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+    expect(refreshAccessToken).not.toHaveBeenCalled();
     expect(FakeSocket.instances).toHaveLength(2);
     expect(last().url).toContain("after=4");
     expect(last().url).toContain("token=token-two");
   });
 
-  it("stops retrying when the refresh answers 401", async () => {
+  it("stops visibly when the refresh answers 401", async () => {
     vi.useFakeTimers();
     track(await startLive());
     refreshAccessToken.mockRejectedValue(
       new ApiError(401, "authentication required"),
     );
 
-    last().serverClose(1006);
+    last().serverClose(1008);
     await settle();
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(FakeSocket.instances).toHaveLength(1);
+    expect(store().status).toBe("offline");
+    expect(store().connectionError).toContain("sign-in");
   });
 
   it("stops when the shared refresh completed for a session that is gone", async () => {
@@ -255,11 +265,12 @@ describe("SessionSocket", () => {
     // user signed out: there is nothing left to reconnect to.
     refreshAccessToken.mockRejectedValue(new auth.StaleRefreshError());
 
-    last().serverClose(1006);
+    last().serverClose(1008);
     await settle();
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(FakeSocket.instances).toHaveLength(1);
+    expect(store().status).toBe("offline");
   });
 
   it("backs off after a transient refresh failure", async () => {
@@ -268,7 +279,7 @@ describe("SessionSocket", () => {
     track(await startLive());
     refreshAccessToken.mockRejectedValue(new ApiError(503, "unavailable"));
 
-    last().serverClose(1006);
+    last().serverClose(1008);
     await settle();
     expect(FakeSocket.instances).toHaveLength(1);
 
@@ -278,7 +289,11 @@ describe("SessionSocket", () => {
     expect(FakeSocket.instances).toHaveLength(2);
   });
 
-  it("gives up when a refreshed token is refused again within the window", async () => {
+  it("ends in a visible refusal when a refreshed token is refused again", async () => {
+    // The second close carries a token this browser has just rotated, and the
+    // session reads perfectly well over REST with it: the refusal is this
+    // stream's, not this user's, so nobody is signed out and nothing is
+    // rotated again — the reader is told, and offered the way back.
     vi.useFakeTimers();
     track(await startLive());
     refreshAccessToken.mockResolvedValue(REFRESHED);
@@ -288,13 +303,129 @@ describe("SessionSocket", () => {
     await settle();
     expect(FakeSocket.instances).toHaveLength(2);
 
+    const refused = last();
+    refused.accept();
+    refused.serverClose(1008);
+    await settle();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    // No retry storm: no third socket, one rotation, one REST check.
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    // And what the user sees: a terminal state with a reason, not a promise
+    // of a reconnect that is not coming.
+    expect(store().status).toBe("offline");
+    expect(store().connectionError).toBe(
+      "The server refused this session's live stream.",
+    );
+  });
+
+  it("signs nothing out but stops when the session was deleted", async () => {
+    // A refused upgrade never opens and never says why: after enough of them
+    // the session is read over REST, which answers in words.
+    vi.useFakeTimers();
+    listEvents.mockResolvedValueOnce({ events: [], has_more: false });
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+    await socket.start();
+    getSession.mockRejectedValue(new ApiError(404, "session not found"));
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      last().serverClose(1006);
+      await settle();
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(refreshAccessToken).not.toHaveBeenCalled();
+    expect(store().status).toBe("offline");
+    expect(store().connectionError).toBe("This session no longer exists.");
+
+    // Nothing is pending: an hour later there is still no sixth socket.
+    const opened = FakeSocket.instances.length;
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(FakeSocket.instances).toHaveLength(opened);
+  });
+
+  it("stops when the session is no longer this user's", async () => {
+    vi.useFakeTimers();
+    listEvents.mockResolvedValueOnce({ events: [], has_more: false });
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+    await socket.start();
+    getSession.mockRejectedValue(new ApiError(403, "forbidden"));
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      last().serverClose(1006);
+      await settle();
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+
+    expect(store().status).toBe("offline");
+    expect(store().connectionError).toBe(
+      "You no longer have access to this session.",
+    );
+  });
+
+  it("bounds the attempts even while the session still reads", async () => {
+    // The orchestrator answers REST but refuses the upgrade — a proxy that
+    // does not speak WebSocket, say. That is not something waiting fixes, so
+    // the attempts end rather than run at the backoff cap for ever.
+    vi.useFakeTimers();
+    listEvents.mockResolvedValueOnce({ events: [], has_more: false });
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+    await socket.start();
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      last().serverClose(1006);
+      await settle();
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+
+    // Ten attempts that never opened, one REST check, no token rotation.
+    expect(FakeSocket.instances).toHaveLength(10);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(refreshAccessToken).not.toHaveBeenCalled();
+    expect(store().status).toBe("offline");
+    expect(store().connectionError).toBe(
+      "Could not reconnect to this session.",
+    );
+
+    // The reader's way back: one press, a full schedule again.
+    socket.reconnect();
+    expect(store().status).toBe("reconnecting");
+    expect(FakeSocket.instances).toHaveLength(11);
+  });
+
+  it("leaves no live stream behind once it has given up", async () => {
+    vi.useFakeTimers();
+    refreshAccessToken.mockResolvedValue(REFRESHED);
+    const socket = track(await startLive());
+    last().text({ type: "session", session: session("running") });
+    socket.terminal.open(80, 24);
+    const frames: unknown[] = [];
+    socket.terminal.subscribe((frame) => frames.push(frame));
+    const opened = last();
+
+    // Refused, rotated, refused again — and the session is gone, which is
+    // what the check finds.
+    getSession.mockRejectedValue(new ApiError(404, "session not found"));
+    opened.text({ type: "error", message: "authentication required" });
+    opened.serverClose(1008);
+    await settle();
     last().accept();
     last().serverClose(1008);
     await settle();
     await vi.advanceTimersByTimeAsync(60_000);
 
+    expect(store().status).toBe("offline");
+    expect(store().connectionError).toBe("This session no longer exists.");
+    // The dead socket is detached: its frames reach neither the store nor a
+    // terminal subscriber, and nothing is queued behind it.
+    opened.text({ type: "event", event: textEvent(1, "one") });
+    opened.binary(new Uint8Array([1]));
+    expect(store().order).toHaveLength(0);
+    expect(frames).toEqual([]);
     expect(FakeSocket.instances).toHaveLength(2);
-    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
   });
 
   it("shows a non-auth error frame as a system message", async () => {

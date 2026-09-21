@@ -10,9 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryClient } from "../queryClient";
 import { ApiError } from "../services/apiClient";
 import * as auth from "../services/auth";
+import * as projects from "../services/projects";
 import * as tasks from "../services/tasks";
 import * as taskStates from "../services/taskStates";
-import type { AuthResponse, Task, TaskEvent, TaskState } from "../types";
+import type {
+  AuthResponse,
+  Project,
+  Task,
+  TaskEvent,
+  TaskState,
+} from "../types";
 import { taskKeys } from "./queryKeys";
 import { useTaskStore } from "./taskStore";
 import { useTaskStream } from "./useTaskStream";
@@ -41,9 +48,15 @@ vi.mock("../services/taskStates", async (original) => ({
   listTaskStates: vi.fn(),
 }));
 
+vi.mock("../services/projects", async (original) => ({
+  ...(await original<typeof projects>()),
+  getProject: vi.fn(),
+}));
+
 const getAccessToken = vi.mocked(auth.getAccessToken);
 const refreshAccessToken = vi.mocked(auth.refreshAccessToken);
 const onCredentialsReplaced = vi.mocked(auth.onCredentialsReplaced);
+const getProject = vi.mocked(projects.getProject);
 const listTasks = vi.mocked(tasks.listTasks);
 const listTaskStates = vi.mocked(taskStates.listTaskStates);
 
@@ -146,6 +159,7 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.clearAllMocks();
   getAccessToken.mockReturnValue("token-one");
+  getProject.mockResolvedValue({} as Project);
   listTasks.mockResolvedValue([] as Task[]);
   listTaskStates.mockResolvedValue([state("Ready", 0)]);
   queryClient.clear();
@@ -434,6 +448,66 @@ describe("useTaskStream", () => {
     expect(listTasks).toHaveBeenCalledTimes(loads);
     expect(refreshAccessToken).not.toHaveBeenCalled();
     expect(FakeEventSource.instances).toHaveLength(1);
+  });
+
+  it("rotates the token once for a run of failures, not once per attempt", async () => {
+    // A stream that never opens — the upgrade is refused, and `EventSource`
+    // never says why — used to spend the single-use refresh cookie on every
+    // cycle for as long as the tab was open.
+    vi.useFakeTimers();
+    refreshAccessToken.mockResolvedValue(REFRESHED);
+    const view = renderHook(() => useTaskStream(PROJECT));
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await act(async () => {
+        last().fail();
+        await settle();
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+    }
+
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+    expect(getProject).toHaveBeenCalledTimes(1);
+    // Ten attempts that never opened, and then a state that says so.
+    expect(FakeEventSource.instances).toHaveLength(10);
+    expect(board().stream).toBe("offline");
+    expect(board().streamError).toBe("Could not reconnect to the task stream.");
+
+    // Nothing is pending: an hour later there is still no eleventh source.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_600_000);
+    });
+    expect(FakeEventSource.instances).toHaveLength(10);
+
+    // And the board's own recovery action starts the schedule again.
+    act(() => {
+      board().reconnectStream?.();
+    });
+    expect(FakeEventSource.instances).toHaveLength(11);
+    expect(board().stream).toBe("reconnecting");
+
+    view.unmount();
+  });
+
+  it("stops with a visible state when the project is gone", async () => {
+    vi.useFakeTimers();
+    refreshAccessToken.mockResolvedValue(REFRESHED);
+    getProject.mockRejectedValue(new ApiError(404, "project not found"));
+    const view = renderHook(() => useTaskStream(PROJECT));
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await act(async () => {
+        last().fail();
+        await settle();
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+    }
+
+    expect(board().stream).toBe("offline");
+    expect(board().streamError).toBe("This project no longer exists.");
+    expect(FakeEventSource.instances).toHaveLength(5);
+
+    view.unmount();
   });
 
   it("does not open a stream without an access token", () => {

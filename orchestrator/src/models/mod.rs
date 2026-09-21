@@ -13,7 +13,6 @@ pub mod task_comment;
 pub mod task_dependency;
 pub mod task_event;
 pub mod task_handoff;
-pub mod task_session;
 pub mod task_state;
 pub mod token;
 pub mod user;
@@ -60,7 +59,6 @@ pub use task_handoff::{
     HandoffCaller, HandoffInput, NewTaskHandoff, ReviewDecision, ReviewStatus, TaskHandoff,
     ValidatedHandoff, is_commit_id,
 };
-pub use task_session::TaskSession;
 pub use task_state::{
     DEFAULT_TASK_STATES, MAX_STATE_NAME_CHARS, NewTaskState, TaskState, TaskStateKind,
     TaskStateName, is_state_name,

@@ -210,7 +210,7 @@ async fn events(pool: &PgPool, project_id: Uuid) -> Vec<TaskEvent> {
 async fn session_links(
     pool: &PgPool,
     task_id: Uuid,
-) -> Vec<mars_orchestrator::models::TaskSession> {
+) -> Vec<mars_orchestrator::tracker::TaskSessionLinkDto> {
     TaskRepository::new(pool)
         .list_task_sessions(task_id)
         .await

@@ -1,8 +1,7 @@
-//! One throw-away Postgres per test *process*, one throw-away database per
-//! test.
+//! One throw-away Postgres per test *run*, one throw-away database per test.
 //!
 //! Every repository test, the migration round-trip test and
-//! `TestApp::spawn()` build on this. The first test in a binary to ask for a
+//! `TestApp::spawn()` build on this. The first process of a run to ask for a
 //! pool starts `postgres:18` in a container and applies the crate's
 //! migrations once, to a database called `mars_template`; every test then gets
 //! `CREATE DATABASE test_<uuid> TEMPLATE mars_template` on that same server,
@@ -11,6 +10,28 @@
 //! database of one's own isolates rows, sequences, `LISTEN`/`NOTIFY` channels
 //! and advisory locks alike, because a PostgreSQL advisory lock tag carries
 //! the database oid.
+//!
+//! # One server for the whole run
+//!
+//! The run is `cargo nextest run`, which puts every test in a process of its
+//! own (ADR 0037). A server per process would therefore be a server per test,
+//! so the processes of a run share one.
+//!
+//! What they share is a state directory under `CARGO_TARGET_TMPDIR`, which is
+//! inside the build directory and so belongs to this checkout and this build
+//! alone. It holds a `lock` file every process takes `flock(LOCK_EX)` on
+//! before it reads or writes anything else, a `server` file naming the URL,
+//! the container id and a fingerprint of the embedded migrations, and one
+//! empty file per live process under `pids/`. A process finding a `server`
+//! whose fingerprint is its own and whose URL answers joins it; anything else
+//! — a different fingerprint, a container someone removed by hand — is torn
+//! down and replaced, so a stale server can never serve an old schema. The
+//! last process to leave removes the container and the `server` file.
+//!
+//! A process killed outright leaves its `pids/` entry behind. The next
+//! process prunes it: a pid no process answers to is not holding anything.
+//! Reusing a pid is the one way that can go wrong, and all it costs is a
+//! container that outlives its run.
 //!
 //! Starting a container needs a reachable engine socket. The harness does not
 //! configure one: it relies on the default socket resolution of
@@ -41,11 +62,16 @@
 //! destructors. The container is therefore removed from a `libc::atexit`
 //! hook — `atexit` handlers *do* run on `process::exit` — which opens a
 //! `bollard` client on the same socket `testcontainers` used and forces the
-//! container away. A run that is killed outright (`SIGKILL`) leaks its
+//! container away. The hook is the same one that removes this process from
+//! `pids/`, and it only removes the container when no other process of the
+//! run is left. A run that is killed outright (`SIGKILL`) leaks its
 //! container, which is the one case no in-process mechanism can cover.
 
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
+use std::os::fd::AsRawFd;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use bollard::query_parameters::RemoveContainerOptionsBuilder;
@@ -78,10 +104,10 @@ pub const DEFAULT_MAX_CONNECTIONS: u32 = 5;
 /// `fsync=off` is what the `testcontainers` Postgres module passes by default
 /// and is repeated here because `ImageExt::with_cmd` replaces the image's
 /// command rather than extending it. `max_connections` is raised from the
-/// built-in 100 because one server now carries every test in a binary at once:
-/// sixteen parallel tests at [`DEFAULT_MAX_CONNECTIONS`] fit inside 100, but
-/// the fan-out tests ask for more and each database creation opens one
-/// connection of its own.
+/// built-in 100 because one server now carries every test of the *run* at
+/// once: sixteen test processes at [`DEFAULT_MAX_CONNECTIONS`] plus a listener
+/// and a maintenance connection each fit inside 100 only just, and the
+/// fan-out tests ask for more.
 const SERVER_ARGS: [&str; 4] = ["-c", "fsync=off", "-c", "max_connections=300"];
 
 /// The database the migrations are applied to once and every test database is
@@ -92,17 +118,28 @@ const TEMPLATE_DATABASE: &str = "mars_template";
 /// against. The image creates it; nothing in Mars uses it.
 const ADMIN_DATABASE: &str = "postgres";
 
-/// Serialises `CREATE DATABASE` process-wide.
+/// How many times a `CREATE DATABASE` is tried before the test fails.
 ///
-/// PostgreSQL takes only a `ShareLock` on the source database, so concurrent
-/// clones of one template are legal, but a test harness that flakes is worse
-/// than one that is a few hundred milliseconds slower, and the whole point of
-/// the template is that a clone is cheap. Held on a session against
-/// [`ADMIN_DATABASE`], so it can never meet a lock a test takes: an advisory
-/// lock tag carries the database oid, and no test runs in the maintenance
-/// database. Distinct from `ADMIN_MEMBERSHIP_LOCK_KEY` all the same, so a
-/// `pg_locks` dump is never ambiguous.
-const CREATE_DATABASE_LOCK_KEY: i64 = 0x4D41_5253_5445_5354;
+/// The clones used to be serialised by a process-wide advisory lock, on the
+/// argument that a harness that flakes is worse than one that is a few hundred
+/// milliseconds slower. Under nextest that lock spans the whole run, and a
+/// suite measured with it is 9 % slower than one measured without
+/// (ADR 0037). PostgreSQL takes only a `ShareLock` on the source database, so
+/// concurrent clones of one template are legal; what they can meet is a
+/// transient "source database is being accessed by other users" when a
+/// connection to the template has not finished closing, and a retry is the
+/// answer to that rather than a queue.
+const CREATE_DATABASE_ATTEMPTS: u32 = 4;
+
+/// How long the first retry waits; the second waits twice that, and so on.
+const CREATE_DATABASE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// How long the apparently last process of a run waits before it believes it
+/// (see [`leave`]).
+///
+/// Long enough to cover the runner starting the next test, short enough that
+/// the end of a run is not noticeably later for it.
+const REMOVAL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Names a Postgres server the suite should use instead of starting its own:
 /// `postgres://user:password@host:port`, with no database name.
@@ -170,27 +207,86 @@ fn shared() -> &'static SharedPostgres {
     })
 }
 
-/// Start the container, register its removal and build the template.
+/// Join the run's server, starting it if this process is the first.
+///
+/// Everything here happens under the state directory's lock, so a sibling
+/// process either waits for the server this one starts or is the one that
+/// started it (see the module documentation).
 async fn boot(runtime: Handle) -> SharedPostgres {
-    if let Some(base_url) = external_server() {
-        drop_template(&base_url).await;
-        create_template(&base_url).await;
+    let state = state_directory();
+    let lock = StateLock::acquire(&state);
+    prune_pids(&state);
 
-        return SharedPostgres {
-            base_url,
-            runtime,
-            _container: None,
-        };
+    let fingerprint = migrations_fingerprint();
+    let mut joined = None;
+    let mut container = None;
+
+    if let Some(server) = read_server(&state) {
+        if server.fingerprint == fingerprint && answers(&server.base_url).await {
+            joined = Some(server.base_url);
+        } else {
+            // A server of another build, or one whose container is gone: take
+            // it away rather than clone a schema this binary was not compiled
+            // against.
+            discard_server(&state, &server).await;
+        }
     }
 
+    let base_url = match joined {
+        Some(base_url) => base_url,
+        None => {
+            let (base_url, started) = start_server().await;
+            create_template(&base_url).await;
+            write_server(
+                &state,
+                &Server {
+                    fingerprint,
+                    base_url: base_url.clone(),
+                    container: started.as_ref().map(|started| started.id().to_string()),
+                },
+            );
+            container = started;
+
+            base_url
+        }
+    };
+
+    register_departure(&state);
+    drop(lock);
+
+    SharedPostgres {
+        base_url,
+        runtime,
+        _container: container,
+    }
+}
+
+/// Start the server this run's databases live on.
+///
+/// Either the one [`EXTERNAL_SERVER_ENV`] names, which the run brought itself
+/// and nothing here removes, or a container of this run's own.
+async fn start_server() -> (String, Option<ContainerAsync<Postgres>>) {
+    if let Some(base_url) = external_server() {
+        drop_template(&base_url).await;
+
+        return (base_url, None);
+    }
+
+    // `trust` because `scram-sha-256` is the single most expensive thing a
+    // test does: the SCRAM exchange is 4096 rounds of PBKDF2 at each end, and
+    // an unoptimised test binary spends about 55 ms of its own CPU on every
+    // connection it opens — three of them per `TestApp::spawn`. The password
+    // in the URL below is then ignored. Nothing real is reachable: the server
+    // is this run's container, on a port published to the loopback address,
+    // and it is removed when the run ends (`CLAUDE.md`, rule 3, is about
+    // credentials that mean something somewhere).
     let container = Postgres::default()
         .with_tag(POSTGRES_TAG)
         .with_cmd(SERVER_ARGS)
+        .with_env_var("POSTGRES_HOST_AUTH_METHOD", "trust")
         .start()
         .await
         .expect("postgres starts");
-
-    register_removal(container.id());
 
     let base_url = format!(
         "postgres://postgres:postgres@{}:{}",
@@ -204,13 +300,18 @@ async fn boot(runtime: Handle) -> SharedPostgres {
             .expect("the container publishes 5432"),
     );
 
-    create_template(&base_url).await;
+    (base_url, Some(container))
+}
 
-    SharedPostgres {
-        base_url,
-        runtime,
-        _container: Some(container),
-    }
+/// Whether a server recorded earlier is still there to be used.
+async fn answers(base_url: &str) -> bool {
+    let Ok(connection) = PgConnection::connect(&format!("{base_url}/{ADMIN_DATABASE}")).await
+    else {
+        return false;
+    };
+    let _ = connection.close().await;
+
+    true
 }
 
 /// The server [`EXTERNAL_SERVER_ENV`] names, without a trailing slash.
@@ -221,8 +322,8 @@ fn external_server() -> Option<String> {
     (!url.is_empty()).then(|| url.to_string())
 }
 
-/// Remove a template an earlier binary of the same run left on an external
-/// server, so that this binary's migrations are the ones its tests clone.
+/// Remove a template an earlier run left on an external server, so that this
+/// run's migrations are the ones its tests clone.
 async fn drop_template(base_url: &str) {
     let mut admin = admin_connection(base_url).await;
     execute(
@@ -310,20 +411,20 @@ async fn create_database(template: Option<&str>) -> TestDatabase {
     let name = format!("test_{}", Uuid::new_v4().simple());
 
     let mut admin = admin_connection(&shared.base_url).await;
-    sqlx::query("SELECT pg_advisory_lock($1)")
-        .bind(CREATE_DATABASE_LOCK_KEY)
-        .execute(&mut admin)
-        .await
-        .expect("the create-database lock is taken");
-
     let statement = match template {
         Some(template) => format!("CREATE DATABASE \"{name}\" TEMPLATE \"{template}\""),
         None => format!("CREATE DATABASE \"{name}\""),
     };
-    let created = execute(&mut admin, statement).await;
 
-    // The advisory lock is a session lock, so closing the connection releases
-    // it whether the statement succeeded or not.
+    let mut created = execute(&mut admin, statement.clone()).await;
+    for attempt in 1..CREATE_DATABASE_ATTEMPTS {
+        if created.is_ok() {
+            break;
+        }
+        tokio::time::sleep(CREATE_DATABASE_BACKOFF * attempt).await;
+        created = execute(&mut admin, statement.clone()).await;
+    }
+
     let _ = admin.close().await;
     created.expect("the test database is created");
 
@@ -433,76 +534,265 @@ async fn connect(database: &TestDatabase, max_connections: u32) -> PgPool {
         .expect("the pool connects")
 }
 
-/// The container to remove at process exit, and the socket to remove it
-/// through.
-struct Reaped {
-    engine: String,
-    id: String,
+/// The run's state directory, inside this build directory's `tmp/`.
+///
+/// `CARGO_TARGET_TMPDIR` is set for integration test binaries only, which is
+/// all of this module's callers, and it follows `CARGO_TARGET_DIR`: two
+/// worktrees building into two directories therefore share no server, which is
+/// what a parallel agent needs (`CLAUDE.md`, "Git workflow").
+fn state_directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("mars-test-postgres")
 }
 
-static REAPED: OnceLock<Reaped> = OnceLock::new();
+/// What the `server` file records: the one line each of fingerprint, URL and
+/// container id, in that order, with `-` for a server the run did not start.
+struct Server {
+    fingerprint: String,
+    base_url: String,
+    container: Option<String>,
+}
 
-/// Arrange for `id` to be removed when the process exits.
-fn register_removal(id: &str) {
-    let registration = REAPED.set(Reaped {
-        engine: engine_socket(),
-        id: id.to_string(),
-    });
-    if registration.is_err() {
-        // Only `boot` calls this and the `OnceLock` around it runs it once, so
-        // a second registration would be a bug rather than a race; there is
-        // nothing left to do either way.
+/// The exclusive `flock` on the state directory, held for as long as the guard
+/// is.
+///
+/// `flock` and not a lock file's existence: the kernel releases it however the
+/// process ends, so a panicking or killed process cannot wedge a run.
+struct StateLock(File);
+
+impl StateLock {
+    /// Take the lock, waiting for whoever holds it.
+    fn acquire(state: &Path) -> StateLock {
+        fs::create_dir_all(state).expect("the test state directory exists");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(state.join("lock"))
+            .expect("the test state lock file opens");
+
+        // SAFETY: `flock` takes a descriptor this process owns and keeps open
+        // for the lifetime of the guard, and `LOCK_EX` is a documented
+        // operation. It blocks, which is the intent.
+        let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        assert_eq!(locked, 0, "the test state lock is taken");
+
+        StateLock(file)
+    }
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        // SAFETY: the same descriptor, still open. Closing it would release
+        // the lock too; this only makes the release the visible thing.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+/// The recorded server, if the file is there and well formed.
+///
+/// Anything unreadable is treated as no record at all: the worst that follows
+/// is one more container start.
+fn read_server(state: &Path) -> Option<Server> {
+    let recorded = fs::read_to_string(state.join("server")).ok()?;
+    let mut lines = recorded.lines();
+    let fingerprint = lines.next()?.to_string();
+    let base_url = lines.next()?.to_string();
+    let container = lines.next()?;
+
+    Some(Server {
+        fingerprint,
+        base_url,
+        container: (container != "-").then(|| container.to_string()),
+    })
+}
+
+/// Record the server for the processes that follow.
+fn write_server(state: &Path, server: &Server) {
+    let mut file = File::create(state.join("server")).expect("the server record is created");
+    writeln!(
+        file,
+        "{}\n{}\n{}",
+        server.fingerprint,
+        server.base_url,
+        server.container.as_deref().unwrap_or("-"),
+    )
+    .expect("the server record is written");
+}
+
+/// Take a recorded server away: its container, if it owned one, and its
+/// record.
+async fn discard_server(state: &Path, server: &Server) {
+    if let Some(id) = &server.container {
+        remove_container(&engine_socket(), id).await;
+    }
+    let _ = fs::remove_file(state.join("server"));
+}
+
+/// A fingerprint of the migrations this binary embeds.
+///
+/// Two binaries of one build agree on it and a binary built after a migration
+/// changed does not, which is the whole question a reused template has to
+/// answer.
+fn migrations_fingerprint() -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    for migration in MIGRATOR.iter() {
+        digest.update(migration.version.to_le_bytes());
+        digest.update(&*migration.checksum);
+    }
+
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// This process's entry under `pids/`, which the exit hook removes.
+static DEPARTURE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Announce this process as a user of the server and arrange for it to
+/// announce its departure.
+///
+/// Called with the state lock held.
+fn register_departure(state: &Path) {
+    let pids = state.join("pids");
+    fs::create_dir_all(&pids).expect("the pid directory exists");
+    let entry = pids.join(std::process::id().to_string());
+    File::create(&entry).expect("this process registers itself");
+
+    if DEPARTURE.set(entry).is_err() {
+        // `boot` runs once behind a `OnceLock`, so a second registration would
+        // be a bug rather than a race.
         return;
     }
 
     // SAFETY: `atexit` asks for an `extern "C" fn()` that neither takes nor
-    // returns anything and does not unwind. `remove_shared_container` is one,
-    // and it catches its own panics. The `OnceLock` above makes this the only
-    // registration.
-    let registered = unsafe { libc::atexit(remove_shared_container) };
-    assert_eq!(registered, 0, "the container removal hook registers");
+    // returns anything and does not unwind. `leave` is one, and it catches its
+    // own panics. The `OnceLock` above makes this the only registration.
+    let registered = unsafe { libc::atexit(leave) };
+    assert_eq!(registered, 0, "the departure hook registers");
 }
 
-/// Force the shared container away. Registered with `atexit`, so it runs on
-/// the `std::process::exit` the test harness finishes with.
-extern "C" fn remove_shared_container() {
-    let Some(reaped) = REAPED.get() else {
+/// Drop the entries of processes that are no longer running.
+///
+/// Called with the state lock held.
+fn prune_pids(state: &Path) {
+    let Ok(entries) = fs::read_dir(state.join("pids")) else {
         return;
     };
 
-    let removed = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
-        // A current-thread runtime, built and finished inside this handler: no
-        // thread is spawned and nothing outlives the call, which is as much as
-        // an exit handler should ask of the process.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())?;
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            let _ = fs::remove_file(entry.path());
+            continue;
+        };
+        if !running(pid) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
 
-        runtime.block_on(async {
-            let engine = connect_engine(&reaped.engine).map_err(|error| error.to_string())?;
-            let options = RemoveContainerOptionsBuilder::default()
-                .force(true)
-                .v(true)
-                .build();
+/// Whether a process with this pid exists.
+fn running(pid: i32) -> bool {
+    // SAFETY: signal 0 is the documented existence check and sends nothing.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
 
-            engine
-                .remove_container(&reaped.id, Some(options))
-                .await
-                .map_err(|error| error.to_string())
-        })
+    // `EPERM` is another user's process, which is alive; only `ESRCH` says the
+    // pid is free.
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+/// How many processes of the run are still registered.
+///
+/// Called with the state lock held, after [`prune_pids`].
+fn remaining(state: &Path) -> usize {
+    fs::read_dir(state.join("pids"))
+        .map(|entries| entries.flatten().count())
+        .unwrap_or(0)
+}
+
+/// Leave the run, and take the server with it if nobody else is using it.
+///
+/// Registered with `atexit`, so it runs on the `std::process::exit` the test
+/// harness finishes with.
+extern "C" fn leave() {
+    let Some(entry) = DEPARTURE.get() else {
+        return;
+    };
+    let Some(state) = entry.parent().and_then(Path::parent) else {
+        return;
+    };
+
+    let left = std::panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
+        let lock = StateLock::acquire(state);
+        let _ = fs::remove_file(entry);
+        prune_pids(state);
+        let last = remaining(state) == 0;
+        drop(lock);
+
+        if !last {
+            return Ok(());
+        }
+
+        // Being the last process of the moment is not being the last process
+        // of the run: the runner starts the next test as soon as this one's
+        // slot frees, and a process that tore the server down in that gap
+        // would make the next one start a container of its own — three or
+        // four times over a suite, each of them seconds the whole run waits
+        // for behind the lock. So the last one out waits for the gap to close
+        // before it believes itself, with the lock released so that whoever
+        // arrives can take it.
+        std::thread::sleep(REMOVAL_GRACE);
+
+        let lock = StateLock::acquire(state);
+        prune_pids(state);
+        if remaining(state) == 0
+            && let Some(server) = read_server(state)
+        {
+            // A current-thread runtime, built and finished inside this
+            // handler: no thread is spawned and nothing outlives the call,
+            // which is as much as an exit handler should ask of the process.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+            runtime.block_on(discard_server(state, &server));
+        }
+
+        drop(lock);
+
+        Ok(())
     }));
 
-    match removed {
+    match left {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => eprintln!(
-            "could not remove the test Postgres container {}: {error}",
-            reaped.id
-        ),
-        Err(_) => eprintln!(
-            "removing the test Postgres container {} panicked",
-            reaped.id
-        ),
+        Ok(Err(error)) => eprintln!("could not clean up the test Postgres server: {error}"),
+        Err(_) => eprintln!("cleaning up the test Postgres server panicked"),
+    }
+}
+
+/// Force a container away through the engine socket `testcontainers` used.
+async fn remove_container(engine: &str, id: &str) {
+    let removed = async {
+        let engine = connect_engine(engine).map_err(|error| error.to_string())?;
+        let options = RemoveContainerOptionsBuilder::default()
+            .force(true)
+            .v(true)
+            .build();
+
+        engine
+            .remove_container(id, Some(options))
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+
+    if let Err(error) = removed {
+        eprintln!("could not remove the test Postgres container {id}: {error}");
     }
 }
 

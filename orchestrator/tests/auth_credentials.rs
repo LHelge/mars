@@ -27,7 +27,7 @@ use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use chrono::Utc;
 use common::TestApp;
-use common::races::{IN_FLIGHT, RACE_TIMEOUT, hold_user_lock, unrevoked_refresh_tokens};
+use common::races::{RACE_TIMEOUT, hold_user_lock, unrevoked_refresh_tokens, wait_until_blocked};
 use mars_orchestrator::auth::{Credentials, IssuedPair, REFRESH_COOKIE};
 use mars_orchestrator::models::user::hash_password;
 use mars_orchestrator::models::{OpaqueToken, User};
@@ -35,7 +35,7 @@ use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{
     PasswordResetTokenRepository, UserRepository, password_reset_tokens,
 };
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use uuid::Uuid;
 
 /// Obviously fake, and long enough for the documented 10–128 range.
@@ -214,7 +214,7 @@ async fn a_refresh_racing_a_password_change_loses() {
 
     let refreshing = credentials.refresh(&jar);
     let changing = async {
-        sleep(IN_FLIGHT).await;
+        wait_until_blocked(&app.pool, 1).await;
         let hash = hash_password(NEW_PASSWORD).expect("the new password hashes");
         UserRepository::new(&app.pool)
             .apply_password_change(&mut holder, ada.id, &hash, None)

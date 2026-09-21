@@ -37,7 +37,7 @@ use axum_test::TestResponse;
 use common::TestApp;
 use common::app::{TokenPair, assert_refresh_cookie_cleared};
 use common::races::{
-    IN_FLIGHT, RACE_ITERATIONS, RACE_TIMEOUT, hold_user_lock, unrevoked_refresh_tokens,
+    RACE_ITERATIONS, RACE_TIMEOUT, hold_user_lock, unrevoked_refresh_tokens, wait_until_blocked,
 };
 use mars_orchestrator::auth::REFRESH_COOKIE;
 use mars_orchestrator::models::User;
@@ -45,7 +45,7 @@ use mars_orchestrator::models::user::hash_password;
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::UserRepository;
 use serde_json::{Value, json};
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use uuid::Uuid;
 
 const LOGIN: &str = "/api/auth/login";
@@ -134,7 +134,7 @@ async fn a_refresh_that_waits_for_a_password_change_is_rejected_and_cleared() {
 
     let refreshing = app.refresh(&cookie);
     let changing = async {
-        sleep(IN_FLIGHT).await;
+        wait_until_blocked(&app.pool, 1).await;
         change_password_under_lock(&app, &mut holder, user.id, NEW_PASSWORD).await;
         holder.commit().await.expect("the holder commits");
     };
@@ -294,7 +294,7 @@ async fn a_login_that_waits_for_a_password_change_is_rejected() {
         .post(LOGIN)
         .json(&json!({ "username": USERNAME, "password": PASSWORD }));
     let changing = async {
-        sleep(IN_FLIGHT).await;
+        wait_until_blocked(&app.pool, 1).await;
         change_password_under_lock(&app, &mut holder, user.id, NEW_PASSWORD).await;
         holder.commit().await.expect("the holder commits");
     };

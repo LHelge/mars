@@ -13,6 +13,16 @@
 #     (ARCHITECTURE.md, "Uid contract");
 #   - a session without a command fails loudly with exit 2;
 #   - the claude image carries the pinned CLI, git and a working login bash;
+#   - the dev image (images/claude-dev, ADR 0039), when DEV_IMAGE names one,
+#     keeps every line of that contract — uid, HOME, cwd, the entrypoint
+#     redirects and the same pinned CLI — and on top of it: cargo, rustc,
+#     cargo clippy, rustfmt, cargo binstall, node and npm all resolve both for
+#     the command the entrypoint execs and in `/bin/bash -l`, with
+#     /session/home bind-mounted empty as the launcher mounts it; `cargo new`
+#     plus `cargo build --offline` succeeds in /session/work; `agent` can write
+#     under /opt/rustup and /opt/cargo; and the npm global prefix is under
+#     /session/home. With DEV_IMAGE unset those checks print a skip line, so
+#     the two-image form of this script still runs;
 #   - the stub replays its fixture under both `-p` and `--input-format
 #     stream-json`, opens every turn with a `system`/`init` line as the real
 #     CLI does, writes nothing at all before the first stdin line in the
@@ -37,6 +47,7 @@
 #   ENGINE          docker | podman        (default docker)
 #   CLAUDE_IMAGE    claude image reference (default mars-session-claude:dev)
 #   STUB_IMAGE      stub image reference   (default mars-session-stub:dev)
+#   DEV_IMAGE       dev image reference    (unset: the dev checks are skipped)
 #   SMOKE_KEEP_DIR  when set, temp directories are created under this path and
 #                   kept, so CI can upload log/* after a failure.
 #
@@ -49,6 +60,9 @@ set -euo pipefail
 ENGINE="${ENGINE:-docker}"
 CLAUDE_IMAGE="${CLAUDE_IMAGE:-mars-session-claude:dev}"
 STUB_IMAGE="${STUB_IMAGE:-mars-session-stub:dev}"
+# No default: the dev image is optional, and a run that does not name one says
+# so rather than failing preflight.
+DEV_IMAGE="${DEV_IMAGE:-}"
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 CLAUDE_DOCKERFILE="$SCRIPT_DIR/claude/Dockerfile"
@@ -91,11 +105,13 @@ Environment:
   ENGINE          docker | podman                (default: docker)
   CLAUDE_IMAGE    claude session image reference (default: mars-session-claude:dev)
   STUB_IMAGE      stub session image reference   (default: mars-session-stub:dev)
+  DEV_IMAGE       dev session image reference    (unset: dev checks are skipped)
   SMOKE_KEEP_DIR  create temp directories under this path and keep them
 
 Examples:
   images/smoke-test.sh
   ENGINE=podman images/smoke-test.sh
+  ENGINE=podman DEV_IMAGE=mars-session-claude-dev:latest images/smoke-test.sh
   ENGINE=podman SMOKE_KEEP_DIR=/tmp/smoke images/smoke-test.sh
 USAGE
 }
@@ -372,20 +388,102 @@ check_entrypoint_noargs() {
     [ ! -s "$dir/log/stream.jsonl" ] || { fail "stream.jsonl is not empty"; return 1; }
 }
 
+# check_claude_version <image> <label> — the pinned CLI, git and a login bash.
+# The dev image inherits all three from the base and pins the CLI nowhere of
+# its own (images/claude-dev/Dockerfile), so the same check answers for both.
 check_claude_version() {
-    local dir version
-    dir="$(session_dir claude-version)"
+    local image=$1 label=$2 dir version
+    dir="$(session_dir "$label")"
     version="$(sed -n 's/^ARG CLAUDE_CODE_VERSION=//p' "$CLAUDE_DOCKERFILE")"
     [ -n "$version" ] || { fail "no ARG CLAUDE_CODE_VERSION in $CLAUDE_DOCKERFILE"; return 1; }
-    run_once "$CLAUDE_IMAGE" "$dir" claude --version \
+    run_once "$image" "$dir" claude --version \
         || { fail "claude --version exited non-zero"; return 1; }
-    run_once "$CLAUDE_IMAGE" "$dir" git --version \
+    run_once "$image" "$dir" git --version \
         || { fail "git --version exited non-zero"; return 1; }
-    run_once "$CLAUDE_IMAGE" "$dir" bash -lc 'echo ok' \
+    run_once "$image" "$dir" bash -lc 'echo ok' \
         || { fail "bash -lc exited non-zero"; return 1; }
     expect_contains "$dir/log/stream.jsonl" "$version" "the pinned CLI version" || return 1
     expect_contains "$dir/log/stream.jsonl" "git version" "the git version" || return 1
     expect_line "$dir/log/stream.jsonl" ok "the login shell output" || return 1
+}
+
+# The dev image's toolchain probe, run twice per check: once as the command
+# the entrypoint execs, which sees the Dockerfile's ENV PATH, and once through
+# `bash -l`, which passes Debian's /etc/profile and gets its PATH back from
+# /etc/profile.d/mars-toolchains.sh. `home-entries:` reports what the
+# bind-mounted /session/home holds, which is nothing: the launcher mounts an
+# empty directory over it, so anything the image baked under that path is gone
+# and the toolchain must resolve from /opt regardless. That line comes first,
+# before any tool has had a chance to create a cache or a config under HOME.
+# shellcheck disable=SC2016 # expanded by the container's shell, not this one
+DEV_PROBE_SH='set -e
+echo "home-entries:$(ls -A /session/home | wc -l)"
+cargo --version
+rustc --version
+cargo clippy --version
+rustfmt --version
+cargo binstall -V
+node --version
+npm --version
+command -v cargo
+npm config get prefix
+echo toolchain-ok'
+
+# dev_toolchain_probe <label> <cmd...> — one probe run in a session of its
+# own, so its /session/home really is the empty mount the launcher makes and
+# not what an earlier run left in it.
+dev_toolchain_probe() {
+    local label=$1 dir
+    shift
+    dir="$(session_dir "$label")"
+    # Assert the bind source here too, so a future change to session_dir
+    # cannot quietly weaken the check.
+    [ -z "$(ls -A "$dir/home")" ] || { fail "$label: the home bind source is not empty"; return 1; }
+    run_once "$DEV_IMAGE" "$dir" "$@" \
+        || { fail "$label: the toolchain probe exited non-zero"; return 1; }
+    expect_line "$dir/log/stream.jsonl" home-entries:0 "$label: /session/home" || return 1
+    expect_line "$dir/log/stream.jsonl" /opt/cargo/bin/cargo "$label: where cargo resolved" || return 1
+    expect_line "$dir/log/stream.jsonl" /session/home/.npm-global "$label: the npm prefix" || return 1
+    expect_line "$dir/log/stream.jsonl" toolchain-ok "$label: the end of the probe" || return 1
+}
+
+check_dev_toolchain() {
+    # The entrypoint's command, which sees the Dockerfile's ENV PATH.
+    dev_toolchain_probe dev-toolchain-exec sh -c "$DEV_PROBE_SH" || return 1
+    # The terminal's login shell, which gets its PATH back from
+    # /etc/profile.d/mars-toolchains.sh after /etc/profile reset it.
+    dev_toolchain_probe dev-toolchain-login bash -lc "$DEV_PROBE_SH" || return 1
+}
+
+# `cargo new` plus an offline build: the one thing a dev session exists to do,
+# and the one that needs the toolchain, a writable CARGO_HOME and a writable
+# /session/work at once. Offline, because nothing here may reach the network.
+check_dev_cargo_build() {
+    local dir
+    dir="$(session_dir dev-cargo-build)"
+    # shellcheck disable=SC2016 # expanded by the container's shell
+    run_once "$DEV_IMAGE" "$dir" sh -c 'set -e
+cd /session/work
+cargo new --quiet --bin --vcs none smoke-build
+cd smoke-build
+cargo build --quiet --offline
+./target/debug/smoke-build
+echo build-ok' || { fail "cargo new + cargo build --offline exited non-zero"; return 1; }
+    expect_line "$dir/log/stream.jsonl" "Hello, world!" "the built binary's output" || return 1
+    expect_line "$dir/log/stream.jsonl" build-ok "the offline build" || return 1
+}
+
+# The two toolchain homes `agent` must be able to write without root: rustup
+# installs a repository's pinned toolchain into /opt/rustup and `cargo install`
+# writes /opt/cargo (images/claude-dev/Dockerfile).
+check_dev_writable_toolchain() {
+    local dir
+    dir="$(session_dir dev-writable)"
+    run_once "$DEV_IMAGE" "$dir" sh -c 'set -e
+touch /opt/rustup/.mars-smoke /opt/cargo/.mars-smoke
+rm -f /opt/rustup/.mars-smoke /opt/cargo/.mars-smoke
+echo writable-ok' || { fail "agent cannot write /opt/rustup and /opt/cargo"; return 1; }
+    expect_line "$dir/log/stream.jsonl" writable-ok "the toolchain write check" || return 1
 }
 
 check_stub_oneshot() {
@@ -499,7 +597,7 @@ preflight() {
         printf 'FAIL: preflight: no %s on PATH (set ENGINE=docker or ENGINE=podman)\n' "$ENGINE"
         exit 1
     fi
-    for image in "$CLAUDE_IMAGE" "$STUB_IMAGE"; do
+    for image in "$CLAUDE_IMAGE" "$STUB_IMAGE" ${DEV_IMAGE:+"$DEV_IMAGE"}; do
         if ! "$ENGINE" image inspect "$image" >/dev/null 2>&1; then
             printf 'FAIL: preflight: %s has no image %s; build it from %s first\n' \
                 "$ENGINE" "$image" "$SCRIPT_DIR"
@@ -549,7 +647,8 @@ main() {
     TMP="$(mktemp -d "$base/smoke-XXXXXX")"
     [ "$ENGINE" = podman ] || chmod 0777 "$TMP"
 
-    printf 'engine=%s claude=%s stub=%s\n' "$ENGINE" "$CLAUDE_IMAGE" "$STUB_IMAGE"
+    printf 'engine=%s claude=%s stub=%s dev=%s\n' \
+        "$ENGINE" "$CLAUDE_IMAGE" "$STUB_IMAGE" "${DEV_IMAGE:-<unset>}"
     start=$(date +%s%N)
 
     check entrypoint-redirect-claude \
@@ -558,7 +657,17 @@ main() {
     check entrypoint-redirect-stub check_entrypoint_redirect "$STUB_IMAGE" "$redirect_dir"
     check entrypoint-append check_entrypoint_append "$redirect_dir"
     check entrypoint-noargs check_entrypoint_noargs
-    check claude-version check_claude_version
+    check claude-version check_claude_version "$CLAUDE_IMAGE" claude-version
+    if [ -n "$DEV_IMAGE" ]; then
+        check entrypoint-redirect-dev \
+            check_entrypoint_redirect "$DEV_IMAGE" "$(session_dir redirect-dev)"
+        check dev-claude-version check_claude_version "$DEV_IMAGE" dev-claude-version
+        check dev-toolchain check_dev_toolchain
+        check dev-cargo-build check_dev_cargo_build
+        check dev-writable-toolchain check_dev_writable_toolchain
+    else
+        printf 'skip: the dev image checks (DEV_IMAGE is unset)\n'
+    fi
     check stub-oneshot check_stub_oneshot
     check stub-interactive check_stub_interactive
     check stub-sigint check_stub_sigint

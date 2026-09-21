@@ -1,15 +1,16 @@
 ---
 id: vxcrn
 title: "MCP server instructions: say this server is the session's task tracker and replaces the one the repository names"
-status: open
+status: done
 priority: P1
 created: "2026-09-20T22:40:12.532043890Z"
-updated: "2026-09-20T22:40:12.532043890Z"
+updated: "2026-09-21T09:02:55.843768402Z"
 tags:
   - orchestrator
   - mcp
   - docs
 parent: pekcb
+attempts: 1
 ---
 
 ## Summary

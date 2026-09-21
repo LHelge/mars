@@ -1,15 +1,16 @@
 ---
 id: pd6zy
 title: Write the four role profile templates and seed them into every new project
-status: open
+status: done
 priority: P1
 created: "2026-09-20T22:40:49.760467945Z"
-updated: "2026-09-20T22:40:49.760467945Z"
+updated: "2026-09-21T09:02:57.270460746Z"
 tags:
   - orchestrator
   - profiles
   - docs
 parent: pekcb
+attempts: 1
 ---
 
 ## Summary

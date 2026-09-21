@@ -197,4 +197,210 @@ rename to src/new.ts
       { type: "add", text: "const a = 2;", newNo: 1 },
     ]);
   });
+
+  it("keeps a deleted `-- ` comment as a deletion and keeps counting", () => {
+    // What deleting a line of SQL, Lua or Haskell looks like: the `-` marker
+    // in front of `-- old comment` spells a file header.
+    const [file] = parseUnifiedPatch(
+      `diff --git a/migrations/0001_init.sql b/migrations/0001_init.sql
+index 1111111..2222222 100644
+--- a/migrations/0001_init.sql
++++ b/migrations/0001_init.sql
+@@ -1,3 +1,3 @@
+ CREATE TABLE t (id uuid);
+--- old comment
++-- new comment
+ SELECT 1;
+`,
+    );
+    expect(file.path).toBe("migrations/0001_init.sql");
+    expect(file.hunks[0].lines).toEqual([
+      { type: "context", text: "CREATE TABLE t (id uuid);", oldNo: 1, newNo: 1 },
+      { type: "del", text: "-- old comment", oldNo: 2 },
+      { type: "add", text: "-- new comment", newNo: 2 },
+      // The old side kept counting: the deletion was not swallowed.
+      { type: "context", text: "SELECT 1;", oldNo: 3, newNo: 3 },
+    ]);
+  });
+
+  it("keeps an added `++ ` line as an addition and does not rename the file", () => {
+    const [file] = parseUnifiedPatch(
+      `diff --git a/notes.txt b/notes.txt
+index 1111111..2222222 100644
+--- a/notes.txt
++++ b/notes.txt
+@@ -1,1 +1,2 @@
+ a
++++ b
+`,
+    );
+    expect(file.path).toBe("notes.txt");
+    expect(file.hunks[0].lines).toEqual([
+      { type: "context", text: "a", oldNo: 1, newNo: 1 },
+      { type: "add", text: "++ b", newNo: 2 },
+    ]);
+  });
+
+  it("does not count a no-newline marker as a line of the hunk", () => {
+    const [file] = parseUnifiedPatch(
+      `diff --git a/tail.txt b/tail.txt
+index 1111111..2222222 100644
+--- a/tail.txt
++++ b/tail.txt
+@@ -1,1 +1,1 @@
+-old
+\\ No newline at end of file
++new
+\\ No newline at end of file
+diff --git a/after.txt b/after.txt
+new file mode 100644
+`,
+    );
+    expect(file.hunks[0].lines).toEqual([
+      { type: "del", text: "old", oldNo: 1 },
+      { type: "add", text: "new", newNo: 1 },
+    ]);
+  });
+
+  it("reads a hunk header that omits its counts as one line a side", () => {
+    const [file] = parseUnifiedPatch(
+      `diff --git a/one.txt b/one.txt
+--- a/one.txt
++++ b/one.txt
+@@ -3 +3 @@
+-old
++new
+`,
+    );
+    expect(file.hunks[0].lines).toEqual([
+      { type: "del", text: "old", oldNo: 3 },
+      { type: "add", text: "new", newNo: 3 },
+    ]);
+  });
+
+  it("lists a new empty file and a mode-only change with no hunks", () => {
+    expect(
+      parseUnifiedPatch(
+        `diff --git a/empty.txt b/empty.txt
+new file mode 100644
+index 0000000..e69de29
+diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+`,
+      ),
+    ).toEqual([
+      { path: "empty.txt", hunks: [], binary: false },
+      { path: "script.sh", hunks: [], binary: false },
+    ]);
+  });
+
+  it("keeps the carriage returns of a CRLF file and still reads the headers", () => {
+    const [file] = parseUnifiedPatch(
+      "diff --git a/crlf.txt b/crlf.txt\r\n" +
+        "index 1111111..2222222 100644\r\n" +
+        "--- a/crlf.txt\r\n" +
+        "+++ b/crlf.txt\r\n" +
+        "@@ -1,2 +1,2 @@\r\n" +
+        " one\r\n" +
+        "-two\r\n" +
+        "+three\r\n",
+    );
+    expect(file.path).toBe("crlf.txt");
+    expect(file.hunks[0].header).toBe("@@ -1,2 +1,2 @@");
+    expect(file.hunks[0].lines).toEqual([
+      { type: "context", text: "one\r", oldNo: 1, newNo: 1 },
+      { type: "del", text: "two\r", oldNo: 2 },
+      { type: "add", text: "three\r", newNo: 2 },
+    ]);
+  });
+
+  it("unquotes a C-quoted path", () => {
+    const [file] = parseUnifiedPatch(
+      `diff --git "a/docs/f\\303\\266o.md" "b/docs/f\\303\\266o.md"
+index 1111111..2222222 100644
+--- "a/docs/f\\303\\266o.md"
++++ "b/docs/f\\303\\266o.md"
+@@ -1 +1 @@
+-old
++new
+`,
+    );
+    expect(file.path).toBe("docs/föo.md");
+    expect(file.hunks[0].lines).toHaveLength(2);
+  });
+
+  it("marks the binary file after a text file, not the text file", () => {
+    const files = parseUnifiedPatch(
+      `diff --git a/a.txt b/a.txt
+index 1111111..2222222 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-one
++two
+diff --git "a/img/f\\303\\266o.png" "b/img/f\\303\\266o.png"
+new file mode 100644
+index 0000000..3333333
+Binary files /dev/null and "b/img/f\\303\\266o.png" differ
+`,
+    );
+    expect(files.map((file) => [file.path, file.binary])).toEqual([
+      ["a.txt", false],
+      ["img/föo.png", true],
+    ]);
+    expect(files[0].hunks).toHaveLength(1);
+    expect(files[1].hunks).toEqual([]);
+  });
+
+  it("starts a new file on a `diff --git` line whose paths it cannot read", () => {
+    const files = parseUnifiedPatch(
+      `diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-one
++two
+diff --git nonsense
+Binary files a/nonsense and b/nonsense differ
+`,
+    );
+    expect(files).toHaveLength(2);
+    expect(files[0].binary).toBe(false);
+    expect(files[1].binary).toBe(true);
+  });
+
+  it("splits a plain `diff -u` patch that has no `diff --git` lines", () => {
+    const files = parseUnifiedPatch(
+      `--- a/one.txt
++++ b/one.txt
+@@ -1 +1 @@
+-one
++ONE
+--- a/two.txt
++++ b/two.txt
+@@ -1 +1 @@
+-two
++TWO
+`,
+    );
+    expect(files.map((file) => file.path)).toEqual(["one.txt", "two.txt"]);
+    expect(files[1].hunks[0].lines).toEqual([
+      { type: "del", text: "two", oldNo: 1 },
+      { type: "add", text: "TWO", newNo: 1 },
+    ]);
+  });
+
+  it("reads a path that contains a space", () => {
+    const files = parseUnifiedPatch(
+      `diff --git a/my notes.txt b/my notes.txt
+--- a/my notes.txt
++++ b/my notes.txt
+@@ -1 +1 @@
+-one
++two
+`,
+    );
+    expect(files.map((file) => file.path)).toEqual(["my notes.txt"]);
+  });
 });

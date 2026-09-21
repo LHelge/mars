@@ -4,6 +4,8 @@
 
 import { useState } from "react";
 
+import { splitLines } from "../utils/lines";
+
 // A module that renders a component may export nothing else, so the limit is
 // a constant here rather than a shared export.
 /** The line count above which output is collapsed. */
@@ -29,8 +31,11 @@ export function CollapsibleLines({
   className = "",
 }: CollapsibleLinesProps) {
   const [expanded, setExpanded] = useState(false);
-  const lines = text.split("\n");
-  const total = text === "" ? 0 : lines.length;
+  // `splitLines`, so the count in the control is the count an editor shows:
+  // the newline that ends the last line is a terminator, not a line of its
+  // own, and 40 lines ending in one must not read "Show all 41 lines".
+  const lines = splitLines(text);
+  const total = lines.length;
   const long = total > COLLAPSE_LINES;
   const collapsed = long && !expanded;
 
@@ -41,7 +46,7 @@ export function CollapsibleLines({
           wrap ? "whitespace-pre-wrap" : "whitespace-pre"
         } ${className}`}
       >
-        {collapsed ? lines.slice(0, COLLAPSE_LINES).join("\n") : text}
+        {(collapsed ? lines.slice(0, COLLAPSE_LINES) : lines).join("\n")}
       </pre>
       {long && (
         <button

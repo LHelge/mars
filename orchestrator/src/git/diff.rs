@@ -30,6 +30,13 @@
 //! `D` and an `A`, which is what the frontend wants anyway: it lists files
 //! with their counts, not rename arrows.
 //!
+//! **Literal paths.** The two file-list runs pass `-z`, which prints every
+//! path verbatim. The patch cannot take `-z`, and by default git C-quotes a
+//! path with any byte outside printable ASCII in it, so the patch run passes
+//! `-c core.quotePath=false`: the `diff --git` header of `föo.png` then names
+//! the same path the `files` entry does, which is what lets the frontend match
+//! a patch block to a file row.
+//!
 //! **No repository-configured helpers.** `--no-ext-diff` and `--no-textconv`
 //! are on every invocation. The project repository is orchestrator-owned and
 //! is never given a diff driver, but a diff of agent-authored content must not
@@ -105,7 +112,7 @@ pub async fn diff(
 
     let name_status = run_diff(&repo, &["--name-status", "-z"], &merge_base, head).await?;
     let numstat = run_diff(&repo, &["--numstat", "-z"], &merge_base, head).await?;
-    let patch = run_diff(&repo, &[], &merge_base, head).await?;
+    let patch = run_patch(&repo, &merge_base, head).await?;
 
     let (patch, truncated) = truncate_patch(patch, limit);
 
@@ -254,6 +261,32 @@ async fn run_diff(
         .arg("diff")
         .args(DIFF_FLAGS)
         .args(mode)
+        .args(["--end-of-options", merge_base, &head.commit])
+        .cwd(repo)
+        .run_ok()
+        .await?
+        .stdout)
+}
+
+/// The patch itself: [`run_diff`] with no mode flags and `core.quotePath` off.
+///
+/// The file list comes from `-z` runs, which are never quoted, but a patch
+/// cannot be asked for `-z`: its paths are quoted whenever git thinks the
+/// terminal needs it, which by default is any byte outside printable ASCII.
+/// A `diff --git "a/f\303\266o.png" "b/f\303\266o.png"` header names a path
+/// that no entry of `files` carries, so the panel could not match the block to
+/// the row. Off here rather than in the repository's config: a config value is
+/// something a fetched repository could carry, and every invocation in this
+/// module states what it needs (`ARCHITECTURE.md`, "Git model", Diff).
+async fn run_patch(
+    repo: &Path,
+    merge_base: &str,
+    head: &ResolvedRef,
+) -> std::result::Result<String, GitError> {
+    Ok(GitCommand::new()
+        .args(["-c", "core.quotePath=false"])
+        .arg("diff")
+        .args(DIFF_FLAGS)
         .args(["--end-of-options", merge_base, &head.commit])
         .cwd(repo)
         .run_ok()

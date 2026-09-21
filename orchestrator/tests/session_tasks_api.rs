@@ -79,14 +79,13 @@ async fn project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> Uuid {
     .id
 }
 
-/// A session of this project, through its own `default` profile.
+/// A session of this project, through its default profile: the seeded
+/// `implementer` over `ready` (`SPEC.md`, "Role profile templates").
 async fn session(app: &TestApp, pid: Uuid) -> Uuid {
     let profile = ProjectRepository::new(&app.pool)
-        .list_profiles(pid)
+        .find_default_profile(pid)
         .await
         .expect("the profiles read")
-        .into_iter()
-        .next()
         .expect("a new project has its default profile");
 
     let new = NewSession::new(

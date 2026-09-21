@@ -842,15 +842,14 @@ async fn the_dashboard_needs_a_token() {
 
 /// A session of this project, so that a lease has something to point at.
 ///
-/// Through the project's own `default` profile, which `create_project` seeded
-/// serving `ready`.
+/// Through the project's default profile, the seeded `implementer` over
+/// `ready` (`SPEC.md`, "Role profile templates"), found by its flag rather
+/// than by position.
 async fn session(app: &TestApp, pid: Uuid) -> Uuid {
     let profile = ProjectRepository::new(&app.pool)
-        .list_profiles(pid)
+        .find_default_profile(pid)
         .await
         .expect("the profiles read")
-        .into_iter()
-        .next()
         .expect("a new project has its default profile");
 
     let new = NewSession::new(

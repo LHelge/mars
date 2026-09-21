@@ -1461,14 +1461,16 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
     Owned {
         project: project_id,
         sessions: vec![session_id],
-        profiles: vec![
-            projects
-                .find_default_profile(project_id)
-                .await
-                .expect("the profile reads")
-                .expect("a created project has a default profile")
-                .id,
-        ],
+        // Every profile the project was seeded with, not just the default
+        // one, so the deletion assertion covers all four (`SPEC.md`, "Role
+        // profile templates").
+        profiles: projects
+            .list_profiles(project_id)
+            .await
+            .expect("the profiles read")
+            .into_iter()
+            .map(|profile| profile.id)
+            .collect(),
         tasks: vec![blocker.id, blocked.id],
         secrets,
     }

@@ -174,7 +174,7 @@ Constraints and indexes:
 
 ### `agent_profiles`
 
-Per-project configuration of one kind of agent. Every project gets one default conversational profile on creation, named `default`.
+Per-project configuration of one kind of agent. Every project gets four conversational profiles on creation — `planner`, `implementer` (the default one), `reviewer` and `merger` — each with the served state, tool list and `system_prompt` of its role copied from the templates in `SPEC.md`, "Role profile templates" (ADR 0038). They are ordinary rows from then on.
 
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
@@ -193,7 +193,7 @@ Per-project configuration of one kind of agent. Every project gets one default c
 | `partial_messages` | `BOOLEAN` | NOT NULL | Whether to request partial (streaming) messages from the CLI. No column default: the model sets `true` for `conversational` and `false` for `ephemeral` when the caller does not specify it. |
 | `idle_timeout_secs` | `INTEGER` | NOT NULL DEFAULT 1800 | Time without any event after which a running conversational session is parked, or a running ephemeral session is treated as stalled and failed (`ARCHITECTURE.md`, "Task tracker"). |
 | `is_default` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Exactly one per project. |
-| `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | Project creation supplies it instead of taking the default: `NOW()` is the transaction's start, so the four seeded profiles would share it and `ORDER BY created_at` could not put them in role order. |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
 Constraints and indexes:

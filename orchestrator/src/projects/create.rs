@@ -3,16 +3,17 @@
 //! `POST /api/projects` takes `{name, remote_url, default_branch?,
 //! credential?}` and answers a `cloning` project (`SPEC.md`, "Projects"), but
 //! a project is never only its row. It starts with the default task states,
-//! with a `default` conversational profile on the built-in Claude image
-//! serving `ready`, and — when the caller supplied one — with its remote
-//! credential stored as the project-scoped, orchestrator-only secret
-//! `GIT_CREDENTIAL` (`docs/data-model.md`, `task_states`, `profile_states`,
-//! `agent_profiles`, `secrets`; `SPEC.md`, "User-facing features" → "Agent
-//! profiles" and "Task states").
+//! with the four role profiles of [`profile_templates`] — `planner`,
+//! `implementer`, `reviewer`, `merger` — on the built-in Claude image, and —
+//! when the caller supplied one — with its remote credential stored as the
+//! project-scoped, orchestrator-only secret `GIT_CREDENTIAL`
+//! (`docs/data-model.md`, `task_states`, `profile_states`, `agent_profiles`,
+//! `secrets`; `SPEC.md`, "User-facing features" → "Agent profiles", "Role
+//! profile templates" and "Task states").
 //!
 //! [`create_project`] is all of that in one `BEGIN … COMMIT`. Either a project
 //! exists with everything it needs, or nothing of it does: a duplicate name
-//! leaves no orphaned states, profile or credential behind, and a keyring
+//! leaves no orphaned states, profiles or credential behind, and a keyring
 //! failure takes the project with it.
 //!
 //! **Nothing here touches git or the filesystem.** The mirror, the project
@@ -25,18 +26,16 @@
 //! seeded by the database would have its state list created in one place and
 //! edited in another.
 
+use chrono::{TimeDelta, Utc};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::models::{BranchName, NewProject, ProfileInput, Project};
+use crate::models::{BranchName, NewProject, Project};
 use crate::prelude::*;
+use crate::projects::profile_templates::profile_templates;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::secrets::insert_project_git_credential;
 use crate::tracker::Locked;
-
-/// The name of the profile every project is created with
-/// (`docs/data-model.md`, `agent_profiles`).
-pub const DEFAULT_PROFILE_NAME: &str = "default";
 
 /// The caller-supplied half of `POST /api/projects` (`SPEC.md`, "Projects").
 ///
@@ -120,16 +119,27 @@ pub async fn create_project(
     let credential = credential_buffer(input.credential)?;
 
     // Through the model's own path, so the defaults of a seeded profile are
-    // the documented request defaults — `conversational`, `claude`, `bypass`,
-    // `SESSION_IMAGE_DEFAULT`, `["ready"]`, 1800 seconds and the kind's
-    // `partial_messages` — rather than literals repeated here (`SPEC.md`,
-    // "Agent profiles").
-    let profile = ProfileInput {
-        name: DEFAULT_PROFILE_NAME.to_string(),
-        is_default: Some(true),
-        ..ProfileInput::default()
-    }
-    .resolve_new(new_project.id, &state.config)?;
+    // the documented ones — `conversational`, `claude`, `bypass`, 1800 seconds
+    // and the kind's `partial_messages` — rather than literals repeated here
+    // (`SPEC.md`, "Agent profiles"), and so a template that ever stopped
+    // validating fails the creation instead of reaching the column.
+    //
+    // The timestamps are spaced one microsecond apart in template order, which
+    // is the order the four are listed in: `now()` is the transaction's start
+    // and would give all four the same value, leaving `ORDER BY created_at,
+    // name` to sort them alphabetically (`NewAgentProfile::created_at`).
+    let seeded_at = Utc::now();
+    let profiles: Vec<_> = profile_templates()
+        .iter()
+        .enumerate()
+        .map(|(index, template)| {
+            let mut profile =
+                template.to_new_profile(new_project.id, &state.config.session_image_default)?;
+            profile.created_at = Some(seeded_at + TimeDelta::microseconds(index as i64));
+
+            Ok(profile)
+        })
+        .collect::<Result<_>>()?;
 
     let projects = ProjectRepository::new(&state.pool);
     let tasks = TaskRepository::new(&state.pool);
@@ -157,21 +167,23 @@ pub async fn create_project(
         .insert_default_states(Locked::during_project_creation(&mut tx), project.id)
         .await?;
 
-    let inserted_profile = projects.insert_profile(&mut tx, &profile).await?;
-    tasks
-        .set_profile_states_by_name(
-            Locked::during_project_creation(&mut tx),
-            project.id,
-            inserted_profile.id,
-            &profile.serves_states,
-        )
-        .await?;
+    for profile in &profiles {
+        let inserted = projects.insert_profile(&mut tx, profile).await?;
+        tasks
+            .set_profile_states_by_name(
+                Locked::during_project_creation(&mut tx),
+                project.id,
+                inserted.id,
+                &profile.serves_states,
+            )
+            .await?;
+    }
 
     tx.commit().await?;
 
     info!(
         project_id = %project.id,
-        profile_id = %inserted_profile.id,
+        profiles = profiles.len(),
         has_credential = project.has_credential,
         "project created"
     );

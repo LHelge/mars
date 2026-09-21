@@ -1,10 +1,10 @@
 ---
 id: vtssn
 title: "Move tracker tests onto the verb interface: delete the test-side mutation envelope helpers and assert lock and notify behaviour only at the TrackerMutation seam"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-17T20:02:01.328838073Z"
-updated: "2026-09-21T02:24:58.272771753Z"
+updated: "2026-09-21T03:15:49.858244600Z"
 tags:
   - orchestrator
   - tracker

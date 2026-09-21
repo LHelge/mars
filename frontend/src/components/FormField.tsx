@@ -11,7 +11,7 @@ import { CONTROL } from "./fieldStyles";
 
 export interface FormFieldProps {
   label: string;
-  /** The control's `name`; `FieldShell` derives a unique `id` from it. */
+  /** The control's `name` and its `id` (`FieldShell`); unique in the document. */
   name: string;
   type?: HTMLInputTypeAttribute;
   value: string;

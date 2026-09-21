@@ -529,7 +529,7 @@ test("a shared directory is added, refused twice, cleared and removed", async ({
   ).toEqual([]);
 });
 
-test("clearing and removing a shared directory are refused while a session runs", async ({
+test("clearing and removing a shared directory wait for the running session to end", async ({
   page,
   context,
   user,
@@ -550,22 +550,18 @@ test("clearing and removing a shared directory are refused while a session runs"
   const session = await sessions.launch(api, project.id);
   await waitForSessionState(api, session.id, "running");
 
-  // Straight to the tab, without opening the sessions tab first: the buttons
-  // are only pre-disabled when a cached sessions list has already shown a live
-  // session, and the server's 409 is the real answer either way.
+  // Straight to the tab, without opening the sessions tab first: the tab reads
+  // the project's session list itself rather than relying on another tab
+  // having read it (`SPEC.md`, "Frontend", Project page).
   await page.goto(`/projects/${project.id}?tab=shared-dirs`);
   const row = page
     .getByRole("row")
     .filter({ has: page.getByText("/session/work/target", { exact: true }) });
   await expect(row).toBeVisible();
 
-  await row.getByRole("button", { name: "Clear" }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
-  await expect(row).toBeVisible();
-
-  await row.getByRole("button", { name: "Remove" }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
-  await expect(row).toBeVisible();
+  await expect(page.getByText(/A session is running/)).toBeVisible();
+  await expect(row.getByRole("button", { name: "Clear" })).toBeDisabled();
+  await expect(row.getByRole("button", { name: "Remove" })).toBeDisabled();
   expect(
     (await api.get<SharedDir[]>(`/projects/${project.id}/shared-dirs`)).length,
   ).toBe(1);
@@ -573,8 +569,11 @@ test("clearing and removing a shared directory are refused while a session runs"
   await api.post<Session>(`/sessions/${session.id}/end`);
   await waitForSessionState(api, session.id, ["done", "failed"]);
 
-  await page.reload();
-  await row.getByRole("button", { name: "Remove" }).click();
+  // No reload: the tab's own poll of that list is what has to bring the two
+  // actions back, which is the whole point of it reading the list itself.
+  const remove = row.getByRole("button", { name: "Remove" });
+  await expect(remove).toBeEnabled({ timeout: 60_000 });
+  await remove.click();
   await expect(page.getByText("No shared directories yet")).toBeVisible();
 });
 

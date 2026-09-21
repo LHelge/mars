@@ -36,9 +36,13 @@ export const DASHBOARD_REFETCH_MS = 30_000;
 const CELL = "py-1.5 pr-3 align-middle";
 const HEAD = "text-console-muted py-1.5 pr-3 text-left text-xs font-normal";
 const ROW =
-  "border-console-border/60 hover:bg-console-raised/60 relative border-b last:border-b-0";
-// One link per row, stretched over the whole row: the row is a single tab stop
-// and a single click target, without nesting anything inside an anchor.
+  "border-console-border/60 hover:bg-console-raised/60 border-b last:border-b-0";
+// One link per row, stretched over its own cell — `LINK_CELL` is what
+// positions it. Stretching it over the whole row would mean positioning the
+// `<tr>`, and a table row is not reliably a containing block: where it is
+// ignored, every row's `inset-0` resolves against some far ancestor instead
+// and the last row drawn swallows clicks across the page.
+const LINK_CELL = `${CELL} relative min-w-0`;
 const ROW_LINK =
   "text-console-text hover:text-console-accent after:absolute after:inset-0 after:content-['']";
 
@@ -146,7 +150,7 @@ function SessionRows({
             <td className={CELL}>
               <StatusBadge state={session.state} />
             </td>
-            <td className={`${CELL} min-w-0`}>
+            <td className={LINK_CELL}>
               <Link to={`/sessions/${session.id}`} className={ROW_LINK}>
                 {session.title ?? (
                   <span className="text-console-muted">Untitled session</span>
@@ -233,7 +237,7 @@ function TaskRows({
               <td className={`${CELL} text-console-muted font-mono text-xs`}>
                 #{task.number}
               </td>
-              <td className={`${CELL} min-w-0`}>
+              <td className={LINK_CELL}>
                 <Link
                   to={`/projects/${task.project_id}/tasks/${task.number}`}
                   className={ROW_LINK}

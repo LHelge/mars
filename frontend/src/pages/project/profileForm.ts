@@ -23,8 +23,14 @@ import type {
 /** `docs/data-model.md`, `agent_profiles`: the column default. */
 export const DEFAULT_IDLE_TIMEOUT_SECS = 1800;
 
-/** The shortest idle timeout the editor offers; the API's own floor is 1. */
-export const MIN_IDLE_TIMEOUT_SECS = 60;
+/**
+ * The shortest idle timeout the editor accepts, which is the API's own floor
+ * (`SPEC.md`, "Agent profiles": `idle_timeout_secs` at least 1). A higher
+ * editor floor would be a rule the API does not have: a profile created over
+ * the API or by an agent with a 30-second timeout could not be saved from the
+ * editor at all without first being changed into something else.
+ */
+export const MIN_IDLE_TIMEOUT_SECS = 1;
 
 /** `SPEC.md`: `max_concurrent` defaults to 1, and 1 is also its floor. */
 export const MIN_MAX_CONCURRENT = 1;
@@ -44,6 +50,20 @@ export const PROFILE_PERMISSION_MODE = "bypass";
  */
 export function partialMessagesDefault(kind: ProfileKind): boolean {
   return kind === "conversational";
+}
+
+/**
+ * Whether the editor should treat `partial_messages` as already decided by
+ * hand. The kind only picks the default while nobody has: a stored profile
+ * whose flag differs from its kind's default carries a deliberate answer, and
+ * switching kind to and fro must not overwrite it. A new profile (`null`) has
+ * decided nothing.
+ */
+export function partialMessagesDecided(profile: Profile | null): boolean {
+  return (
+    profile !== null &&
+    profile.partial_messages !== partialMessagesDefault(profile.kind)
+  );
 }
 
 /** A new profile of this kind, on the image the project already uses. */

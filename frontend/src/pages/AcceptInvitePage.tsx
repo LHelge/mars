@@ -31,6 +31,14 @@ import { validatePassword } from "../utils/password";
 const INVALID_INVITE =
   "This invitation link is invalid, has expired or was already used. Ask an administrator for a new one.";
 
+/**
+ * The root of this page's own query key. The invite lookup belongs to the
+ * visitor rather than to the account they are leaving, and the page still
+ * renders it while the accept is in flight, so it is the one read the switch
+ * of accounts keeps.
+ */
+const INVITE_KEY_ROOT = "invite";
+
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 32;
 /** The length half of the `users.username` rule in `docs/data-model.md`. */
@@ -73,7 +81,7 @@ export function AcceptInvitePage() {
   const hasToken = token !== undefined && token !== "";
 
   const lookup = useQuery({
-    queryKey: ["invite", token],
+    queryKey: [INVITE_KEY_ROOT, token],
     queryFn: () => lookupInvite(token ?? ""),
     enabled: hasToken,
   });
@@ -103,9 +111,16 @@ export function AcceptInvitePage() {
         throw caught;
       }
       // No return destination applies to an invite: it always lands on the
-      // dashboard, and the previous account's cached reads go with it.
+      // dashboard, and the previous account's cached reads go with it. They go
+      // first: navigation is a transition, so the dashboard's own observers
+      // may already have mounted by the time an `await navigate` resolves, and
+      // clearing then would take their queries with it — leaving them
+      // unreachable by any later invalidation until a remount. Everything but
+      // this page's own invite lookup, which is still on screen.
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey[0] !== INVITE_KEY_ROOT,
+      });
       await navigate("/", { replace: true });
-      queryClient.clear();
     },
     { mapError: acceptFailure },
   );

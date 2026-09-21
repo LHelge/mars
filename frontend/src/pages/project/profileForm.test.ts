@@ -14,6 +14,7 @@ import {
   MIN_IDLE_TIMEOUT_SECS,
   MIN_MAX_CONCURRENT,
   nextFreeName,
+  partialMessagesDecided,
   prefillFromTemplate,
   toFormState,
   toggleMember,
@@ -175,6 +176,40 @@ describe("toFormState and toInput", () => {
   });
 });
 
+describe("partialMessagesDecided", () => {
+  it("has decided nothing for a new profile", () => {
+    expect(partialMessagesDecided(null)).toBe(false);
+  });
+
+  it("leaves a stored answer that differs from its kind's default alone", () => {
+    // The editor's `partial_messages` follows the kind only until somebody has
+    // decided: an ephemeral profile streaming partial messages, or this
+    // conversational one deliberately not, has. Switching kind and back must
+    // not quietly put the default answer back.
+    expect(partialMessagesDecided({ ...STORED, kind: "ephemeral" })).toBe(true);
+    expect(
+      partialMessagesDecided({
+        ...STORED,
+        kind: "conversational",
+        partial_messages: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("lets the kind keep deciding when the stored value is its default", () => {
+    expect(
+      partialMessagesDecided({
+        ...STORED,
+        kind: "ephemeral",
+        partial_messages: false,
+      }),
+    ).toBe(false);
+    expect(
+      partialMessagesDecided({ ...STORED, kind: "conversational" }),
+    ).toBe(false);
+  });
+});
+
 describe("idleTimeoutError", () => {
   it("accepts the default", () => {
     expect(idleTimeoutError(String(DEFAULT_IDLE_TIMEOUT_SECS))).toBeNull();
@@ -193,7 +228,14 @@ describe("idleTimeoutError", () => {
   it("refuses anything below the floor, including zero and negatives", () => {
     expect(idleTimeoutError("0")).not.toBeNull();
     expect(idleTimeoutError("-60")).not.toBeNull();
-    expect(idleTimeoutError("59")).not.toBeNull();
+  });
+
+  it("accepts every timeout the API does, so a stored one can be saved back", () => {
+    // `SPEC.md`, "Agent profiles": `idle_timeout_secs` at least 1. A profile
+    // created over the API or by an agent with a short timeout is editable
+    // without having to be given a longer one first.
+    expect(MIN_IDLE_TIMEOUT_SECS).toBe(1);
+    expect(idleTimeoutError("30")).toBeNull();
   });
 });
 

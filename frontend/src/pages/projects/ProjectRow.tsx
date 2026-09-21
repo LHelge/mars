@@ -14,6 +14,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { SubmitButton } from "../../components/SubmitButton";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
+import { adoptProject } from "../../services/projectCache";
 import { retryClone } from "../../services/projects";
 import { queryKeys } from "../../services/queryKeys";
 import type { Project } from "../../types";
@@ -32,14 +33,15 @@ export function ProjectRow({ project }: ProjectRowProps) {
 
   const retry = useMutation({
     mutationFn: () => retryClone(project.id),
+    // The same answer the project page takes from its own `Retry clone`
+    // (`services/projectCache.ts`).
     onSuccess: (updated) => {
-      queryClient.setQueryData(queryKeys.projects.detail(updated.id), updated);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+      adoptProject(queryClient, updated);
     },
     onError: (caught: unknown) => {
       logUnexpected(caught);
       // The project may have moved on since the list was read; find out.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.list() });
     },
   });
 

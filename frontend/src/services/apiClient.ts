@@ -9,11 +9,18 @@
 // refresh itself signs out; transient failures keep the token so callers can
 // back off normally.
 //
+// The single in-flight refresh lives in `./auth`, shared with the session
+// WebSocket and the task SSE stream; this module only asks for it.
+//
 // This module and `./auth` import each other (refresh uses the client, the
 // client reads the token). Neither calls across the cycle at module load.
 
 import type { ApiErrorBody } from "../types";
-import { refreshAccessToken, getAccessToken } from "./auth";
+import {
+  getAccessToken,
+  isStaleRefreshError,
+  refreshAccessToken,
+} from "./auth";
 
 /** The `{ status, error }` envelope of `SPEC.md`, "REST API". */
 export class ApiError extends Error {
@@ -105,21 +112,6 @@ function handleForbidden(apiError: ApiError): void {
   forbiddenHandler?.();
 }
 
-/**
- * One in-flight refresh shared by every concurrent 401, so a burst of parallel
- * requests never becomes a refresh storm.
- */
-let refreshing: Promise<void> | null = null;
-
-function sharedRefresh(): Promise<void> {
-  refreshing ??= refreshAccessToken()
-    .then(() => undefined)
-    .finally(() => {
-      refreshing = null;
-    });
-  return refreshing;
-}
-
 async function parseBody<T>(response: Response): Promise<T> {
   if (response.status === 204) {
     return undefined as T;
@@ -180,7 +172,20 @@ async function request<T>(
   });
 
   if (response.status === 401 && !retried && !isUnauthenticatedPath(path)) {
-    await sharedRefresh();
+    // Only refresh when this request carried the token the browser still
+    // holds. If something already replaced it, retrying with the current one
+    // is the whole fix, and one rotation of the single-use cookie is saved.
+    if (token === getAccessToken()) {
+      try {
+        await refreshAccessToken();
+      } catch (error) {
+        // A rotation that completed for credentials nobody holds any more
+        // says nothing about this request; the retry produces the real answer.
+        if (!isStaleRefreshError(error)) {
+          throw error;
+        }
+      }
+    }
     return request<T>(method, path, body, init, true);
   }
 

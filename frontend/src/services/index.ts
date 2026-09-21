@@ -17,6 +17,7 @@ export {
   getCurrentUser,
   installSession,
   isAuthenticated,
+  isStaleRefreshError,
   login,
   logout,
   lookupInvite,
@@ -27,6 +28,7 @@ export {
   resetPassword,
   setCurrentUser,
   signOut,
+  StaleRefreshError,
   subscribe,
 } from "./auth";
 export type {

@@ -13,6 +13,7 @@ import type { StoreApi } from "zustand";
 import { ApiError } from "../services/apiClient";
 import {
   getAccessToken,
+  isStaleRefreshError,
   onCredentialsReplaced,
   onSignOut,
   refreshAccessToken,
@@ -268,11 +269,17 @@ export class SessionSocket {
   private async refreshThenReconnect(): Promise<void> {
     this.refreshing = true;
     try {
+      // One rotation for the whole browser: `services/auth` shares this with
+      // the HTTP client and the task stream, and answers with whatever
+      // credentials are current if a newer login replaced ours meanwhile.
       await refreshAccessToken();
     } catch (error) {
-      // A 401 already cleared local authentication and routed to login; only
-      // transient failures are worth retrying.
-      if (!isUnauthorized(error)) this.scheduleRetry();
+      // A 401 already cleared local authentication and routed to login, and a
+      // stale completion belongs to a session that is gone; only transient
+      // failures are worth retrying.
+      if (!isUnauthorized(error) && !isStaleRefreshError(error)) {
+        this.scheduleRetry();
+      }
       return;
     } finally {
       this.refreshing = false;

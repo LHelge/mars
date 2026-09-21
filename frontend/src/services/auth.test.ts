@@ -12,10 +12,12 @@ import {
   lookupInvite,
   onCredentialsReplaced,
   onSignOut,
+  refreshAccessToken,
   requestPasswordReset,
   resetPassword,
   setCurrentUser,
   signOut,
+  StaleRefreshError,
   subscribe,
 } from "./auth";
 import type { AuthResponse, User } from "../types";
@@ -55,6 +57,28 @@ function urlOf(input: RequestInfo | URL): string {
     throw new TypeError("apiClient passed a non-string URL");
   }
   return input;
+}
+
+function errorResponse(status: number, error: string): Response {
+  return jsonResponse(status, { status, error });
+}
+
+/**
+ * A promise whose settlement the test controls, so a refresh can be held open
+ * across a logout or a newer login and released afterwards.
+ */
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 const fetchMock = vi.fn<typeof fetch>();
@@ -200,6 +224,22 @@ describe("auth endpoints", () => {
     expect(lookup.email).toBe("invitee@example.invalid");
   });
 
+  it("signs out when the rotation itself answers 401", async () => {
+    installSession(authResponse("token-a"));
+    const signedOut = vi.fn();
+    const unregister = onSignOut(signedOut);
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(401, "authentication required"),
+    );
+
+    await expect(refreshAccessToken()).rejects.toBeInstanceOf(Error);
+
+    expect(signedOut).toHaveBeenCalledTimes(1);
+    expect(signedOut).toHaveBeenCalledWith("refresh_failed");
+    expect(getAccessToken()).toBeNull();
+    unregister();
+  });
+
   it("posts the password reset request and the reset itself", async () => {
     fetchMock
       .mockResolvedValueOnce(fakeResponse(204))
@@ -218,5 +258,156 @@ describe("auth endpoints", () => {
     expect(fetchMock.mock.calls[1][1]?.body).toBe(
       JSON.stringify({ token: "reset-token", password: "not-a-real-password" }),
     );
+  });
+});
+
+// The cookie `POST /auth/refresh` rotates is single-use: a second submission
+// of it fails *and* clears the cookie, so the whole frontend — HTTP retries,
+// the session WebSocket and the task SSE stream — shares one rotation, and a
+// rotation that no longer owns the browser's authentication installs nothing
+// (`SPEC.md`, "Frontend", Rules).
+describe("refreshAccessToken coordination", () => {
+  it("shares one rotation between an HTTP caller and a stream caller", async () => {
+    installSession(authResponse("token-a"));
+    const gate = deferred<Response>();
+    fetchMock.mockImplementation((input) => {
+      expect(urlOf(input)).toBe("/api/auth/refresh");
+      return gate.promise;
+    });
+
+    const fromHttp = refreshAccessToken();
+    const fromStream = refreshAccessToken();
+    gate.resolve(jsonResponse(200, authResponse("token-b")));
+
+    await expect(fromHttp).resolves.toEqual(authResponse("token-b"));
+    await expect(fromStream).resolves.toEqual(authResponse("token-b"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getAccessToken()).toBe("token-b");
+
+    // The next caller, after that one settled, rotates again.
+    fetchMock.mockResolvedValue(jsonResponse(200, authResponse("token-c")));
+    await expect(refreshAccessToken()).resolves.toEqual(
+      authResponse("token-c"),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("installs nothing when a rotation succeeds after a logout", async () => {
+    installSession(authResponse("token-a"));
+    const signedOut = vi.fn();
+    const unregisterSignOut = onSignOut(signedOut);
+    const replaced = vi.fn();
+    const unregisterReplaced = onCredentialsReplaced(replaced);
+    const gate = deferred<Response>();
+    fetchMock.mockImplementation((input) =>
+      urlOf(input) === "/api/auth/refresh"
+        ? gate.promise
+        : Promise.resolve(fakeResponse(204)),
+    );
+
+    const pending = refreshAccessToken();
+    await logout();
+    gate.resolve(jsonResponse(200, authResponse("token-b")));
+
+    await expect(pending).rejects.toBeInstanceOf(StaleRefreshError);
+    expect(getAccessToken()).toBeNull();
+    expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBeNull();
+    expect(replaced).not.toHaveBeenCalled();
+    expect(signedOut).toHaveBeenCalledTimes(1);
+    expect(signedOut).toHaveBeenCalledWith("user");
+    unregisterSignOut();
+    unregisterReplaced();
+  });
+
+  it("does not sign out again when a rotation 401s after a logout", async () => {
+    installSession(authResponse("token-a"));
+    const signedOut = vi.fn();
+    const unregister = onSignOut(signedOut);
+    const gate = deferred<Response>();
+    fetchMock.mockImplementation((input) =>
+      urlOf(input) === "/api/auth/refresh"
+        ? gate.promise
+        : Promise.resolve(fakeResponse(204)),
+    );
+
+    const pending = refreshAccessToken();
+    await logout();
+    gate.resolve(errorResponse(401, "authentication required"));
+
+    await expect(pending).rejects.toBeInstanceOf(StaleRefreshError);
+    expect(signedOut).toHaveBeenCalledTimes(1);
+    expect(signedOut).toHaveBeenCalledWith("user");
+    unregister();
+  });
+
+  it("hands a rotation that completes after a newer login the newer pair", async () => {
+    installSession(authResponse("token-a"));
+    const replaced = vi.fn();
+    const unregisterReplaced = onCredentialsReplaced(replaced);
+    const signedOut = vi.fn();
+    const unregisterSignOut = onSignOut(signedOut);
+    const gate = deferred<Response>();
+    fetchMock.mockImplementation((input) =>
+      urlOf(input) === "/api/auth/refresh"
+        ? gate.promise
+        : Promise.resolve(jsonResponse(200, authResponse("token-c"))),
+    );
+
+    const pending = refreshAccessToken();
+    await login({ username: "tester", password: "not-a-real-password" });
+    gate.resolve(jsonResponse(200, authResponse("token-b")));
+
+    // The obsolete pair is never installed; the caller reconnects once, with
+    // the credentials the login left behind.
+    await expect(pending).resolves.toEqual(authResponse("token-c"));
+    expect(getAccessToken()).toBe("token-c");
+    expect(replaced).toHaveBeenCalledTimes(1);
+    expect(replaced).toHaveBeenCalledWith("token-c");
+    expect(signedOut).not.toHaveBeenCalled();
+    unregisterReplaced();
+    unregisterSignOut();
+  });
+
+  it("does not sign out a newer login when the obsolete rotation 401s", async () => {
+    installSession(authResponse("token-a"));
+    const signedOut = vi.fn();
+    const unregister = onSignOut(signedOut);
+    const gate = deferred<Response>();
+    fetchMock.mockImplementation((input) =>
+      urlOf(input) === "/api/auth/refresh"
+        ? gate.promise
+        : Promise.resolve(jsonResponse(200, authResponse("token-c"))),
+    );
+
+    const pending = refreshAccessToken();
+    await login({ username: "tester", password: "not-a-real-password" });
+    // The loser's 401 carries the clearing `Set-Cookie`; it says nothing about
+    // the session the login just installed.
+    gate.resolve(errorResponse(401, "authentication required"));
+
+    await expect(pending).resolves.toEqual(authResponse("token-c"));
+    expect(getAccessToken()).toBe("token-c");
+    expect(signedOut).not.toHaveBeenCalled();
+    unregister();
+  });
+
+  it("keeps the token on a transient failure and rotates again next time", async () => {
+    installSession(authResponse("token-a"));
+    const signedOut = vi.fn();
+    const unregister = onSignOut(signedOut);
+    const failure = new TypeError("Failed to fetch");
+    fetchMock
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce(jsonResponse(200, authResponse("token-b")));
+
+    await expect(refreshAccessToken()).rejects.toBe(failure);
+    expect(getAccessToken()).toBe("token-a");
+    expect(signedOut).not.toHaveBeenCalled();
+
+    await expect(refreshAccessToken()).resolves.toEqual(
+      authResponse("token-b"),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    unregister();
   });
 });

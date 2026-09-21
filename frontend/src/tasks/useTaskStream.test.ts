@@ -17,12 +17,19 @@ import { taskKeys } from "./queryKeys";
 import { useTaskStore } from "./taskStore";
 import { useTaskStream } from "./useTaskStream";
 
-vi.mock("../services/auth", () => ({
-  getAccessToken: vi.fn(() => "token-one"),
-  refreshAccessToken: vi.fn(),
-  onCredentialsReplaced: vi.fn(() => () => {}),
-  onSignOut: vi.fn(() => () => {}),
-}));
+vi.mock("../services/auth", async (original) => {
+  const actual = await original<typeof auth>();
+  return {
+    getAccessToken: vi.fn(() => "token-one"),
+    refreshAccessToken: vi.fn(),
+    onCredentialsReplaced: vi.fn(() => () => {}),
+    onSignOut: vi.fn(() => () => {}),
+    // The stale-completion marker is a value, not a collaborator: the stream
+    // has to recognise the real one.
+    StaleRefreshError: actual.StaleRefreshError,
+    isStaleRefreshError: actual.isStaleRefreshError,
+  };
+});
 
 vi.mock("../services/tasks", async (original) => ({
   ...(await original<typeof tasks>()),
@@ -270,6 +277,28 @@ describe("useTaskStream", () => {
   it("stops when the refresh answers 401", async () => {
     vi.useFakeTimers();
     refreshAccessToken.mockRejectedValue(new ApiError(401, "unauthenticated"));
+    const view = renderHook(() => useTaskStream(PROJECT));
+    await act(async () => {
+      last().accept();
+      await settle();
+    });
+
+    await act(async () => {
+      last().fail();
+      await settle();
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(FakeEventSource.instances).toHaveLength(1);
+
+    view.unmount();
+  });
+
+  it("stops when the shared refresh completed for a session that is gone", async () => {
+    vi.useFakeTimers();
+    // `services/auth` rejects this way when the rotation finished after the
+    // user signed out: there is nothing left to reconnect to.
+    refreshAccessToken.mockRejectedValue(new auth.StaleRefreshError());
     const view = renderHook(() => useTaskStream(PROJECT));
     await act(async () => {
       last().accept();

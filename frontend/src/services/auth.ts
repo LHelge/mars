@@ -6,6 +6,11 @@
 // `GET /users/me` at authenticated startup. Deliberately framework-free (a
 // plain module object and a `Set` of listeners, not Zustand) so `apiClient` can
 // import it without pulling in React.
+//
+// This module also owns the one in-flight refresh of the whole frontend: the
+// HTTP client, the session WebSocket and the task SSE stream all go through
+// `refreshAccessToken()`, so a burst never submits the same rotating cookie
+// twice (`SPEC.md`, "Authentication", stream rules).
 
 import type {
   AcceptInviteRequest,
@@ -63,6 +68,13 @@ function removeStoredToken(): void {
 // Replaced wholesale on every change so `useSyncExternalStore` can compare by
 // identity and re-render only when something actually moved.
 let state: AuthState = { user: null, accessToken: readStoredToken() };
+
+// Bumped by every change of *which* credentials this browser holds — a login,
+// an accepted invite, an installed refresh or password-change pair, a sign-out.
+// A refresh captures it when it starts and compares on completion, so a
+// rotation that lost its race cannot reinstall a session that has been
+// replaced or dropped meanwhile.
+let authGeneration = 0;
 
 const listeners = new Set<() => void>();
 const signOutHandlers = new Set<SignOutHandler>();
@@ -141,6 +153,7 @@ export function onCredentialsReplaced(
  */
 export function installSession(auth: AuthResponse): void {
   const replaced = state.accessToken !== null;
+  authGeneration += 1;
   writeStoredToken(auth.access_token);
   setState({ user: auth.user, accessToken: auth.access_token });
   if (replaced) {
@@ -156,6 +169,7 @@ export function setCurrentUser(user: User): void {
 
 /** Drops the token and user from memory and `localStorage`. */
 export function clearAuth(): void {
+  authGeneration += 1;
   removeStoredToken();
   setState({ user: null, accessToken: null });
 }
@@ -199,22 +213,100 @@ export async function logout(): Promise<void> {
 }
 
 /**
- * Rotates the refresh cookie for a new pair. A 401 means the refresh token is
- * missing, expired or revoked: sign out instead of retrying. A network error or
- * 5xx is transient — the token stays in place and callers back off normally
- * (`SPEC.md`, "Authentication").
+ * Thrown by `refreshAccessToken()` when the rotation it awaited finished for
+ * credentials this browser no longer holds *and* nothing replaced them — the
+ * user signed out, or the refresh cookie was rejected for a session already
+ * gone. Callers stop quietly: there is nothing left to reconnect.
  */
-export async function refreshAccessToken(): Promise<AuthResponse> {
+export class StaleRefreshError extends Error {
+  constructor() {
+    super("the refresh completed for a session that no longer exists");
+    this.name = "StaleRefreshError";
+  }
+}
+
+export function isStaleRefreshError(error: unknown): boolean {
+  return error instanceof StaleRefreshError;
+}
+
+interface RefreshAttempt {
+  /** The authentication generation this rotation was started for. */
+  generation: number;
+  id: number;
+  promise: Promise<AuthResponse>;
+}
+
+let refreshAttempt: RefreshAttempt | null = null;
+let nextRefreshId = 1;
+
+/**
+ * The result an obsolete rotation hands its caller: the credentials this
+ * browser holds *now*, installed by whatever replaced the ones the rotation was
+ * started for. Nothing is installed and no `onCredentialsReplaced` handler runs
+ * a second time, so a caller that reconnects on success reconnects once.
+ */
+function currentCredentials(): AuthResponse {
+  if (state.accessToken === null || state.user === null) {
+    throw new StaleRefreshError();
+  }
+  return { user: state.user, access_token: state.accessToken };
+}
+
+async function runRefresh(
+  generation: number,
+  id: number,
+): Promise<AuthResponse> {
   try {
     const auth = await apiPost<AuthResponse>("/auth/refresh");
+    if (generation !== authGeneration) {
+      return currentCredentials();
+    }
     installSession(auth);
     return auth;
   } catch (error) {
+    if (error instanceof StaleRefreshError) {
+      throw error;
+    }
+    if (generation !== authGeneration) {
+      // A logout or a newer login replaced these credentials while the
+      // rotation was in flight: its failure — including the 401 that carries
+      // the clearing `Set-Cookie` — is about a session nobody uses, and must
+      // not sign the newer one out.
+      return currentCredentials();
+    }
     if (error instanceof ApiError && error.status === 401) {
       signOut("refresh_failed");
     }
     throw error;
+  } finally {
+    if (refreshAttempt?.id === id) {
+      refreshAttempt = null;
+    }
   }
+}
+
+/**
+ * Rotates the refresh cookie for a new pair, at most once at a time for the
+ * whole frontend: HTTP 401 retries, the session WebSocket and the task SSE
+ * stream share one in-flight rotation, because the cookie is single-use and a
+ * second submission of it fails (`orchestrator/src/auth/credentials.rs`).
+ *
+ * A 401 means the refresh token is missing, expired or revoked: sign out
+ * instead of retrying. A network error or 5xx is transient — the token stays in
+ * place and callers back off normally (`SPEC.md`, "Authentication"). A
+ * completion that no longer owns the browser's authentication installs nothing:
+ * it resolves with the credentials that replaced it, or rejects with
+ * `StaleRefreshError` when the user is signed out.
+ */
+export function refreshAccessToken(): Promise<AuthResponse> {
+  if (refreshAttempt !== null && refreshAttempt.generation === authGeneration) {
+    return refreshAttempt.promise;
+  }
+  const generation = authGeneration;
+  const id = nextRefreshId++;
+  const promise = runRefresh(generation, id);
+  refreshAttempt = { generation, id, promise };
+  return promise;
 }
 
 export function lookupInvite(token: string): Promise<InviteLookup> {

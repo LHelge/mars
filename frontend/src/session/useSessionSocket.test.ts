@@ -8,12 +8,19 @@ import { disposeSessionStore, getSessionStore } from "./sessionStore";
 import type { SocketLike } from "./useSessionSocket";
 import { SessionSocket } from "./useSessionSocket";
 
-vi.mock("../services/auth", () => ({
-  getAccessToken: vi.fn(() => "token-one"),
-  refreshAccessToken: vi.fn(),
-  onCredentialsReplaced: vi.fn(() => () => {}),
-  onSignOut: vi.fn(() => () => {}),
-}));
+vi.mock("../services/auth", async (original) => {
+  const actual = await original<typeof auth>();
+  return {
+    getAccessToken: vi.fn(() => "token-one"),
+    refreshAccessToken: vi.fn(),
+    onCredentialsReplaced: vi.fn(() => () => {}),
+    onSignOut: vi.fn(() => () => {}),
+    // The stale-completion marker is a value, not a collaborator: the socket
+    // has to recognise the real one.
+    StaleRefreshError: actual.StaleRefreshError,
+    isStaleRefreshError: actual.isStaleRefreshError,
+  };
+});
 
 vi.mock("../services/sessions", () => ({
   listEvents: vi.fn(),
@@ -233,6 +240,20 @@ describe("SessionSocket", () => {
     refreshAccessToken.mockRejectedValue(
       new ApiError(401, "authentication required"),
     );
+
+    last().serverClose(1006);
+    await settle();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(FakeSocket.instances).toHaveLength(1);
+  });
+
+  it("stops when the shared refresh completed for a session that is gone", async () => {
+    vi.useFakeTimers();
+    track(await startLive());
+    // `services/auth` rejects this way when the rotation finished after the
+    // user signed out: there is nothing left to reconnect to.
+    refreshAccessToken.mockRejectedValue(new auth.StaleRefreshError());
 
     last().serverClose(1006);
     await settle();

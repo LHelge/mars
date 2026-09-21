@@ -237,6 +237,29 @@ describe("apiClient 401 handling", () => {
     expect(refreshes).toHaveLength(1);
   });
 
+  it("retries without refreshing when the token it carried is no longer current", async () => {
+    installSession(authResponse("token-a"));
+    let attempts = 0;
+    fetchMock.mockImplementation((input) => {
+      if (urlOf(input) !== "/api/users/me") {
+        return Promise.resolve(jsonResponse(200, authResponse("token-c")));
+      }
+      attempts += 1;
+      if (attempts === 1) {
+        // Another request's refresh landed while this one was in flight.
+        installSession(authResponse("token-b"));
+        return Promise.resolve(errorResponse(401, "unauthenticated"));
+      }
+      return Promise.resolve(jsonResponse(200, user));
+    });
+
+    await expect(apiGet<User>("/users/me")).resolves.toEqual(user);
+
+    // No second rotation of the single-use cookie: just the retry.
+    expect(requestUrls()).toEqual(["/api/users/me", "/api/users/me"]);
+    expect(headerOf(1, "authorization")).toBe("Bearer token-b");
+  });
+
   it("does not refresh after a second 401 on the retry", async () => {
     installSession(authResponse("token-a"));
     fetchMock

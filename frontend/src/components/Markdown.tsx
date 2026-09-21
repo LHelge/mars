@@ -356,13 +356,17 @@ const PLUGINS = [remarkGfm];
 
 export interface MarkdownBodyProps {
   children: string;
+  // Classes for the root, for a caller that renders one text as several
+  // bodies: `StreamingMarkdown` uses it to say that a body continues the one
+  // above it, so `first:mt-0` does not eat a heading's margin mid-message.
+  className?: string;
 }
 
-export function MarkdownBody({ children }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className }: MarkdownBodyProps) {
   return (
     // A URL, a hash or a path with no break opportunity wraps rather than
     // widening the row; `pre` and inline code opt back out.
-    <div className="[overflow-wrap:anywhere]">
+    <div className={cx("[overflow-wrap:anywhere]", className)}>
       <Markdown components={COMPONENTS} remarkPlugins={PLUGINS}>
         {children}
       </Markdown>

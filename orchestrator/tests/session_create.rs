@@ -1,5 +1,5 @@
 //! `session::create_session` driven directly, with no HTTP request and no user
-//! (`ARCHITECTURE.md`, "After v1: dispatcher and scheduled agents").
+//! (`ARCHITECTURE.md`, "Unattended launches").
 //!
 //! What a *user* launch does is asserted through the route in
 //! `tests/sessions_api.rs`, which is the proof that moving the launch out of

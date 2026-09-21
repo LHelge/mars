@@ -12,8 +12,8 @@
 //! project, profile, prompt, title and base checks, the task claim that commits
 //! with the session row and the first message. `POST` here parses the body,
 //! calls it with [`LaunchActor::User`] and answers 201, so that the dispatcher
-//! and the scheduled agents planned in `ARCHITECTURE.md`, "After v1: dispatcher
-//! and scheduled agents", launch through the same path without an HTTP request
+//! and the scheduled agents planned in `ARCHITECTURE.md`, "Unattended
+//! launches", launch through the same path without an HTTP request
 //! and without a user. What that path decides, and in which order, is
 //! `session::create`'s documentation.
 //!

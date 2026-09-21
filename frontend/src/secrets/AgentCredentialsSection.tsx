@@ -21,6 +21,8 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { Alert } from "../components/Alert";
 import { EmptyState } from "../components/EmptyState";
+import { FieldShell } from "../components/FieldShell";
+import { CONTROL } from "../components/fieldStyles";
 import { LoadingState } from "../components/LoadingState";
 import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
@@ -258,7 +260,6 @@ function AgentCredentialRow({ secret, appliesTo }: AgentCredentialRowProps) {
             <SubmitButton
               type="button"
               variant="ghost"
-              loading={false}
               disabled={busy}
               onClick={() => {
                 setError(null);
@@ -292,24 +293,25 @@ function AgentCredentialRow({ secret, appliesTo }: AgentCredentialRowProps) {
                   aria-label={`Replace the ${label} that applies to ${appliesTo}`}
                   className="flex flex-col gap-2"
                 >
-                  <label
-                    htmlFor={`replace-credential-${secret.id}`}
-                    className="text-console-muted text-xs"
+                  <FieldShell
+                    label="New value"
+                    name={`replace-credential-${secret.id}`}
                   >
-                    New value
-                  </label>
-                  <input
-                    id={`replace-credential-${secret.id}`}
-                    type="password"
-                    value={value}
-                    onChange={(event) => {
-                      setValue(event.target.value);
-                    }}
-                    autoComplete="off"
-                    spellCheck={false}
-                    required
-                    className="border-console-border bg-console-bg text-console-text max-w-md rounded border px-2.5 py-1.5 font-mono text-sm"
-                  />
+                    {(control) => (
+                      <input
+                        {...control}
+                        type="password"
+                        value={value}
+                        onChange={(event) => {
+                          setValue(event.target.value);
+                        }}
+                        autoComplete="off"
+                        spellCheck={false}
+                        required
+                        className={`${CONTROL} max-w-md`}
+                      />
+                    )}
+                  </FieldShell>
                   <div className="flex gap-2">
                     <SubmitButton loading={replace.isPending}>
                       Save value
@@ -317,7 +319,6 @@ function AgentCredentialRow({ secret, appliesTo }: AgentCredentialRowProps) {
                     <SubmitButton
                       type="button"
                       variant="ghost"
-                      loading={false}
                       onClick={() => {
                         setValue("");
                         setReplacing(false);

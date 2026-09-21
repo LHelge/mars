@@ -96,7 +96,6 @@ export function ProjectsPage() {
   const newProjectButton = (
     <SubmitButton
       type="button"
-      loading={false}
       disabled={creating}
       onClick={() => {
         setCreating(true);

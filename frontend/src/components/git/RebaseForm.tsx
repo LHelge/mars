@@ -11,10 +11,11 @@ import { isGitConflict, rebase } from "../../services/git";
 import type { Branch } from "../../types";
 import { shortSha } from "../../utils/format";
 import { Alert } from "../Alert";
-import { FormField } from "../FormField";
+import { FieldShell } from "../FieldShell";
+import { FIELD } from "../fieldStyles";
 import { SubmitButton } from "../SubmitButton";
 import { ConflictList } from "./ConflictList";
-import { chosenOr, CONTROL, refsOfKind, useReportBusy } from "./formState";
+import { chosenOr, refsOfKind, useReportBusy } from "./formState";
 import type { ReportBusy } from "./formState";
 
 /** `ARCHITECTURE.md`, "Git model": a dirty work tree is left for the agent. */
@@ -96,46 +97,41 @@ export function RebaseForm({
           </p>
         </div>
 
-        <FormField
-          label="Onto"
-          name={`${formId}-onto`}
-          value={onto}
-          onChange={setChosenOnto}
-          disabled={disabled}
-        >
-          <select
-            id={`${formId}-onto`}
-            name={`${formId}-onto`}
-            value={onto}
-            disabled={disabled}
-            onChange={(event) => {
-              setChosenOnto(event.target.value);
-            }}
-            className={CONTROL}
-          >
-            {heads.length === 0 && upstream.length === 0 && (
-              <option value="">No ref to rebase onto</option>
-            )}
-            {heads.length > 0 && (
-              <optgroup label="Integration heads">
-                {heads.map((head) => (
-                  <option key={head.name} value={head.name}>
-                    {head.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            {upstream.length > 0 && (
-              <optgroup label="Upstream">
-                {upstream.map((ref) => (
-                  <option key={ref.name} value={ref.name}>
-                    {ref.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-        </FormField>
+        <FieldShell label="Onto" name={`${formId}-onto`}>
+          {(control) => (
+            <select
+              {...control}
+              value={onto}
+              disabled={disabled}
+              onChange={(event) => {
+                setChosenOnto(event.target.value);
+              }}
+              className={FIELD}
+            >
+              {heads.length === 0 && upstream.length === 0 && (
+                <option value="">No ref to rebase onto</option>
+              )}
+              {heads.length > 0 && (
+                <optgroup label="Integration heads">
+                  {heads.map((head) => (
+                    <option key={head.name} value={head.name}>
+                      {head.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {upstream.length > 0 && (
+                <optgroup label="Upstream">
+                  {upstream.map((ref) => (
+                    <option key={ref.name} value={ref.name}>
+                      {ref.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          )}
+        </FieldShell>
       </div>
 
       <p className="text-console-muted text-xs">{WORK_TREE_HINT}</p>

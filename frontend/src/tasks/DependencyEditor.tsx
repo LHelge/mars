@@ -23,7 +23,7 @@ import { projectErrorMessage } from "../pages/project/messages";
 import type { TaskDependencyKind, TaskDetail } from "../types";
 import { DependencyList } from "./DependencyList";
 import { filterTasks } from "./search";
-import { CONTROL } from "./taskChrome";
+import { CONTROL } from "../components/fieldStyles";
 import { useTaskStore } from "./taskStore";
 import { useTaskMutations } from "./useTaskMutations";
 

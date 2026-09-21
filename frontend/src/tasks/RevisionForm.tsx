@@ -20,6 +20,8 @@ import type { FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { Alert } from "../components/Alert";
+import { FieldShell } from "../components/FieldShell";
+import { FIELD } from "../components/fieldStyles";
 import { SubmitButton } from "../components/SubmitButton";
 import { projectErrorMessage } from "../pages/project/messages";
 import { queryKeys } from "../services/queryKeys";
@@ -33,7 +35,6 @@ import {
   defaultSourceSession,
   orderSessionsForPicker,
 } from "./handoffRules";
-import { CONTROL } from "./taskChrome";
 import { useTaskStore } from "./taskStore";
 import { useTaskMutations } from "./useTaskMutations";
 
@@ -43,8 +44,6 @@ export interface RevisionFormProps {
   /** The panel closes the form again once the revision is published. */
   onDone: () => void;
 }
-
-const FIELD = `${CONTROL} w-full placeholder:text-console-muted`;
 
 export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
   const states = useTaskStore((store) => store.states);
@@ -114,106 +113,92 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
         <Alert kind="error">Could not load the project&rsquo;s sessions.</Alert>
       )}
 
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="handoff-source" className="text-console-muted text-xs">
-          Source session
-        </label>
-        <select
-          id="handoff-source"
-          name="handoff-source"
-          value={chosen}
-          disabled={update.isPending}
-          onChange={(event) => {
-            setSource(event.target.value);
-          }}
-          className={FIELD}
-        >
-          <option value="">Choose the session whose work this is</option>
-          {rows.map((session) => (
-            <option
-              key={session.id}
-              value={session.id}
-              disabled={session.branch === null}
-            >
-              {session.title ?? "Untitled session"} — {session.state} —{" "}
-              {shortId(session.id, 8)}
-              {session.branch === null ? " (no branch yet)" : ""}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="handoff-commit" className="text-console-muted text-xs">
-          Commit
-        </label>
-        <input
-          id="handoff-commit"
-          name="handoff-commit"
-          value={commit}
-          spellCheck={false}
-          autoComplete="off"
-          disabled={update.isPending}
-          placeholder="0000000000000000000000000000000000000000"
-          aria-describedby="handoff-commit-hint"
-          onChange={(event) => {
-            setCommit(event.target.value);
-            setShownError(null);
-          }}
-          className={FIELD}
-        />
-        <p id="handoff-commit-hint" className="text-console-muted text-xs">
-          {COMMIT_HINT}
-        </p>
-        {shownError !== null && <Alert kind="error">{shownError}</Alert>}
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="handoff-comment" className="text-console-muted text-xs">
-          Comment
-        </label>
-        <textarea
-          id="handoff-comment"
-          name="handoff-comment"
-          rows={4}
-          value={comment}
-          disabled={update.isPending}
-          placeholder="What is in this commit, and what should the next agent do with it?"
-          onChange={(event) => {
-            setComment(event.target.value);
-          }}
-          className={FIELD}
-        />
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="handoff-state" className="text-console-muted text-xs">
-          Move to
-        </label>
-        <select
-          id="handoff-state"
-          name="handoff-state"
-          value={state}
-          disabled={update.isPending}
-          aria-describedby="handoff-state-hint"
-          onChange={(event) => {
-            setState(event.target.value);
-          }}
-          className={FIELD}
-        >
-          <option value="">Choose a state</option>
-          {states
-            .filter((row) => row.name !== task.state)
-            .map((row) => (
-              <option key={row.id} value={row.name}>
-                {row.name}
+      <FieldShell label="Source session" name="handoff-source">
+        {(control) => (
+          <select
+            {...control}
+            value={chosen}
+            disabled={update.isPending}
+            onChange={(event) => {
+              setSource(event.target.value);
+            }}
+            className={FIELD}
+          >
+            <option value="">Choose the session whose work this is</option>
+            {rows.map((session) => (
+              <option
+                key={session.id}
+                value={session.id}
+                disabled={session.branch === null}
+              >
+                {session.title ?? "Untitled session"} — {session.state} —{" "}
+                {shortId(session.id, 8)}
+                {session.branch === null ? " (no branch yet)" : ""}
               </option>
             ))}
-        </select>
-        <p id="handoff-state-hint" className="text-console-muted text-xs">
-          {STATE_HINT}
-        </p>
-      </div>
+          </select>
+        )}
+      </FieldShell>
+
+      <FieldShell label="Commit" name="handoff-commit" hint={COMMIT_HINT}>
+        {(control) => (
+          <>
+            <input
+              {...control}
+              value={commit}
+              spellCheck={false}
+              autoComplete="off"
+              disabled={update.isPending}
+              placeholder="0000000000000000000000000000000000000000"
+              onChange={(event) => {
+                setCommit(event.target.value);
+                setShownError(null);
+              }}
+              className={FIELD}
+            />
+            {shownError !== null && <Alert kind="error">{shownError}</Alert>}
+          </>
+        )}
+      </FieldShell>
+
+      <FieldShell label="Comment" name="handoff-comment">
+        {(control) => (
+          <textarea
+            {...control}
+            rows={4}
+            value={comment}
+            disabled={update.isPending}
+            placeholder="What is in this commit, and what should the next agent do with it?"
+            onChange={(event) => {
+              setComment(event.target.value);
+            }}
+            className={FIELD}
+          />
+        )}
+      </FieldShell>
+
+      <FieldShell label="Move to" name="handoff-state" hint={STATE_HINT}>
+        {(control) => (
+          <select
+            {...control}
+            value={state}
+            disabled={update.isPending}
+            onChange={(event) => {
+              setState(event.target.value);
+            }}
+            className={FIELD}
+          >
+            <option value="">Choose a state</option>
+            {states
+              .filter((row) => row.name !== task.state)
+              .map((row) => (
+                <option key={row.id} value={row.name}>
+                  {row.name}
+                </option>
+              ))}
+          </select>
+        )}
+      </FieldShell>
 
       {update.isError && (
         <Alert kind="error">{projectErrorMessage(update.error)}</Alert>
@@ -226,7 +211,6 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
         <SubmitButton
           type="button"
           variant="ghost"
-          loading={false}
           disabled={update.isPending}
           onClick={onDone}
         >

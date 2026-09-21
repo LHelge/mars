@@ -16,16 +16,12 @@ import { isGitConflict, merge } from "../../services/git";
 import type { Branch } from "../../types";
 import { shortSha } from "../../utils/format";
 import { Alert } from "../Alert";
+import { FieldShell } from "../FieldShell";
+import { FIELD } from "../fieldStyles";
 import { FormField } from "../FormField";
 import { SubmitButton } from "../SubmitButton";
 import { ConflictList } from "./ConflictList";
-import {
-  chosenOr,
-  CONTROL,
-  keptIfKnown,
-  refsOfKind,
-  useReportBusy,
-} from "./formState";
+import { chosenOr, keptIfKnown, refsOfKind, useReportBusy } from "./formState";
 import type { ReportBusy } from "./formState";
 
 export interface MergeFormProps {
@@ -108,33 +104,32 @@ export function MergeForm({
     >
       <div className="grid gap-3 sm:grid-cols-2">
         {source === undefined ? (
-          <FormField
-            label="Source"
-            name={`${formId}-source`}
-            value={from}
-            onChange={setChosenSource}
-            disabled={disabled}
-          >
-            <select
-              id={`${formId}-source`}
-              name={`${formId}-source`}
-              value={from}
-              disabled={disabled}
-              onChange={(event) => {
-                setChosenSource(event.target.value);
-              }}
-              className={CONTROL}
-            >
-              <option value="">Choose a ref…</option>
-              <Options branches={branches} kind="upstream" label="Upstream" />
-              <Options branches={branches} kind="head" label="Integration heads" />
-              <Options
-                branches={branches}
-                kind="session"
-                label="Session branches"
-              />
-            </select>
-          </FormField>
+          <FieldShell label="Source" name={`${formId}-source`}>
+            {(control) => (
+              <select
+                {...control}
+                value={from}
+                disabled={disabled}
+                onChange={(event) => {
+                  setChosenSource(event.target.value);
+                }}
+                className={FIELD}
+              >
+                <option value="">Choose a ref…</option>
+                <Options branches={branches} kind="upstream" label="Upstream" />
+                <Options
+                  branches={branches}
+                  kind="head"
+                  label="Integration heads"
+                />
+                <Options
+                  branches={branches}
+                  kind="session"
+                  label="Session branches"
+                />
+              </select>
+            )}
+          </FieldShell>
         ) : (
           <div className="flex flex-col gap-1.5">
             <span className="text-console-muted text-xs">Source</span>
@@ -144,31 +139,28 @@ export function MergeForm({
           </div>
         )}
 
-        <FormField
-          label="Target"
-          name={`${formId}-target`}
-          value={target}
-          onChange={setChosenTarget}
-          disabled={disabled}
-        >
-          <select
-            id={`${formId}-target`}
-            name={`${formId}-target`}
-            value={target}
-            disabled={disabled}
-            onChange={(event) => {
-              setChosenTarget(event.target.value);
-            }}
-            className={CONTROL}
-          >
-            {heads.length === 0 && <option value="">No integration head</option>}
-            {heads.map((head) => (
-              <option key={head.name} value={head.name}>
-                {head.name}
-              </option>
-            ))}
-          </select>
-        </FormField>
+        <FieldShell label="Target" name={`${formId}-target`}>
+          {(control) => (
+            <select
+              {...control}
+              value={target}
+              disabled={disabled}
+              onChange={(event) => {
+                setChosenTarget(event.target.value);
+              }}
+              className={FIELD}
+            >
+              {heads.length === 0 && (
+                <option value="">No integration head</option>
+              )}
+              {heads.map((head) => (
+                <option key={head.name} value={head.name}>
+                  {head.name}
+                </option>
+              ))}
+            </select>
+          )}
+        </FieldShell>
       </div>
 
       <FormField

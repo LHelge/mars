@@ -16,6 +16,8 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Alert } from "../components/Alert";
+import { FieldShell } from "../components/FieldShell";
+import { FIELD } from "../components/fieldStyles";
 import { ConflictList } from "../components/git/ConflictList";
 import { chosenOr, refsOfKind } from "../components/git/formState";
 import { SubmitButton } from "../components/SubmitButton";
@@ -36,15 +38,12 @@ import {
   mergedMessage,
 } from "./mergeRules";
 import type { MergeConflict } from "./mergeRules";
-import { CONTROL } from "./taskChrome";
 import { useTaskStore } from "./taskStore";
 
 export interface MergeTaskActionProps {
   projectId: string;
   task: TaskDetail;
 }
-
-const FIELD = `${CONTROL} w-full placeholder:text-console-muted`;
 
 export function MergeTaskAction({ projectId, task }: MergeTaskActionProps) {
   const [open, setOpen] = useState(false);
@@ -167,48 +166,46 @@ function MergeHandoffForm({
     >
       <p className="text-console-muted text-xs">{mergeCoverLine(handoff)}</p>
 
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="merge-target" className="text-console-muted text-xs">
-          Target
-        </label>
-        <select
-          id="merge-target"
-          name="merge-target"
-          value={target}
-          disabled={form.loading}
-          onChange={(event) => {
-            setChosenTarget(event.target.value);
-          }}
-          className={FIELD}
-        >
-          {heads.length === 0 && <option value="">No integration head</option>}
-          {heads.map((head) => (
-            <option key={head.name} value={head.name}>
-              {head.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <FieldShell label="Target" name="merge-target">
+        {(control) => (
+          <select
+            {...control}
+            value={target}
+            disabled={form.loading}
+            onChange={(event) => {
+              setChosenTarget(event.target.value);
+            }}
+            className={FIELD}
+          >
+            {heads.length === 0 && (
+              <option value="">No integration head</option>
+            )}
+            {heads.map((head) => (
+              <option key={head.name} value={head.name}>
+                {head.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </FieldShell>
 
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="merge-message" className="text-console-muted text-xs">
-          Message
-        </label>
-        <input
-          id="merge-message"
-          name="merge-message"
-          value={message}
-          disabled={form.loading}
-          aria-describedby="merge-message-hint"
-          onChange={(event) => {
-            setMessage(event.target.value);
-          }}
-          className={FIELD}
-        />
-        <p id="merge-message-hint" className="text-console-muted text-xs">
-          Left empty, the merge commit names the hand-off and its branch.
-        </p>
-      </div>
+      <FieldShell
+        label="Message"
+        name="merge-message"
+        hint="Left empty, the merge commit names the hand-off and its branch."
+      >
+        {(control) => (
+          <input
+            {...control}
+            value={message}
+            disabled={form.loading}
+            onChange={(event) => {
+              setMessage(event.target.value);
+            }}
+            className={FIELD}
+          />
+        )}
+      </FieldShell>
 
       {conflict !== null && (
         <ConflictList paths={conflict.paths} message={conflict.message} />
@@ -227,7 +224,6 @@ function MergeHandoffForm({
         <SubmitButton
           type="button"
           variant="ghost"
-          loading={false}
           disabled={form.loading}
           onClick={onClose}
         >

@@ -96,7 +96,6 @@ export function HandoffPanel({ projectId, task }: HandoffPanelProps) {
         <SubmitButton
           type="button"
           variant="ghost"
-          loading={false}
           disabled={open?.kind === "revision"}
           onClick={() => {
             setOpen({ kind: "revision" });
@@ -118,7 +117,6 @@ export function HandoffPanel({ projectId, task }: HandoffPanelProps) {
               <SubmitButton
                 type="button"
                 variant="ghost"
-                loading={false}
                 disabled={
                   current === null ||
                   (open?.kind === "review" && open.decision === decision)

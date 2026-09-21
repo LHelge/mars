@@ -92,7 +92,6 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
   const newTask = (
     <SubmitButton
       type="button"
-      loading={false}
       disabled={states.length === 0}
       onClick={() => {
         setCreating(true);
@@ -199,7 +198,6 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
                     <SubmitButton
                       type="button"
                       variant="ghost"
-                      loading={false}
                       onClick={clearSearch}
                     >
                       Clear search

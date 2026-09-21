@@ -23,6 +23,8 @@ import { useCallback, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { Alert } from "../components/Alert";
 import { EmptyState } from "../components/EmptyState";
+import { FieldShell } from "../components/FieldShell";
+import { CONTROL } from "../components/fieldStyles";
 import { FormField } from "../components/FormField";
 import { LoadingState } from "../components/LoadingState";
 import { QueryErrorAlert } from "../components/QueryErrorAlert";
@@ -264,38 +266,36 @@ function AddStateForm({
           required
         />
 
-        <FormField
+        <FieldShell
           label="Kind"
           name="task-state-kind"
-          value={kind}
-          onChange={(next) => {
-            setKind(next as TaskStateKind);
-          }}
           hint={KIND_MEANING[kind]}
         >
-          <select
-            id="task-state-kind"
-            name="task-state-kind"
-            value={kind}
-            onChange={(event) => {
-              setKind(event.target.value as TaskStateKind);
-            }}
-            aria-describedby="task-state-kind-hint"
-            className="border-console-border bg-console-bg text-console-text rounded border px-2.5 py-1.5 font-mono text-sm"
-          >
-            {KINDS.map((option) => (
-              <option
-                key={option}
-                value={option}
-                disabled={option === "human" && hasHuman}
-                title={option === "human" && hasHuman ? HUMAN_TAKEN : undefined}
-              >
-                {option}
-                {option === "human" && hasHuman ? ` — ${HUMAN_TAKEN}` : ""}
-              </option>
-            ))}
-          </select>
-        </FormField>
+          {(control) => (
+            <select
+              {...control}
+              value={kind}
+              onChange={(event) => {
+                setKind(event.target.value as TaskStateKind);
+              }}
+              className={CONTROL}
+            >
+              {KINDS.map((option) => (
+                <option
+                  key={option}
+                  value={option}
+                  disabled={option === "human" && hasHuman}
+                  title={
+                    option === "human" && hasHuman ? HUMAN_TAKEN : undefined
+                  }
+                >
+                  {option}
+                  {option === "human" && hasHuman ? ` — ${HUMAN_TAKEN}` : ""}
+                </option>
+              ))}
+            </select>
+          )}
+        </FieldShell>
 
         <FormField
           label="Position"
@@ -449,7 +449,6 @@ function StateRow({
               <SubmitButton
                 type="button"
                 variant="ghost"
-                loading={false}
                 disabled={rename.isPending}
                 onClick={() => {
                   setEditing(false);
@@ -486,7 +485,6 @@ function StateRow({
             <SubmitButton
               type="button"
               variant="ghost"
-              loading={false}
               disabled={busy || index === 0}
               onClick={() => {
                 move.mutate(index - 1);
@@ -499,7 +497,6 @@ function StateRow({
             <SubmitButton
               type="button"
               variant="ghost"
-              loading={false}
               disabled={busy || index === states.length - 1}
               onClick={() => {
                 move.mutate(index + 1);
@@ -513,7 +510,6 @@ function StateRow({
               <SubmitButton
                 type="button"
                 variant="ghost"
-                loading={false}
                 disabled={busy}
                 onClick={startRename}
               >

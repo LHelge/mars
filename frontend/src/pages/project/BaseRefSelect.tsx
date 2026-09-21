@@ -14,6 +14,8 @@
 // project's default branch — is asked for.
 
 import { useState } from "react";
+import { FieldShell } from "../../components/FieldShell";
+import { FIELD } from "../../components/fieldStyles";
 import type { Branch } from "../../types";
 
 /** The select entry that opens the free-text field. */
@@ -37,9 +39,6 @@ const GROUPS: { kind: Branch["kind"]; label: string }[] = [
   { kind: "session", label: "Session branches" },
 ];
 
-const CONTROL =
-  "border-console-border bg-console-bg text-console-text w-full rounded border px-2.5 py-1.5 font-mono text-sm disabled:opacity-50";
-
 export function BaseRefSelect({
   branches,
   value,
@@ -56,67 +55,65 @@ export function BaseRefSelect({
   const custom = customRequested || (value !== "" && !known);
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor="session-base-ref" className="text-console-muted text-xs">
-        Base ref
-      </label>
+    <FieldShell label="Base ref" name="session-base-ref" hint={hint}>
+      {(control) => (
+        <>
+          <select
+            {...control}
+            value={custom ? CUSTOM : value}
+            disabled={disabled}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (next === CUSTOM) {
+                setCustomRequested(true);
+                onChange("");
+                return;
+              }
+              setCustomRequested(false);
+              onChange(next);
+            }}
+            className={FIELD}
+          >
+            <option value="">{defaultLabel}</option>
 
-      <select
-        id="session-base-ref"
-        name="session-base-ref"
-        value={custom ? CUSTOM : value}
-        disabled={disabled}
-        onChange={(event) => {
-          const next = event.target.value;
-          if (next === CUSTOM) {
-            setCustomRequested(true);
-            onChange("");
-            return;
-          }
-          setCustomRequested(false);
-          onChange(next);
-        }}
-        className={CONTROL}
-      >
-        <option value="">{defaultLabel}</option>
+            {GROUPS.map((group) => {
+              const refs = branches.filter(
+                (branch) => branch.kind === group.kind,
+              );
+              if (refs.length === 0) {
+                return null;
+              }
+              return (
+                <optgroup key={group.kind} label={group.label}>
+                  {refs.map((branch) => (
+                    <option key={branch.name} value={branch.name}>
+                      {branch.name}
+                    </option>
+                  ))}
+                </optgroup>
+              );
+            })}
 
-        {GROUPS.map((group) => {
-          const refs = branches.filter((branch) => branch.kind === group.kind);
-          if (refs.length === 0) {
-            return null;
-          }
-          return (
-            <optgroup key={group.kind} label={group.label}>
-              {refs.map((branch) => (
-                <option key={branch.name} value={branch.name}>
-                  {branch.name}
-                </option>
-              ))}
-            </optgroup>
-          );
-        })}
+            <option value={CUSTOM}>Custom ref…</option>
+          </select>
 
-        <option value={CUSTOM}>Custom ref…</option>
-      </select>
-
-      {custom && (
-        <input
-          id="session-base-ref-custom"
-          name="session-base-ref-custom"
-          value={value}
-          disabled={disabled}
-          placeholder="A tag or commit id"
-          aria-label="Custom base ref"
-          onChange={(event) => {
-            onChange(event.target.value);
-          }}
-          className={CONTROL}
-        />
+          {custom && (
+            <input
+              id={`${control.id}-custom`}
+              name="session-base-ref-custom"
+              value={value}
+              disabled={disabled}
+              placeholder="A tag or commit id"
+              aria-label="Custom base ref"
+              aria-describedby={control["aria-describedby"]}
+              onChange={(event) => {
+                onChange(event.target.value);
+              }}
+              className={FIELD}
+            />
+          )}
+        </>
       )}
-
-      {hint !== undefined && (
-        <p className="text-console-muted text-xs">{hint}</p>
-      )}
-    </div>
+    </FieldShell>
   );
 }

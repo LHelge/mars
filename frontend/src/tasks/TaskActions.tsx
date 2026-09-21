@@ -57,7 +57,6 @@ export function TaskActions({
         <SubmitButton
           type="button"
           variant="ghost"
-          loading={false}
           disabled={editing}
           onClick={() => {
             onEditingChange(true);
@@ -89,7 +88,6 @@ export function TaskActions({
           <SubmitButton
             type="button"
             variant="danger"
-            loading={false}
             disabled={confirmingDelete || remove.isPending}
             onClick={() => {
               setConfirmingDelete(true);
@@ -126,7 +124,6 @@ export function TaskActions({
             <SubmitButton
               type="button"
               variant="ghost"
-              loading={false}
               disabled={remove.isPending}
               onClick={() => {
                 setConfirmingDelete(false);

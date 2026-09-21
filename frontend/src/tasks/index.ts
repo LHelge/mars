@@ -60,7 +60,7 @@ export { buildTaskLink, parseTaskNumber, taskPath } from "./taskLink";
 export { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
 export { useUsername } from "./useUsername";
 
-export { CONTROL, PRIORITIES } from "./taskChrome";
+export { PRIORITIES } from "./taskChrome";
 export {
   diffTaskInput,
   isEmptyUpdate,

@@ -17,6 +17,9 @@ import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
   Alert,
+  CONTROL,
+  FieldShell,
+  FIELD,
   FormField,
   QueryErrorAlert,
   SectionHeader,
@@ -53,9 +56,7 @@ import {
 } from "./project/profileForm";
 import type { ProfileFormState } from "./project/profileForm";
 
-const INPUT_CLASS =
-  "border-console-border bg-console-bg text-console-text placeholder:text-console-muted rounded border px-2.5 py-1.5 font-mono text-sm disabled:opacity-50";
-
+/** A value the editor shows but nobody can change: quieter, and not a field. */
 const READ_ONLY_CLASS =
   "border-console-border bg-console-raised text-console-muted rounded border px-2.5 py-1.5 font-mono text-sm";
 
@@ -277,12 +278,7 @@ export function ProfileEditorPage({
         title={profile === null ? "New profile" : `Edit ${profile.name}`}
         description="The served states and the system prompt together define what this agent does."
         actions={
-          <SubmitButton
-            type="button"
-            variant="ghost"
-            loading={false}
-            onClick={onClose}
-          >
+          <SubmitButton type="button" variant="ghost" onClick={onClose}>
             Cancel
           </SubmitButton>
         }
@@ -303,40 +299,41 @@ export function ProfileEditorPage({
               With the request still out or failed the select holds `Blank`
               alone and the editor behaves as it did before. */}
           {profile === null && (
-            <FormField
+            <FieldShell
               label="Start from"
               name="profile-template"
-              value={templateName}
-              onChange={onTemplateChange}
               hint="A role template fills the name, served states, git tools and prompt; you can change anything before saving."
             >
-              <select
-                id="profile-template"
-                name="profile-template"
-                value={templateName}
-                onChange={(event) => {
-                  onTemplateChange(event.target.value);
-                }}
-                disabled={save.loading}
-                className={`${INPUT_CLASS} w-full`}
-              >
-                <option value={BLANK_TEMPLATE}>Blank</option>
-                {(templates.data ?? []).map((template) => (
-                  <option key={template.name} value={template.name}>
-                    {template.name}
-                  </option>
-                ))}
-              </select>
-              {droppedStates.length > 0 && (
-                <p className="text-console-muted text-xs">
-                  This project has no queue state called{" "}
-                  <span className="text-console-text font-mono">
-                    {droppedStates.join(", ")}
-                  </span>
-                  , so the template&rsquo;s served states were left off.
-                </p>
+              {(control) => (
+                <>
+                  <select
+                    {...control}
+                    value={templateName}
+                    onChange={(event) => {
+                      onTemplateChange(event.target.value);
+                    }}
+                    disabled={save.loading}
+                    className={FIELD}
+                  >
+                    <option value={BLANK_TEMPLATE}>Blank</option>
+                    {(templates.data ?? []).map((template) => (
+                      <option key={template.name} value={template.name}>
+                        {template.name}
+                      </option>
+                    ))}
+                  </select>
+                  {droppedStates.length > 0 && (
+                    <p className="text-console-muted text-xs">
+                      This project has no queue state called{" "}
+                      <span className="text-console-text font-mono">
+                        {droppedStates.join(", ")}
+                      </span>
+                      , so the template&rsquo;s served states were left off.
+                    </p>
+                  )}
+                </>
               )}
-            </FormField>
+            </FieldShell>
           )}
 
           <FormField
@@ -352,89 +349,77 @@ export function ProfileEditorPage({
             disabled={save.loading}
           />
 
-          <FormField
+          <FieldShell
             label="Kind"
             name="profile-kind"
-            value={form.kind}
-            onChange={() => {
-              /* handled by the select below */
-            }}
             hint={
               form.kind === "conversational"
                 ? "Takes messages, parks between turns."
                 : "Runs one prompt and ends."
             }
           >
-            <select
-              id="profile-kind"
-              name="profile-kind"
-              value={form.kind}
-              onChange={(event) => {
-                onKindChange(event.target.value as ProfileKind);
-              }}
-              disabled={save.loading}
-              className={`${INPUT_CLASS} w-full`}
-            >
-              <option value="conversational">conversational</option>
-              <option value="ephemeral">ephemeral</option>
-            </select>
-          </FormField>
+            {(control) => (
+              <select
+                {...control}
+                value={form.kind}
+                onChange={(event) => {
+                  onKindChange(event.target.value as ProfileKind);
+                }}
+                disabled={save.loading}
+                className={FIELD}
+              >
+                <option value="conversational">conversational</option>
+                <option value="ephemeral">ephemeral</option>
+              </select>
+            )}
+          </FieldShell>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-            <FormField
+            <FieldShell
               label="Backend"
               name="profile-backend"
-              value={PROFILE_BACKEND}
-              onChange={() => {
-                /* fixed in v1 */
-              }}
               hint="The only agent CLI in this version."
             >
-              <output id="profile-backend" className={READ_ONLY_CLASS}>
-                {PROFILE_BACKEND}
-              </output>
-            </FormField>
+              {(control) => (
+                <output {...control} className={READ_ONLY_CLASS}>
+                  {PROFILE_BACKEND}
+                </output>
+              )}
+            </FieldShell>
 
-            <FormField
+            <FieldShell
               label="Permission mode"
               name="profile-permission-mode"
-              value={PROFILE_PERMISSION_MODE}
-              onChange={() => {
-                /* fixed in v1 */
-              }}
               hint="Sessions run in their own container, so the CLI never asks."
             >
-              <output id="profile-permission-mode" className={READ_ONLY_CLASS}>
-                {PROFILE_PERMISSION_MODE}
-              </output>
-            </FormField>
+              {(control) => (
+                <output {...control} className={READ_ONLY_CLASS}>
+                  {PROFILE_PERMISSION_MODE}
+                </output>
+              )}
+            </FieldShell>
           </div>
 
-          <FormField
+          <FieldShell
             label="Model"
             name="profile-model"
-            value={form.model}
-            onChange={(next) => {
-              patch({ model: next });
-            }}
             hint="Leave empty to let the CLI choose."
-            autoComplete="off"
-            disabled={save.loading}
           >
-            <input
-              id="profile-model"
-              name="profile-model"
-              value={form.model}
-              onChange={(event) => {
-                patch({ model: event.target.value });
-              }}
-              placeholder="CLI default"
-              autoComplete="off"
-              spellCheck={false}
-              disabled={save.loading}
-              className={`${INPUT_CLASS} w-full`}
-            />
-          </FormField>
+            {(control) => (
+              <input
+                {...control}
+                value={form.model}
+                onChange={(event) => {
+                  patch({ model: event.target.value });
+                }}
+                placeholder="CLI default"
+                autoComplete="off"
+                spellCheck={false}
+                disabled={save.loading}
+                className={FIELD}
+              />
+            )}
+          </FieldShell>
 
           <FormField
             label="Image"
@@ -449,57 +434,48 @@ export function ProfileEditorPage({
             disabled={save.loading}
           />
 
-          <FormField
+          <FieldShell
             label="Runtime"
             name="profile-runtime"
-            value={form.runtime}
-            onChange={(next) => {
-              patch({ runtime: next });
-            }}
             hint="A sandboxed runtime such as runsc or kata; empty uses the engine default."
-            disabled={save.loading}
           >
-            <input
-              id="profile-runtime"
-              name="profile-runtime"
-              value={form.runtime}
-              onChange={(event) => {
-                patch({ runtime: event.target.value });
-              }}
-              placeholder="engine default"
-              autoComplete="off"
-              spellCheck={false}
-              disabled={save.loading}
-              className={`${INPUT_CLASS} w-full`}
-            />
-          </FormField>
+            {(control) => (
+              <input
+                {...control}
+                value={form.runtime}
+                onChange={(event) => {
+                  patch({ runtime: event.target.value });
+                }}
+                placeholder="engine default"
+                autoComplete="off"
+                spellCheck={false}
+                disabled={save.loading}
+                className={FIELD}
+              />
+            )}
+          </FieldShell>
 
-          <FormField
+          <FieldShell
             label="Idle timeout (seconds)"
             name="profile-idle-timeout"
-            value={form.idle_timeout_secs}
-            onChange={(next) => {
-              patch({ idle_timeout_secs: next });
-            }}
             hint="How long a session may sit idle before it is parked."
-            {...(timeoutError === null ? {} : { error: timeoutError })}
-            disabled={save.loading}
+            error={timeoutError ?? undefined}
           >
-            <input
-              id="profile-idle-timeout"
-              name="profile-idle-timeout"
-              type="number"
-              min={MIN_IDLE_TIMEOUT_SECS}
-              step={1}
-              value={form.idle_timeout_secs}
-              onChange={(event) => {
-                patch({ idle_timeout_secs: event.target.value });
-              }}
-              disabled={save.loading}
-              aria-invalid={timeoutError === null ? undefined : true}
-              className={`${INPUT_CLASS} aria-invalid:border-state-failed w-full`}
-            />
-          </FormField>
+            {(control) => (
+              <input
+                {...control}
+                type="number"
+                min={MIN_IDLE_TIMEOUT_SECS}
+                step={1}
+                value={form.idle_timeout_secs}
+                onChange={(event) => {
+                  patch({ idle_timeout_secs: event.target.value });
+                }}
+                disabled={save.loading}
+                className={FIELD}
+              />
+            )}
+          </FieldShell>
 
           <label className="text-console-text flex items-start gap-2 text-sm">
             <input
@@ -524,31 +500,28 @@ export function ProfileEditorPage({
 
         {/* The prompt and the grants */}
         <div className="flex flex-col gap-3">
-          <FormField
+          <FieldShell
             label="System prompt"
             name="profile-system-prompt"
-            value={form.system_prompt}
-            onChange={(next) => {
-              patch({ system_prompt: next });
-            }}
             hint="Prepended to every session of this profile."
-            disabled={save.loading}
           >
-            <textarea
-              id="profile-system-prompt"
-              name="profile-system-prompt"
-              // A role prompt is five paragraphs; short enough to scroll, tall
-              // enough that the whole of one is on screen while it is edited.
-              rows={20}
-              value={form.system_prompt}
-              onChange={(event) => {
-                patch({ system_prompt: event.target.value });
-              }}
-              spellCheck={false}
-              disabled={save.loading}
-              className={`${INPUT_CLASS} w-full resize-y`}
-            />
-          </FormField>
+            {(control) => (
+              <textarea
+                {...control}
+                // A role prompt is five paragraphs; short enough to scroll,
+                // tall enough that the whole of one is on screen while it is
+                // edited.
+                rows={20}
+                value={form.system_prompt}
+                onChange={(event) => {
+                  patch({ system_prompt: event.target.value });
+                }}
+                spellCheck={false}
+                disabled={save.loading}
+                className={`${FIELD} resize-y`}
+              />
+            )}
+          </FieldShell>
 
           <fieldset className="border-console-border rounded border p-3">
             <legend className="text-console-muted px-1 text-xs">
@@ -764,12 +737,11 @@ export function ProfileEditorPage({
                 spellCheck={false}
                 pattern={SECRET_NAME_RE.source}
                 disabled={save.loading}
-                className={INPUT_CLASS}
+                className={CONTROL}
               />
               <SubmitButton
                 type="button"
                 variant="ghost"
-                loading={false}
                 disabled={save.loading || newSecret.trim() === ""}
                 onClick={onAddSecret}
               >
@@ -792,7 +764,6 @@ export function ProfileEditorPage({
         <SubmitButton
           type="button"
           variant="ghost"
-          loading={false}
           disabled={save.loading}
           onClick={onClose}
         >
@@ -818,7 +789,10 @@ function isCredentialNameError(caught: unknown): caught is ApiError {
 }
 
 /** One scope's names; a scope the caller may not read contributes none. */
-function useSecretNames(scope: "global" | "project" | "user", scopeId?: string) {
+function useSecretNames(
+  scope: "global" | "project" | "user",
+  scopeId?: string,
+) {
   return useQuery({
     queryKey: queryKeys.secrets.list(scope, scopeId),
     queryFn: () =>

@@ -23,6 +23,11 @@ export type { ConflictListProps } from "./git/ConflictList";
 export { GitActionsPanel } from "./git/GitActionsPanel";
 export type { GitActionsPanelProps } from "./git/GitActionsPanel";
 
+export { FieldShell } from "./FieldShell";
+export type { FieldControl, FieldShellProps } from "./FieldShell";
+
+export { CONTROL, FIELD } from "./fieldStyles";
+
 export { FormField } from "./FormField";
 export type { FormFieldProps } from "./FormField";
 

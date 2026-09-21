@@ -19,6 +19,8 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 
 import { Alert } from "../components/Alert";
+import { FieldShell } from "../components/FieldShell";
+import { FIELD } from "../components/fieldStyles";
 import { SubmitButton } from "../components/SubmitButton";
 import type { Handoff, TaskDetail } from "../types";
 import {
@@ -28,7 +30,6 @@ import {
   reviewErrorMessage,
 } from "./handoffRules";
 import type { ReviewDecision } from "./handoffRules";
-import { CONTROL } from "./taskChrome";
 import { useTaskStore } from "./taskStore";
 import { useTaskMutations } from "./useTaskMutations";
 
@@ -40,8 +41,6 @@ export interface ReviewFormProps {
   decision: ReviewDecision;
   onDone: () => void;
 }
-
-const FIELD = `${CONTROL} w-full placeholder:text-console-muted`;
 
 export function ReviewForm({
   projectId,
@@ -90,56 +89,48 @@ export function ReviewForm({
         </span>
       </p>
 
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="review-state" className="text-console-muted text-xs">
-          Move to
-        </label>
-        <select
-          id="review-state"
-          name="review-state"
-          value={state}
-          disabled={update.isPending}
-          aria-describedby="review-state-hint"
-          onChange={(event) => {
-            setState(event.target.value);
-          }}
-          className={FIELD}
-        >
-          <option value="">Choose a state</option>
-          {states
-            .filter((row) => row.name !== task.state)
-            .map((row) => (
-              <option key={row.id} value={row.name}>
-                {row.name}
-              </option>
-            ))}
-        </select>
-        <p id="review-state-hint" className="text-console-muted text-xs">
-          {STATE_HINT}
-        </p>
-      </div>
+      <FieldShell label="Move to" name="review-state" hint={STATE_HINT}>
+        {(control) => (
+          <select
+            {...control}
+            value={state}
+            disabled={update.isPending}
+            onChange={(event) => {
+              setState(event.target.value);
+            }}
+            className={FIELD}
+          >
+            <option value="">Choose a state</option>
+            {states
+              .filter((row) => row.name !== task.state)
+              .map((row) => (
+                <option key={row.id} value={row.name}>
+                  {row.name}
+                </option>
+              ))}
+          </select>
+        )}
+      </FieldShell>
 
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="review-comment" className="text-console-muted text-xs">
-          Comment
-        </label>
-        <textarea
-          id="review-comment"
-          name="review-comment"
-          rows={4}
-          value={comment}
-          disabled={update.isPending}
-          placeholder={
-            decision === "changes_requested"
-              ? "What has to change, and where?"
-              : "What did you check, and what happens next?"
-          }
-          onChange={(event) => {
-            setComment(event.target.value);
-          }}
-          className={FIELD}
-        />
-      </div>
+      <FieldShell label="Comment" name="review-comment">
+        {(control) => (
+          <textarea
+            {...control}
+            rows={4}
+            value={comment}
+            disabled={update.isPending}
+            placeholder={
+              decision === "changes_requested"
+                ? "What has to change, and where?"
+                : "What did you check, and what happens next?"
+            }
+            onChange={(event) => {
+              setComment(event.target.value);
+            }}
+            className={FIELD}
+          />
+        )}
+      </FieldShell>
 
       {update.isError && (
         <Alert kind="error">{reviewErrorMessage(update.error)}</Alert>
@@ -152,7 +143,6 @@ export function ReviewForm({
         <SubmitButton
           type="button"
           variant="ghost"
-          loading={false}
           disabled={update.isPending}
           onClick={onDone}
         >

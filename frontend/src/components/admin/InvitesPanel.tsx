@@ -34,7 +34,7 @@ import { LoadingState } from "../LoadingState";
 import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SectionHeader } from "../SectionHeader";
 import { SubmitButton } from "../SubmitButton";
-import { errorMessage } from "./errorMessage";
+import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import { CELL, HEAD, ROW, SCROLLER, TABLE, THEAD } from "./tableStyles";
 
 const DUPLICATE =
@@ -94,17 +94,16 @@ export function Expiry({ iso, now = new Date() }: { iso: string; now?: Date }) {
   );
 }
 
-/** Everything this page wants to say differently from the server. */
-function inviteFailure(caught: unknown): unknown {
-  if (caught instanceof ApiError) {
-    // 400 keeps the server's validation text; only the conflict is reworded,
-    // because "email already invited" does not say what to do about it.
-    return caught.status === 409 ? new ApiError(409, DUPLICATE) : caught;
+/**
+ * The one thing this panel says differently from the server: 400 keeps the
+ * validation text and a network failure is `errorMessage`'s to name, but
+ * "email already invited" does not say what to do about it.
+ */
+function inviteFailure(caught: unknown): string {
+  if (caught instanceof ApiError && caught.status === 409) {
+    return DUPLICATE;
   }
-  if (caught instanceof TypeError) {
-    return new ApiError(0, "Orchestrator unreachable");
-  }
-  return caught;
+  return errorMessage(caught);
 }
 
 export function InvitesPanel() {
@@ -151,12 +150,7 @@ export function InvitesPanel() {
     // duplicate check predictable.
     const normalised = email.trim().toLowerCase();
 
-    let invite: Invite;
-    try {
-      invite = await createInvite({ email: normalised, admin });
-    } catch (caught) {
-      throw inviteFailure(caught);
-    }
+    const invite = await createInvite({ email: normalised, admin });
 
     writeRows((rows) => [invite, ...rows]);
     setEmail("");
@@ -164,6 +158,8 @@ export function InvitesPanel() {
     setNotice(
       `Invitation sent to ${invite.email}. Without email configured, the link is in the orchestrator log.`,
     );
+  }, {
+    mapError: inviteFailure,
   });
 
   const resend = useMutation({
@@ -176,6 +172,7 @@ export function InvitesPanel() {
       setNotice("Invitation re-sent");
     },
     onError: (caught) => {
+      logUnexpected(caught);
       setRowError(errorMessage(caught));
       void queryClient.invalidateQueries({ queryKey: queryKeys.invites.all });
     },
@@ -189,6 +186,7 @@ export function InvitesPanel() {
       writeRows((rows) => rows.filter((row) => row.id !== invite.id));
     },
     onError: (caught) => {
+      logUnexpected(caught);
       setRowError(errorMessage(caught));
       void queryClient.invalidateQueries({ queryKey: queryKeys.invites.all });
     },

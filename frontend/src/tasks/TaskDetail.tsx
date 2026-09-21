@@ -29,7 +29,7 @@ import { LoadingState } from "../components/LoadingState";
 import { MarkdownBody } from "../components/Markdown";
 import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { SubmitButton } from "../components/SubmitButton";
-import { isNotFound, projectErrorMessage } from "../pages/project/messages";
+import { errorMessage, isNotFound } from "../services/errorMessage";
 import { getTask } from "../services/tasks";
 import type { Task, TaskDetail as TaskDetailData } from "../types";
 import { formatDateTime, formatRelative, shortId } from "../utils/format";
@@ -136,7 +136,7 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
             ) : (
               <QueryErrorAlert
                 query={detail}
-                message={projectErrorMessage(detail.error)}
+                message={errorMessage(detail.error)}
               />
             )
           ) : (
@@ -146,7 +146,7 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
               {detail.isError && (
                 <QueryErrorAlert
                   query={detail}
-                  message={projectErrorMessage(detail.error)}
+                  message={errorMessage(detail.error)}
                 />
               )}
               {/* The task's id is the drawer's identity boundary: everything

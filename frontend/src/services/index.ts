@@ -10,6 +10,17 @@ export {
 } from "./apiClient";
 
 export {
+  errorMessage,
+  GENERIC_FAILURE,
+  isNetworkFailure,
+  isNotFound,
+  logUnexpected,
+  MessageError,
+  statusMessage,
+  UNREACHABLE,
+} from "./errorMessage";
+
+export {
   acceptInvite,
   clearAuth,
   getAccessToken,

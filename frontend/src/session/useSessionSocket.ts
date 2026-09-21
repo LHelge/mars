@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { StoreApi } from "zustand";
 
 import { ApiError } from "../services/apiClient";
+import { errorMessage } from "../services/errorMessage";
 import {
   getAccessToken,
   isStaleRefreshError,
@@ -74,7 +75,7 @@ export interface SessionSocketApi {
 }
 
 function reason(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return errorMessage(error);
 }
 
 function isUnauthorized(error: unknown): boolean {

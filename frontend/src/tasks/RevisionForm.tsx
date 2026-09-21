@@ -23,7 +23,7 @@ import { Alert } from "../components/Alert";
 import { FieldShell } from "../components/FieldShell";
 import { FIELD } from "../components/fieldStyles";
 import { SubmitButton } from "../components/SubmitButton";
-import { projectErrorMessage } from "../pages/project/messages";
+import { errorMessage } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import { listProjectSessions } from "../services/sessions";
 import type { TaskDetail } from "../types";
@@ -201,7 +201,7 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
       </FieldShell>
 
       {update.isError && (
-        <Alert kind="error">{projectErrorMessage(update.error)}</Alert>
+        <Alert kind="error">{errorMessage(update.error)}</Alert>
       )}
 
       <div className="flex items-center gap-2">

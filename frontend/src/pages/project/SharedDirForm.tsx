@@ -18,11 +18,12 @@ import type { FormEvent } from "react";
 import { Alert } from "../../components/Alert";
 import { FormField } from "../../components/FormField";
 import { SubmitButton } from "../../components/SubmitButton";
+import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import { queryKeys } from "../../services/queryKeys";
 import { createSharedDir } from "../../services/projects";
 import type { SharedDir, SharedDirInput } from "../../types";
 import { SHARED_DIR_PRESETS, validateSharedDir } from "../../utils/sharedDir";
-import { sharedDirErrorField, sharedDirErrorMessage } from "./sharedDirMessages";
+import { sharedDirErrorField } from "./sharedDirMessages";
 
 export interface SharedDirFormProps {
   projectId: string;
@@ -50,7 +51,8 @@ export function SharedDirForm({ projectId }: SharedDirFormProps) {
       setError(null);
     },
     onError: (caught: unknown) => {
-      const message = sharedDirErrorMessage(caught);
+      logUnexpected(caught);
+      const message = errorMessage(caught);
       const field = sharedDirErrorField(caught);
       // A refusal that names a field belongs beside that field; anything else
       // goes above the form, where nothing else can explain it.

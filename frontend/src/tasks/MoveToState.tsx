@@ -27,7 +27,7 @@ import { useState } from "react";
 
 import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
-import { projectErrorMessage } from "../pages/project/messages";
+import { errorMessage } from "../services/errorMessage";
 import type { Task } from "../types";
 import { shortId } from "../utils/format";
 import { CONTROL } from "../components/fieldStyles";
@@ -141,7 +141,7 @@ export function MoveToState({ projectId, task }: MoveToStateProps) {
       )}
 
       {update.isError && (
-        <Alert kind="error">{projectErrorMessage(update.error)}</Alert>
+        <Alert kind="error">{errorMessage(update.error)}</Alert>
       )}
     </div>
   );

@@ -19,7 +19,7 @@ import type { FormEvent } from "react";
 
 import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
-import { projectErrorMessage } from "../pages/project/messages";
+import { errorMessage } from "../services/errorMessage";
 import type { TaskDependencyKind, TaskDetail } from "../types";
 import { DependencyList } from "./DependencyList";
 import { filterTasks } from "./search";
@@ -98,7 +98,7 @@ export function DependencyEditor({ projectId, task }: DependencyEditorProps) {
       />
 
       {removeDependency.isError && (
-        <Alert kind="error">{projectErrorMessage(removeDependency.error)}</Alert>
+        <Alert kind="error">{errorMessage(removeDependency.error)}</Alert>
       )}
 
       <form
@@ -174,7 +174,7 @@ export function DependencyEditor({ projectId, task }: DependencyEditorProps) {
         </div>
 
         {addDependency.isError && (
-          <Alert kind="error">{projectErrorMessage(addDependency.error)}</Alert>
+          <Alert kind="error">{errorMessage(addDependency.error)}</Alert>
         )}
 
         <div className="flex justify-end">

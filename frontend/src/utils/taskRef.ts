@@ -6,10 +6,11 @@
 // was typed through `getTask` before it submits — this parser only decides
 // what to send to that lookup, and refuses anything that is neither.
 
+import { isUuid } from "./uuid";
+
 export type TaskRef =
   { kind: "number"; number: number } | { kind: "uuid"; id: string };
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NUMBER = /^#?(\d+)$/;
 
 /**
@@ -22,7 +23,7 @@ export function parseTaskRef(raw: string): TaskRef | null {
     return null;
   }
 
-  if (UUID.test(value)) {
+  if (isUuid(value)) {
     return { kind: "uuid", id: value.toLowerCase() };
   }
 

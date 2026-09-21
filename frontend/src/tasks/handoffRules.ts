@@ -18,6 +18,7 @@
 
 import type { Comment, Handoff, ReviewStatus, Session } from "../types";
 import { ApiError } from "../services/apiClient";
+import { errorMessage } from "../services/errorMessage";
 import { shortCommit } from "./launchRules";
 
 /** The commit id the API accepts: a full, lowercase, hexadecimal object id. */
@@ -144,13 +145,14 @@ const STALE_HANDOFF = "handoff_id is not the task's current hand-off";
  * `handoff_id`).
  */
 export function reviewErrorMessage(caught: unknown): string {
-  if (caught instanceof ApiError) {
-    if (caught.status === 409 && caught.error === STALE_HANDOFF) {
-      return "The hand-off changed; review the new revision";
-    }
-    return caught.error;
+  if (
+    caught instanceof ApiError &&
+    caught.status === 409 &&
+    caught.error === STALE_HANDOFF
+  ) {
+    return "The hand-off changed; review the new revision";
   }
-  return "Something went wrong";
+  return errorMessage(caught);
 }
 
 /** Which decision a review forwards, if any. */

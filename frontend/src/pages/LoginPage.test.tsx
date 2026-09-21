@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { LoginPage } from "./LoginPage";
 import { ApiError } from "../services/apiClient";
+import { statusMessage } from "../services/errorMessage";
 import { clearAuth, installSession, login } from "../services/auth";
 import type { AuthResponse, User } from "../types";
 
@@ -163,6 +164,21 @@ describe("LoginPage", () => {
         "Orchestrator unreachable",
       );
     });
+  });
+
+  it("says something when nginx answers HTML for a stopped orchestrator", async () => {
+    // What `apiClient` builds for a 502 whose body is not the `{status,
+    // error}` envelope (`services/apiClient.test.ts`). `statusText` is empty
+    // under HTTP/2 and HTTP/3, so the alert used to render nothing at all and
+    // the button just stopped spinning.
+    loginMock.mockRejectedValue(new ApiError(502, statusMessage(502)));
+
+    renderLogin();
+    signIn();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Orchestrator unreachable");
+    expect(alert.textContent?.length).toBeGreaterThan(0);
   });
 
   it("shows any other server message verbatim", async () => {

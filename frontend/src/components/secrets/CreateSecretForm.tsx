@@ -19,6 +19,7 @@ import { CONTROL } from "../fieldStyles";
 import { FormField } from "../FormField";
 import { SubmitButton } from "../SubmitButton";
 import { secretErrorMessage } from "./messages";
+import { logUnexpected } from "../../services/errorMessage";
 
 export interface CreateSecretFormProps {
   scope: SecretScope;
@@ -52,6 +53,7 @@ export function CreateSecretForm({ scope, scopeId }: CreateSecretFormProps) {
       setError(null);
     },
     onError: (caught: unknown) => {
+      logUnexpected(caught);
       setError(secretErrorMessage(caught));
     },
     // Whatever happened, the plaintext goes now; the user retypes it. The

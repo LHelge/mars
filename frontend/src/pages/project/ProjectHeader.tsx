@@ -20,7 +20,7 @@ import { queryKeys } from "../../services/queryKeys";
 import type { Project } from "../../types";
 import { formatRelative } from "../../utils/format";
 import { ProjectStatusPill } from "../projects/ProjectStatusPill";
-import { projectErrorMessage } from "./messages";
+import { errorMessage, logUnexpected } from "../../services/errorMessage";
 
 export interface ProjectHeaderProps {
   project: Project;
@@ -57,7 +57,8 @@ export function ProjectHeader({
     // An unreachable upstream leaves `last_fetched_at` as it was: nothing is
     // written to the cache, only the server's reason is shown.
     onError: (caught: unknown) => {
-      setError(projectErrorMessage(caught));
+      logUnexpected(caught);
+      setError(errorMessage(caught));
     },
   });
 
@@ -65,7 +66,8 @@ export function ProjectHeader({
     mutationFn: () => retryClone(project.id),
     onSuccess: adopt,
     onError: (caught: unknown) => {
-      setError(projectErrorMessage(caught));
+      logUnexpected(caught);
+      setError(errorMessage(caught));
     },
   });
 
@@ -79,7 +81,8 @@ export function ProjectHeader({
       // 409 `refused while a session is running or being created`: stay here
       // so the user can go and stop the session.
       setConfirmingDelete(false);
-      setError(projectErrorMessage(caught));
+      logUnexpected(caught);
+      setError(errorMessage(caught));
     },
   });
 

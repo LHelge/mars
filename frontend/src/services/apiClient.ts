@@ -21,6 +21,7 @@ import {
   isStaleRefreshError,
   refreshAccessToken,
 } from "./auth";
+import { statusMessage } from "./errorMessage";
 
 /** The `{ status, error }` envelope of `SPEC.md`, "REST API". */
 export class ApiError extends Error {
@@ -136,10 +137,14 @@ async function toApiError(response: Response): Promise<ApiError> {
         );
       }
     } catch {
-      // Not the JSON envelope; fall through to the status line.
+      // Not the JSON envelope; fall through to the status wording.
     }
   }
-  return new ApiError(response.status, response.statusText);
+  // Anything that is not the envelope — a proxy's HTML 502, an empty body —
+  // is named by its status. Never `response.statusText`: it is always empty
+  // under HTTP/2 and HTTP/3, and an `ApiError` with no words renders as a
+  // blank alert, which is to say as no feedback at all.
+  return new ApiError(response.status, statusMessage(response.status));
 }
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

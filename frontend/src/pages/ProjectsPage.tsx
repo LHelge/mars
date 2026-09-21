@@ -25,7 +25,7 @@ import {
   QueryErrorAlert,
   SubmitButton,
 } from "../components";
-import { ApiError } from "../services/apiClient";
+import { errorMessage, logUnexpected } from "../services/errorMessage";
 import { listProjects, retryClone } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
 import type { Project } from "../types";
@@ -80,8 +80,8 @@ export function ProjectsPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
     },
     onError: (caught: unknown, id) => {
-      const message =
-        caught instanceof ApiError ? caught.error : "Could not retry the clone.";
+      logUnexpected(caught);
+      const message = errorMessage(caught, "Could not retry the clone.");
       setRetryErrors((current) => ({ ...current, [id]: message }));
       // The project may have moved on since the list was read; find out.
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
@@ -119,7 +119,7 @@ export function ProjectsPage() {
         {projects.isError && (
           <QueryErrorAlert
             query={projects}
-            message={`Could not load projects. ${projects.error instanceof Error ? projects.error.message : ""}`.trim()}
+            message={`Could not load projects. ${errorMessage(projects.error)}`}
           />
         )}
 

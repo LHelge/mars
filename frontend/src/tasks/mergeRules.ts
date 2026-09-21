@@ -15,6 +15,7 @@
 //    commits it has gained are exactly what was not approved.
 
 import { ApiError } from "../services/apiClient";
+import { errorMessage } from "../services/errorMessage";
 import { isGitConflict } from "../services/git";
 import type { Handoff, TaskDetail } from "../types";
 import { shortCommit } from "./launchRules";
@@ -64,7 +65,7 @@ export function isStaleMerge(caught: unknown): boolean {
  * approved" both name the thing to go and read.
  */
 export function mergeErrorMessage(caught: unknown): string {
-  return caught instanceof ApiError ? caught.error : "Something went wrong";
+  return errorMessage(caught);
 }
 
 /** What the form says it is about to do, naming the commit and what it omits. */

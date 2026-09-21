@@ -23,14 +23,18 @@ import {
   SubmitButton,
 } from "../components";
 import { useAuth, useFormSubmit } from "../hooks";
-import { acceptInvite, ApiError, lookupInvite } from "../services";
+import {
+  acceptInvite,
+  ApiError,
+  errorMessage,
+  lookupInvite,
+  UNREACHABLE,
+} from "../services";
 import { formatDateTime, validatePassword } from "../utils";
 
 /** Every rejection of an invite token reads the same: unknown, used or expired. */
 const INVALID_INVITE =
   "This invitation link is invalid, has expired or was already used. Ask an administrator for a new one.";
-
-const UNREACHABLE = "Orchestrator unreachable";
 
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 32;
@@ -38,24 +42,15 @@ const USERNAME_MAX_LENGTH = 32;
 const USERNAME_LENGTH_MESSAGE = "Username must be 3–32 characters";
 
 /**
- * Turns a failed accept into the message the user should read. Everything the
- * page words differently from the server is rewrapped as an `ApiError`, the one
- * shape `useFormSubmit` renders verbatim; a plain 400 (bad input, or an invite
- * consumed between the lookup and the submit) is already the server's own
- * sentence and passes through untouched.
+ * The one refusal this page words itself. A plain 400 — bad input, or an
+ * invite consumed between the lookup and the submit — is already the server's
+ * own sentence, and everything else is `errorMessage`'s one rule.
  */
-function acceptFailure(caught: unknown): unknown {
-  if (caught instanceof ApiError) {
-    if (caught.status === 409) {
-      return new ApiError(caught.status, "That username is already taken.");
-    }
-    return caught;
+function acceptFailure(caught: unknown): string {
+  if (caught instanceof ApiError && caught.status === 409) {
+    return "That username is already taken.";
   }
-  if (caught instanceof TypeError) {
-    // `fetch` rejects with a `TypeError` when it never reached the server.
-    return new ApiError(0, UNREACHABLE);
-  }
-  return caught;
+  return errorMessage(caught);
 }
 
 function DeadEnd() {
@@ -98,24 +93,27 @@ export function AcceptInvitePage() {
   // invite expired while the form was open: the login link is then the exit.
   const [rejected, setRejected] = useState(false);
 
-  const { submit, loading, error } = useFormSubmit(async () => {
-    try {
-      // `acceptInvite` installs the returned pair itself, replacing whatever
-      // session the visitor arrived with.
-      await acceptInvite({
-        token: token ?? "",
-        username: username.trim(),
-        password,
-      });
-    } catch (caught) {
-      setRejected(caught instanceof ApiError && caught.status === 400);
-      throw acceptFailure(caught);
-    }
-    // No return destination applies to an invite: it always lands on the
-    // dashboard, and the previous account's cached reads go with it.
-    await navigate("/", { replace: true });
-    queryClient.clear();
-  });
+  const { submit, loading, error } = useFormSubmit(
+    async () => {
+      try {
+        // `acceptInvite` installs the returned pair itself, replacing whatever
+        // session the visitor arrived with.
+        await acceptInvite({
+          token: token ?? "",
+          username: username.trim(),
+          password,
+        });
+      } catch (caught) {
+        setRejected(caught instanceof ApiError && caught.status === 400);
+        throw caught;
+      }
+      // No return destination applies to an invite: it always lands on the
+      // dashboard, and the previous account's cached reads go with it.
+      await navigate("/", { replace: true });
+      queryClient.clear();
+    },
+    { mapError: acceptFailure },
+  );
 
   if (!hasToken) {
     return <DeadEnd />;
@@ -196,7 +194,7 @@ export function AcceptInvitePage() {
           <QueryErrorAlert query={lookup} message={UNREACHABLE} />
         )}
 
-        {error && <Alert kind="error">{error}</Alert>}
+        {error !== null && <Alert kind="error">{error}</Alert>}
 
         <FieldShell
           label="Invited email"

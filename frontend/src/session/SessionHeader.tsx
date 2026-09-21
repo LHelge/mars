@@ -21,7 +21,7 @@ import {
   GitActionsPanel,
   SessionStatePill,
 } from "../components";
-import { ApiError } from "../services/apiClient";
+import { errorMessage, logUnexpected } from "../services/errorMessage";
 import { getProject } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
 import { updateSession } from "../services/sessions";
@@ -150,11 +150,8 @@ function BranchSection({ session }: { session: Session }) {
     },
     onError: (caught: unknown) => {
       setNotice(null);
-      setError(
-        caught instanceof ApiError
-          ? caught.error
-          : "Could not sync the session branch",
-      );
+      logUnexpected(caught);
+      setError(errorMessage(caught, "Could not sync the session branch"));
     },
   });
 
@@ -300,9 +297,8 @@ function SessionTitle({ session }: { session: Session }) {
     onError: (caught: unknown) => {
       // The server keeps the old title; so does the header, with the reason.
       setEditing(false);
-      setError(
-        caught instanceof ApiError ? caught.error : "Could not rename the session",
-      );
+      logUnexpected(caught);
+      setError(errorMessage(caught, "Could not rename the session"));
     },
   });
 

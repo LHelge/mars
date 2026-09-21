@@ -438,7 +438,7 @@ describe("SessionSocket", () => {
     track(await startLive([textEvent(5, "five")]));
     store().prependHistory([textEvent(5, "five")], true);
 
-    listEvents.mockRejectedValueOnce(new Error("network down"));
+    listEvents.mockRejectedValueOnce(new ApiError(503, "network down"));
     const socket = track(new SessionSocket(SESSION_ID, factory));
     expect(await socket.loadOlder()).toBe(false);
     expect(store().historyStatus).toBe("error");

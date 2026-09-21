@@ -23,11 +23,11 @@ import {
   deleteSharedDir,
   listSharedDirs,
 } from "../../services/projects";
+import { errorMessage } from "../../services/errorMessage";
 import type { Session, SharedDir } from "../../types";
 import { formatDateTime, formatRelative } from "../../utils/format";
 import { SharedDirForm } from "./SharedDirForm";
 import type { ProjectTabPanelProps } from "./tabs";
-import { sharedDirErrorMessage } from "./sharedDirMessages";
 
 /** `SPEC.md`, "Shared directories", in the one line the tab has room for. */
 const MOUNT_HELP =
@@ -73,7 +73,7 @@ export function SharedDirsTab({ project }: ProjectTabPanelProps) {
       {dirs.isError && (
         <QueryErrorAlert
           query={dirs}
-          message={sharedDirErrorMessage(dirs.error)}
+          message={errorMessage(dirs.error)}
         />
       )}
 
@@ -235,7 +235,7 @@ function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
       {failure !== null && (
         <tr className="border-console-border/60 border-b last:border-b-0">
           <td colSpan={4} className="bg-console-surface/60 px-3 py-2">
-            <Alert kind="error">{sharedDirErrorMessage(failure)}</Alert>
+            <Alert kind="error">{errorMessage(failure)}</Alert>
           </td>
         </tr>
       )}

@@ -13,6 +13,7 @@ import { create, type UseBoundStore, type StoreApi } from "zustand";
 
 import { queryClient } from "../queryClient";
 import { listTasks } from "../services/tasks";
+import { errorMessage } from "../services/errorMessage";
 import { listTaskStates } from "../services/taskStates";
 import type { Task, TaskEvent, TaskState } from "../types";
 import { taskKeys, taskStateKeys } from "./queryKeys";
@@ -98,7 +99,7 @@ function byPosition(states: TaskState[]): TaskState[] {
 }
 
 function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return errorMessage(error);
 }
 
 export function createTaskStore(deps: TaskStoreDeps): TaskStoreHook {

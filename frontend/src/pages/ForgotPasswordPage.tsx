@@ -20,11 +20,9 @@ export function ForgotPasswordPage() {
     try {
       await requestPasswordReset(identifier.trim());
     } catch (caught) {
-      if (caught instanceof TypeError) {
-        // Never reached the orchestrator: this one is worth saying out loud.
-        throw new ApiError(0, "Orchestrator unreachable");
-      }
       if (!(caught instanceof ApiError)) {
+        // Never reached the orchestrator, or a bug here: both are worth
+        // saying out loud, and `errorMessage` names them.
         throw caught;
       }
       // A status body would only tell the visitor something the endpoint is
@@ -69,7 +67,7 @@ export function ForgotPasswordPage() {
       }
     >
       <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
-        {error && <Alert kind="error">{error}</Alert>}
+        {error !== null && <Alert kind="error">{error}</Alert>}
 
         <FormField
           label="Username or email"

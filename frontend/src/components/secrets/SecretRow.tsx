@@ -30,6 +30,7 @@ import { CONTROL } from "../fieldStyles";
 import { SubmitButton } from "../SubmitButton";
 import { SecretUsesList } from "./SecretUsesList";
 import { secretErrorMessage } from "./messages";
+import { logUnexpected } from "../../services/errorMessage";
 
 /** The project credential of `SPEC.md`, "Projects". */
 const GIT_CREDENTIAL = "GIT_CREDENTIAL";
@@ -81,6 +82,7 @@ export function SecretRow({
       setPanel(null);
     },
     onError: (caught: unknown) => {
+      logUnexpected(caught);
       setError(secretErrorMessage(caught));
     },
     // The mutation cache keeps `variables` — here the plaintext — for as long
@@ -104,6 +106,7 @@ export function SecretRow({
     },
     onError: (caught: unknown) => {
       // A duplicate name keeps the editor open so the name can be corrected.
+      logUnexpected(caught);
       setError(secretErrorMessage(caught));
     },
   });
@@ -115,6 +118,7 @@ export function SecretRow({
       invalidateSecretQueries(queryClient);
     },
     onError: (caught: unknown) => {
+      logUnexpected(caught);
       setError(secretErrorMessage(caught));
     },
   });

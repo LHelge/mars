@@ -26,6 +26,7 @@ import {
   SectionHeader,
 } from "../components";
 import { getCurrentUser, setCurrentUser } from "../services/auth";
+import { errorMessage } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import { getMe, updateMe } from "../services/users";
 import type { User } from "../types";
@@ -127,9 +128,7 @@ export function SettingsPage() {
           {user === undefined ? (
             me.isError ? (
               <Alert kind="error">
-                {me.error instanceof Error
-                  ? me.error.message
-                  : "Could not load your account."}
+                {errorMessage(me.error, "Could not load your account.")}
               </Alert>
             ) : (
               <LoadingState />
@@ -161,9 +160,7 @@ export function SettingsPage() {
 
           {preference.isError && (
             <Alert kind="error">
-              {preference.error instanceof Error
-                ? preference.error.message
-                : "Could not save your preferences."}
+              {errorMessage(preference.error, "Could not save your preferences.")}
             </Alert>
           )}
 

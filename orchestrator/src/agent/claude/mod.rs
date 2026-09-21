@@ -7,7 +7,7 @@
 
 use std::any::Any;
 
-use super::{AgentBackend, Command, LaunchContext, TranslateState};
+use super::{AgentBackend, Command, CredentialName, LaunchContext, TranslateState};
 use crate::events::{AgentEvent, SessionInput};
 use crate::prelude::*;
 
@@ -61,6 +61,20 @@ impl AgentBackend for ClaudeBackend {
     /// in [`input`].
     fn encode_input(&self, input: &SessionInput) -> Result<String> {
         input::encode_input(input)
+    }
+
+    /// What the CLI authenticates with (`ARCHITECTURE.md`, "Claude Code
+    /// invocation", Credentials; ADR 0036).
+    ///
+    /// The subscription token first: a scope holding both is a row older than
+    /// the one-per-scope write rule, and the CLI's own precedence would
+    /// silently take the API key and bill it, which is the outcome nobody
+    /// asked for.
+    fn credential_names(&self) -> &'static [CredentialName] {
+        &[
+            CredentialName::ClaudeCodeOauthToken,
+            CredentialName::AnthropicApiKey,
+        ]
     }
 
     fn as_any(&self) -> &dyn Any {

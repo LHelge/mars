@@ -2,14 +2,25 @@
 //! container (`ARCHITECTURE.md`, "Secrets", Resolution at launch; "Launch
 //! sequence").
 //!
-//! The launcher hands over the names the profile declares and the three things
-//! that decide which rows they can see — the session, its project and the user
-//! who created it — and gets back the environment to put in the container, the
-//! `launch_warning` messages to append and the names that were deliberately
-//! not injected. Everything the resolver decides is decided here: the
-//! repository reads every candidate row in one query and filters nothing,
-//! because precedence and suppression are decisions about a *group* of rows
-//! rather than about any one of them.
+//! The launcher hands over two lists of names — the ones the profile declares
+//! and the agent credentials the backend declares — and the three things that
+//! decide which rows they can see: the session, its project and the user who
+//! created it. It gets back the environment to put in the container, the
+//! `launch_warning` messages to append, the names that were deliberately not
+//! injected and which credential won. Everything the resolver decides is
+//! decided here: the repository reads every candidate row in one query and
+//! filters nothing, because precedence and suppression are decisions about a
+//! *group* of rows rather than about any one of them.
+//!
+//! **Two lists, two rules.** A profile name is its own slot: the rows carrying
+//! that exact name compete and the most specific scope wins. The credential
+//! names are *one* slot between them: the rows carrying any of them compete
+//! and the most specific scope wins whatever name it carries, so exactly one
+//! credential is injected and a launcher no longer has to refuse a session
+//! that resolved two (ADR 0036; `ARCHITECTURE.md`, "Secrets", Agent
+//! credentials). Which backend those names belong to is not known here and
+//! deliberately so: they arrive as a list like any other, and the warning that
+//! names the backend is the launcher's to write.
 //!
 //! **Precedence, then the flag.** `global`, then `project`, then `user`, last
 //! one found wins. The winner's `orchestrator_only` is only consulted once the
@@ -72,21 +83,28 @@ pub struct LaunchScope {
 /// What one launch resolved to.
 ///
 /// `env` is the environment to give the container, in the order the profile
-/// listed the names and with each name at most once. `warnings` are the
-/// `launch_warning` messages the launcher appends before starting the
-/// container, and `skipped` names the secrets that resolved to an
-/// `orchestrator_only` row and are therefore absent from `env` on purpose —
-/// the launcher has both so it can tell "never existed" from "withheld".
+/// listed the names and with each name at most once; the agent credential, if
+/// one was resolved, is last, because it is the launcher's name and not the
+/// profile's. `warnings` are the `launch_warning` messages the launcher
+/// appends before starting the container, and `skipped` names the secrets that
+/// resolved to an `orchestrator_only` row and are therefore absent from `env`
+/// on purpose — the launcher has both so it can tell "never existed" from
+/// "withheld".
 ///
 /// `scopes` is the winning scope of each injected name, in the same order and
-/// with the same names as `env`. The launcher needs it for one thing: the
-/// `InjectedCredential` it hands the translator names the model credential
-/// *and* the scope it came from, so a failed authentication can say where to
-/// fix it (`ARCHITECTURE.md`, "Claude Code invocation", Credentials). It is a
-/// parallel list rather than a third element of the `env` tuples so that
-/// `env` can still be moved into
+/// with the same names as `env`. It is a parallel list rather than a third
+/// element of the `env` tuples so that `env` can still be moved into
 /// [`SessionSpecInput::secrets`](crate::engine::spec::SessionSpecInput::secrets)
 /// unchanged.
+///
+/// `credential` is the one row of the credential slot that was injected, by
+/// name and scope. The launcher hands it to the translator as its
+/// `InjectedCredential`, which names the credential *and* the scope it came
+/// from so a failed authentication can say where to fix it
+/// (`ARCHITECTURE.md`, "Claude Code invocation", Credentials); it is stated
+/// here rather than re-derived from `env`, where the launcher would have to
+/// know the names again. `None` means no row carried any of them, or that the
+/// row that won was `orchestrator_only` and skipped.
 ///
 /// `Debug` redacts the values: the struct exists to carry credentials, so a
 /// `?` field on it anywhere would be the one way they reach a log line
@@ -97,6 +115,15 @@ pub struct ResolvedSecrets {
     pub scopes: Vec<(String, SecretScope)>,
     pub warnings: Vec<String>,
     pub skipped: Vec<String>,
+    pub credential: Option<ResolvedCredential>,
+}
+
+/// The agent credential one launch injected: a name and the scope it was
+/// stored at, never a value (`ARCHITECTURE.md`, "Secrets", Agent credentials).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCredential {
+    pub name: SecretName,
+    pub scope: SecretScope,
 }
 
 impl ResolvedSecrets {
@@ -122,6 +149,7 @@ impl std::fmt::Debug for ResolvedSecrets {
             .field("scopes", &self.scopes)
             .field("warnings", &self.warnings)
             .field("skipped", &self.skipped)
+            .field("credential", &self.credential)
             .finish()
     }
 }
@@ -144,8 +172,50 @@ fn rank(scope: SecretScope) -> u8 {
     }
 }
 
-/// Resolve `names` for one launch: the environment, the warnings and the audit
-/// rows.
+/// The credential row one launch uses, out of every row carrying one of
+/// `credential_names`.
+///
+/// The names are one slot, so the comparison is the scope first: the most
+/// specific wins whatever name it carries. Two rows at the *same* scope can
+/// only be rows older than the one-credential-per-scope write rule
+/// (`ARCHITECTURE.md`, "Secrets", Agent credentials); the tie is broken by the
+/// backend's own order, which is the order `credential_names` arrived in, and
+/// logged with the names and the scope so an operator can delete one. No
+/// value, and no name that was not asked for, reaches that line (rule 3).
+fn pick_credential(credential_names: &[String], rows: Vec<Secret>) -> Option<Secret> {
+    // Lower is more preferred; a row whose name is not in the list cannot
+    // reach here, and would sort last if it did.
+    let preference = |row: &Secret| {
+        credential_names
+            .iter()
+            .position(|name| *name == row.name)
+            .unwrap_or(usize::MAX)
+    };
+
+    let winner = rows
+        .iter()
+        .min_by_key(|row| (std::cmp::Reverse(rank(row.scope)), preference(row)))?
+        .clone();
+
+    let contenders: Vec<&str> = rows
+        .iter()
+        .filter(|row| row.scope == winner.scope)
+        .map(|row| row.name.as_str())
+        .collect();
+    if contenders.len() > 1 {
+        warn!(
+            secret_names = ?contenders,
+            scope = %winner.scope,
+            chosen = %winner.name,
+            "more than one agent credential at one scope; keep exactly one"
+        );
+    }
+
+    Some(winner)
+}
+
+/// Resolve `names` and the agent credential for one launch: the environment,
+/// the warnings and the audit rows.
 ///
 /// Called by the session launcher between the git checkout and the container
 /// creation (`ARCHITECTURE.md`, "Launch sequence"). Duplicates in `names`
@@ -158,12 +228,16 @@ fn rank(scope: SecretScope) -> u8 {
 /// A name that is not one therefore never reaches this function, and a name
 /// that no row carries is a warning rather than a failure.
 ///
-/// The refusal to inject `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN`
-/// together is the launcher's rule applied to `env` afterwards, not this
-/// function's, and stays there: it is about what one backend's CLI tolerates,
-/// not about what the caller is allowed to read, and a resolver that knew the
-/// two names would be deciding for every future [`crate::agent::AgentBackend`]
-/// (`ARCHITECTURE.md`, "Claude Code invocation", Credentials).
+/// `credentials` are the names the session's backend authenticates with
+/// ([`AgentBackend::credential_names`](crate::agent::AgentBackend::credential_names)),
+/// and they are treated as one slot: the row at the most specific scope
+/// carrying any of them is the credential, whichever of the names it carries,
+/// and it alone is decrypted and injected. Nothing here knows which backend
+/// they belong to, so a credential that resolves to nothing is reported as
+/// `credential: None` and not as a warning — the message that names the
+/// backend is the launcher's (ADR 0036; `ARCHITECTURE.md`, "Secrets", Agent
+/// credentials). A name in both lists is resolved once, as a credential, so a
+/// profile that still lists one cannot make it a second environment entry.
 ///
 /// # Errors
 ///
@@ -177,6 +251,7 @@ fn rank(scope: SecretScope) -> u8 {
         session_id = %scope.session_id,
         project_id = %scope.project_id,
         requested = names.len(),
+        credentials = credentials.len(),
     )
 )]
 pub async fn resolve_for_launch(
@@ -184,13 +259,26 @@ pub async fn resolve_for_launch(
     keyring: &SecretsKeyring,
     scope: LaunchScope,
     names: &[SecretName],
+    credentials: &[SecretName],
 ) -> Result<ResolvedSecrets> {
     let mut resolved = ResolvedSecrets {
         env: Vec::new(),
         scopes: Vec::new(),
         warnings: Vec::new(),
         skipped: Vec::new(),
+        credential: None,
     };
+
+    // The credential slot first, so a name in both lists is a credential and
+    // not a profile secret: one row, one environment entry, one audit row.
+    let mut credential_names: Vec<String> = Vec::with_capacity(credentials.len());
+    for name in credentials {
+        let name = name.as_str();
+        if credential_names.iter().any(|seen| seen == name) {
+            continue;
+        }
+        credential_names.push(name.to_string());
+    }
 
     // First occurrence wins the position; a repeated name is resolved once.
     // Nothing is validated here: the names arrive as `SecretName`s from the
@@ -199,27 +287,40 @@ pub async fn resolve_for_launch(
     let mut wanted: Vec<String> = Vec::with_capacity(names.len());
     for name in names {
         let name = name.as_str();
-        if wanted.iter().any(|seen| seen == name) {
+        if wanted.iter().any(|seen| seen == name)
+            || credential_names.iter().any(|seen| seen == name)
+        {
             continue;
         }
         wanted.push(name.to_string());
     }
 
-    if wanted.is_empty() {
+    if wanted.is_empty() && credential_names.is_empty() {
         // Nothing to look up and nothing to record: a profile with no secrets
-        // does not open a transaction.
+        // and a backend with no credential do not open a transaction.
         return Ok(resolved);
     }
 
+    // One query for every wanted name at the three scopes, credentials
+    // included: the group is what the rules are about, so it is read as one.
+    let mut all_wanted = wanted.clone();
+    all_wanted.extend(credential_names.iter().cloned());
+
     let repository = SecretRepository::new(pool);
     let candidates = repository
-        .find_for_resolution(&wanted, scope.project_id, scope.created_by)
+        .find_for_resolution(&all_wanted, scope.project_id, scope.created_by)
         .await?;
 
     // One entry per name, holding the highest-precedence row seen so far. The
     // query's order is not relied on: the rank decides.
     let mut winners: HashMap<String, Secret> = HashMap::with_capacity(wanted.len());
+    let mut credential_rows: Vec<Secret> = Vec::new();
     for row in candidates {
+        if credential_names.contains(&row.name) {
+            credential_rows.push(row);
+            continue;
+        }
+
         match winners.get(&row.name) {
             Some(current) if rank(current.scope) >= rank(row.scope) => {}
             _ => {
@@ -228,10 +329,12 @@ pub async fn resolve_for_launch(
         }
     }
 
+    let credential_winner = pick_credential(&credential_names, credential_rows);
+
     // Decide every name before anything is opened or written, so the two
     // outcomes that produce no audit row — missing and suppressed — are
     // settled outside the transaction.
-    let mut injected: Vec<Secret> = Vec::with_capacity(wanted.len());
+    let mut injected: Vec<Secret> = Vec::with_capacity(wanted.len() + 1);
     for name in &wanted {
         let Some(winner) = winners.remove(name) else {
             resolved.warnings.push(undefined_warning(name));
@@ -249,6 +352,40 @@ pub async fn resolve_for_launch(
         }
 
         injected.push(winner);
+    }
+
+    // The credential is decided the same way and last, so it sits at the end
+    // of `env`. A winner that is `orchestrator_only` — only possible for a row
+    // older than the write rule that forbids it — is skipped exactly like any
+    // other suppressed name, and no lower-precedence credential takes its
+    // place: the more specific row already overrode them.
+    if let Some(winner) = credential_winner {
+        if winner.orchestrator_only {
+            info!(
+                secret_name = %winner.name,
+                scope = %winner.scope,
+                "orchestrator-only secret skipped at launch"
+            );
+            resolved.skipped.push(winner.name.clone());
+        } else {
+            match SecretName::parse(&winner.name) {
+                Ok(name) => {
+                    resolved.credential = Some(ResolvedCredential {
+                        name,
+                        scope: winner.scope,
+                    });
+                    injected.push(winner);
+                }
+                Err(_) => {
+                    // Unreachable: the row was found by one of the names the
+                    // caller passed as a `SecretName`.
+                    error!(
+                        secret_name = %winner.name,
+                        "a credential row carries a name that is not a valid secret name"
+                    );
+                }
+            }
+        }
     }
 
     if injected.is_empty() {
@@ -344,6 +481,11 @@ mod tests {
             scopes: vec![("DEPLOY_TOKEN".to_string(), SecretScope::Project)],
             warnings: vec![undefined_warning("ABSENT")],
             skipped: vec!["WITHHELD".to_string()],
+            credential: Some(ResolvedCredential {
+                name: SecretName::parse("CLAUDE_CODE_OAUTH_TOKEN")
+                    .expect("the credential name is valid"),
+                scope: SecretScope::User,
+            }),
         };
 
         let rendered = format!("{resolved:?}");

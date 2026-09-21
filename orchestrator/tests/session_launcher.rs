@@ -35,9 +35,9 @@ use mars_orchestrator::git::{
     DataPaths, create_work_clone, init_project_repo, resolve_base, session_branch,
 };
 use mars_orchestrator::models::{
-    AgentProfile, BranchName, NewAgentProfile, NewProject, NewSecret, NewSession, NewSharedDir,
-    ProfileKind, Project, ProjectStatus, RemoteUrl, ScopeRef, Secret, SecretName, Session,
-    SessionState, User,
+    AgentBackend, AgentProfile, BranchName, NewAgentProfile, NewProject, NewSecret, NewSession,
+    NewSharedDir, ProfileKind, Project, ProjectStatus, RemoteUrl, ScopeRef, Secret, SecretName,
+    Session, SessionState, User,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{
@@ -45,7 +45,7 @@ use mars_orchestrator::repositories::{
 };
 use mars_orchestrator::secrets::{SealedSecret, SecretIdentity};
 use mars_orchestrator::session::{
-    BOTH_CREDENTIALS_ERROR, LaunchMode, Launcher, McpToken, Phase, SessionDirs, initial_token,
+    LaunchMode, Launcher, McpToken, Phase, SessionDirs, initial_token, no_agent_credential_warning,
     write_mcp_json,
 };
 use serde_json::Value;
@@ -344,7 +344,12 @@ async fn a_fresh_launch_prepares_the_session_and_runs_it() {
         Some(recorded),
         "the row's container id is not the one the engine created",
     );
-    assert_eq!(kinds(&app, fixture.session.id).await, vec!["state_change"]);
+    // The fixture seeds no agent credential, which is one `launch_warning`
+    // before the transition and not a failure (ADR 0036).
+    assert_eq!(
+        kinds(&app, fixture.session.id).await,
+        vec!["launch_warning", "state_change"],
+    );
     assert_eq!(
         app.session_registry().phase(fixture.session.id),
         Some(Phase::Running),
@@ -603,11 +608,19 @@ async fn an_unreachable_upstream_warns_and_the_launch_proceeds() {
     );
 
     let recorded = warnings(&app, fixture.session.id).await;
-    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(
+        recorded.len(),
+        2,
+        "the fetch failure, then the missing agent credential: {recorded:?}",
+    );
     assert!(
         recorded[0].starts_with("mirror fetch failed: "),
         "{}",
         recorded[0],
+    );
+    assert_eq!(
+        recorded[1],
+        no_agent_credential_warning(AgentBackend::Claude)
     );
     // The clone still happened, from the mirror as it is.
     assert_eq!(head_of(&fixture.dirs(&app).work()).await, fixture.branch());
@@ -623,7 +636,12 @@ async fn a_missing_secret_is_a_warning_and_the_launch_proceeds() {
 
     assert_eq!(
         warnings(&app, fixture.session.id).await,
-        vec!["secret ABSENT_TOKEN is not defined at any scope"],
+        vec![
+            "secret ABSENT_TOKEN is not defined at any scope".to_string(),
+            // No credential row was seeded either, and that is its own warning
+            // (ADR 0036).
+            no_agent_credential_warning(AgentBackend::Claude),
+        ],
     );
     assert_eq!(
         reload(&app, fixture.session.id).await.state,
@@ -662,15 +680,11 @@ async fn an_unresolvable_base_ref_fails_the_session() {
 }
 
 #[tokio::test]
-async fn both_model_credentials_fail_the_session() {
+async fn a_global_api_key_and_a_user_token_launch_with_the_token() {
     let app = TestApp::spawn().await;
-    let mut fixture = Fixture::with(
-        &app,
-        ProfileKind::Conversational,
-        &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
-        None,
-    )
-    .await;
+    // The profile declares neither: the backend's names are resolved for every
+    // session of it (ADR 0036).
+    let mut fixture = Fixture::with(&app, ProfileKind::Conversational, &[], None).await;
     seed_secret(
         &app,
         ScopeRef::global(),
@@ -689,9 +703,45 @@ async fn both_model_credentials_fail_the_session() {
     launch(&app, fixture.session.id, fixture.fresh()).await;
 
     let session = reload(&app, fixture.session.id).await;
-    assert_eq!(session.state, SessionState::Failed);
-    assert_eq!(session.error.as_deref(), Some(BOTH_CREDENTIALS_ERROR));
-    assert!(app.engine().specs().is_empty(), "no container was created");
+    assert_eq!(
+        session.state,
+        SessionState::Running,
+        "two credentials are no longer a refusal: {:?}",
+        session.error,
+    );
+    assert_eq!(
+        recorded_spec(&app)
+            .secret_env
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["CLAUDE_CODE_OAUTH_TOKEN"],
+        "the most specific scope wins the one credential slot",
+    );
+    assert!(
+        warnings(&app, fixture.session.id).await.is_empty(),
+        "a resolved credential warns about nothing",
+    );
+}
+
+#[tokio::test]
+async fn a_session_with_no_credential_anywhere_warns_and_launches() {
+    let app = TestApp::spawn().await;
+    let mut fixture = Fixture::with(&app, ProfileKind::Conversational, &[], None).await;
+
+    launch(&app, fixture.session.id, fixture.fresh()).await;
+
+    let session = reload(&app, fixture.session.id).await;
+    assert_eq!(
+        session.state,
+        SessionState::Running,
+        "the stub image and an image carrying its own authentication need none",
+    );
+    assert_eq!(
+        warnings(&app, fixture.session.id).await,
+        vec!["no agent credential for backend claude; add one on the Secrets page"],
+    );
+    assert!(recorded_spec(&app).secret_env.is_empty());
 }
 
 #[tokio::test]

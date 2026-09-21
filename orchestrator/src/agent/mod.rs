@@ -3,14 +3,17 @@
 //!
 //! This module is the seam between the session owner and any CLI
 //! (`ARCHITECTURE.md`, "Agent process model"; ADR 0003, ADR 0008). A backend
-//! has exactly three responsibilities and no state of its own:
+//! has exactly four responsibilities and no state of its own:
 //!
 //! 1. build the container command for a fresh, resumed or ephemeral launch
 //!    from a [`LaunchContext`] the launcher filled from the profile and the
 //!    session;
 //! 2. translate one native output line into zero or more [`AgentEvent`]s,
 //!    against a [`TranslateState`] that belongs to one process launch;
-//! 3. encode one [`SessionInput`] into the line the CLI reads on stdin.
+//! 3. encode one [`SessionInput`] into the line the CLI reads on stdin;
+//! 4. name the secrets its CLI authenticates with, which the launcher resolves
+//!    for every session of the backend without the profile listing them
+//!    (ADR 0036).
 //!
 //! Everything that varies per launch lives in [`LaunchContext`] and everything
 //! that varies per process lives in [`TranslateState`], so the implementations
@@ -26,6 +29,7 @@ use crate::events::{AgentEvent, SessionInput};
 // the documentation uses and the enum is referred to as `Backend` inside
 // `agent/`; neither is renamed.
 use crate::models::AgentBackend as Backend;
+use crate::models::SecretName;
 use crate::prelude::*;
 
 pub mod claude;
@@ -143,6 +147,19 @@ pub trait AgentBackend: Send + Sync {
     /// than written.
     fn encode_input(&self, input: &SessionInput) -> Result<String>;
 
+    /// The secret names this CLI authenticates with, most preferred first
+    /// (`ARCHITECTURE.md`, "Secrets", Agent credentials; ADR 0036).
+    ///
+    /// The launcher resolves them for every session of this backend, treating
+    /// the whole list as one slot: the row at the most specific scope wins
+    /// whatever of these names it carries, and exactly one is injected. The
+    /// order matters only for the tie a scope holding two of them would
+    /// otherwise be, which is a row older than the one-per-scope write rule.
+    ///
+    /// An adapter whose image carries its own authentication returns an empty
+    /// slice, which resolves nothing and warns about nothing.
+    fn credential_names(&self) -> &'static [CredentialName];
+
     /// Downcast hook, so a test that injected a concrete backend can read back
     /// what the owner did with it (`CLAUDE.md`, "Testing expectations").
     fn as_any(&self) -> &dyn Any;
@@ -158,6 +175,68 @@ pub fn backend_for(backend: Backend) -> Arc<dyn AgentBackend> {
     }
 }
 
+/// Every backend there is, in the order [`credential_backend_of`] searches
+/// them.
+///
+/// A new `agent_backend` value is added here, and `exhaustive_backend` below
+/// is what makes that impossible to forget: its match stops compiling until
+/// the new variant has an arm, and that arm asserts this list carries it.
+pub const BACKENDS: &[Backend] = &[Backend::Claude];
+
+/// Every credential name any backend declares, in backend order.
+///
+/// A flat list for a caller — the secrets service, which enforces one
+/// credential per scope — that cares about the names and not about whose they
+/// are (ADR 0036). Together with [`credential_backend_of`] this is the only
+/// place outside the adapters that enumerates them.
+pub fn all_credential_names() -> Vec<CredentialName> {
+    BACKENDS
+        .iter()
+        .flat_map(|backend| backend_for(*backend).credential_names().to_vec())
+        .collect()
+}
+
+/// Which backend, if any, authenticates with a secret called `name`.
+///
+/// The comparison is on the exact spelling, because that is what makes a
+/// secret a credential: the CLI reads the variable by name, so a row under any
+/// other name authenticates nothing (ADR 0036). A name no backend declares is
+/// an ordinary secret and answers `None`.
+pub fn credential_backend_of(name: &str) -> Option<Backend> {
+    BACKENDS.iter().copied().find(|backend| {
+        backend_for(*backend)
+            .credential_names()
+            .iter()
+            .any(|credential| credential.as_str() == name)
+    })
+}
+
+/// The backend's credential names as the launch resolver takes them
+/// (`crate::secrets::resolve_for_launch`).
+///
+/// A name that is somehow not a valid [`SecretName`] is dropped with a log
+/// line rather than failing the launch; it cannot happen, and
+/// [`CredentialName::secret_name`] says why.
+pub fn credential_secret_names(backend: &dyn AgentBackend) -> Vec<SecretName> {
+    backend
+        .credential_names()
+        .iter()
+        .filter_map(|name| name.secret_name())
+        .collect()
+}
+
+/// The exhaustiveness guard behind [`BACKENDS`].
+///
+/// Only ever called with the members of that list; adding an `agent_backend`
+/// value makes this match non-exhaustive, and the arm added to fix it is the
+/// one that names the new backend here.
+#[cfg(test)]
+fn exhaustive_backend(backend: Backend) -> bool {
+    match backend {
+        Backend::Claude => BACKENDS.contains(&Backend::Claude),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +245,70 @@ mod tests {
     fn backend_for_claude_is_the_claude_adapter() {
         let backend = backend_for(Backend::Claude);
         assert!(backend.as_any().downcast_ref::<ClaudeBackend>().is_some());
+    }
+
+    #[test]
+    fn every_backend_is_listed() {
+        for backend in BACKENDS {
+            assert!(exhaustive_backend(*backend), "{backend:?}");
+        }
+    }
+
+    #[test]
+    fn the_claude_adapter_declares_both_of_its_credentials_in_order() {
+        assert_eq!(
+            backend_for(Backend::Claude).credential_names(),
+            &[
+                CredentialName::ClaudeCodeOauthToken,
+                CredentialName::AnthropicApiKey,
+            ],
+        );
+    }
+
+    #[test]
+    fn both_claude_credentials_are_credentials_of_the_claude_backend() {
+        assert_eq!(
+            credential_backend_of("CLAUDE_CODE_OAUTH_TOKEN"),
+            Some(Backend::Claude)
+        );
+        assert_eq!(
+            credential_backend_of("ANTHROPIC_API_KEY"),
+            Some(Backend::Claude)
+        );
+    }
+
+    #[test]
+    fn an_ordinary_secret_name_is_no_backends_credential() {
+        assert_eq!(credential_backend_of("DEPLOY_TOKEN"), None);
+        // The spelling is the whole rule: case and shape included.
+        assert_eq!(credential_backend_of("anthropic_api_key"), None);
+        assert_eq!(credential_backend_of("ANTHROPIC_API_KEY_2"), None);
+        assert_eq!(credential_backend_of(""), None);
+    }
+
+    #[test]
+    fn the_flat_list_is_every_backends_names() {
+        let all = all_credential_names();
+        assert_eq!(
+            all,
+            vec![
+                CredentialName::ClaudeCodeOauthToken,
+                CredentialName::AnthropicApiKey,
+            ],
+        );
+        for name in &all {
+            assert!(credential_backend_of(name.as_str()).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_resolver_takes_the_declared_names_as_secret_names() {
+        let names = credential_secret_names(backend_for(Backend::Claude).as_ref());
+        let spellings: Vec<&str> = names.iter().map(|name| name.as_str()).collect();
+        assert_eq!(
+            spellings,
+            vec!["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
+        );
     }
 
     #[test]

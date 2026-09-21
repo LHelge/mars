@@ -21,9 +21,9 @@
 //!    base ref is resolved and the work tree is cloned on `session/<sid>`;
 //! 4. the project's shared directories and its CLI state directory are created
 //!    if missing (ADR 0015);
-//! 5. the profile's secrets are resolved, each missing name becoming a
-//!    `launch_warning`, and a profile that resolves both model credentials is
-//!    refused;
+//! 5. the profile's secrets and the backend's agent credential are resolved,
+//!    each missing profile name becoming a `launch_warning` and a backend with
+//!    no credential row at any scope becoming one more (ADR 0036);
 //! 6. the container specification is built by
 //!    [`build_session_spec`](crate::engine::spec::build_session_spec) — the one
 //!    place the specification table lives — the image is pulled if absent, the
@@ -75,8 +75,8 @@ use uuid::Uuid;
 
 use crate::agent::LaunchMode as AgentLaunchMode;
 use crate::agent::{
-    CredentialName, DEFAULT_MCP_CONFIG_PATH, InjectedCredential, LaunchContext, TranslateConfig,
-    backend_for,
+    AgentBackend, DEFAULT_MCP_CONFIG_PATH, InjectedCredential, LaunchContext, TranslateConfig,
+    backend_for, credential_secret_names,
 };
 use crate::engine::spec::{SessionSpecInput, SharedDirMount, build_session_spec};
 use crate::engine::{ContainerId, EngineError, LABEL_SESSION_ID};
@@ -85,6 +85,9 @@ use crate::git::{
     CommitIdentity, DataPaths, GitActor, GitCommand, GitService, create_work_clone, resolve_base,
     session_branch,
 };
+// The model enum and the agent module's trait share the name `AgentBackend`;
+// the enum is `Backend` here, as it is inside `agent/`.
+use crate::models::AgentBackend as Backend;
 use crate::models::{AgentProfile, Project, Session, SessionKind, SessionState, SharedDir};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, SessionRepository, Transition, UserRepository};
@@ -114,10 +117,15 @@ pub const LAUNCHED_REASON: &str = "container started and stdin attached";
 /// *what* failed is `sessions.error`.
 pub const LAUNCH_FAILED_REASON: &str = "launch failed";
 
-/// What a profile that resolves both model credentials is refused with
-/// (`ARCHITECTURE.md`, "Claude Code invocation", Credentials).
-pub const BOTH_CREDENTIALS_ERROR: &str =
-    "profile resolves both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN; keep exactly one";
+/// The `launch_warning` a session whose backend found no credential at any
+/// scope records (`ARCHITECTURE.md`, "Secrets", Agent credentials; ADR 0036).
+///
+/// A warning and not a refusal: the stub image and an image that carries its
+/// own authentication need none. It names the backend and nothing else — no
+/// secret name the caller did not ask for, and no value (rule 3).
+pub fn no_agent_credential_warning(backend: Backend) -> String {
+    format!("no agent credential for backend {backend}; add one on the Secrets page")
+}
 
 /// Which launch this is.
 ///
@@ -390,6 +398,11 @@ async fn launch(
             .map_err(|err| internal(session_id, "a shared directory is not usable", &err))?;
     }
 
+    // The backend's own names, resolved for every session of it whether the
+    // profile lists them or not (ADR 0036).
+    let backend = backend_for(profile.backend);
+    let credential_names = credential_secret_names(backend.as_ref());
+
     let resolved = resolve_for_launch(
         &state.pool,
         &state.keyring,
@@ -401,6 +414,7 @@ async fn launch(
         // The profile yields validated names; the resolver checks none of its
         // own (`ARCHITECTURE.md`, "Secrets", Resolution at launch).
         &profile.secret_names(),
+        &credential_names,
     )
     .await
     .map_err(|err| {
@@ -413,7 +427,18 @@ async fn launch(
     for message in &resolved.warnings {
         warn_on_session(state, session_id, message).await;
     }
-    let credential = injected_credential(&resolved)?;
+
+    let credential = injected_credential(backend.as_ref(), &resolved);
+    if credential.is_none() && !credential_names.is_empty() {
+        // Not a refusal: a session can run without one, and the user is told
+        // where to add it ("Secrets", Agent credentials).
+        warn_on_session(
+            state,
+            session_id,
+            &no_agent_credential_warning(profile.backend),
+        )
+        .await;
+    }
 
     let spec = {
         let cmd = launch_command(session, &profile, prompt, resume_id(session, resuming))?;
@@ -562,7 +587,9 @@ async fn launch(
         session_id,
         kind: session.kind,
         dirs,
-        backend: backend_for(profile.backend),
+        // The same adapter the credential names came from, shared rather than
+        // built a second time.
+        backend: Arc::clone(&backend),
         start_offset,
         translate: TranslateConfig {
             resumed: resume_id(session, resuming).is_some(),
@@ -803,36 +830,29 @@ fn resume_id(session: &Session, resuming: bool) -> Option<String> {
     session.cli_session_id.clone()
 }
 
-/// The model credential this launch injected, and the refusal when it injected
-/// both.
+/// The agent credential this launch injected, as the translator describes it.
 ///
-/// Compared by name against the resolved environment and never by value
-/// (`ARCHITECTURE.md`, "Claude Code invocation", Credentials).
+/// The resolver already decided which row wins the credential slot and says so
+/// in [`ResolvedSecrets::credential`]; all that is left here is to give the
+/// name back its backend's [`CredentialName`](crate::agent::CredentialName),
+/// which is what the
+/// authentication-failure event carries (`ARCHITECTURE.md`, "Claude Code
+/// invocation", Credentials). The names are the backend's own and are never
+/// enumerated here, and the value never reaches this function at all.
 fn injected_credential(
+    backend: &dyn AgentBackend,
     resolved: &ResolvedSecrets,
-) -> std::result::Result<Option<InjectedCredential>, Failure> {
-    let found: Vec<CredentialName> = [
-        CredentialName::AnthropicApiKey,
-        CredentialName::ClaudeCodeOauthToken,
-    ]
-    .into_iter()
-    .filter(|name| {
-        resolved
-            .env
-            .iter()
-            .any(|(injected, _)| injected == name.as_str())
-    })
-    .collect();
+) -> Option<InjectedCredential> {
+    let winner = resolved.credential.as_ref()?;
 
-    if found.len() > 1 {
-        return Err(Failure::new(BOTH_CREDENTIALS_ERROR));
-    }
-
-    Ok(found.first().and_then(|name| {
-        resolved
-            .scope_of(name.as_str())
-            .map(|scope| InjectedCredential { name: *name, scope })
-    }))
+    backend
+        .credential_names()
+        .iter()
+        .find(|name| name.as_str() == winner.name.as_str())
+        .map(|name| InjectedCredential {
+            name: *name,
+            scope: winner.scope,
+        })
 }
 
 /// Append one `launch_warning` to the session's transcript
@@ -1052,10 +1072,15 @@ mod tests {
     use zeroize::Zeroizing;
 
     use super::*;
-    use crate::models::SecretScope;
+    use crate::agent::CredentialName;
+    use crate::models::{SecretName, SecretScope};
+    use crate::secrets::ResolvedCredential;
 
     /// An obviously fake value; nothing here is a credential (rule 3).
-    fn resolution(names: &[(&str, SecretScope)]) -> ResolvedSecrets {
+    fn resolution(
+        names: &[(&str, SecretScope)],
+        credential: Option<(&str, SecretScope)>,
+    ) -> ResolvedSecrets {
         ResolvedSecrets {
             env: names
                 .iter()
@@ -1072,19 +1097,22 @@ mod tests {
                 .collect(),
             warnings: Vec::new(),
             skipped: Vec::new(),
+            credential: credential.map(|(name, scope)| ResolvedCredential {
+                name: SecretName::parse(name).expect("the test credential name is valid"),
+                scope,
+            }),
         }
     }
 
     #[test]
     fn the_credential_is_reported_with_the_scope_it_resolved_at() {
-        let resolved = resolution(&[
-            ("DEPLOY_TOKEN", SecretScope::Project),
-            ("CLAUDE_CODE_OAUTH_TOKEN", SecretScope::User),
-        ]);
+        let resolved = resolution(
+            &[("DEPLOY_TOKEN", SecretScope::Project)],
+            Some(("CLAUDE_CODE_OAUTH_TOKEN", SecretScope::User)),
+        );
 
-        let credential = injected_credential(&resolved)
-            .expect("one credential is not a refusal")
-            .expect("the credential is found");
+        let credential =
+            injected_credential(backend_for(Backend::Claude).as_ref(), &resolved).expect("found");
 
         assert_eq!(credential.name, CredentialName::ClaudeCodeOauthToken);
         assert_eq!(credential.scope, SecretScope::User);
@@ -1092,29 +1120,32 @@ mod tests {
 
     #[test]
     fn a_resolution_with_no_credential_reports_none() {
-        let resolved = resolution(&[("DEPLOY_TOKEN", SecretScope::Global)]);
+        let resolved = resolution(&[("DEPLOY_TOKEN", SecretScope::Global)], None);
 
-        assert!(
-            injected_credential(&resolved)
-                .expect("no credential is not a refusal")
-                .is_none()
-        );
+        assert!(injected_credential(backend_for(Backend::Claude).as_ref(), &resolved).is_none());
     }
 
     #[test]
-    fn both_credentials_are_refused_with_the_documented_message() {
-        let resolved = resolution(&[
-            ("ANTHROPIC_API_KEY", SecretScope::Global),
-            ("CLAUDE_CODE_OAUTH_TOKEN", SecretScope::User),
-        ]);
+    fn a_credential_of_another_backend_is_not_this_ones() {
+        // The resolver is handed the launching backend's names, so this cannot
+        // arise from a launch; the mapping back to a `CredentialName` is still
+        // the backend's own list and nothing else.
+        let resolved = resolution(&[], Some(("DEPLOY_TOKEN", SecretScope::Global)));
 
-        let failure = injected_credential(&resolved).expect_err("both credentials are refused");
+        assert!(injected_credential(backend_for(Backend::Claude).as_ref(), &resolved).is_none());
+    }
+
+    #[test]
+    fn the_missing_credential_warning_names_the_backend_and_nothing_else() {
+        let message = no_agent_credential_warning(Backend::Claude);
 
         assert_eq!(
-            failure.0,
-            "profile resolves both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN; \
-             keep exactly one"
+            message,
+            "no agent credential for backend claude; add one on the Secrets page"
         );
+        for name in crate::agent::all_credential_names() {
+            assert!(!message.contains(name.as_str()), "{message}");
+        }
     }
 
     #[test]

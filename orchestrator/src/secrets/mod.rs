@@ -27,7 +27,7 @@ pub use git_credential::{
 pub use keyring::{
     DATA_KEY_LEN, MASTER_KEY_LEN, SecretsError, SecretsKeyring, WRAP_NONCE_LEN, WrappedKey,
 };
-pub use resolve::{LaunchScope, ResolvedSecrets, resolve_for_launch};
+pub use resolve::{LaunchScope, ResolvedCredential, ResolvedSecrets, resolve_for_launch};
 pub use rotation::{ROTATION_BATCH, RotationReport, rewrap_outdated};
 pub use service::{
     Actor, CreateSecret, DEFAULT_USES_LIMIT, MAX_USES_LIMIT, PatchSecret, SecretsService,

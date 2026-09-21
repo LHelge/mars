@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 
 use sha2::{Digest, Sha256};
 
-use crate::models::SecretScope;
+use crate::models::{SecretName, SecretScope};
 // The crate convention (`CLAUDE.md`, "Backend conventions").
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -42,6 +42,33 @@ impl CredentialName {
         match self {
             CredentialName::AnthropicApiKey => "ANTHROPIC_API_KEY",
             CredentialName::ClaudeCodeOauthToken => "CLAUDE_CODE_OAUTH_TOKEN",
+        }
+    }
+
+    /// The same spelling as a stored secret's name.
+    ///
+    /// The conversion goes through [`SecretName::parse`], the one place the
+    /// name rule is written down (`crate::models::secret`), rather than being
+    /// asserted a second time here: the launch resolver is handed
+    /// [`SecretName`]s and a credential is an ordinary row of `secrets`
+    /// (ADR 0036; `ARCHITECTURE.md`, "Secrets", Agent credentials).
+    ///
+    /// `None` is unreachable — every variant of [`CredentialName::as_str`] is
+    /// a compile-time constant matching the pattern, and a unit test below
+    /// holds that — so a caller drops the name the way
+    /// [`AgentProfile::secret_names`](crate::models::AgentProfile::secret_names)
+    /// drops a stored one it cannot parse, rather than failing a launch over a
+    /// typo in this file.
+    pub fn secret_name(&self) -> Option<SecretName> {
+        match SecretName::parse(self.as_str()) {
+            Ok(name) => Some(name),
+            Err(_) => {
+                error!(
+                    credential_name = %self,
+                    "a backend declares a credential name that is not a valid secret name"
+                );
+                None
+            }
         }
     }
 }
@@ -264,5 +291,15 @@ mod tests {
             CredentialName::ClaudeCodeOauthToken.to_string(),
             "CLAUDE_CODE_OAUTH_TOKEN",
         );
+    }
+
+    #[test]
+    fn every_credential_name_is_a_valid_secret_name() {
+        for name in crate::agent::all_credential_names() {
+            let parsed = name
+                .secret_name()
+                .expect("a declared credential name matches the secret name rule");
+            assert_eq!(parsed.as_str(), name.as_str());
+        }
     }
 }

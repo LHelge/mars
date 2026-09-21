@@ -113,6 +113,22 @@ pub enum AgentBackend {
     Claude,
 }
 
+impl AgentBackend {
+    /// The enum value's exact spelling, which is the one the column, the JSON
+    /// and any message naming a backend use (`docs/data-model.md`, "Enums").
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentBackend::Claude => "claude",
+        }
+    }
+}
+
+impl std::fmt::Display for AgentBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Every way an agent-profile model can reject its input.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProfileError {

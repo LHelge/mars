@@ -1,0 +1,44 @@
+[
+  {
+    "seq": 1,
+    "ts": "2026-01-02T21:00:00Z",
+    "kind": "user_message",
+    "text": "Explain the fold",
+    "user_id": "00000000-0000-0000-0000-000000000001"
+  },
+  {
+    "seq": 2,
+    "ts": "2026-01-02T21:00:01Z",
+    "kind": "text_delta",
+    "text": "The fold "
+  },
+  {
+    "seq": 3,
+    "ts": "2026-01-02T21:00:02Z",
+    "kind": "text_delta",
+    "text": "is pure "
+  },
+  {
+    "seq": 4,
+    "ts": "2026-01-02T21:00:03Z",
+    "kind": "text_delta",
+    "text": "and shared."
+  },
+  {
+    "seq": 5,
+    "ts": "2026-01-02T21:00:04Z",
+    "kind": "text",
+    "text": "The fold is pure and shared."
+  },
+  {
+    "seq": 6,
+    "ts": "2026-01-02T21:00:05Z",
+    "kind": "result",
+    "subtype": "success",
+    "terminal_reason": "completed",
+    "is_error": false,
+    "num_turns": 1,
+    "duration_ms": 1200,
+    "permission_denials": []
+  }
+]

@@ -16,11 +16,15 @@ import {
   type ToolMessage,
 } from "./sessionStore";
 
+import gitMidStreamFixture from "./fixtures/git_mid_stream.json";
 import gitOpsFixture from "./fixtures/git_ops.json";
+import interjectMidStreamFixture from "./fixtures/interject_mid_stream.json";
 import rawAndUnknownFixture from "./fixtures/raw_and_unknown.json";
 import simpleTurnFixture from "./fixtures/simple_turn.json";
+import splitStreamFixture from "./fixtures/split_stream.json";
 import stopAndParkFixture from "./fixtures/stop_and_park.json";
 import subagentFixture from "./fixtures/subagent.json";
+import subagentStreamFixture from "./fixtures/subagent_stream.json";
 import toolUseFixture from "./fixtures/tool_use.json";
 
 // The fixtures are JSON, so TypeScript widens their literal `kind` to `string`.
@@ -34,6 +38,10 @@ const subagent = events(subagentFixture);
 const stopAndPark = events(stopAndParkFixture);
 const gitOps = events(gitOpsFixture);
 const rawAndUnknown = events(rawAndUnknownFixture);
+const interjectMidStream = events(interjectMidStreamFixture);
+const gitMidStream = events(gitMidStreamFixture);
+const splitStream = events(splitStreamFixture);
+const subagentStream = events(subagentStreamFixture);
 
 function applyAll(
   store: ReturnType<typeof createSessionStore>,
@@ -543,6 +551,222 @@ describe("prependHistory across a subagent boundary", () => {
   });
 });
 
+describe("a streamed block with other rows in the middle", () => {
+  it("keeps one assistant message when a user interjects mid-stream", () => {
+    const state = folded(interjectMidStream);
+
+    // The interjected message lands under the block it interrupted, and the
+    // block stays one message carrying the whole text of `text`.
+    expect(state.order).toEqual(["e1", "e2", "e4", "e7"]);
+    const assistant = state.messages.e2 as AssistantTextMessage;
+    expect(assistant.kind).toBe("assistant_text");
+    expect(assistant.text).toBe("Reading the parser and the docs.");
+    expect(assistant.streaming).toBe(false);
+    expect(state.messages.e4).toMatchObject({
+      kind: "user",
+      text: "also update the docs",
+    });
+  });
+
+  it("keeps one assistant message across the optimistic interject", () => {
+    const store = createSessionStore();
+    applyAll(store, interjectMidStream.slice(0, 3));
+    store
+      .getState()
+      .addOptimisticUser("c-2", { kind: "message", text: "also update the docs" });
+    applyAll(store, interjectMidStream.slice(4, 6));
+    const state = store.getState();
+
+    expect(state.order).toEqual(["e1", "e2", optimisticId("c-2")]);
+    const assistant = state.messages.e2 as AssistantTextMessage;
+    expect(assistant.text).toBe("Reading the parser and the docs.");
+    expect(assistant.streaming).toBe(false);
+  });
+
+  it("keeps one assistant message across git, warning and raw rows", () => {
+    const state = folded(gitMidStream);
+
+    expect(state.order).toEqual(["e1", "e2", "e3", "e4"]);
+    const assistant = state.messages.e1 as AssistantTextMessage;
+    expect(assistant.text).toBe("Committing the change.");
+    expect(assistant.streaming).toBe(false);
+    expect(state.gitEventSeq).toBe(2);
+  });
+
+  it("keeps one assistant message across a local system row", () => {
+    const store = createSessionStore();
+    applyAll(store, gitMidStream.slice(0, 1));
+    store.getState().addSystemMessage("connection lost, retrying");
+    applyAll(store, gitMidStream.slice(4));
+    const state = store.getState();
+
+    expect(state.order).toEqual(["e1", "local:1"]);
+    expect((state.messages.e1 as AssistantTextMessage).text).toBe(
+      "Committing the change.",
+    );
+  });
+
+  it("starts a new message when a tool or thinking ends the block", () => {
+    const withTool = folded([
+      gitMidStream[0],
+      {
+        seq: 2,
+        ts: "2026-01-02T20:00:01Z",
+        kind: "tool_call",
+        tool_use_id: "toolu_mid_fake",
+        name: "Read",
+        input: { file_path: "/repo/src/widget.ts" },
+      },
+      { ...gitMidStream[4], seq: 3 },
+    ]);
+    expect(withTool.order).toEqual(["e1", "e2", "e3"]);
+    expect((withTool.messages.e1 as AssistantTextMessage).text).toBe("Committing");
+    expect((withTool.messages.e3 as AssistantTextMessage).text).toBe(" the change");
+
+    const withThinking = folded([
+      gitMidStream[0],
+      {
+        seq: 2,
+        ts: "2026-01-02T20:00:01Z",
+        kind: "thinking",
+        text: "hm",
+        redacted: false,
+      },
+      { ...gitMidStream[4], seq: 3 },
+    ]);
+    expect(withThinking.order).toEqual(["e1", "e2", "e3"]);
+  });
+
+  it("keeps one assistant message inside a subagent scope", () => {
+    const state = folded(subagentStream);
+
+    expect(state.order).toEqual(["e1"]);
+    expect(state.subagents).toEqual({ toolu_task_fake: ["e3", "e4"] });
+    const nested = state.messages.e3 as AssistantTextMessage;
+    expect(nested.text).toBe("Scanning the routes.");
+    expect(nested.streaming).toBe(false);
+    expect(state.messages.e4).toMatchObject({ kind: "system", level: "warn" });
+    expect(tool(state, "e1").children).toEqual(["e3", "e4"]);
+  });
+
+  it("clears the cursor when a park interrupts the stream", () => {
+    const state = folded(stopAndPark.slice(0, 3));
+
+    const assistant = state.messages.e2 as AssistantTextMessage;
+    expect(assistant.text).toBe("Running");
+    expect(assistant.streaming).toBe(false);
+    expect(state.streamEndSeq).toBe(3);
+  });
+
+  it("clears the cursor when a fatal error ends the stream", () => {
+    const state = folded([
+      gitMidStream[0],
+      {
+        seq: 2,
+        ts: "2026-01-02T20:00:01Z",
+        kind: "error",
+        message: "the CLI exited unexpectedly",
+        fatal: true,
+      },
+    ]);
+
+    expect((state.messages.e1 as AssistantTextMessage).streaming).toBe(false);
+    expect(state.streamEndSeq).toBe(2);
+    expect(state.turnActive).toBe(false);
+  });
+});
+
+describe("a history page cut inside a delta run", () => {
+  it("joins the fragment when the live head is still streaming", () => {
+    const store = createSessionStore();
+    applyAll(store, splitStream.slice(3, 4));
+    expect((store.getState().messages.e4 as AssistantTextMessage).text).toBe(
+      "and shared.",
+    );
+
+    store.getState().prependHistory(splitStream.slice(0, 3), false);
+    const merged = store.getState();
+
+    expect(merged.order).toEqual(["e1", "e2"]);
+    expect(merged.messages.e4).toBeUndefined();
+    const assistant = merged.messages.e2 as AssistantTextMessage;
+    expect(assistant.text).toBe("The fold is pure and shared.");
+    expect(assistant.streaming).toBe(true);
+
+    // The joined message is still the one the completing `text` lands on.
+    applyAll(store, splitStream.slice(4));
+    const done = store.getState();
+    expect(done.order).toEqual(["e1", "e2", "e6"]);
+    const completed = done.messages.e2 as AssistantTextMessage;
+    expect(completed.text).toBe("The fold is pure and shared.");
+    expect(completed.streaming).toBe(false);
+  });
+
+  it("drops the fragment when the live head already completed the block", () => {
+    const store = createSessionStore();
+    applyAll(store, splitStream.slice(3));
+    store.getState().prependHistory(splitStream.slice(0, 3), false);
+    const state = store.getState();
+
+    expect(state.order).toEqual(["e1", "e2", "e6"]);
+    expect(state.messages.e4).toBeUndefined();
+    const assistant = state.messages.e2 as AssistantTextMessage;
+    expect(assistant.text).toBe("The fold is pure and shared.");
+    expect(assistant.streaming).toBe(false);
+    expect(state.turnActive).toBe(false);
+  });
+
+  it("reconciles a cut inside a subagent's delta run", () => {
+    const store = createSessionStore();
+    applyAll(store, subagentStream.slice(4));
+    store.getState().prependHistory(subagentStream.slice(0, 4), false);
+    const state = store.getState();
+
+    expect(state.order).toEqual(["e1"]);
+    expect(state.messages.e5).toBeUndefined();
+    expect(state.subagents).toEqual({ toolu_task_fake: ["e3", "e4"] });
+    const nested = state.messages.e3 as AssistantTextMessage;
+    expect(nested.text).toBe("Scanning the routes.");
+    expect(nested.streaming).toBe(false);
+
+    const task = tool(state, "e1");
+    expect(task.name).toBe("Task");
+    expect(task.children).toEqual(["e3", "e4"]);
+    expect(task.running).toBe(false);
+  });
+
+  it("stops the cursor when the live half saw the stream interrupted", () => {
+    // The page boundary fell inside the deltas; the park that ended them is in
+    // the live half, which is the only side that knows the block is over.
+    const store = createSessionStore();
+    applyAll(store, stopAndPark.slice(2));
+    store.getState().prependHistory(stopAndPark.slice(0, 2), false);
+    const state = store.getState();
+
+    expect(state.order).toEqual(["e1", "e2", "e3", "e4"]);
+    const assistant = state.messages.e2 as AssistantTextMessage;
+    expect(assistant.text).toBe("Running");
+    expect(assistant.streaming).toBe(false);
+  });
+
+  it("leaves the fragment streaming when only quiet rows follow", () => {
+    const store = createSessionStore();
+    applyAll(store, [gitMidStream[1]]);
+    store.getState().prependHistory(gitMidStream.slice(0, 1), false);
+    expect(
+      (store.getState().messages.e1 as AssistantTextMessage).streaming,
+    ).toBe(true);
+
+    // ... and the next delta continues it rather than starting a second block.
+    applyAll(store, gitMidStream.slice(4, 5));
+    const state = store.getState();
+    expect(state.order).toEqual(["e1", "e2"]);
+    expect((state.messages.e1 as AssistantTextMessage).text).toBe(
+      "Committing the change",
+    );
+  });
+});
+
 describe("optimistic input", () => {
   it("replaces the optimistic message in place when its event arrives", () => {
     const store = createSessionStore();
@@ -620,6 +844,43 @@ describe("optimistic input", () => {
     expect(store.getState().messages[optimisticId("c-x")]).toMatchObject({
       rejected: "session is done",
     });
+  });
+
+  it("restores the previous turnActive when the send is rejected", () => {
+    const store = createSessionStore();
+    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    expect(store.getState().turnActive).toBe(true);
+
+    store.getState().inputRejected("c-x", "session is done");
+    expect(store.getState().turnActive).toBe(false);
+  });
+
+  it("keeps turnActive when the rejected send interjected a running turn", () => {
+    const store = createSessionStore();
+    applyAll(store, simpleTurn.slice(0, 3));
+    expect(store.getState().turnActive).toBe(true);
+
+    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    store.getState().inputRejected("c-x", "input queue is full");
+    expect(store.getState().turnActive).toBe(true);
+  });
+
+  it("keeps turnActive when an event arrived after the rejected send", () => {
+    const store = createSessionStore();
+    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    applyAll(store, simpleTurn.slice(0, 3));
+    store.getState().inputRejected("c-x", "session is done");
+
+    expect(store.getState().turnActive).toBe(true);
+  });
+
+  it("keeps turnActive while another send is still in flight", () => {
+    const store = createSessionStore();
+    store.getState().addOptimisticUser("c-1", { kind: "message", text: "One" });
+    store.getState().addOptimisticUser("c-2", { kind: "message", text: "Two" });
+    store.getState().inputRejected("c-2", "session is done");
+
+    expect(store.getState().turnActive).toBe(true);
   });
 
   it("reset clears the last rejection", () => {

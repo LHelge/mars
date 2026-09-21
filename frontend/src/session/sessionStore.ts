@@ -128,6 +128,13 @@ export interface SessionState {
   hasMore: boolean;
   /** `seq` of the last `git` event, consumed by the Changes panel. */
   gitEventSeq: number;
+  /**
+   * `seq` of the event that last closed the streamed blocks — a `result`, a
+   * fatal `error` or a `state_change` into an ended state. A merged older page
+   * consults it: a page cut inside a delta run ends with a fragment the older
+   * fold never saw finish, and this says the live half saw it.
+   */
+  streamEndSeq: number;
   /** A turn is in progress; the composer's button reads "Interject". */
   turnActive: boolean;
   /**
@@ -186,6 +193,7 @@ export function emptySessionState(): SessionState {
     oldestSeq: null,
     hasMore: false,
     gitEventSeq: 0,
+    streamEndSeq: 0,
     turnActive: false,
     lastRejection: null,
   };
@@ -283,10 +291,26 @@ function placeMessage(
 }
 
 /**
+ * Whether a message ends a streamed text block. A row the agent did not write
+ * — a user message (the "Interject" of a live turn, optimistic or confirmed), a
+ * system row from a `git`, `launch_warning`, `state_change` or socket error, a
+ * `raw` line — can land in the middle of a delta run without meaning the block
+ * ended, so the fold looks past it. A tool, thinking, a `result` or a completed
+ * text block does end it.
+ */
+function endsStreaming(message: Message): boolean {
+  return (
+    message.kind !== "user" &&
+    message.kind !== "system" &&
+    message.kind !== "raw"
+  );
+}
+
+/**
  * The streaming assistant message a `text_delta`/`text` belongs to: the last
- * message of the scope, and only while it is still streaming. Anything else
- * (a tool, a completed text block) starts a new message, so a delta never
- * attaches to an assistant message from an earlier turn.
+ * block-ending message of the scope, and only while it is still streaming.
+ * Anything else (a tool, a completed text block) starts a new message, so a
+ * delta never attaches to an assistant message from an earlier turn.
  */
 function streamingId(
   state: SessionState,
@@ -295,14 +319,20 @@ function streamingId(
   const ids = scopeIds(state, parent);
   for (let i = ids.length - 1; i >= 0; i -= 1) {
     const message = state.messages[ids[i]];
-    if (!message) continue;
+    if (!message || !endsStreaming(message)) continue;
     if (message.kind !== "assistant_text") return undefined;
     return message.streaming ? message.id : undefined;
   }
   return undefined;
 }
 
-function clearStreaming(state: SessionState): SessionState {
+/**
+ * Completes every streamed block: the turn is over, whether it ended by itself
+ * (`result`), was interrupted (a park or a kill, which produce no `result`) or
+ * failed fatally. `streamEndSeq` remembers that it happened, so an older page
+ * merged in later does not bring a blinking cursor back.
+ */
+function endStreaming(state: SessionState, seq: number): SessionState {
   let messages: Record<string, Message> | null = null;
   for (const message of Object.values(state.messages)) {
     if (message.kind === "assistant_text" && message.streaming) {
@@ -310,7 +340,7 @@ function clearStreaming(state: SessionState): SessionState {
       messages[message.id] = { ...message, streaming: false };
     }
   }
-  return messages ? { ...state, messages } : state;
+  return { ...state, messages: messages ?? state.messages, streamEndSeq: seq };
 }
 
 function system(
@@ -568,13 +598,19 @@ export function foldEvent(state: SessionState, event: AgentEvent): SessionState 
         cost_usd: event.cost_usd,
         usage: event.usage,
       };
-      const placed = placeMessage(clearStreaming(next), message, parent);
+      const placed = placeMessage(endStreaming(next, event.seq), message, parent);
       return { ...placed, turnActive: false };
     }
 
     case "error": {
       const text = event.fatal ? `${event.message} (fatal)` : event.message;
-      const placed = placeMessage(next, system(event.seq, text, "error"), parent);
+      // A fatal error ends the turn wherever the stream had got to, so the
+      // cursor of a half-written block stops blinking (there is no `result`).
+      const placed = placeMessage(
+        event.fatal ? endStreaming(next, event.seq) : next,
+        system(event.seq, text, "error"),
+        parent,
+      );
       return event.fatal ? { ...placed, turnActive: false } : placed;
     }
 
@@ -585,8 +621,12 @@ export function foldEvent(state: SessionState, event: AgentEvent): SessionState 
         event.reason,
         event.signal,
       );
+      const ended =
+        event.to === "parked" || event.to === "done" || event.to === "failed";
+      // A kill or a park mid-stream never produces a `result`, so the streamed
+      // block that was interrupted is completed here instead.
       const placed = placeMessage(
-        next,
+        ended ? endStreaming(next, event.seq) : next,
         system(event.seq, text, "info", {
           from: event.from,
           to: event.to,
@@ -598,8 +638,6 @@ export function foldEvent(state: SessionState, event: AgentEvent): SessionState 
       const session = placed.session
         ? { ...placed.session, state: event.to }
         : null;
-      const ended =
-        event.to === "parked" || event.to === "done" || event.to === "failed";
       return {
         ...placed,
         session,
@@ -691,12 +729,96 @@ function mergeToolMessages(older: ToolMessage, live: ToolMessage): ToolMessage {
   };
 }
 
+/** The scopes a merge has to reconcile: the top level and every subagent. */
+function mergedScopes(
+  older: SessionState,
+  live: SessionState,
+): (string | undefined)[] {
+  const keys = new Set([
+    ...Object.keys(older.subagents),
+    ...Object.keys(live.subagents),
+  ]);
+  return [undefined, ...keys];
+}
+
+/** The last message of a scope that ends a streamed block, if there is one. */
+function lastBlockMessage(
+  state: SessionState,
+  parent: string | undefined,
+): Message | undefined {
+  const ids = scopeIds(state, parent);
+  for (let i = ids.length - 1; i >= 0; i -= 1) {
+    const message = state.messages[ids[i]];
+    if (message && endsStreaming(message)) return message;
+  }
+  return undefined;
+}
+
+/** The first message of a scope that ends a streamed block, if there is one. */
+function firstBlockMessage(
+  state: SessionState,
+  parent: string | undefined,
+): Message | undefined {
+  for (const id of scopeIds(state, parent)) {
+    const message = state.messages[id];
+    if (message && endsStreaming(message)) return message;
+  }
+  return undefined;
+}
+
+/**
+ * Reconciles a page boundary that fell inside a delta run. The older page was
+ * folded on its own, so it ends with a streaming fragment of a block the live
+ * half has already rebuilt from the later deltas. The two halves become one
+ * message at the older position, exactly as a split tool does: a live half
+ * still streaming contributes its deltas, a completed one the whole block's
+ * `text`, and a block the live half saw interrupted (a park, a kill, a fatal
+ * error) merely stops streaming. Writes into `messages` and records what it
+ * merged away in `dropped`, which the caller compacts out of every order and
+ * child list.
+ */
+function mergeStreamingFragments(
+  older: SessionState,
+  live: SessionState,
+  messages: Record<string, Message>,
+  dropped: Set<string>,
+): void {
+  for (const parent of mergedScopes(older, live)) {
+    const fragment = lastBlockMessage(older, parent);
+    if (fragment?.kind !== "assistant_text" || !fragment.streaming) continue;
+    const head = firstBlockMessage(live, parent);
+    if (head === undefined) {
+      // Only user, system or raw rows follow. The fragment is still the tail of
+      // the live scope, so the next delta continues it — unless the live half
+      // saw the turn end, which is what interrupted the block.
+      if (live.streamEndSeq > 0) {
+        messages[fragment.id] = { ...fragment, streaming: false };
+      }
+      continue;
+    }
+    if (head.kind !== "assistant_text") {
+      messages[fragment.id] = { ...fragment, streaming: false };
+      continue;
+    }
+    // A completed head carries the block's whole text (`SPEC.md`,
+    // "AgentEvent"); a streaming one carries only the deltas after the cut.
+    messages[fragment.id] = {
+      ...fragment,
+      text: head.streaming ? fragment.text + head.text : head.text,
+      streaming: head.streaming,
+    };
+    dropped.add(head.id);
+  }
+}
+
 /**
  * Merges an older page folded on its own into the live state. The two orders
  * are concatenated, and every placeholder tool message the live half had to
  * invent — an `unknown` for a result without a call, an `Agent` for a subagent
  * whose parent `tool_call` had scrolled out of view — is reconciled onto the
- * real message from the older page so one `tool_use_id` is one message.
+ * real message from the older page so one `tool_use_id` is one message, and a
+ * streaming fragment the page boundary cut out of a delta run is joined to or
+ * dropped in favour of the live half of the same block.
  */
 function mergeHistory(older: SessionState, live: SessionState): SessionState {
   const messages: Record<string, Message> = { ...older.messages, ...live.messages };
@@ -726,6 +848,8 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
     }
   }
 
+  mergeStreamingFragments(older, live, messages, dropped);
+
   // Nothing may keep pointing at a merged-away message: not `messages`, not
   // `order`, not a subagent's list, not the `children` of the tool it was
   // nested under.
@@ -749,6 +873,7 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
     subagents,
     pendingTools,
     gitEventSeq: live.gitEventSeq || older.gitEventSeq,
+    streamEndSeq: live.streamEndSeq || older.streamEndSeq,
     // The first page is loaded into an empty store, so its tail decides whether
     // a turn is in progress; later pages never revise the live answer.
     turnActive:
@@ -761,10 +886,18 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
 export function createSessionStore(): StoreApi<SessionStore> {
   // Ids for messages the client invents; `e<seq>` is reserved for events.
   let local = 0;
-  return createStore<SessionStore>()((set) => ({
+  // `turnActive` as each optimistic send found it, so a rejection can put it
+  // back: a send that the orchestrator refuses never started a turn, and the
+  // composer's button must go back to reading "Send".
+  // The `lastSeq` it was sent at comes with it: an event that arrived since
+  // may have started a turn of its own, and that turn is not this send's to
+  // undo.
+  const turnActiveBefore = new Map<string, { active: boolean; seq: number }>();
+  return createStore<SessionStore>()((set, get) => ({
     ...emptySessionState(),
 
     reset: () => {
+      turnActiveBefore.clear();
       set(emptySessionState());
     },
 
@@ -825,6 +958,10 @@ export function createSessionStore(): StoreApi<SessionStore> {
     },
 
     addOptimisticUser: (clientId, input) => {
+      if (!turnActiveBefore.has(clientId)) {
+        const { turnActive, lastSeq } = get();
+        turnActiveBefore.set(clientId, { active: turnActive, seq: lastSeq });
+      }
       set((state) => {
         const id = optimisticId(clientId);
         const message: UserMessage = {
@@ -844,6 +981,9 @@ export function createSessionStore(): StoreApi<SessionStore> {
     },
 
     inputAccepted: (clientId) => {
+      // Accepted: the turn this send started is the live one, so there is
+      // nothing left to restore.
+      turnActiveBefore.delete(clientId);
       set((state) => {
         const id = optimisticId(clientId);
         const message = state.messages[id];
@@ -860,6 +1000,8 @@ export function createSessionStore(): StoreApi<SessionStore> {
     },
 
     inputRejected: (clientId, reason) => {
+      const before = turnActiveBefore.get(clientId);
+      turnActiveBefore.delete(clientId);
       set((state) => {
         const lastRejection = { client_id: clientId, reason };
         const id = optimisticId(clientId);
@@ -868,11 +1010,19 @@ export function createSessionStore(): StoreApi<SessionStore> {
         // another browser's message, or one sent before a reload — still has
         // to reach the composer, so the rejection is recorded either way.
         if (message?.kind !== "user") return { ...state, lastRejection };
+        // Another send is still in flight, or an event has arrived since:
+        // only this send's own optimism is undone.
+        const othersPending = Object.values(state.messages).some(
+          (other) => other.kind === "user" && other.pending && other.id !== id,
+        );
+        const restore =
+          before !== undefined && !othersPending && before.seq === state.lastSeq;
         return {
           messages: {
             ...state.messages,
             [id]: { ...message, pending: false, rejected: reason },
           },
+          turnActive: restore ? before.active : state.turnActive,
           lastRejection,
         };
       });

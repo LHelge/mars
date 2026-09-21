@@ -1,0 +1,41 @@
+[
+  {
+    "seq": 1,
+    "ts": "2026-01-02T20:00:00Z",
+    "kind": "text_delta",
+    "text": "Committing"
+  },
+  {
+    "seq": 2,
+    "ts": "2026-01-02T20:00:01Z",
+    "kind": "git",
+    "op": "sync",
+    "ok": true,
+    "detail": { "ref": "sessions/fake-session", "commit": "0000000000000000000000000000000000000002" }
+  },
+  {
+    "seq": 3,
+    "ts": "2026-01-02T20:00:02Z",
+    "kind": "launch_warning",
+    "message": "secret GITHUB_TOKEN is used but not declared"
+  },
+  {
+    "seq": 4,
+    "ts": "2026-01-02T20:00:03Z",
+    "kind": "raw",
+    "backend": "claude",
+    "native": { "type": "unknown_line", "payload": 2 }
+  },
+  {
+    "seq": 5,
+    "ts": "2026-01-02T20:00:04Z",
+    "kind": "text_delta",
+    "text": " the change"
+  },
+  {
+    "seq": 6,
+    "ts": "2026-01-02T20:00:05Z",
+    "kind": "text",
+    "text": "Committing the change."
+  }
+]

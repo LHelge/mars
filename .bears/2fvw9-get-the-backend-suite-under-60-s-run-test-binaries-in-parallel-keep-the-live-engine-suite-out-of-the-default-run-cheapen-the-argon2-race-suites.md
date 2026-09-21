@@ -1,16 +1,17 @@
 ---
 id: "2fvw9"
 title: "Get the backend suite under 60 s: run test binaries in parallel, keep the live engine suite out of the default run, cheapen the Argon2 race suites"
-status: open
+status: done
 priority: P2
 created: "2026-09-17T21:43:25.516811148Z"
-updated: "2026-09-17T21:43:25.516811148Z"
+updated: "2026-09-21T02:53:30.626114249Z"
 tags:
   - orchestrator
   - tests
   - infra
 depends_on:
   - "7fsrg"
+attempts: 1
 ---
 
 ## Summary

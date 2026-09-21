@@ -1,15 +1,16 @@
 ---
 id: g8rx8
 title: "Role templates: say the container is disposable and a missing tool is installed at user level, not reported as a blocker"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:01:01.513997908Z"
-updated: "2026-09-21T10:01:01.513997908Z"
+updated: "2026-09-21T11:13:14.525579023Z"
 tags:
   - orchestrator
   - profiles
   - docs
 parent: qpshf
+attempts: 1
 ---
 
 ## Summary

@@ -68,7 +68,8 @@ export interface SessionSocketApi {
   /** Returns the generated `client_id` the `user_message` echoes back. */
   send: (input: SessionInput) => string;
   stop: () => void;
-  loadOlder: () => Promise<void>;
+  /** Resolves `false` when the request failed; see `SessionSocket.loadOlder`. */
+  loadOlder: () => Promise<boolean>;
   terminal: TerminalApi;
 }
 
@@ -100,7 +101,8 @@ export class SessionSocket {
   private refreshing = false;
   private sawAuthError = false;
   private lastAuthCloseAt: number | null = null;
-  private loadingOlder = false;
+  /** The older-history request in flight, which later callers join. */
+  private loadingOlder: Promise<boolean> | null = null;
   private terminalRunning = false;
   private readonly terminalListeners = new Set<TerminalListener>();
   private readonly unsubscribes: (() => void)[] = [];
@@ -366,24 +368,47 @@ export class SessionSocket {
     });
   }
 
-  async loadOlder(): Promise<void> {
+  /**
+   * Fetches the page before `oldestSeq`. Resolves `true` when there is nothing
+   * more to do — a page landed, or there was none to ask for — and `false` when
+   * the request failed, which also leaves `historyStatus` at `error` for the
+   * transcript to offer a retry on. Simultaneous callers — a scroll gesture and
+   * the layout effect that fills a short transcript — share the one request
+   * rather than racing two pages of the same cursor.
+   */
+  loadOlder(): Promise<boolean> {
+    const running = this.loadingOlder;
+    if (running !== null) return running;
+    const request = this.fetchOlder();
+    this.loadingOlder = request;
+    void request.finally(() => {
+      if (this.loadingOlder === request) this.loadingOlder = null;
+    });
+    return request;
+  }
+
+  private async fetchOlder(): Promise<boolean> {
     const state = this.store.getState();
-    if (!state.hasMore || this.loadingOlder) return;
+    if (!state.hasMore) return true;
     const before = state.oldestSeq;
-    if (before === null) return;
+    if (before === null) return true;
     if (before <= 1) {
       // `seq` starts at 1, so nothing can precede it.
       state.prependHistory([], false);
-      return;
+      return true;
     }
-    this.loadingOlder = true;
+    state.setHistoryStatus("loading");
     try {
       const page = await listEvents(this.sessionId, { before, limit: PAGE_SIZE });
       this.store.getState().prependHistory(page.events, page.has_more);
+      this.store.getState().setHistoryStatus("idle");
+      return true;
     } catch (error) {
+      // The transcript keeps what it holds; only the status changes, so the
+      // reader sees why and can ask again.
       console.warn("older session history failed to load:", reason(error));
-    } finally {
-      this.loadingOlder = false;
+      this.store.getState().setHistoryStatus("error", reason(error));
+      return false;
     }
   }
 

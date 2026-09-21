@@ -22,8 +22,23 @@ function events(fixture: unknown): AgentEvent[] {
   return fixture as AgentEvent[];
 }
 
+/** One completed assistant message, for the history paging scenarios. */
+function textEvent(seq: number, text: string): AgentEvent {
+  return {
+    seq,
+    ts: "2026-01-02T10:00:00Z",
+    kind: "text",
+    text,
+  } as unknown as AgentEvent;
+}
+
 const SCROLLER_PX = 600;
 const ROW_PX = 24;
+
+// jsdom lays nothing out, so the scroller's own box is stubbed too: the fill
+// effect asks for another page exactly when the content does not overflow the
+// viewport, which is a comparison of these two numbers.
+let scrollerContentPx = 5000;
 
 beforeAll(() => {
   // Store updates made outside `render` are wrapped in `act`, which React only
@@ -39,6 +54,20 @@ beforeAll(() => {
   Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
     configurable: true,
     get: () => 800,
+  });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.dataset.testid === "transcript-scroll" ? SCROLLER_PX : ROW_PX;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.dataset.testid === "transcript-scroll"
+        ? scrollerContentPx
+        : ROW_PX;
+    },
   });
 });
 
@@ -63,6 +92,7 @@ function mount(list: AgentEvent[]) {
 }
 
 afterEach(() => {
+  scrollerContentPx = 5000;
   cleanup();
   for (const sessionId of sessions.splice(0)) {
     disposeSessionStore(sessionId);
@@ -226,7 +256,10 @@ describe("Transcript", () => {
     const loadOlder = vi.fn();
     render(<Transcript sessionId={sessionId} loadOlder={loadOlder} />);
 
+    // The reader takes the view to the top; the auto-follow left it at the
+    // bottom of the stubbed content.
     const scroller = screen.getByTestId("transcript-scroll");
+    scroller.scrollTop = 0;
     fireEvent.scroll(scroller);
     fireEvent.scroll(scroller);
 
@@ -242,6 +275,135 @@ describe("Transcript", () => {
     fireEvent.scroll(screen.getByTestId("transcript-scroll"));
 
     expect(loadOlder).not.toHaveBeenCalled();
+  });
+
+  it("shows the loading indicator only while a request is running", () => {
+    const sessionId = seed([textEvent(10, "The latest message")]);
+    sessions.push(sessionId);
+    const store = getSessionStore(sessionId);
+    act(() => {
+      store.getState().prependHistory([], true);
+    });
+    render(<Transcript sessionId={sessionId} loadOlder={vi.fn()} />);
+
+    // Older history remains, but nothing has been asked for yet.
+    expect(screen.queryByText("Loading earlier messages")).toBeNull();
+
+    act(() => {
+      store.getState().setHistoryStatus("loading");
+    });
+    expect(screen.getByText("Loading earlier messages")).toBeDefined();
+
+    act(() => {
+      store.getState().setHistoryStatus("idle");
+    });
+    expect(screen.queryByText("Loading earlier messages")).toBeNull();
+  });
+
+  it("retries a failed page on demand and keeps the transcript meanwhile", () => {
+    const sessionId = seed([textEvent(10, "The latest message")]);
+    sessions.push(sessionId);
+    const store = getSessionStore(sessionId);
+    act(() => {
+      store.getState().prependHistory([], true);
+    });
+    // Stands in for the socket: a request moves the status, and only the
+    // status decides what the transcript may ask for next.
+    const loadOlder = vi.fn(() => {
+      store.getState().setHistoryStatus("loading");
+    });
+    render(<Transcript sessionId={sessionId} loadOlder={loadOlder} />);
+
+    const scroller = screen.getByTestId("transcript-scroll");
+    scroller.scrollTop = 0;
+    fireEvent.scroll(scroller);
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      store.getState().setHistoryStatus("error", "network down");
+    });
+
+    // The page that failed is still on screen, the spinner is not, and
+    // scrolling does not retry into the same failure by itself.
+    expect(screen.getByText("The latest message")).toBeDefined();
+    expect(screen.queryByText("Loading earlier messages")).toBeNull();
+    expect(screen.getByText(/network down/)).toBeDefined();
+    fireEvent.scroll(scroller);
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+
+    // Retry releases the duplicate-request guard the failed attempt took.
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(loadOlder).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Loading earlier messages")).toBeDefined();
+
+    act(() => {
+      store.getState().prependHistory([textEvent(5, "An earlier message")], false);
+      store.getState().setHistoryStatus("idle");
+    });
+    expect(screen.queryByText(/Could not load/)).toBeNull();
+    expect(screen.getByText("An earlier message")).toBeDefined();
+    expect(screen.getByText("The latest message")).toBeDefined();
+  });
+
+  it("keeps the reader on the same row when an older page lands", () => {
+    const sessionId = seed([textEvent(10, "The latest message")]);
+    sessions.push(sessionId);
+    const store = getSessionStore(sessionId);
+    act(() => {
+      store.getState().prependHistory([], true);
+    });
+    const loadOlder = vi.fn(() => {
+      store.getState().setHistoryStatus("loading");
+    });
+    render(<Transcript sessionId={sessionId} loadOlder={loadOlder} />);
+
+    const scroller = screen.getByTestId("transcript-scroll");
+    scroller.scrollTop = 120;
+    fireEvent.scroll(scroller);
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      // The page that arrived is a thousand pixels of rows above the reader.
+      scrollerContentPx = 6000;
+      store.getState().prependHistory([textEvent(5, "An earlier message")], false);
+      store.getState().setHistoryStatus("idle");
+    });
+
+    // Without the anchor the reader would be dragged back by the whole page.
+    expect(scroller.scrollTop).toBe(1120);
+  });
+
+  it("asks for the next page when a landed one does not fill the viewport", () => {
+    // 200 tiny `text_delta` events fold into a row or two: nothing overflows,
+    // so no `scroll` event will ever be fired for this transcript.
+    scrollerContentPx = 100;
+    const sessionId = seed([textEvent(10, "The latest message")]);
+    sessions.push(sessionId);
+    const store = getSessionStore(sessionId);
+    act(() => {
+      store.getState().prependHistory([], true);
+    });
+    const loadOlder = vi.fn(() => {
+      store.getState().setHistoryStatus("loading");
+    });
+    render(<Transcript sessionId={sessionId} loadOlder={loadOlder} />);
+
+    // One page, without a gesture.
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      store.getState().prependHistory([textEvent(5, "An earlier message")], true);
+      store.getState().setHistoryStatus("idle");
+    });
+    // The cursor moved and the content still does not overflow: the next page,
+    // and only the next one.
+    expect(loadOlder).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      store.getState().prependHistory([textEvent(1, "The first message")], false);
+      store.getState().setHistoryStatus("idle");
+    });
+    expect(loadOlder).toHaveBeenCalledTimes(2);
   });
 
   it("offers Resend for a rejected message", () => {

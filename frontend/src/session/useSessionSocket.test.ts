@@ -434,6 +434,50 @@ describe("SessionSocket", () => {
     expect(listEvents).not.toHaveBeenCalled();
   });
 
+  it("reports a failed older page and loads it on a retry", async () => {
+    track(await startLive([textEvent(5, "five")]));
+    store().prependHistory([textEvent(5, "five")], true);
+
+    listEvents.mockRejectedValueOnce(new Error("network down"));
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+    expect(await socket.loadOlder()).toBe(false);
+    expect(store().historyStatus).toBe("error");
+    expect(store().historyError).toBe("network down");
+    // The transcript is untouched: the page that failed is the only loss.
+    expect(store().order).toHaveLength(1);
+    expect(store().oldestSeq).toBe(5);
+
+    // The guard the failed attempt took is gone: the same page is asked for
+    // again and lands.
+    listEvents.mockResolvedValueOnce({
+      events: [textEvent(1, "one")],
+      has_more: false,
+    });
+    expect(await socket.loadOlder()).toBe(true);
+    expect(store().historyStatus).toBe("idle");
+    expect(store().historyError).toBeNull();
+    expect(store().oldestSeq).toBe(1);
+    expect(store().order).toHaveLength(2);
+  });
+
+  it("coalesces simultaneous older-history requests into one", async () => {
+    track(await startLive([textEvent(5, "five")]));
+    store().prependHistory([textEvent(5, "five")], true);
+
+    listEvents.mockClear();
+    listEvents.mockResolvedValueOnce({
+      events: [textEvent(1, "one")],
+      has_more: false,
+    });
+    const socket = track(new SessionSocket(SESSION_ID, factory));
+    // A scroll gesture and the transcript's fill effect in the same commit.
+    const outcomes = await Promise.all([socket.loadOlder(), socket.loadOlder()]);
+
+    expect(outcomes).toEqual([true, true]);
+    expect(listEvents).toHaveBeenCalledTimes(1);
+    expect(store().order).toHaveLength(2);
+  });
+
   it("ignores a malformed frame", async () => {
     track(await startLive());
     last().onmessage?.(new MessageEvent("message", { data: "{not json" }));

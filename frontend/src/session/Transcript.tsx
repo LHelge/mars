@@ -33,6 +33,8 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
   const order = useSessionStore(sessionId, (state) => state.order);
   const hasMore = useSessionStore(sessionId, (state) => state.hasMore);
   const oldestSeq = useSessionStore(sessionId, (state) => state.oldestSeq);
+  const historyStatus = useSessionStore(sessionId, (state) => state.historyStatus);
+  const historyError = useSessionStore(sessionId, (state) => state.historyError);
   // Streaming growth has to re-pin the view, and it changes no id: the length
   // of the tail message's text is what moves while a `text_delta` arrives.
   const tailLength = useSessionStore(sessionId, (state) => {
@@ -83,26 +85,59 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
     requestedFor: number | null;
   } | null>(null);
 
+  // `stick` is a fresh object every render, so the handlers below depend on the
+  // two stable callbacks instead of on it.
+  const { onScroll: stickOnScroll, isPinned } = stick;
+
+  /**
+   * Asks for the page before `oldestSeq`, remembering where the reader was.
+   *
+   * Three things stop a request: no page to ask for, one already in flight —
+   * a scroll gesture and the fill effect below can want the same page in the
+   * same commit — and the cursor guard, which keeps one gesture from firing a
+   * request per `scroll` event and re-arms when a landed page moves
+   * `oldestSeq`. A failed request leaves the status at `error` and stops the
+   * automatic paths rather than retrying into the same failure; `force` is the
+   * reader pressing Retry, which is the one thing that asks again.
+   */
+  const load = useCallback(
+    (force: boolean) => {
+      const element = scrollRef.current;
+      if (!element || !loadOlder || !hasMore || historyStatus === "loading") {
+        return;
+      }
+      if (
+        !force &&
+        (historyStatus === "error" || requestedFor.current === oldestSeq)
+      ) {
+        return;
+      }
+      requestedFor.current = oldestSeq;
+      anchor.current = {
+        height: element.scrollHeight,
+        top: element.scrollTop,
+        // The live flag: `stick.pinned` is still the value from before this
+        // very gesture (`useStickToBottom`, `isPinned`).
+        pinned: isPinned(),
+        requestedFor: oldestSeq,
+      };
+      loadOlder();
+    },
+    [hasMore, historyStatus, isPinned, loadOlder, oldestSeq, scrollRef],
+  );
+
   const handleScroll = useCallback(() => {
-    stick.onScroll();
+    stickOnScroll();
     const element = scrollRef.current;
-    if (!element || !loadOlder || !hasMore) {
+    if (!element || element.scrollTop > NEAR_TOP_PX) {
       return;
     }
-    if (element.scrollTop > NEAR_TOP_PX || requestedFor.current === oldestSeq) {
-      return;
-    }
-    requestedFor.current = oldestSeq;
-    anchor.current = {
-      height: element.scrollHeight,
-      top: element.scrollTop,
-      // The live flag: `stick.pinned` is still the value from before this
-      // very gesture (`useStickToBottom`, `isPinned`).
-      pinned: stick.isPinned(),
-      requestedFor: oldestSeq,
-    };
-    loadOlder();
-  }, [hasMore, loadOlder, oldestSeq, scrollRef, stick]);
+    load(false);
+  }, [load, scrollRef, stickOnScroll]);
+
+  const retry = useCallback(() => {
+    load(true);
+  }, [load]);
 
   // A prepend grows the list above the viewport, which would otherwise drag the
   // reader backwards by exactly the height of the page that just arrived.
@@ -120,6 +155,31 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
     element.scrollTop = element.scrollHeight - pending.height + pending.top;
   }, [oldestSeq, order, scrollRef]);
 
+  // A failed page moved nothing, so the anchor it took is stale and the cursor
+  // guard would otherwise refuse that page for the rest of the mount. Both go;
+  // what holds the automatic paths back now is the `error` status, which Retry
+  // is the only way past.
+  useLayoutEffect(() => {
+    if (historyStatus !== "error") {
+      return;
+    }
+    anchor.current = null;
+    requestedFor.current = undefined;
+  }, [historyStatus]);
+
+  // A page of 200 events can fold into one or two rows — `text_delta` events
+  // are tiny — so a transcript that does not overflow its viewport never
+  // produces a `scroll` event, and scrolling would be the only way to ask for
+  // the rest of the history. One page at a time, until the content overflows
+  // or there is nothing older left.
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element || element.scrollHeight > element.clientHeight + NEAR_TOP_PX) {
+      return;
+    }
+    load(false);
+  }, [load, order, scrollRef, totalSize]);
+
   const items = virtualizer.getVirtualItems();
 
   return (
@@ -127,10 +187,25 @@ export function Transcript({ sessionId, loadOlder, onResend }: TranscriptProps) 
       {/* Outside the scroller on purpose: anything above the virtual container
           inside it would shift every row's offset away from what the
           virtualizer positions rows at. */}
-      {hasMore && (
+      {historyStatus === "loading" && (
         <div className="text-console-muted flex shrink-0 items-center justify-center gap-2 py-2 text-xs">
           <Spinner className="size-3" />
           <span>Loading earlier messages</span>
+        </div>
+      )}
+      {historyStatus === "error" && (
+        <div className="text-state-failed flex shrink-0 items-center justify-center gap-2 py-2 text-xs">
+          <span>
+            Could not load earlier messages
+            {historyError === null ? "" : `: ${historyError}`}
+          </span>
+          <button
+            type="button"
+            onClick={retry}
+            className="border-console-border text-console-text rounded border px-2 py-0.5"
+          >
+            Retry
+          </button>
         </div>
       )}
       <div

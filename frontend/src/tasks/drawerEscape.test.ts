@@ -1,12 +1,13 @@
 // The drawer's Escape rule, away from the drawer: what the key means is a
-// decision over four booleans, and what counts as a draft is a question about
-// a DOM subtree. The browser-level half — that the key really reaches the
+// decision over four booleans, what counts as a draft is a question about a
+// DOM subtree, and which of the drawer's half-dozen sub-forms a press belongs
+// to is a stack. The browser-level half — that the key really reaches the
 // dialog, that focus is really trapped and really handed back — is
 // `frontend/tests/tasks.spec.ts`.
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { escapeAction, hasDraftText } from "./drawerEscape";
+import { createEscapeRegistry, escapeAction, hasDraftText } from "./drawerEscape";
 
 describe("escapeAction", () => {
   const clean = {
@@ -40,6 +41,48 @@ describe("escapeAction", () => {
 
   it("does not ask twice about a drawer with nothing in it", () => {
     expect(escapeAction({ ...clean, armed: true })).toBe("close");
+  });
+});
+
+describe("createEscapeRegistry", () => {
+  it("has nothing to close until a sub-form registers", () => {
+    expect(createEscapeRegistry().innermost()).toBeUndefined();
+  });
+
+  it("closes the innermost sub-form first, one press at a time", () => {
+    const registry = createEscapeRegistry();
+    const closed: string[] = [];
+    const closeForm = registry.register(() => closed.push("form"));
+    const closeConfirmation = registry.register(() =>
+      closed.push("confirmation"),
+    );
+
+    // A confirmation opened inside a form is what Escape shuts first, and the
+    // form only once the confirmation has unregistered itself.
+    registry.innermost()?.();
+    closeConfirmation();
+    registry.innermost()?.();
+    closeForm();
+
+    expect(closed).toEqual(["confirmation", "form"]);
+    // Everything under the drawer is shut, so the next press is the drawer's.
+    expect(registry.innermost()).toBeUndefined();
+  });
+
+  it("leaves the forms still open when one in the middle closes", () => {
+    // A form can go for a reason of its own — a save landing, a launch
+    // starting — and taking the wrong one off the stack would leave Escape
+    // calling a `close` for something that is no longer on screen.
+    const registry = createEscapeRegistry();
+    const closed: string[] = [];
+    registry.register(() => closed.push("outer"));
+    const closeMiddle = registry.register(() => closed.push("middle"));
+    registry.register(() => closed.push("inner"));
+
+    closeMiddle();
+    registry.innermost()?.();
+
+    expect(closed).toEqual(["inner"]);
   });
 });
 

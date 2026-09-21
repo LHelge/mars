@@ -34,6 +34,7 @@ import {
   defaultSourceSession,
   orderSessionsForPicker,
 } from "./handoffRules";
+import { useDrawerEscape } from "./drawerEscape";
 import { useTaskStore } from "./taskStore";
 import { useUpdateTask } from "./taskWrites";
 
@@ -90,6 +91,10 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
     });
     onDone();
   });
+
+  // Escape leaves the form as `Cancel` does, and is shut while the revision is
+  // being published for the same reason it is (`drawerEscape.ts`).
+  useDrawerEscape(onDone, !publish.loading);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

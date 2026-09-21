@@ -51,6 +51,7 @@ import type {
   SessionCreateInput,
   TaskDetail,
 } from "../types";
+import { useDrawerEscape } from "./drawerEscape";
 import { defaultProfile, launchDisabledReason } from "./launchRules";
 import { useTaskStore } from "./taskStore";
 
@@ -147,6 +148,12 @@ export function LaunchForTask({ projectId, task }: LaunchForTaskProps) {
     setMessage("");
     launch.reset();
   }
+
+  // Escape shuts the panel as `Cancel` does, and like `Cancel` and the kind
+  // toggles is shut while a launch is in flight (`drawerEscape.ts`).
+  useDrawerEscape(() => {
+    if (kind !== null) toggle(kind);
+  }, open && !launch.loading);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

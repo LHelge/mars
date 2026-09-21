@@ -21,6 +21,7 @@ import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
 import { errorMessage } from "../services/errorMessage";
 import type { TaskDetail } from "../types";
+import { useDrawerEscape } from "./drawerEscape";
 import { LaunchForTask } from "./LaunchForTask";
 import { MoveToState } from "./MoveToState";
 import { useDeleteTask, useReleaseTask } from "./taskWrites";
@@ -52,6 +53,12 @@ export function TaskActions({
     mutationFn: useDeleteTask(projectId, task.number),
   });
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  // Escape keeps the task, as `Keep the task` does, and like it is shut while
+  // the deletion is in flight (`drawerEscape.ts`).
+  useDrawerEscape(() => {
+    setConfirmingDelete(false);
+  }, confirmingDelete && !remove.isPending);
 
   const held = task.lease_holder_session_id !== null;
 

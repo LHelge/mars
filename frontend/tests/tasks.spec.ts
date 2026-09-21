@@ -394,6 +394,49 @@ test("Escape asks before discarding a draft and shuts an open form first", async
   expect((await getTask(api, project.id, 1)).title).toBe("Draft the plan");
 });
 
+test("Escape shuts a hand-off form and a confirmation before the drawer", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+}) => {
+  await createTask(api, project.id, { title: "Publish the work" });
+  await loginViaToken(context, user);
+  await openBoard(page, project);
+
+  const panel = await openCard(page, 1);
+
+  // The hand-off section's forms claim the key the same way the edit form
+  // does: over the note half written into one, the first press asks and the
+  // second shuts the form and no more.
+  await panel.getByRole("button", { name: "Publish revision" }).click();
+  const form = panel.getByRole("form", { name: "Publish revision" });
+  await form.getByLabel("Comment").fill("The first half of a hand-off note.");
+
+  await page.keyboard.press("Escape");
+  await expect(discardQuestion(panel)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(form).toHaveCount(0);
+  await expect(panel).toBeVisible();
+
+  // A confirmation is the same seam with nothing to lose: one press withdraws
+  // it, and the drawer is still there behind it.
+  await panel.getByRole("button", { name: "Delete", exact: true }).click();
+  const confirmation = panel.getByText(/Dependants are unblocked/);
+  await expect(confirmation).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toHaveCount(0);
+  await expect(panel).toBeVisible();
+
+  // With nothing open under it, the next press is the drawer's own.
+  await page.keyboard.press("Escape");
+  await expect(drawer(page)).toHaveCount(0);
+
+  // Neither the hand-off nor the deletion was ever sent.
+  expect((await getTask(api, project.id, 1)).handoff).toBeNull();
+});
+
 test("a drawer opened by link falls back to the board, and a child link moves focus", async ({
   page,
   context,

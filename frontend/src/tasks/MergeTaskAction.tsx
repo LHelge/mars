@@ -47,6 +47,7 @@ import {
   mergedMessage,
 } from "./mergeRules";
 import type { MergeConflict } from "./mergeRules";
+import { useDrawerEscape } from "./drawerEscape";
 import { useRefetchTask, useSettleTask } from "./taskWrites";
 
 export interface MergeTaskActionProps {
@@ -167,6 +168,10 @@ function MergeHandoffForm({
       throw caught;
     }
   });
+
+  // Escape leaves the form as `Cancel` does, and is shut while the merge is in
+  // flight for the same reason it is (`drawerEscape.ts`).
+  useDrawerEscape(onClose, !form.loading);
 
   return (
     <form

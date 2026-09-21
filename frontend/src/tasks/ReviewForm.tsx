@@ -43,6 +43,7 @@ import {
   reviewErrorMessage,
 } from "./handoffRules";
 import type { ReviewDecision } from "./handoffRules";
+import { useDrawerEscape } from "./drawerEscape";
 import { useTaskStore } from "./taskStore";
 import { useUpdateTask } from "./taskWrites";
 
@@ -96,6 +97,10 @@ export function ReviewForm({
     },
     { mapError: reviewErrorMessage },
   );
+
+  // Escape leaves the form as `Cancel` does, and is shut while the decision is
+  // being sent for the same reason it is (`drawerEscape.ts`).
+  useDrawerEscape(onDone, !send.loading);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

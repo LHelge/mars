@@ -32,6 +32,7 @@ import { errorMessage } from "../services/errorMessage";
 import type { Task } from "../types";
 import { shortId } from "../utils/format";
 import { CONTROL } from "../components/fieldStyles";
+import { useDrawerEscape } from "./drawerEscape";
 import { useTaskStore } from "./taskStore";
 import { useUpdateTask } from "./taskWrites";
 
@@ -50,6 +51,12 @@ export function MoveToState({ projectId, task }: MoveToStateProps) {
   // The user's explicit choice, or `null` while they have made none.
   const [choice, setChoice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+
+  // Escape withdraws the confirmation as `Cancel` does, and like `Cancel` is
+  // shut while the move is in flight (`drawerEscape.ts`).
+  useDrawerEscape(() => {
+    setConfirming(false);
+  }, confirming && !update.isPending);
 
   const target = choice ?? task.state;
   const selectId = `task-${String(task.number)}-move-to`;

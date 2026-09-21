@@ -588,7 +588,7 @@ When the merge succeeds, move the task to `done` with `update` and a comment nam
 
 ## Frontend
 
-Vite, React 19, TypeScript strict, Tailwind CSS 4, React Router 7, TanStack Query, Zustand for per-session and per-project reducers, `@tanstack/react-virtual` for the transcript, `react-markdown` with `remark-gfm` for text, a diff renderer for edit tools, `xterm.js` for the terminal view, Playwright for end-to-end tests.
+Vite, React 19, TypeScript strict, Tailwind CSS 4, React Router 7, TanStack Query, Zustand for per-session and per-project reducers, `@tanstack/react-virtual` for the transcript, `react-markdown` with `remark-gfm` for text and `lowlight` for highlighted code fences, a diff renderer for edit tools, `xterm.js` for the terminal view, Playwright for end-to-end tests.
 
 Structure:
 

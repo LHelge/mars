@@ -35,12 +35,19 @@ export interface SecretsManagerProps {
   /** The project for `project`; omitted for `global` and for "my secrets". */
   scopeId?: string;
   title?: string;
+  /**
+   * Leaves the agent credentials out of the table. `/secrets` sets it because
+   * it lists them above under their labels (`SPEC.md`, "Frontend", Agent
+   * credentials); the project page's tab shows every row it has.
+   */
+  hideAgentCredentials?: boolean;
 }
 
 export function SecretsManager({
   scope,
   scopeId,
   title = "Secrets",
+  hideAgentCredentials = false,
 }: SecretsManagerProps) {
   const { user, isAdmin } = useAuth();
 
@@ -70,8 +77,13 @@ export function SecretsManager({
   }, [users.data, user]);
 
   const rows = useMemo(
-    () => [...(secrets.data ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
-    [secrets.data],
+    () =>
+      (secrets.data ?? [])
+        .filter(
+          (secret) => !hideAgentCredentials || secret.credential_for === null,
+        )
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [secrets.data, hideAgentCredentials],
   );
 
   const forbidden = secrets.isError && isForbidden(secrets.error);

@@ -14,6 +14,7 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { invalidateSecretQueries } from "../../secrets/invalidate";
 import { queryKeys } from "../../services/queryKeys";
 import {
   deleteSecret,
@@ -64,6 +65,9 @@ export function SecretRow({
       rows?.map((row) => (row.id === updated.id ? updated : row)),
     );
     void queryClient.invalidateQueries({ queryKey: listKey });
+    // A rename can make a row a credential or stop it being one, so every
+    // agent-credential answer is stale (`SPEC.md`, "Frontend").
+    invalidateSecretQueries(queryClient);
   }
 
   const replace = useMutation({
@@ -106,6 +110,7 @@ export function SecretRow({
     mutationFn: () => deleteSecret(secret.id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: listKey });
+      invalidateSecretQueries(queryClient);
     },
     onError: (caught: unknown) => {
       setError(secretErrorMessage(caught));

@@ -66,6 +66,13 @@ export const queryKeys = {
     profiles: (id: string) => ["projects", id, "profiles"] as const,
     /** The project's board columns (`GET /projects/{id}/task-states`). */
     taskStates: (id: string) => ["projects", id, "task-states"] as const,
+    /**
+     * Which agent credential a launch of this project by the caller would get
+     * (`GET /projects/{id}/agent-credentials`). Every secrets mutation
+     * invalidates it, whichever scope it wrote (`SPEC.md`, "Frontend").
+     */
+    agentCredentials: (id: string) =>
+      ["projects", id, "agent-credentials"] as const,
   },
 
   secrets: {

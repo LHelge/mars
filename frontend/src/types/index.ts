@@ -15,6 +15,7 @@ export type {
   User,
 } from "./users";
 export type {
+  AgentBackend,
   CreateSecretRequest,
   PatchSecretRequest,
   ReplaceSecretRequest,

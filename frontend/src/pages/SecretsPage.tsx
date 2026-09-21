@@ -14,6 +14,10 @@ import { useSearchParams } from "react-router";
 import { Alert, PageLayout } from "../components";
 import { SecretsManager } from "../components/secrets/SecretsManager";
 import { useAuth } from "../hooks/useAuth";
+// By path, not through a barrel: the section is only ever on this lazily
+// loaded route, and the barrel is in the entry chunk (`SPEC.md`, "Frontend" →
+// "Code splitting"), as with `DiffBody`.
+import { AgentCredentialsSection } from "../secrets/AgentCredentialsSection";
 import { listProjects } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
 import { listUsers } from "../services/users";
@@ -44,8 +48,7 @@ export function SecretsPage() {
 
   // A user scope naming the caller is "my secrets": normalise it away so both
   // spellings share one URL and one query key.
-  const selfSelected =
-    scope === "user" && user !== null && scopeId === user.id;
+  const selfSelected = scope === "user" && user !== null && scopeId === user.id;
 
   useEffect(() => {
     if (!selfSelected) {
@@ -118,89 +121,104 @@ export function SecretsPage() {
           : `User secrets${userName === undefined ? "" : `: ${userName}`}`;
 
   // A project or another user has to be picked before there is a scope to read.
-  const needsId = (choice === "project" || choice === "user") && scopeId === null;
+  const needsId =
+    (choice === "project" || choice === "user") && scopeId === null;
+
+  // An administrator looking at somebody else's scope: their credentials join
+  // the section above under their username rather than `You`.
+  const otherUser =
+    choice === "user" && scopeId !== null && userName !== undefined
+      ? { id: scopeId, username: userName }
+      : undefined;
 
   return (
     <PageLayout title="Secrets">
-      <div className="space-y-5">
-        <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <legend className="text-console-muted mb-1 text-xs">Scope</legend>
+      <div className="space-y-8">
+        <AgentCredentialsSection
+          {...(otherUser === undefined ? {} : { otherUser })}
+        />
 
-          {CHOICES.filter((entry) => !entry.adminOnly || isAdmin).map(
-            (entry) => (
-              <label
-                key={entry.value}
-                className="text-console-text flex items-center gap-1.5 text-sm"
+        <div className="space-y-5">
+          <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <legend className="text-console-muted mb-1 text-xs">Scope</legend>
+
+            {CHOICES.filter((entry) => !entry.adminOnly || isAdmin).map(
+              (entry) => (
+                <label
+                  key={entry.value}
+                  className="text-console-text flex items-center gap-1.5 text-sm"
+                >
+                  <input
+                    type="radio"
+                    name="secret-scope"
+                    value={entry.value}
+                    checked={choice === entry.value}
+                    onChange={() => {
+                      select(entry.value);
+                    }}
+                    className="accent-console-accent size-3.5"
+                  />
+                  {entry.label}
+                </label>
+              ),
+            )}
+
+            {choice === "project" && (
+              <select
+                aria-label="Project"
+                value={scopeId ?? ""}
+                onChange={(event) => {
+                  selectId(event.target.value);
+                }}
+                className={SELECT_CLASS}
               >
-                <input
-                  type="radio"
-                  name="secret-scope"
-                  value={entry.value}
-                  checked={choice === entry.value}
-                  onChange={() => {
-                    select(entry.value);
-                  }}
-                  className="accent-console-accent size-3.5"
-                />
-                {entry.label}
-              </label>
-            ),
-          )}
-
-          {choice === "project" && (
-            <select
-              aria-label="Project"
-              value={scopeId ?? ""}
-              onChange={(event) => {
-                selectId(event.target.value);
-              }}
-              className={SELECT_CLASS}
-            >
-              <option value="" disabled>
-                Choose a project
-              </option>
-              {(projects.data ?? []).map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
+                <option value="" disabled>
+                  Choose a project
                 </option>
-              ))}
-            </select>
-          )}
+                {(projects.data ?? []).map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            )}
 
-          {choice === "user" && isAdmin && (
-            <select
-              aria-label="User"
-              value={scopeId ?? ""}
-              onChange={(event) => {
-                selectId(event.target.value);
-              }}
-              className={SELECT_CLASS}
-            >
-              <option value="" disabled>
-                Choose a user
-              </option>
-              {(users.data ?? []).map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {candidate.username}
+            {choice === "user" && isAdmin && (
+              <select
+                aria-label="User"
+                value={scopeId ?? ""}
+                onChange={(event) => {
+                  selectId(event.target.value);
+                }}
+                className={SELECT_CLASS}
+              >
+                <option value="" disabled>
+                  Choose a user
                 </option>
-              ))}
-            </select>
-          )}
-        </fieldset>
+                {(users.data ?? []).map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.username}
+                  </option>
+                ))}
+              </select>
+            )}
+          </fieldset>
 
-        {needsId ? (
-          <Alert kind="info">
-            {choice === "project"
-              ? "Choose a project to see its secrets."
-              : "Choose a user to see their secrets."}
-          </Alert>
-        ) : (
-          <SecretsManager
-            scope={scope}
-            {...(scopeId === null || selfSelected ? {} : { scopeId })}
-            title={title}
-          />
-        )}
+          {needsId ? (
+            <Alert kind="info">
+              {choice === "project"
+                ? "Choose a project to see its secrets."
+                : "Choose a user to see their secrets."}
+            </Alert>
+          ) : (
+            <SecretsManager
+              scope={scope}
+              {...(scopeId === null || selfSelected ? {} : { scopeId })}
+              title={title}
+              hideAgentCredentials
+            />
+          )}
+        </div>
       </div>
     </PageLayout>
   );

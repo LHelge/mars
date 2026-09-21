@@ -1,16 +1,17 @@
 ---
 id: m5jtw
 title: Tracker update deadlocks against a session's event batch under load (40P01 on PUT /tasks/{n})
-status: open
+status: done
 priority: P1
 created: "2026-09-21T16:20:17.645713501Z"
-updated: "2026-09-21T16:20:17.645713501Z"
+updated: "2026-09-21T18:14:12.259560621Z"
 tags:
   - orchestrator
   - bug
   - tracker
   - locking
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: found while implementing 4srw8 (2026-09-21), in a Playwright run on a loaded machine (five E2E stacks on 4 cores). `tests/handoffs.spec.ts` › `a review of a superseded revision says the hand-off changed` failed in its arrangement: `PUT /api/projects/{id}/tasks/1` answered 500, and the orchestrator log named a Postgres deadlock, SQLSTATE 40P01, two backends waiting on the same `sessions` row in opposite order (reported as `FOR KEY SHARE`, i.e. the foreign-key check of a row that references `sessions`). The log was deleted with the stack, so the exact statements are not recorded; the agent's reading was a lock-ordering race between the tracker/session-link path and another writer of the session row.

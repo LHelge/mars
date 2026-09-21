@@ -1,10 +1,10 @@
 ---
 id: xreap
 title: Keep live streams and the terminal open across an ordinary token refresh
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:51:19.647851173Z"
-updated: "2026-09-21T10:51:19.647851173Z"
+updated: "2026-09-21T18:14:04.394262552Z"
 tags:
   - frontend
   - technical-review
@@ -14,6 +14,7 @@ tags:
 depends_on:
   - "4srw8"
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: services/auth.ts installSession fires the onCredentialsReplaced handlers whenever a token was already present, which is every ordinary 401-then-refresh rotation and not only a self-service password change. SessionSocket.onCredentialsReplaced (session/useSessionSocket.ts:307-314, whose own comment says "A self-service password change installed a new pair") is guarded only by the socket's own `refreshing` flag and unconditionally runs teardown(1000) and connect(); TaskStream does the same (tasks/useTaskStream.ts:97). The access token lives 15 minutes. After that any REST 401 — the window-focus refetch of the session detail, the TasksPanel poll, a Sync click — refreshes through apiClient and closes a healthy socket. The exec PTY multiplexed on that socket is disposed server-side: the user's shell, cwd and any foreground build are lost and TerminalView shows "Terminal disconnected". The board meanwhile flips to "reconnecting" and re-reads its snapshot. It repeats on every rotation. The teardown is unnecessary: SPEC.md, "Authentication" says an open stream is not closed because its token expired.

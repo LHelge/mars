@@ -725,6 +725,7 @@ export function ProfileEditor({
                     name="profile-schedule-prompt"
                     hint="What every scheduled run is asked to do; it is the message the session opens with."
                     error={scheduleFieldError("prompt")}
+                    help="instructions"
                   >
                     {(control) => (
                       <textarea
@@ -780,8 +781,8 @@ export function ProfileEditor({
           <FieldShell
             label="System prompt"
             name="profile-system-prompt"
-            hint="Appended to the CLI's own system prompt on every launch. Describe this agent's job here: repository conventions come from its CLAUDE.md, and skills from .claude/skills."
-            help="skills"
+            hint="Appended to the CLI's own system prompt on every launch, a parked session's resume included. Describe this agent's job here: repository conventions come from its CLAUDE.md, and skills from .claude/skills."
+            help="instructions"
           >
             {(control) => (
               <textarea

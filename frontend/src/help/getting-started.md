@@ -23,6 +23,8 @@ On the project's **Sessions** tab, pick a profile and choose **Launch session**.
 - a **task**, which the session then holds from the start;
 - a **base ref**, if it should start from something other than the default branch.
 
+The profile's system prompt tells the agent what its job is, and your message tells it what to do now. [How a session is instructed](help:instructions) explains how the two combine with a task.
+
 The launch form shows which agent credential the session will use. If there is none, it offers **Add credential** instead.
 
 A conversational session keeps running when nobody is watching. When it goes quiet it parks, and your next message picks it up where it stopped. The [Dashboard](/) lists every running and parked session, and every task that is waiting for a person.

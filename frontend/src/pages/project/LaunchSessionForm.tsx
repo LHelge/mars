@@ -261,6 +261,7 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
             ? "An ephemeral session ends after one result, so this is the only thing it will be told. A task can stand in for the message."
             : undefined
         }
+        help="instructions"
       >
         {(control) => (
           <textarea

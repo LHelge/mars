@@ -391,3 +391,49 @@ export function moveTask(
     state,
   });
 }
+
+// --- the scheduled-agent job ------------------------------------------------
+
+/** The three counters one run of a cron job reports (`SPEC.md`, "Test-only routes"). */
+export interface SchedulerTickReport {
+  /** Sessions launched. */
+  items: number;
+  /** Ticks claimed and then spent without a launch: a pause, a cap, no credential. */
+  skipped: number;
+  /** Launches that failed for some other reason. */
+  failures: number;
+}
+
+/**
+ * How far before `now` the window floor is placed by default.
+ *
+ * A cron expression cannot come due sooner than the next minute boundary, and
+ * nothing in this suite waits for one. Two minutes of window is what makes
+ * `* * * * *` — and anything coarser the scenario chose to place inside it —
+ * due on the spot.
+ */
+const DUE_WINDOW_MS = 2 * 60_000;
+
+/**
+ * Runs the scheduled-agent job once, with a window wide enough that a
+ * per-minute expression is due (`SPEC.md`, "Test-only routes"; "User-facing
+ * features" → "Scheduled agents").
+ *
+ * `now` is the end of the window and the value a fired tick writes to
+ * `last_scheduled_at`; the floor under it is `now` minus [`DUE_WINDOW_MS`]
+ * unless the caller places its own. Both are the caller's, so the job decides
+ * on instants the scenario chose and never on the wall clock — which is what
+ * lets a schedule fire immediately instead of on the minute.
+ */
+export function runSchedulerTick(
+  client: Api,
+  opts: { now?: Date; startedAt?: Date } = {},
+): Promise<SchedulerTickReport> {
+  const now = opts.now ?? new Date();
+  const startedAt = opts.startedAt ?? new Date(now.getTime() - DUE_WINDOW_MS);
+
+  return client.post<SchedulerTickReport>("/test/scheduler-tick", {
+    now: now.toISOString(),
+    started_at: startedAt.toISOString(),
+  });
+}

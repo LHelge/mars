@@ -53,9 +53,10 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use bollard::query_parameters::InspectContainerOptions;
+use chrono::{Duration as ChronoDuration, Utc};
 use common::{AuthenticatedUser, TestApp};
 use futures_util::FutureExt;
-use mars_orchestrator::cron::JobName;
+use mars_orchestrator::cron::{CronService, JobName, JobReport};
 use mars_orchestrator::engine::bollard::BollardEngine;
 use mars_orchestrator::engine::{
     ContainerEngine, EngineKind, LABEL_PROFILE_ID, LABEL_PROJECT_ID, LABEL_SESSION_ID,
@@ -94,6 +95,10 @@ const POLL: Duration = Duration::from_millis(250);
 
 /// The uid the session container runs as (`ARCHITECTURE.md`, "Uid contract").
 const SESSION_UID: u32 = 1000;
+
+/// What the scheduled profile below is told to do, and so the prompt its run
+/// is launched with.
+const SCHEDULE_PROMPT: &str = "scan the repository for tech debt and file tasks";
 
 /// `MARS_STUB_IMAGE`, or [`DEFAULT_STUB_IMAGE`].
 fn stub_image() -> String {
@@ -407,6 +412,31 @@ impl Fixture {
                 "auto_launch": true,
                 "max_concurrent": 1,
                 "serves_states": states,
+            }))
+            .await;
+        response.assert_status(StatusCode::CREATED);
+
+        id_of(&response.json::<Value>())
+    }
+
+    /// A scheduled ephemeral profile of this project, on the same image.
+    ///
+    /// The prompt is what every run of it is asked to do, and the stub image
+    /// replays its fixture whatever the prompt says (`images/stub/claude`), so
+    /// what it is for here is being the argument the launch is asserted to
+    /// carry.
+    async fn scheduled_profile(&self, app: &TestApp, cron: &str) -> Uuid {
+        let response = app
+            .post_as(
+                &self.user,
+                &format!("/api/projects/{}/profiles", self.project_id),
+            )
+            .json(&json!({
+                "name": format!("scheduled-{}", suffix()),
+                "kind": "ephemeral",
+                "max_concurrent": 1,
+                "schedule_cron": cron,
+                "schedule_prompt": SCHEDULE_PROMPT,
             }))
             .await;
         response.assert_status(StatusCode::CREATED);
@@ -1331,6 +1361,119 @@ async fn a_task_moved_into_a_served_state_is_dispatched_run_and_released() {
         // One launch, and no second one after the release.
         let all = project.sessions(&app).await;
         assert_eq!(all.len(), 1, "something else was launched: {all:?}");
+    })
+    .await;
+}
+
+/// A profile's cron expression coming due runs a real container to `done`
+/// (`ARCHITECTURE.md`, "Task tracker" → "Scheduled agents"; `SPEC.md`,
+/// "User-facing features" → "Scheduled agents"; ADR 0043).
+///
+/// `tests/cron_scheduler.rs` is the job's own suite and covers every rule about
+/// *when* a tick is due, over `MockEngine`. What is left for here is the same
+/// part the dispatcher scenario above covers for its own job, and it is the
+/// whole point of the feature: that the specification a scheduled launch
+/// builds is one a real engine accepts, that the CLI it names really runs with
+/// the schedule's prompt as its argument, and that the session ends by itself
+/// with no person and no task anywhere in the loop.
+///
+/// **Nothing is launched by hand.** The only calls are a profile and one run of
+/// the job. `POST /api/projects/{pid}/sessions` is never reached, which is
+/// asserted through `launch_source` and `created_by` on the row that appears.
+///
+/// **The two instants are the scenario's.** The job takes its `now` from the
+/// caller and its process-start floor from [`CronService::with_started_at`], so
+/// a window two minutes wide makes `* * * * *` due at once and nothing here
+/// waits for a minute boundary. The same two instants a second time are what
+/// shows the tick was spent by the first run.
+///
+/// No job loop is started, so the one run below is the only run there is: a
+/// timer would fire the profile again every minute for as long as the scenario
+/// lasted.
+#[tokio::test]
+async fn a_due_schedule_runs_an_ephemeral_session_on_the_stub_image() {
+    scenario(|app| async move {
+        let fixture = StubFixture::load();
+        let project = Fixture::create(&app).await;
+        project.store_agent_credential(&app).await;
+        let profile_id = project.scheduled_profile(&app, "* * * * *").await;
+
+        // A window that ends now and opens two minutes ago: every minute has
+        // an occurrence in it, so the tick is due on the spot.
+        let now = Utc::now();
+        let service =
+            CronService::with_started_at(app.state.clone(), now - ChronoDuration::minutes(2));
+        let report = service
+            .run_once(JobName::Scheduler, now)
+            .await
+            .expect("the sweep runs");
+        assert_eq!(
+            report,
+            JobReport {
+                items: 1,
+                ..JobReport::default()
+            },
+            "the due tick did not launch",
+        );
+
+        let sessions = project.sessions(&app).await;
+        let [launched] = sessions.as_slice() else {
+            panic!("one session was launched, not {}", sessions.len());
+        };
+        // Nobody asked for it, and it holds nothing: a scheduled run is a
+        // task-less ephemeral launch (`SPEC.md`, "Sessions").
+        assert_eq!(launched["launch_source"], json!("schedule"));
+        assert_eq!(launched["created_by"], Value::Null);
+        assert_eq!(launched["task_id"], Value::Null);
+        assert_eq!(launched["kind"], json!("ephemeral"));
+        assert_eq!(launched["profile_id"], json!(profile_id.to_string()));
+        let id = id_of(launched);
+
+        // It really is a one-shot run of the stub on this engine, and what it
+        // was given is the schedule's prompt.
+        wait_for_container(&app, id).await;
+        let cmd = cmd(&inspect(id).await);
+        assert!(
+            cmd.windows(2)
+                .any(|pair| pair[0] == "-p" && pair[1] == SCHEDULE_PROMPT),
+            "the schedule prompt is not the argument of the run: {cmd:?}",
+        );
+        assert!(
+            !cmd.iter().any(|part| part == "--input-format"),
+            "a scheduled launch is ephemeral and has no stdin: {cmd:?}",
+        );
+
+        // ---- and it runs to the end on its own ----
+        wait_for_state(&app, &project, id, SessionState::Done).await;
+        let events = transcript(&app, &project, id).await;
+        assert_contiguous_seq(&events);
+        assert_eq!(
+            of_kind(&events, "tool_call")
+                .iter()
+                .map(|event| event["name"].as_str().unwrap_or("?").to_string())
+                .collect::<Vec<_>>(),
+            fixture.turn(1).tools,
+            "the turn that ran is the fixture's first",
+        );
+        assert_eq!(
+            reload(&app, id).await.cost_usd,
+            fixture.turn(1).cumulative_cost,
+        );
+        wait_for_discarded_container(&app, id).await;
+
+        // ---- and the tick it fired is spent ----
+        // The claim is committed before the launch, so the same window a
+        // second time — which a restart inside the tick's own minute is —
+        // finds nothing to do.
+        assert_eq!(
+            service
+                .run_once(JobName::Scheduler, now)
+                .await
+                .expect("the second sweep runs"),
+            JobReport::default(),
+        );
+        let all = project.sessions(&app).await;
+        assert_eq!(all.len(), 1, "the tick fired twice: {all:?}");
     })
     .await;
 }

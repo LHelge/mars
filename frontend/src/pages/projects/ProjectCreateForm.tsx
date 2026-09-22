@@ -174,6 +174,7 @@ export function ProjectCreateForm({ onCancel }: ProjectCreateFormProps) {
         value={credential}
         onChange={setCredential}
         hint="Personal access token for a private repository; stored write-only as the project secret GIT_CREDENTIAL and never shown again"
+        help="git-credential"
         autoComplete="off"
         disabled={loading}
       />

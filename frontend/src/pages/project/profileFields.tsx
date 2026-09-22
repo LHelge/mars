@@ -10,19 +10,37 @@
 
 import type { ReactNode } from "react";
 
+import { HelpLink } from "../../components/HelpLink";
+import type { HelpTopic } from "../../help/topics";
+
 import { CHECK_CLASS } from "./profileForm";
 
 export interface FieldsetProps {
   legend: string;
   description: string;
+  /** The help topic a `Learn more` link after the description opens. */
+  help?: HelpTopic;
   children: ReactNode;
 }
 
-export function Fieldset({ legend, description, children }: FieldsetProps) {
+export function Fieldset({
+  legend,
+  description,
+  help,
+  children,
+}: FieldsetProps) {
   return (
     <fieldset className="border-console-border rounded border p-3">
       <legend className="text-console-muted px-1 text-xs">{legend}</legend>
-      <p className="text-console-muted pb-2 text-xs">{description}</p>
+      <div className="text-console-muted pb-2 text-xs">
+        <p className="inline">{description}</p>
+        {help && (
+          <>
+            {" "}
+            <HelpLink topic={help} />
+          </>
+        )}
+      </div>
       {children}
     </fieldset>
   );

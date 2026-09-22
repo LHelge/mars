@@ -14,8 +14,14 @@
 // mid swap — and duplicate ids point a label at the wrong control, so a caller
 // that can be rendered twice puts what distinguishes it into the name:
 // `${formId}-target`, `task-${number}-title`, `rename-${secret.id}`.
+//
+// `help` puts a `HelpLink` after the hint, beside it rather than inside it:
+// the control's `aria-describedby` names the hint's text and never a link.
 
 import type { ReactNode } from "react";
+
+import type { HelpTopic } from "../help/topics";
+import { HelpLink } from "./HelpLink";
 
 /** What a control must carry for its label, hint and error to reach it. */
 export interface FieldControl {
@@ -31,6 +37,8 @@ export interface FieldShellProps {
   name: string;
   error?: string;
   hint?: string;
+  /** The help topic a `Learn more` link after the hint opens. */
+  help?: HelpTopic;
   /** Marks the label; the control still declares `required` itself. */
   required?: boolean;
   /** Renders the control with the wiring the shell computed for it. */
@@ -42,6 +50,7 @@ export function FieldShell({
   name,
   error,
   hint,
+  help,
   required,
   children,
 }: FieldShellProps) {
@@ -67,10 +76,16 @@ export function FieldShell({
 
       {children(control)}
 
-      {hint && (
-        <p id={hintId} className="text-console-muted text-xs">
-          {hint}
-        </p>
+      {(hint || help) && (
+        <div className="text-console-muted text-xs">
+          {hint && (
+            <p id={hintId} className="inline">
+              {hint}
+            </p>
+          )}
+          {hint && help && " "}
+          {help && <HelpLink topic={help} />}
+        </div>
       )}
       {error && (
         <p id={errorId} className="text-state-failed text-xs">

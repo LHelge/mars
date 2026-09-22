@@ -1,9 +1,14 @@
 // The frame for every signed-in page: one top bar, no sidebar, and a dense
 // full-width content area. The nav entries are the routes of `SPEC.md`,
 // "Frontend"; `/admin` is shown only to an admin, and the backend checks
-// authorisation regardless — the flag here is a UI hint.
+// authorisation regardless — the flag here is a UI hint. `/help` is not a place
+// work happens, so it sits in the right-hand cluster beside the account rather
+// than among the work areas.
 
-import { ArrowRightStartOnRectangleIcon } from "@heroicons/react/24/outline";
+import {
+  ArrowRightStartOnRectangleIcon,
+  QuestionMarkCircleIcon,
+} from "@heroicons/react/24/outline";
 import type { ReactNode } from "react";
 import { NavLink } from "react-router";
 import { useAuth } from "../hooks/useAuth";
@@ -68,7 +73,22 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
             ))}
           </nav>
 
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-3">
+            <NavLink
+              to="/help"
+              className={({ isActive }) =>
+                [
+                  "inline-flex items-center gap-1 py-2 text-xs",
+                  isActive
+                    ? "text-console-text"
+                    : "text-console-muted hover:text-console-text",
+                ].join(" ")
+              }
+            >
+              <QuestionMarkCircleIcon aria-hidden="true" className="size-4" />
+              {/* Icon-only below `sm`, where the work areas need the room. */}
+              <span className="max-sm:sr-only">Help</span>
+            </NavLink>
             {/* `user` is null until `GET /users/me` resolves at startup. */}
             <span className="text-console-muted hidden font-mono text-xs sm:inline">
               {user?.username ?? "…"}

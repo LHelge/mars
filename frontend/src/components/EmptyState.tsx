@@ -3,9 +3,14 @@
 
 import type { ReactNode } from "react";
 
+import type { HelpTopic } from "../help/topics";
+import { HelpLink } from "./HelpLink";
+
 export interface EmptyStateProps {
   title: string;
   description?: string;
+  /** The help topic a `Learn more` link after the description opens. */
+  help?: HelpTopic;
   /** Usually the same button the section header offers. */
   action?: ReactNode;
   /**
@@ -18,6 +23,7 @@ export interface EmptyStateProps {
 export function EmptyState({
   title,
   description,
+  help,
   action,
   tone = "default",
 }: EmptyStateProps) {
@@ -33,8 +39,12 @@ export function EmptyState({
       >
         {title}
       </p>
-      {description && (
-        <p className="text-console-muted max-w-prose text-sm">{description}</p>
+      {(description || help) && (
+        <div className="text-console-muted max-w-prose text-sm">
+          {description && <p className="inline">{description}</p>}
+          {description && help && " "}
+          {help && <HelpLink topic={help} />}
+        </div>
       )}
       {action && <div className="pt-1">{action}</div>}
     </div>

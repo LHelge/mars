@@ -177,6 +177,10 @@ jobs:
           cache-from: type=gha,scope=session-claude
           cache-to: type=gha,mode=max,scope=session-claude
 
+      # `--prefer-index=false` everywhere a tag is copied: by default
+      # `imagetools create` wraps a single-image source in a new image index,
+      # whose digest differs from the image's, so one release would have two
+      # digests. With it the tag is a carbon copy of the source manifest.
       # A reused image gets this commit's `sha-` tag too, so every release's
       # images carry its tag for people and for retention. The digest
       # recorded is read back from that tag, so it is what the registry
@@ -191,7 +195,7 @@ jobs:
             reused=$(jq -r --arg k "$var" '.[$k] // ""' <<<"$REUSE")
             if [ -n "$reused" ]; then
               echo "reusing mars-${image}@${reused}"
-              docker buildx imagetools create -t "${REGISTRY}/mars-${image}:sha-${GITHUB_SHA}" \
+              docker buildx imagetools create --prefer-index=false -t "${REGISTRY}/mars-${image}:sha-${GITHUB_SHA}" \
                 "${REGISTRY}/mars-${image}@${reused}"
             fi
             digest=$(docker buildx imagetools inspect "${REGISTRY}/mars-${image}:sha-${GITHUB_SHA}" \
@@ -245,7 +249,7 @@ jobs:
           ref="${REGISTRY}/mars-session-claude-dev"
           if [ -n "$REUSED" ]; then
             echo "reusing mars-session-claude-dev@${REUSED}"
-            docker buildx imagetools create -t "${ref}:sha-${GITHUB_SHA}" "${ref}@${REUSED}"
+            docker buildx imagetools create --prefer-index=false -t "${ref}:sha-${GITHUB_SHA}" "${ref}@${REUSED}"
           fi
           digest=$(docker buildx imagetools inspect "${ref}:sha-${GITHUB_SHA}" \
             --format '{{json .Manifest}}' | jq -r .digest)
@@ -354,8 +358,16 @@ jobs:
           decision=$(scripts/release/promote-decision.sh "$PROMOTED" "$GITHUB_SHA")
           case "$decision" in
           promote)
-            docker buildx imagetools create -t "${REGISTRY}/mars-deploy:main" \
+            docker buildx imagetools create --prefer-index=false -t "${REGISTRY}/mars-deploy:main" \
               "${REGISTRY}/mars-deploy@${BUNDLE}"
+            # The server resolves this tag and compares digests, so it must
+            # name exactly the published bundle, not a wrapper around it.
+            resolved=$(docker buildx imagetools inspect "${REGISTRY}/mars-deploy:main" \
+              --format '{{json .Manifest}}' | jq -r .digest)
+            if [ "$resolved" != "$BUNDLE" ]; then
+              echo "::error::mars-deploy:main resolves to ${resolved}, not the published ${BUNDLE}"
+              exit 1
+            fi
             echo "promoted ${GITHUB_SHA} (${BUNDLE})" >> "$GITHUB_STEP_SUMMARY"
             ;;
           same)

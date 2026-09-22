@@ -86,10 +86,10 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -124,7 +124,7 @@ jobs:
 
       - name: Build the orchestrator image
         if: steps.reuse.outputs.orchestrator == ''
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: orchestrator
           platforms: linux/amd64
@@ -142,7 +142,7 @@ jobs:
 
       - name: Build the nginx image
         if: steps.reuse.outputs.nginx == ''
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: nginx/Dockerfile
@@ -161,7 +161,7 @@ jobs:
 
       - name: Build the claude session image
         if: steps.reuse.outputs.session_claude == ''
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: images/claude
           platforms: linux/amd64
@@ -220,7 +220,7 @@ jobs:
 
       - name: Build the dev session image
         if: steps.reuse_dev.outputs.digest == ''
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: images/claude-dev
           platforms: linux/amd64
@@ -267,7 +267,7 @@ jobs:
 
       - name: Publish the bundle
         id: bundle_push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ runner.temp }}/release
           file: ${{ runner.temp }}/release/Containerfile
@@ -313,10 +313,10 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

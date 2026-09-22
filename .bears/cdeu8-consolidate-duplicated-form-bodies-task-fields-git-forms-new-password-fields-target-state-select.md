@@ -1,10 +1,10 @@
 ---
 id: cdeu8
 title: "Consolidate duplicated form bodies: task fields, git forms, new-password fields, target-state select"
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-21T10:55:43.142436051Z"
-updated: "2026-09-21T10:56:48.992686022Z"
+updated: "2026-09-22T00:04:03.814490761Z"
 tags:
   - frontend
   - technical-review
@@ -15,6 +15,7 @@ depends_on:
   - "9c5rg"
   - tmd2v
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: the same form is typed out per feature. With the field primitives (s9rxc) and the submission convention (9c5rg) in place, these collapse:

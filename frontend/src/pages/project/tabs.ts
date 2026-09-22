@@ -2,9 +2,10 @@
 // sessions, board, profiles, shared directories, states and secrets).
 //
 // The selection is the `?tab=` search parameter, so a tab is a real link: it
-// survives a reload, can be shared and can be opened in a new tab. Each later
-// task fills in its own panel; the panel contract is `ProjectTabPanelProps`,
-// the loaded `Project` and nothing else.
+// survives a reload, can be shared and can be opened in a new tab. A panel
+// that takes the whole project takes `ProjectTabPanelProps` and nothing else;
+// the secrets and states tabs mount shared components with narrower props. No
+// panel re-reads the project.
 //
 // It lives beside `ProjectTabs.tsx` rather than in it because a module that
 // renders a component exports nothing else (`react-refresh/only-export-

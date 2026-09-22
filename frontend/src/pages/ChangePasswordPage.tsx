@@ -1,10 +1,6 @@
 // `/change-password` (`SPEC.md`, "Frontend", Routes), the forced first-login
-// change of `SPEC.md`, "Authentication": "While the current user's
-// `must_change_password` is true, every authenticated endpoint other than
-// `POST /auth/login`, `POST /auth/logout`, `POST /auth/refresh`,
-// `GET /users/me` and `POST /users/{id}/password` answers 403 with error
-// `password change required`. The frontend routes such a user to the
-// change-password page."
+// change of `SPEC.md`, "Authentication": while `must_change_password` is set,
+// all but a handful of endpoints answer 403 `password change required`.
 //
 // The page therefore calls nothing but `POST /users/{id}/password`, and wears
 // `AuthLayout` rather than `PageLayout`: the shell's navigation would fire

@@ -1,5 +1,6 @@
-// Typed wrappers for the six endpoints of `SPEC.md`, "Secrets
-// (`/api/secrets`)". No response carries `value`, so nothing here ever answers
+// Typed wrappers for the endpoints of `SPEC.md`, "Secrets (`/api/secrets`)",
+// including the project-scoped agent-credential preflight that section
+// documents. No response carries `value`, so nothing here ever answers
 // a plaintext: a value only travels outwards, in the body of a create or a
 // replace, and the caller drops it as soon as the promise settles
 // (`CLAUDE.md`, rule 3).

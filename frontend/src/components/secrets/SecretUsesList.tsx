@@ -4,7 +4,8 @@
 // the orchestrator fetched a mirror on its own schedule.
 //
 // There is no pagination endpoint, so "Show more" doubles the limit and asks
-// again, up to the 500 the server would cap at anyway. Each limit is a query
+// again, up to this view's own `USES_MAX_LIMIT` (the server caps at 500). Each
+// limit is a query
 // of its own, so the larger page is loaded with the rows of the smaller one
 // still on screen (`SPEC.md`, "Frontend", Read failures: a view that has data
 // keeps showing it).

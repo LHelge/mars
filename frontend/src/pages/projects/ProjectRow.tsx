@@ -1,5 +1,5 @@
 // One row of the projects table, and the one action it offers: retrying a
-// clone that failed (`POST /projects/{id}/clone/retry`).
+// clone that failed (`POST /projects/{id}/retry-clone`).
 //
 // The mutation is the row's own, as it is in the administration tables: a
 // table-wide observer follows only its latest `mutate()`, so retrying a second

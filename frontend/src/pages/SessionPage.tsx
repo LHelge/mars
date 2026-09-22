@@ -9,7 +9,8 @@
 //
 // Two readers of one session: the store, which the socket keeps current from
 // `session` frames, and the TanStack cache, which every other view reads. The
-// store is the display source once it has a session, and each new one is
+// fresher of the REST row and the store is what is displayed — a retained
+// store can be minutes stale on a return visit — and every `session` frame is
 // written back into the cache so a list opened afterwards is not stale.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";

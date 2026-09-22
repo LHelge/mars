@@ -27,9 +27,9 @@ import Markdown from "react-markdown";
 import type { Components, ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-// By path, not through the barrel: `CodeBlock` reaches the highlighter with a
-// dynamic import, and the barrel is in the entry chunk (`SPEC.md`, "Frontend",
-// "Code splitting").
+// `CodeBlock` reaches the highlighter through a dynamic import, so it must
+// stay out of anything a first paint evaluates (`SPEC.md`, "Frontend", "Code
+// splitting").
 import { CodeBlock } from "./CodeBlock";
 
 // Block code is `pre > code`; react-markdown 10 no longer tells the `code`

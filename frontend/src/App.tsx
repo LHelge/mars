@@ -1,6 +1,5 @@
 // The route table of `SPEC.md`, "Frontend", Routes. Every route is one line
-// with its own import line: each page task replaces exactly one element and one
-// import, so the sibling branches barely touch each other.
+// with its own import line.
 //
 // `/login`, `/invite/:token`, `/forgot-password` and `/reset-password/:token`
 // render outside `ProtectedRoute`; `/change-password` is inside it but exempt
@@ -9,11 +8,12 @@
 // Code splitting: the eagerly imported pages are the ones an unauthenticated
 // visitor or a cold sign-in reaches without navigating — the auth forms, which
 // all share `AuthLayout`, and the dashboard the signed-in user lands on. Every
-// heavier page is a `React.lazy` of its own file (never of the `pages/` barrel,
-// which would pull them all back into one chunk), so the session view's
-// `react-markdown` and virtualizer, the project board and the admin and secrets
-// forms are fetched the first time someone navigates to them. The named export
-// is mapped to `default` because this codebase has no default exports.
+// heavier page is a `React.lazy` of its own file — there is no `pages/` barrel
+// to import through (`ARCHITECTURE.md`, "Frontend architecture", Barrels and
+// the first-paint path) — so the session view's `react-markdown` and
+// virtualizer, the project board and the admin and secrets forms are fetched
+// the first time someone navigates to them. The named export is mapped to
+// `default` because this codebase has no default exports.
 //
 // One `Suspense` wraps the whole table. Every lazy route sits inside
 // `ProtectedRoute`, so the fallback can be the same `LoadingState` inside

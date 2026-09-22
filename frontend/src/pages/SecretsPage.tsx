@@ -18,9 +18,8 @@ import { Alert } from "../components/Alert";
 import { PageLayout } from "../components/PageLayout";
 import { SecretsManager } from "../components/secrets/SecretsManager";
 import { useAuth } from "../hooks/useAuth";
-// By path, not through a barrel: the section is only ever on this lazily
-// loaded route, and the barrel is in the entry chunk (`SPEC.md`, "Frontend" →
-// "Code splitting"), as with `DiffBody`.
+// The section is only ever on this lazily loaded route (`SPEC.md`, "Frontend"
+// → "Code splitting").
 import { AgentCredentialsSection } from "../secrets/AgentCredentialsSection";
 import { listProjects } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";

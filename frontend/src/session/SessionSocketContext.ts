@@ -1,9 +1,9 @@
 // The one socket of the session page, handed to everything under it.
 //
-// `SessionPage` mounts `useSessionSocket` once and publishes its API here, so a
-// side panel registered from another module — the Changes panel, the terminal —
-// reaches the same connection without being threaded through `SessionView` as a
-// prop. No component lives in this module: a file that renders one may export
+// `SessionPage` mounts `useSessionSocket` once and hands the API to
+// `SessionView`, which publishes it here, so a side panel registered from
+// another module — the Changes panel, the terminal — reaches the same
+// connection without being threaded down as a prop. No component lives in this module: a file that renders one may export
 // nothing else (`react-refresh/only-export-components`).
 
 import { createContext, useContext } from "react";

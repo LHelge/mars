@@ -1451,8 +1451,8 @@ export function disposeSessionStore(sessionId: string): void {
  * Ends every transcript this login folded. Stores that still have an owner —
  * a session page that has not unmounted yet — are reset in place, so their
  * subscribers keep a live store and redraw empty; the rest are dropped.
- * Called on sign-out (`AuthBootstrap`) and whenever the browser changes hands
- * without one (below).
+ * Called on sign-out and whenever the browser changes hands without one, from
+ * the two handlers registered at the foot of this module.
  */
 export function clearSessionStores(): void {
   generation += 1;

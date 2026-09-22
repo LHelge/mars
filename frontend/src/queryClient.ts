@@ -2,11 +2,10 @@
 // conventions": server state through TanStack Query).
 //
 // Any answer below 500 is an answer, not a hiccup: a 401, 403 or 404, and
-// equally a 400, 409, 422 or 429, says the same thing the second time, and a
-// repeated 403 would fire the current-user refresh again. What is worth one
-// more try is what never reached a verdict — a network failure, or a 5xx from
-// an orchestrator that is restarting or a proxy answering 502 — so that one
-// retry is left to the default and no call site turns it off.
+// equally a 400, 409, 422 or 429, says the same thing the second time. What is
+// worth one more try is what never reached a verdict — a network failure, or a
+// 5xx from an orchestrator that is restarting or a proxy answering 502 — so
+// that one retry is left to the default and no call site turns it off.
 
 import { QueryClient } from "@tanstack/react-query";
 import { ApiError } from "./services/apiClient";

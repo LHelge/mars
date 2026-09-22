@@ -2,8 +2,9 @@
 // (ADR 0031): a pure filter over the snapshot the board already holds.
 //
 // Nothing here reads the API or the store. The board derives its visible cards
-// by running `filterTasks` over the complete snapshot on every render, so a
-// refresh that renames, adds or removes a task reapplies the query for free.
+// from the complete snapshot — a `useMemo` over the states, the tasks and the
+// query — so a refresh that renames, adds or removes a task reapplies the
+// query for free.
 //
 // Only `title` and `number` are looked at. Descriptions and comments are
 // deliberately out of scope: they are not loaded with the board snapshot, and

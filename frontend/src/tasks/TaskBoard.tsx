@@ -7,7 +7,7 @@
 // and owns every refresh, so what is on screen is always a whole REST snapshot
 // rather than a snapshot with events applied over it (ADR 0022).
 //
-// What the four states look like, in the order they are decided:
+// What the board states look like, in the order they are decided:
 //   nothing yet          a loading state, and no columns
 //   read failed, nothing an error with Retry — an empty board is never shown
 //   read failed, loaded  the previous snapshot, with the error above it
@@ -90,9 +90,9 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
     searchInput.current?.focus();
   }, [setQuery]);
 
-  // The fourth board state, after loading, failed-with-nothing and loaded: a
-  // snapshot is on screen and the query matches none of it. It is decided from
-  // `loaded` and the query alone, so an empty project with no query keeps its
+  // The no-matches state: a snapshot is on screen and the query matches none
+  // of it. It is decided from `loaded` and the query alone, so an empty
+  // project with no query keeps its
   // `No tasks yet` invitation and a first load keeps its spinner.
   const noMatches =
     loaded &&

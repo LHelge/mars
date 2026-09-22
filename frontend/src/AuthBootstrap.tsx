@@ -10,8 +10,8 @@
 //     `localStorage`, clears authenticated query and stream stores, closes
 //     streams and returns to login" — `onSignOut`.
 //
-// SignOutRegistry: `services/auth` keeps the set of sign-out handlers and runs
-// them in registration order. This component registers the two the application
+// `services/auth` keeps the set of sign-out handlers and runs them in
+// registration order. This component registers the two the application
 // shell owns — clearing the TanStack Query cache and navigating to `/login`,
 // with the current location as the return destination when the sign-out was a
 // failed refresh rather than a user's decision.

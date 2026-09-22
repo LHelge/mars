@@ -5,7 +5,8 @@
 // The connection logic is the plain `SessionSocket` class — no React — so the
 // reconnect, replay and terminal behaviour is unit-testable with a fake socket;
 // `useSessionSocket` only owns its lifetime and hands out stable callbacks.
-// `SessionView` mounts it once per page and passes the API down.
+// `SessionPage` mounts it once per page and hands the API to `SessionView`,
+// which publishes it on `SessionSocketContext`.
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { StoreApi } from "zustand";

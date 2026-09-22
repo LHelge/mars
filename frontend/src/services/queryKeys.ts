@@ -1,4 +1,4 @@
-// Every TanStack Query key in the application, one group per resource. Add a
+// Every shared TanStack Query key, one group per resource. Add a
 // group for a new resource rather than editing someone else's, so two pages
 // being built in parallel never collide here.
 

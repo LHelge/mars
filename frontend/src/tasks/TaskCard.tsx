@@ -4,8 +4,8 @@
 //
 // The whole card is a link to `/projects/{pid}/tasks/{number}` — the board
 // with that task's drawer open — apart from the holding session, which is a
-// link of its own into the transcript. Drag-and-drop is not part of v1; a task
-// moves from the drawer.
+// link of its own into the transcript. A card is not draggable: a task moves
+// from the drawer.
 //
 // Colour is information, not decoration (`CLAUDE.md`, "Frontend conventions").
 // A card is grey until something about it needs attention: a critical or high

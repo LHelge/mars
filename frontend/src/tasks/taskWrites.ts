@@ -1,4 +1,7 @@
-// Every write the task drawer makes, one verb per hook (`SPEC.md`, "Tasks").
+// The task API's own verbs — update, release, delete and the dependency edges
+// — one hook each (`SPEC.md`, "Tasks"), and the settle rule every task write
+// shares. A write with a request of its own — a comment, a merge, a launch —
+// makes it where it lives and settles through `useSettleTask` here.
 //
 // Each hook returns the request itself — an async function that writes and
 // then settles the caches — and nothing else. Who owns the pending and error
@@ -10,9 +13,11 @@
 // All of them settle the same way (`SPEC.md`, "Frontend", "Board refresh
 // ordering"): the task's own detail query is invalidated so the drawer shows
 // what the API just returned, and the board store is invalidated so the card
-// behind the drawer follows without waiting for the SSE event. The event
-// arrives a moment later and is coalesced into the same refresh path, so a
-// mutation never produces two reads (ADR 0022).
+// behind the drawer follows without waiting for the SSE event. The event's own
+// refresh follows a moment later: both are whole snapshots and both are shown,
+// and the two are one read only when the event lands while the first refresh
+// is still in flight (`SPEC.md`, "Frontend", "Board refresh ordering";
+// ADR 0022).
 //
 // A failure invalidates the detail alone: a 409 from a concurrent change, or a
 // 404 from a task someone else deleted mid-edit, is answered by re-reading the
@@ -42,10 +47,10 @@ export interface DependencyEdge {
 
 /**
  * What a task write leaves behind: the drawer rereads the task, and the board
- * behind it refreshes once, coalesced with the event that is on its way.
+ * behind it refreshes.
  *
- * The one settle rule of the drawer, in one place — every caller that writes a
- * task awaits this rather than spelling the two invalidations out again.
+ * The one settle rule of a task write, in one place — every caller that writes
+ * a task awaits this rather than spelling the two invalidations out again.
  *
  * `number` is `null` for a write that names no task at all — the project
  * page's launch form before a task is typed into it — where the board is still

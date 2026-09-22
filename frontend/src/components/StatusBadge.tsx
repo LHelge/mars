@@ -1,8 +1,8 @@
 // One badge for the lifecycle state of a session (`SessionState`), as the
-// dashboard and the session lists show it. Only the four state tokens carry
-// colour (`CLAUDE.md`, "Frontend conventions": quiet colour reserved for
-// state); `done` is neutral, so a list of finished work reads as quiet as it
-// is. A project's clone state is a different vocabulary and is drawn by
+// dashboard and the session lists show it. Only `running`, `parked` and
+// `failed` carry colour (`CLAUDE.md`, "Frontend conventions": quiet colour
+// reserved for state); `creating` and `done` are neutral, so a list of
+// finished work reads as quiet as it is. A project's clone state is a different vocabulary and is drawn by
 // `pages/projects/ProjectStatusPill`, which colours its `error` red.
 
 import type { SessionState } from "../types";

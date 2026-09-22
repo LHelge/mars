@@ -4,7 +4,7 @@ title: "Manual: install the first published deployment and verify Mars on the se
 status: open
 priority: P1
 created: "2026-09-22T07:33:47.306287Z"
-updated: "2026-09-22T07:48:49.201971Z"
+updated: "2026-09-22T21:36:41.717692152Z"
 tags:
   - deployment
   - manual
@@ -13,6 +13,7 @@ depends_on:
   - "2v86y"
   - "9nbnd"
   - a8gbx
+  - jg2dp
 parent: "2uqww"
 assignee: LHelge
 ---

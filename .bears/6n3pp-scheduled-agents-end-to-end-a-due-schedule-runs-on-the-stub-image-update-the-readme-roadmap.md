@@ -1,10 +1,10 @@
 ---
 id: "6n3pp"
 title: "Scheduled agents end to end: a due schedule runs on the stub image; update the README roadmap"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-21T20:25:58.761672025Z"
-updated: "2026-09-21T20:26:04.012246145Z"
+updated: "2026-09-22T09:07:04.463729404Z"
 tags:
   - orchestrator
   - frontend
@@ -16,6 +16,7 @@ depends_on:
   - k73td
   - "7mnqm"
 parent: tup8z
+attempts: 1
 ---
 
 ## Summary

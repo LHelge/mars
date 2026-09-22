@@ -1,10 +1,10 @@
 ---
 id: v6p2w
 title: "Scheduler job: fire each due profile schedule exactly once, as a task-less ephemeral launch through the capacity check"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-21T20:25:23.636566263Z"
-updated: "2026-09-22T08:14:20.075521792Z"
+updated: "2026-09-22T09:06:56.367453329Z"
 tags:
   - orchestrator
   - scheduler

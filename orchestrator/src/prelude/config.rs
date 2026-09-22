@@ -610,6 +610,7 @@ mod tests {
         "POSTGRES_USER",
         "POSTGRES_PASSWORD",
         "POSTGRES_DB",
+        "POSTGRES_IMAGE",
         "DOCKER_HOST",
         "ENGINE_SOCKET_HOST",
         "DATA_DIR_HOST",
@@ -632,6 +633,13 @@ mod tests {
         "RESEND_API_KEY",
         "MAIL_FROM",
         "RUST_LOG",
+        // Read by bin/mars-backup on a deployed server, not by Config.
+        "MARS_BACKUP_DIR",
+        "MARS_BACKUP_AGE_RECIPIENTS",
+        "MARS_BACKUP_KEEP_DB",
+        "MARS_BACKUP_KEEP_FULL",
+        "MARS_BACKUP_HOOK",
+        "MARS_BACKUP_INCLUDE_SHARED",
         "COMPOSE_FILE",
         "DOCKER_GID",
     ];

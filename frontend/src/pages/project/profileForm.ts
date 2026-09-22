@@ -350,6 +350,35 @@ export function idleTimeoutError(raw: string): string | null {
 }
 
 /**
+ * The idle timeout's hint, which depends on the kind because the idle reaper
+ * treats the two differently (`ARCHITECTURE.md`, "Session owner task", "Stop
+ * semantics"): a conversational session is parked and resumes on the next
+ * message, an ephemeral one is stopped and failed as `stalled`. Idle is
+ * measured from the last event, so a long silent command counts.
+ */
+export function idleTimeoutHint(kind: ProfileKind): string {
+  const outcome =
+    kind === "conversational"
+      ? "is parked; the next message resumes it"
+      : "is stopped and failed as stalled, releasing any task it holds";
+  return `Seconds without a new event before a running session ${outcome}. A long command that prints nothing counts as idle.`;
+}
+
+/**
+ * What granting each gated tool lets the agent do, one line per tool, in the
+ * terms of `SPEC.md`, "MCP tool contracts".
+ */
+export const GIT_TOOL_NOTES: Record<ProfileGatedTool, string> = {
+  list_session_branches:
+    "Lists session branches and how far each is ahead of or behind the default branch.",
+  merge:
+    "Merges into an integration branch. A task's work merges only as its approved hand-off, and conflicts are never resolved.",
+  rebase:
+    "Rebases a branch onto another in the mirror, such as a session branch onto the default branch.",
+  push: "Publishes an integration or session branch to the remote with the project's git credential.",
+};
+
+/**
  * Adds or removes one entry of a checkbox group, keeping the rest in order.
  *
  * Generic over the entry, so a group whose members are a union — the gated MCP

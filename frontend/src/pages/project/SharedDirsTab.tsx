@@ -42,12 +42,18 @@ import { formatDateTime, formatRelative } from "../../utils/format";
 import { SharedDirForm } from "./SharedDirForm";
 import type { ProjectTabPanelProps } from "./tabs";
 
-/** `SPEC.md`, "Shared directories", in the one line the tab has room for. */
+/**
+ * `SPEC.md`, "Shared directories", and `README.md`, "Operating notes", in
+ * the few lines the tab has room for: why share, and what not to.
+ */
 const MOUNT_HELP =
-  "Mounted read-write into every session container of this project. The list is read at each launch; a session that is already running keeps the mounts it started with.";
+  "Mounted read-write into every session container of this project, so a download cache, or Cargo's build directory, is kept once instead of once per session. Share what tolerates several sessions writing at once; keep per session what a branch rewrites in place, such as node_modules, a virtualenv or most build output. The list is read at each launch; a running session keeps the mounts it started with.";
 
-/** The tooltip on an action the project's live sessions would have refused. */
+/** The banner's lead-in while the project's live sessions would refuse both actions. */
 const RUNNING_HINT = "A session is running";
+
+/** The same reason, said on each row beside the two buttons it disables. */
+const ROW_BLOCKED = "Blocked while a session of this project is live.";
 
 /**
  * How often the session list behind the two disabled buttons is re-read. A
@@ -90,7 +96,11 @@ export function SharedDirsTab({ project }: ProjectTabPanelProps) {
 
   return (
     <section className="space-y-3">
-      <SectionHeader title="Shared directories" description={MOUNT_HELP} />
+      <SectionHeader
+        title="Shared directories"
+        description={MOUNT_HELP}
+        help="shared-directories"
+      />
 
       {dirs.isError && (
         <QueryErrorAlert query={dirs} message={errorMessage(dirs.error)} />
@@ -114,6 +124,7 @@ export function SharedDirsTab({ project }: ProjectTabPanelProps) {
           <EmptyState
             title="No shared directories yet"
             description="Add one above, or pick a starting point for the ecosystem this project builds with."
+            help="shared-directories"
           />
         )
       ) : (
@@ -149,6 +160,7 @@ function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
   const listKey = queryKeys.projects.sharedDirs(projectId);
   /** Which of the two destructive actions is waiting to be confirmed. */
   const [confirming, setConfirming] = useState<"clear" | "remove" | null>(null);
+  const blockedId = `shared-dir-${dir.name}-blocked`;
 
   const clear = useMutation({
     mutationFn: () => clearSharedDir(projectId, dir.name),
@@ -200,15 +212,13 @@ function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
         </td>
 
         <td className={`${CELL} pr-0`}>
-          <div
-            className="flex flex-wrap justify-end gap-1.5"
-            title={live ? RUNNING_HINT : undefined}
-          >
+          <div className="flex flex-wrap justify-end gap-1.5">
             <SubmitButton
               type="button"
               variant="ghost"
               loading={clear.isPending}
               disabled={busy || live}
+              aria-describedby={live ? blockedId : undefined}
               onClick={() => {
                 setConfirming("clear");
               }}
@@ -220,6 +230,7 @@ function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
               variant="danger"
               loading={remove.isPending}
               disabled={busy || live}
+              aria-describedby={live ? blockedId : undefined}
               onClick={() => {
                 setConfirming("remove");
               }}
@@ -227,6 +238,14 @@ function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
               Remove
             </SubmitButton>
           </div>
+          {live && (
+            <p
+              id={blockedId}
+              className="text-console-muted pt-1 text-right text-xs"
+            >
+              {ROW_BLOCKED}
+            </p>
+          )}
         </td>
       </tr>
 

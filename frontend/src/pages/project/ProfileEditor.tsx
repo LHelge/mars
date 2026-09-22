@@ -53,6 +53,8 @@ import {
   CHECK_CLASS,
   CRON_EXAMPLES,
   defaultInputForKind,
+  GIT_TOOL_NOTES,
+  idleTimeoutHint,
   idleTimeoutError,
   maxConcurrentError,
   MIN_IDLE_TIMEOUT_SECS,
@@ -337,6 +339,7 @@ export function ProfileEditor({
       <SectionHeader
         title={profile === null ? "New profile" : `Edit ${profile.name}`}
         description="The served states and the system prompt together define what this agent does."
+        help="profiles"
         actions={
           <SubmitButton
             type="button"
@@ -437,7 +440,7 @@ export function ProfileEditor({
             hint={
               form.kind === "conversational"
                 ? "Takes messages, parks between turns."
-                : "Runs one prompt and ends."
+                : "Runs one prompt and ends; the only kind that can run automatically or on a schedule."
             }
           >
             {(control) => (
@@ -490,7 +493,7 @@ export function ProfileEditor({
           <FieldShell
             label="Model"
             name="profile-model"
-            hint="Leave empty to let the CLI choose."
+            hint="Passed to the CLI as --model: a model alias the CLI knows or a full model id; empty uses the CLI default."
           >
             {(control) => (
               <input
@@ -515,7 +518,8 @@ export function ProfileEditor({
             onChange={(next) => {
               patch({ image: next });
             }}
-            hint="The container image sessions of this profile run in."
+            hint="The container image sessions of this profile run in. Sessions have no root and cannot install system packages, so build an image FROM a Mars session image for what yours need."
+            help="profiles"
             autoComplete="off"
             required
             disabled={save.loading}
@@ -524,7 +528,7 @@ export function ProfileEditor({
           <FieldShell
             label="Runtime"
             name="profile-runtime"
-            hint="A sandboxed runtime such as runsc or kata; empty uses the engine default."
+            hint="A sandboxed runtime such as runsc or kata; empty uses the engine default. It must be configured in the container engine."
           >
             {(control) => (
               <input
@@ -545,7 +549,7 @@ export function ProfileEditor({
           <FieldShell
             label="Idle timeout (seconds)"
             name="profile-idle-timeout"
-            hint="How long a session may sit idle before it is parked."
+            hint={idleTimeoutHint(form.kind)}
             error={timeoutError ?? undefined}
           >
             {(control) => (
@@ -592,7 +596,8 @@ export function ProfileEditor({
             <>
               <Fieldset
                 legend="Unattended launches"
-                description="The dispatcher picks up tasks in the served states above and runs this profile on them without anyone asking. The cap holds it back only: your own launches are never refused by it."
+                description="The dispatcher picks up tasks in this profile's served states and runs this profile on them without anyone asking. The cap holds it back only: your own launches are never refused by it. Project settings can pause this or cap the whole project."
+                help="automation"
               >
                 <label className="text-console-text flex items-start gap-2 text-sm">
                   <input
@@ -657,6 +662,7 @@ export function ProfileEditor({
               <Fieldset
                 legend="Schedule"
                 description="A cron expression starts a session of this profile by itself, on the clock, and gives it the prompt below."
+                help="automation"
               >
                 {/* The checkbox owns the fieldset: off, the two fields keep
                   what was typed but are disabled and nothing is sent, so
@@ -683,7 +689,7 @@ export function ProfileEditor({
                 <FieldShell
                   label="Cron expression (UTC)"
                   name="profile-schedule-cron"
-                  hint="Five fields — minute hour day-of-month month day-of-week — read in UTC, never in your own zone. No seconds field, no year field, no @daily."
+                  hint="Five fields — minute hour day-of-month month day-of-week — read in UTC, never in your own zone. No seconds field, no year field, no @daily. Missed or refused runs are skipped, not retried."
                   error={scheduleFieldError("cron")}
                 >
                   {(control) => (
@@ -774,7 +780,8 @@ export function ProfileEditor({
           <FieldShell
             label="System prompt"
             name="profile-system-prompt"
-            hint="Prepended to every session of this profile."
+            hint="Appended to the CLI's own system prompt on every launch. Describe this agent's job here: repository conventions come from its CLAUDE.md, and skills from .claude/skills."
+            help="skills"
           >
             {(control) => (
               <textarea
@@ -797,10 +804,14 @@ export function ProfileEditor({
           <Fieldset
             legend="Git tools"
             description="The task tracker tools are always available. These four reach the project’s git mirror."
+            help="branches"
           >
-            <div className="flex flex-wrap gap-x-4 gap-y-2">
+            <div className="flex flex-col gap-2">
               <CheckboxList
-                items={PROFILE_GATED_TOOLS.map((tool) => ({ name: tool }))}
+                items={PROFILE_GATED_TOOLS.map((tool) => ({
+                  name: tool,
+                  description: GIT_TOOL_NOTES[tool],
+                }))}
                 selected={form.mcp_tools}
                 onToggle={(tool) => {
                   patch({ mcp_tools: toggleMember(form.mcp_tools, tool) });
@@ -812,6 +823,7 @@ export function ProfileEditor({
 
           <ServedStatesFieldset
             projectId={projectId}
+            dispatched={form.kind === "ephemeral" && form.auto_launch}
             selected={form.serves_states}
             onToggle={(name) => {
               patch({ serves_states: toggleMember(form.serves_states, name) });

@@ -194,6 +194,35 @@ describe("ProfilesTab", () => {
     );
   });
 
+  it("says what the default marker means, and ties it to the disabled delete", async () => {
+    vi.mocked(listProfiles).mockResolvedValue([profile(), scheduled()]);
+
+    renderTab("?tab=profiles");
+
+    const note = await screen.findByText(/cannot be deleted/);
+    const deletes = screen.getAllByRole("button", { name: "Delete" });
+    expect(deletes[0]?.hasAttribute("disabled")).toBe(true);
+    expect(deletes[0]?.getAttribute("aria-describedby")).toBe(note.id);
+    expect(deletes[0]?.hasAttribute("title")).toBe(false);
+    // The other profile is not the default: no note, nothing disabled.
+    expect(screen.getAllByText(/cannot be deleted/)).toHaveLength(1);
+    expect(deletes[1]?.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("describes each git tool without renaming its checkbox", async () => {
+    vi.mocked(listProfiles).mockResolvedValue([profile()]);
+
+    renderTab(`?tab=profiles&profile=${PROFILE_ID}`);
+
+    // The name stays the tool's own, so it is still found by it alone.
+    const push = await screen.findByRole("checkbox", { name: "push" });
+    const described = push.getAttribute("aria-describedby");
+    expect(described).not.toBeNull();
+    expect(document.getElementById(described ?? "")?.textContent).toContain(
+      "git credential",
+    );
+  });
+
   it("shows the schedule of an ephemeral profile in UTC and in local time", async () => {
     vi.mocked(listProfiles).mockResolvedValue([scheduled()]);
 

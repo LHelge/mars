@@ -31,6 +31,8 @@ import { projectQueries } from "../../services/queryOptions";
 import type { Profile } from "../../types";
 import { ProfileEditor } from "./ProfileEditor";
 import { errorMessage } from "../../services/errorMessage";
+import { formatUtc } from "../../utils/format";
+import { PROFILE_AUTOMATION } from "../../utils/testIds";
 import type { ProjectTabPanelProps } from "./tabs";
 
 const COLUMNS: readonly TableColumn[] = [
@@ -39,9 +41,17 @@ const COLUMNS: readonly TableColumn[] = [
   { label: "Model" },
   { label: "Image", className: "hidden lg:table-cell" },
   { label: "Serves" },
+  { label: "Automation" },
   { label: "Idle timeout", className: "hidden md:table-cell" },
   { label: "Actions", className: "pr-0 text-right" },
 ];
+
+/**
+ * One automation marker. Provenance-like and not a state, so it takes no
+ * colour: the same outlined monospace chip the served states use.
+ */
+const AUTOMATION_TAG =
+  "border-console-border text-console-muted rounded border px-1.5 py-0.5 font-mono text-xs";
 
 /** The image a new profile starts on: the one the project's default uses. */
 function defaultImageOf(profiles: Profile[]): string {
@@ -239,6 +249,32 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
                   {state}
                 </span>
               ))
+            )}
+          </div>
+        </td>
+
+        {/* What runs this profile without anyone asking, so automation is
+            visible from the list instead of one editor at a time. */}
+        <td className={CELL_TOP} data-testid={PROFILE_AUTOMATION}>
+          <div className="flex flex-wrap gap-1">
+            {profile.auto_launch && (
+              <span
+                className={AUTOMATION_TAG}
+                title="The dispatcher may launch this profile"
+              >
+                auto-launch
+              </span>
+            )}
+            {profile.schedule_cron !== null && (
+              <span
+                className={AUTOMATION_TAG}
+                title={`Scheduled: ${profile.schedule_cron} (UTC); next run ${formatUtc(profile.next_scheduled_at)}`}
+              >
+                schedule
+              </span>
+            )}
+            {!profile.auto_launch && profile.schedule_cron === null && (
+              <span className="text-console-muted text-xs">manual</span>
             )}
           </div>
         </td>

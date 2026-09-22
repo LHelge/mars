@@ -41,9 +41,11 @@ import { parseProfileKind } from "../../types";
 import type { Profile, ProfileKind } from "../../types";
 import { PROFILE_GATED_TOOLS } from "../../types";
 import { CheckboxList, Fieldset } from "./profileFields";
+import { formatDateTime, formatUtc, PLACEHOLDER } from "../../utils/format";
 import {
   BLANK_TEMPLATE,
   CHECK_CLASS,
+  CRON_EXAMPLES,
   defaultInputForKind,
   idleTimeoutError,
   maxConcurrentError,
@@ -55,13 +57,19 @@ import {
   PROFILE_BACKEND,
   PROFILE_PERMISSION_MODE,
   READ_ONLY_CLASS,
+  scheduleErrorField,
+  scheduleErrors,
   toFormState,
   toggleMember,
   toInput,
   toProfileInput,
   unattendedCredential,
 } from "./profileForm";
-import type { ProfileFormState } from "./profileForm";
+import type {
+  ProfileFormState,
+  ScheduleField,
+  UnattendedCredential,
+} from "./profileForm";
 import { useQueueStates } from "./queueStates";
 import { SecretsFieldset } from "./SecretsFieldset";
 import { ServedStatesFieldset } from "./ServedStatesFieldset";
@@ -109,6 +117,13 @@ export function ProfileEditor({
   const [secretNameError, setSecretNameError] = useState<string | null>(null);
   // The server's refusal of `auto_launch`, shown at the toggle it is about.
   const [autoLaunchError, setAutoLaunchError] = useState<string | null>(null);
+  // The server's refusal of the schedule, and which of its two fields it is
+  // about. Only the API judges a cron expression, so this is where the reason
+  // an expression was refused comes from.
+  const [scheduleError, setScheduleError] = useState<{
+    field: ScheduleField;
+    message: string;
+  } | null>(null);
 
   /** The template the form was last filled from; `""` is `Blank`. */
   const [templateName, setTemplateName] = useState(BLANK_TEMPLATE);
@@ -165,6 +180,19 @@ export function ProfileEditor({
         setAutoLaunchError(caught.error);
         return;
       }
+      // And so is a refusal of the schedule, which lands on the one of its two
+      // fields the server's own wording names.
+      if (
+        form.kind === "ephemeral" &&
+        caught instanceof ApiError &&
+        caught.status === 400
+      ) {
+        const field = scheduleErrorField(caught.error);
+        if (field !== null) {
+          setScheduleError({ field, message: caught.error });
+          return;
+        }
+      }
       throw caught;
     }
     await queryClient.invalidateQueries({
@@ -179,11 +207,35 @@ export function ProfileEditor({
   const concurrentError = maxConcurrentError(form.max_concurrent);
   const nameMissing = form.name.trim() === "";
   const imageMissing = form.image.trim() === "";
+  // The schedule only exists on an ephemeral profile, and `toInput` drops it
+  // for the other kind, so a half-filled pair left behind by a kind switch
+  // blocks nothing.
+  const schedule =
+    form.kind === "ephemeral"
+      ? scheduleErrors(form)
+      : { cron: null, prompt: null };
   const blocked =
     timeoutError !== null ||
     concurrentError !== null ||
+    schedule.cron !== null ||
+    schedule.prompt !== null ||
     nameMissing ||
     imageMissing;
+
+  /** The one message a schedule field shows: its own check, then the server's. */
+  function scheduleFieldError(field: ScheduleField): string | undefined {
+    const local = field === "cron" ? schedule.cron : schedule.prompt;
+    if (local !== null) {
+      return local;
+    }
+    return scheduleError?.field === field ? scheduleError.message : undefined;
+  }
+
+  /** Editing either schedule field drops an answer about what it used to say. */
+  function patchSchedule(next: Partial<ProfileFormState>) {
+    setScheduleError(null);
+    patch(next);
+  }
 
   function patch(next: Partial<ProfileFormState>) {
     setEdited(true);
@@ -248,6 +300,7 @@ export function ProfileEditor({
     const capStranded =
       kind !== "ephemeral" && maxConcurrentError(form.max_concurrent) !== null;
     setAutoLaunchError(null);
+    setScheduleError(null);
     patch({
       kind,
       ...(partialTouched
@@ -526,73 +579,161 @@ export function ProfileEditor({
               one; `toInput` clears the flag for the other kind whatever the
               checkbox last held. */}
           {form.kind === "ephemeral" && (
-            <Fieldset
-              legend="Unattended launches"
-              description="The dispatcher picks up tasks in the served states above and runs this profile on them without anyone asking. The cap holds it back only: your own launches are never refused by it."
-            >
-              <label className="text-console-text flex items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.auto_launch}
-                  onChange={(event) => {
-                    setAutoLaunchError(null);
-                    patch({ auto_launch: event.target.checked });
-                  }}
-                  disabled={save.loading}
-                  className={`${CHECK_CLASS} mt-1`}
-                />
-                <span>
-                  Let the dispatcher launch this profile
-                  <span className="text-console-muted block text-xs">
-                    Off: this profile only runs when someone launches it.
+            <>
+              <Fieldset
+                legend="Unattended launches"
+                description="The dispatcher picks up tasks in the served states above and runs this profile on them without anyone asking. The cap holds it back only: your own launches are never refused by it."
+              >
+                <label className="text-console-text flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.auto_launch}
+                    onChange={(event) => {
+                      setAutoLaunchError(null);
+                      patch({ auto_launch: event.target.checked });
+                    }}
+                    disabled={save.loading}
+                    className={`${CHECK_CLASS} mt-1`}
+                  />
+                  <span>
+                    Let the dispatcher launch this profile
+                    <span className="text-console-muted block text-xs">
+                      Off: this profile only runs when someone launches it.
+                    </span>
                   </span>
-                </span>
-              </label>
+                </label>
 
-              {/* Before the save, from the answer the secrets notice below
+                {/* Before the save, from the answer the secrets notice below
                   already read; after it, in the server's own words. */}
-              {form.auto_launch &&
-                autoLaunchError === null &&
-                (unattended === "missing" || unattended === "user_only") && (
-                  <p className="text-state-parked pt-2 text-xs">
-                    {unattended === "missing"
-                      ? "No agent credential is stored for this project."
-                      : "Only your own agent credential is stored."}{" "}
-                    An unattended launch has no user behind it, so it needs one
-                    at the project or shared scope. <CredentialLink />
+                {form.auto_launch && autoLaunchError === null && (
+                  <UnattendedCredentialNotice unattended={unattended} />
+                )}
+
+                {autoLaunchError !== null && (
+                  <p className="text-state-failed pt-2 text-xs">
+                    {autoLaunchError}. <CredentialLink />
                   </p>
                 )}
 
-              {autoLaunchError !== null && (
-                <p className="text-state-failed pt-2 text-xs">
-                  {autoLaunchError}. <CredentialLink />
-                </p>
-              )}
+                <div className="pt-3">
+                  <FieldShell
+                    label="Live sessions of this profile"
+                    name="profile-max-concurrent"
+                    hint="The dispatcher waits once this many are creating or running. Every live session counts, whoever launched it."
+                    error={concurrentError ?? undefined}
+                  >
+                    {(control) => (
+                      <input
+                        {...control}
+                        type="number"
+                        min={MIN_MAX_CONCURRENT}
+                        step={1}
+                        value={form.max_concurrent}
+                        onChange={(event) => {
+                          patch({ max_concurrent: event.target.value });
+                        }}
+                        disabled={save.loading}
+                        className={FIELD}
+                      />
+                    )}
+                  </FieldShell>
+                </div>
+              </Fieldset>
 
-              <div className="pt-3">
+              {/* The schedule, under the same ephemeral-only rule and for the
+                same reason: a scheduled run has nobody behind it. No cron
+                parser ships in the bundle — whether an expression is valid,
+                and when it next fires, are the server's answers (ADR 0043). */}
+              <Fieldset
+                legend="Schedule"
+                description="A cron expression starts a session of this profile by itself, on the clock, and gives it the prompt below. Leave both empty for no schedule."
+              >
                 <FieldShell
-                  label="Live sessions of this profile"
-                  name="profile-max-concurrent"
-                  hint="The dispatcher waits once this many are creating or running. Every live session counts, whoever launched it."
-                  error={concurrentError ?? undefined}
+                  label="Cron expression (UTC)"
+                  name="profile-schedule-cron"
+                  hint="Five fields — minute hour day-of-month month day-of-week — read in UTC, never in your own zone. No seconds field, no year field, no @daily."
+                  error={scheduleFieldError("cron")}
                 >
                   {(control) => (
                     <input
                       {...control}
-                      type="number"
-                      min={MIN_MAX_CONCURRENT}
-                      step={1}
-                      value={form.max_concurrent}
+                      value={form.schedule_cron}
                       onChange={(event) => {
-                        patch({ max_concurrent: event.target.value });
+                        patchSchedule({ schedule_cron: event.target.value });
                       }}
+                      placeholder="no schedule"
+                      autoComplete="off"
+                      spellCheck={false}
                       disabled={save.loading}
                       className={FIELD}
                     />
                   )}
                 </FieldShell>
-              </div>
-            </Fieldset>
+
+                <ul className="text-console-muted pt-1.5 text-xs">
+                  {CRON_EXAMPLES.map((example) => (
+                    <li key={example.expression}>
+                      <span className="text-console-text font-mono">
+                        {example.expression}
+                      </span>{" "}
+                      — {example.meaning}
+                    </li>
+                  ))}
+                </ul>
+
+                <div className="pt-3">
+                  <FieldShell
+                    label="Schedule prompt"
+                    name="profile-schedule-prompt"
+                    hint="What every scheduled run is asked to do; it is the message the session opens with."
+                    error={scheduleFieldError("prompt")}
+                  >
+                    {(control) => (
+                      <textarea
+                        {...control}
+                        rows={4}
+                        value={form.schedule_prompt}
+                        onChange={(event) => {
+                          patchSchedule({
+                            schedule_prompt: event.target.value,
+                          });
+                        }}
+                        spellCheck={false}
+                        disabled={save.loading}
+                        className={`${FIELD} resize-y`}
+                      />
+                    )}
+                  </FieldShell>
+                </div>
+
+                {/* Before the save, from the answer the secrets notice already
+                  read; after it, in the server's own words at the field. */}
+                {form.schedule_cron.trim() !== "" && scheduleError === null && (
+                  <UnattendedCredentialNotice unattended={unattended} />
+                )}
+
+                {/* The scheduler's own two timestamps, which only exist for a
+                  stored profile. They are the server's — the next one is
+                  recomputed on every read — so they describe what is saved,
+                  not what is in the boxes above. */}
+                {profile !== null && (
+                  <div className="grid gap-3 pt-3 sm:grid-cols-2">
+                    <ScheduleInstant
+                      label="Next run"
+                      name="profile-next-scheduled-at"
+                      hint="Recomputed by the server; it follows the saved expression, not the one being typed."
+                      iso={profile.next_scheduled_at}
+                    />
+                    <ScheduleInstant
+                      label="Last run"
+                      name="profile-last-scheduled-at"
+                      hint="When the scheduler last decided a tick of this profile fires."
+                      iso={profile.last_scheduled_at}
+                    />
+                  </div>
+                )}
+              </Fieldset>
+            </>
           )}
         </div>
 
@@ -679,6 +820,67 @@ export function ProfileEditor({
         </SubmitButton>
       </div>
     </form>
+  );
+}
+
+/**
+ * One of the scheduler's timestamps: the instant in the viewer's own zone,
+ * with the UTC one under it, because a schedule is written in UTC and a reader
+ * checking an expression needs both without hovering anything. A profile with
+ * no schedule, or an expression that can never fire, has none and shows the
+ * placeholder every other missing value in the console shows.
+ */
+interface ScheduleInstantProps {
+  label: string;
+  name: string;
+  hint: string;
+  iso: string | null;
+}
+
+function ScheduleInstant({ label, name, hint, iso }: ScheduleInstantProps) {
+  return (
+    <FieldShell label={label} name={name} hint={hint}>
+      {(control) => (
+        <output {...control} className={`${READ_ONLY_CLASS} block`}>
+          {iso === null ? (
+            PLACEHOLDER
+          ) : (
+            <>
+              {formatDateTime(iso)}
+              <span className="text-console-muted block text-xs">
+                {formatUtc(iso)}
+              </span>
+            </>
+          )}
+        </output>
+      )}
+    </FieldShell>
+  );
+}
+
+/**
+ * Why an unattended launch — the dispatcher's or a schedule's — would have no
+ * credential to authenticate with. One notice for both, because it is one
+ * rule and one answer (`SPEC.md`, "Agent profiles"; ADR 0036). An answer that
+ * has not arrived, or failed, claims nothing and the save decides.
+ */
+function UnattendedCredentialNotice({
+  unattended,
+}: {
+  unattended: UnattendedCredential;
+}) {
+  if (unattended !== "missing" && unattended !== "user_only") {
+    return null;
+  }
+
+  return (
+    <p className="text-state-parked pt-2 text-xs">
+      {unattended === "missing"
+        ? "No agent credential is stored for this project."
+        : "Only your own agent credential is stored."}{" "}
+      An unattended launch has no user behind it, so it needs one at the project
+      or shared scope. <CredentialLink />
+    </p>
   );
 }
 

@@ -40,6 +40,14 @@ export function taskColumnTestId(state: string): string {
  */
 export const LAUNCH_SOURCE = "launch-source";
 
+/**
+ * The automation cell of one profile row (`src/pages/project/ProfilesTab.tsx`):
+ * what launches this profile without a person. A cell of chips with no
+ * accessible name of its own, and `schedule` is a word the session list also
+ * shows, so the row is addressed by this hook rather than by text.
+ */
+export const PROFILE_AUTOMATION = "profile-automation";
+
 /** One card on the board, by its per-project task number. */
 export function taskCardTestId(taskNumber: number): string {
   return `task-card-${String(taskNumber)}`;

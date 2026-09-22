@@ -97,6 +97,8 @@ export function defaultInputForKind(
     idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
     auto_launch: false,
     max_concurrent: MIN_MAX_CONCURRENT,
+    schedule_cron: null,
+    schedule_prompt: null,
   };
 }
 
@@ -122,6 +124,11 @@ export function toProfileInput(profile: Profile): ProfileInput {
     idle_timeout_secs: profile.idle_timeout_secs,
     auto_launch: profile.auto_launch,
     max_concurrent: profile.max_concurrent,
+    // `last_scheduled_at` and `next_scheduled_at` are deliberately left out:
+    // they are the scheduler's, read-only, and a body that carried them would
+    // simply have them ignored.
+    schedule_cron: profile.schedule_cron,
+    schedule_prompt: profile.schedule_prompt,
   };
 }
 
@@ -146,6 +153,10 @@ export interface ProfileFormState {
   auto_launch: boolean;
   /** Raw text of its number field, like the timeout above. */
   max_concurrent: string;
+  /** The cron expression as typed; empty is "no schedule". */
+  schedule_cron: string;
+  /** The prompt a scheduled run is given; empty is "no schedule". */
+  schedule_prompt: string;
 }
 
 export function toFormState(input: ProfileInput): ProfileFormState {
@@ -159,10 +170,16 @@ export function toFormState(input: ProfileInput): ProfileFormState {
     mcp_tools: [...(input.mcp_tools ?? [])],
     secrets: [...(input.secrets ?? [])],
     serves_states: [...(input.serves_states ?? DEFAULT_SERVES_STATES)],
-    partial_messages: input.partial_messages ?? partialMessagesDefault(input.kind ?? "conversational"),
-    idle_timeout_secs: String(input.idle_timeout_secs ?? DEFAULT_IDLE_TIMEOUT_SECS),
+    partial_messages:
+      input.partial_messages ??
+      partialMessagesDefault(input.kind ?? "conversational"),
+    idle_timeout_secs: String(
+      input.idle_timeout_secs ?? DEFAULT_IDLE_TIMEOUT_SECS,
+    ),
     auto_launch: input.auto_launch ?? false,
     max_concurrent: String(input.max_concurrent ?? MIN_MAX_CONCURRENT),
+    schedule_cron: input.schedule_cron ?? "",
+    schedule_prompt: input.schedule_prompt ?? "",
   };
 }
 
@@ -174,6 +191,17 @@ export function toFormState(input: ProfileInput): ProfileFormState {
 export function toInput(state: ProfileFormState): ProfileInput {
   const model = state.model.trim();
   const runtime = state.runtime.trim();
+  // The schedule is the auto-launch rule again: only an ephemeral profile may
+  // carry one, its controls are hidden for the other kind, so the kind — not a
+  // stale pair of boxes — decides what is sent. Both fields go on every save
+  // because `PUT` replaces the whole profile: `null` and `null` is the
+  // documented way to clear a schedule.
+  const scheduled = state.kind === "ephemeral";
+  const cron = state.schedule_cron.trim();
+  // Whitespace alone is no prompt; what is left keeps the whitespace the user
+  // wrote, as `system_prompt` does.
+  const prompt =
+    state.schedule_prompt.trim() === "" ? "" : state.schedule_prompt;
   return {
     name: state.name.trim(),
     kind: state.kind,
@@ -196,7 +224,76 @@ export function toInput(state: ProfileFormState): ProfileInput {
     // Always sent, on any kind: `PUT` replaces the whole profile, and an
     // omitted cap would silently fall back to 1.
     max_concurrent: Number(state.max_concurrent),
+    schedule_cron: scheduled && cron !== "" ? cron : null,
+    schedule_prompt: scheduled && prompt !== "" ? prompt : null,
   };
+}
+
+/**
+ * The two example expressions the cron field offers, with what each one means.
+ * They are examples and not presets: the field stays free text, because the
+ * server is the only judge of an expression (ADR 0043).
+ */
+export const CRON_EXAMPLES: readonly { expression: string; meaning: string }[] =
+  [
+    { expression: "0 6 * * *", meaning: "every day at 06:00 UTC" },
+    { expression: "*/15 * * * *", meaning: "every 15 minutes" },
+    { expression: "0 9 * * 1", meaning: "Mondays at 09:00 UTC" },
+  ];
+
+/**
+ * What the schedule pair refuses locally, per field, or `null` each when it
+ * does not. Nothing here parses cron: an expression's validity is the
+ * server's answer and reaches the field as its 400. These are the two rules a
+ * form can state before a request without claiming to know cron — the fields
+ * stand or fall together (`SPEC.md`, "Agent profiles" → "Scheduled profiles").
+ *
+ * Both blank is no schedule and no error, which is how a schedule is cleared.
+ */
+export function scheduleErrors(state: ProfileFormState): {
+  cron: string | null;
+  prompt: string | null;
+} {
+  const cron = state.schedule_cron.trim();
+  const prompt = state.schedule_prompt.trim();
+
+  if (cron !== "" && prompt === "") {
+    return { cron: null, prompt: "Required with a cron expression." };
+  }
+  if (cron === "" && prompt !== "") {
+    return {
+      cron: "Required with a schedule prompt; clear the prompt for no schedule.",
+      prompt: null,
+    };
+  }
+  return { cron: null, prompt: null };
+}
+
+/** Which field one of the API's schedule 400s belongs to. */
+export type ScheduleField = "cron" | "prompt";
+
+/**
+ * The field a 400 is about, or `null` when it is about something else and
+ * belongs in the form's own alert.
+ *
+ * Routed on the leading token the API's own wording starts with (`SPEC.md`,
+ * "Agent profiles" → "Scheduled profiles"), the way the editor routes the
+ * `auto_launch` refusals: `schedule_cron …` for the expression — the 5-field
+ * rule, the parser's detail, the kind and the credential — and
+ * `schedule_prompt …`, or the length refusal's `schedule prompt …`, for the
+ * prompt.
+ */
+export function scheduleErrorField(message: string): ScheduleField | null {
+  if (message.startsWith("schedule_cron")) {
+    return "cron";
+  }
+  if (
+    message.startsWith("schedule_prompt") ||
+    message.startsWith("schedule prompt")
+  ) {
+    return "prompt";
+  }
+  return null;
 }
 
 /** The message for a cap that cannot be stored, or `null` when it can. */
@@ -220,7 +317,8 @@ export function maxConcurrentError(raw: string): string | null {
  * `unknown` is the answer that has not arrived, failed, or is for a backend
  * this server does not report: nothing is claimed, and the save decides.
  */
-export type UnattendedCredential = "resolves" | "user_only" | "missing" | "unknown";
+export type UnattendedCredential =
+  "resolves" | "user_only" | "missing" | "unknown";
 
 export function unattendedCredential(
   credential: AgentCredential | null | undefined,

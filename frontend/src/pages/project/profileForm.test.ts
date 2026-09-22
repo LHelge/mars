@@ -16,6 +16,8 @@ import {
   nextFreeName,
   partialMessagesDecided,
   prefillFromTemplate,
+  scheduleErrorField,
+  scheduleErrors,
   toFormState,
   toggleMember,
   toInput,
@@ -42,6 +44,10 @@ const STORED: Profile = {
   is_default: true,
   auto_launch: true,
   max_concurrent: 3,
+  schedule_cron: "0 6 * * *",
+  schedule_prompt: "Scan the repository for tech debt.",
+  last_scheduled_at: "2026-01-02T06:00:00Z",
+  next_scheduled_at: "2026-01-03T06:00:00Z",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",
 };
@@ -102,6 +108,8 @@ describe("toProfileInput", () => {
       idle_timeout_secs: 600,
       auto_launch: true,
       max_concurrent: 3,
+      schedule_cron: "0 6 * * *",
+      schedule_prompt: "Scan the repository for tech debt.",
     });
   });
 
@@ -113,6 +121,13 @@ describe("toProfileInput", () => {
     expect(input).not.toHaveProperty("is_default");
     expect(input).not.toHaveProperty("created_at");
     expect(input).not.toHaveProperty("updated_at");
+  });
+
+  it("leaves the scheduler's own timestamps out of the body", () => {
+    const input = toProfileInput(STORED);
+
+    expect(input).not.toHaveProperty("last_scheduled_at");
+    expect(input).not.toHaveProperty("next_scheduled_at");
   });
 
   it("copies the arrays rather than aliasing the profile's", () => {
@@ -479,5 +494,127 @@ describe("unattendedCredential", () => {
   it("separates no credential from no answer yet", () => {
     expect(unattendedCredential(null)).toBe("missing");
     expect(unattendedCredential(undefined)).toBe("unknown");
+  });
+});
+
+describe("the schedule pair", () => {
+  const ephemeral = (cron: string, prompt: string) =>
+    toFormState({
+      name: "scanner",
+      kind: "ephemeral",
+      schedule_cron: cron,
+      schedule_prompt: prompt,
+    });
+
+  it("round-trips a stored schedule through the form", () => {
+    const state = toFormState(toProfileInput(STORED));
+
+    expect(state.schedule_cron).toBe("0 6 * * *");
+    expect(state.schedule_prompt).toBe("Scan the repository for tech debt.");
+    expect(toInput(state).schedule_cron).toBe("0 6 * * *");
+    expect(toInput(state).schedule_prompt).toBe(
+      "Scan the repository for tech debt.",
+    );
+  });
+
+  it("sends both fields as null to clear the schedule", () => {
+    const input = toInput(ephemeral("", ""));
+
+    expect(input.schedule_cron).toBeNull();
+    expect(input.schedule_prompt).toBeNull();
+  });
+
+  it("treats a whitespace-only prompt as no prompt", () => {
+    expect(toInput(ephemeral("", "   \n")).schedule_prompt).toBeNull();
+  });
+
+  it("keeps the whitespace inside a prompt that was written", () => {
+    expect(toInput(ephemeral("0 6 * * *", "Do this.\n\nThen that.")).schedule_prompt).toBe(
+      "Do this.\n\nThen that.",
+    );
+  });
+
+  it("trims the expression, which is never prose", () => {
+    expect(toInput(ephemeral("  0 6 * * *  ", "Scan.")).schedule_cron).toBe(
+      "0 6 * * *",
+    );
+  });
+
+  it("clears the schedule for a conversational profile before submit", () => {
+    const scheduled = ephemeral("0 6 * * *", "Scan.");
+    const input = toInput({ ...scheduled, kind: "conversational" });
+
+    expect(input.schedule_cron).toBeNull();
+    expect(input.schedule_prompt).toBeNull();
+    // The intent stays in the form, so switching back restores it.
+    expect(toInput(scheduled).schedule_cron).toBe("0 6 * * *");
+  });
+
+  it("asks for the prompt an expression needs, and the expression a prompt needs", () => {
+    expect(scheduleErrors(ephemeral("0 6 * * *", "")).prompt).not.toBeNull();
+    expect(scheduleErrors(ephemeral("0 6 * * *", "")).cron).toBeNull();
+    expect(scheduleErrors(ephemeral("", "Scan.")).cron).not.toBeNull();
+    expect(scheduleErrors(ephemeral("", "Scan.")).prompt).toBeNull();
+  });
+
+  it("calls both empty no schedule rather than a mistake", () => {
+    expect(scheduleErrors(ephemeral("", ""))).toEqual({
+      cron: null,
+      prompt: null,
+    });
+    expect(scheduleErrors(ephemeral("0 6 * * *", "Scan."))).toEqual({
+      cron: null,
+      prompt: null,
+    });
+  });
+
+  it("judges no expression itself", () => {
+    // Nonsense that only the server can refuse still passes the local check:
+    // the bundle carries no cron parser (ADR 0043).
+    expect(scheduleErrors(ephemeral("@daily", "Scan.")).cron).toBeNull();
+    expect(scheduleErrors(ephemeral("not cron at all", "Scan.")).cron).toBeNull();
+  });
+});
+
+describe("scheduleErrorField", () => {
+  // The six refusals of `SPEC.md`, "Agent profiles" → "Scheduled profiles",
+  // word for word, so a reworded one fails here rather than silently landing
+  // in the form's own alert.
+  it("routes every documented refusal to its own field", () => {
+    expect(
+      scheduleErrorField(
+        "schedule_cron must be a 5-field cron expression (minute hour day-of-month month day-of-week) evaluated in UTC, with no seconds field, no year field and no @-form",
+      ),
+    ).toBe("cron");
+    expect(
+      scheduleErrorField(
+        "schedule_cron is not a valid cron expression: unexpected token",
+      ),
+    ).toBe("cron");
+    expect(scheduleErrorField("schedule_cron requires an ephemeral profile")).toBe(
+      "cron",
+    );
+    expect(
+      scheduleErrorField(
+        "schedule_cron requires this backend's agent credential at global or project scope",
+      ),
+    ).toBe("cron");
+    expect(
+      scheduleErrorField("schedule_prompt is required when schedule_cron is set"),
+    ).toBe("prompt");
+    expect(scheduleErrorField("schedule_prompt requires schedule_cron")).toBe(
+      "prompt",
+    );
+    expect(
+      scheduleErrorField("schedule prompt must be at most 65536 bytes"),
+    ).toBe("prompt");
+  });
+
+  it("leaves every other refusal to the form", () => {
+    expect(
+      scheduleErrorField("auto_launch requires an ephemeral profile"),
+    ).toBeNull();
+    expect(scheduleErrorField("max_concurrent must be at least 1")).toBeNull();
+    expect(scheduleErrorField("name is already taken")).toBeNull();
   });
 });

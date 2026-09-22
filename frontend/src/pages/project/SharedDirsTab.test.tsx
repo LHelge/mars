@@ -115,6 +115,25 @@ afterEach(() => {
 });
 
 describe("SharedDirsTab", () => {
+  it("says on the row why its two actions are disabled, not in a tooltip", async () => {
+    vi.mocked(listProjectSessions).mockResolvedValue([session("running")]);
+
+    renderTab();
+
+    const clear = await screen.findByRole("button", { name: "Clear" });
+    await waitFor(() => {
+      expect(clear.hasAttribute("disabled")).toBe(true);
+    });
+    const reason = screen.getByText(/Blocked while a session/);
+    expect(clear.getAttribute("aria-describedby")).toBe(reason.id);
+    expect(
+      screen
+        .getByRole("button", { name: "Remove" })
+        .getAttribute("aria-describedby"),
+    ).toBe(reason.id);
+    expect(clear.closest("[title]")).toBeNull();
+  });
+
   it("re-enables the two actions once its own read of the sessions shows none live", async () => {
     // The tab is the only thing watching: the sessions tab is unmounted, so a
     // cached list read once at mount would stay stale for as long as the user

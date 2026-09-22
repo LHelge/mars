@@ -18,6 +18,12 @@ export interface ServedStatesFieldsetProps {
   selected: string[];
   onToggle: (name: string) => void;
   disabled: boolean;
+  /**
+   * Whether the dispatcher launches this profile by itself — an ephemeral
+   * profile with `auto_launch` — which is the one case where served states
+   * also decide what gets started, not only what the agent is offered.
+   */
+  dispatched: boolean;
 }
 
 export function ServedStatesFieldset({
@@ -25,6 +31,7 @@ export function ServedStatesFieldset({
   selected,
   onToggle,
   disabled,
+  dispatched,
 }: ServedStatesFieldsetProps) {
   const { query, states } = useQueueStates(projectId);
 
@@ -39,7 +46,12 @@ export function ServedStatesFieldset({
   return (
     <Fieldset
       legend="Served states"
-      description="Queue states this profile picks work up from."
+      description={
+        dispatched
+          ? "The dispatcher watches these queue states and, within the caps, launches a session of this profile for each unheld, unblocked task in them, holding that task from the start."
+          : "Queue states this profile picks work up from: the agent's ready tool lists the unheld, unblocked tasks in them, and it can claim only those. A launch for a named task works whatever its state."
+      }
+      help="task-flow"
     >
       {query.isError && (
         <div className="pb-2">

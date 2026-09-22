@@ -104,7 +104,7 @@ export function SharedDirForm({ projectId }: SharedDirFormProps) {
             setNameError(null);
           }}
           error={nameError ?? undefined}
-          hint="The directory name on disk."
+          hint="The directory name on disk: 1–64 of a–z, 0–9, _ and -, starting with a letter or digit."
           autoComplete="off"
           required
         />
@@ -118,7 +118,7 @@ export function SharedDirForm({ projectId }: SharedDirFormProps) {
             setPathError(null);
           }}
           error={pathError ?? undefined}
-          hint="Where every session container mounts it, read-write."
+          hint="Where every session container mounts it, read-write: an absolute path, not /data or below it, and not /session/work, /session/home, /session/log, /session/mcp.json or a parent of one. Below the first three is fine."
           autoComplete="off"
           required
         />

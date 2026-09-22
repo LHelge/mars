@@ -102,7 +102,8 @@ export function SecretsFieldset({
   return (
     <Fieldset
       legend="Secrets"
-      description="Names injected into the session container as environment variables, from the global, project and your own scope. The agent’s own credential is not one of them: it is resolved per launch and never declared."
+      description="Names injected into the session container as environment variables, from the global, project and your own scope. The most specific scope wins, and if that one is orchestrator-only the name is skipped even when declared. The agent’s own credential is not one of them: it is resolved per launch and never declared."
+      help="secrets"
     >
       {/* Read-only, and per caller: what *you* would launch this profile
           with (`SPEC.md`, "Frontend", Agent credentials). */}

@@ -152,6 +152,7 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
       <SectionHeader
         title="Agent profiles"
         description="What an agent is: its image, its prompt, the states it serves and what it may reach."
+        help="profiles"
         actions={newProfile}
       />
 
@@ -161,6 +162,7 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
         <EmptyState
           title="No profiles yet"
           description="A profile decides which image a session runs in and which task states its agent picks work up from."
+          help="profiles"
           action={newProfile}
         />
       ) : (
@@ -195,6 +197,7 @@ interface ProfileRowProps {
 function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
+  const defaultNoteId = `profile-${profile.id}-default-note`;
 
   const remove = useMutation({
     mutationFn: () => deleteProfile(projectId, profile.id),
@@ -216,9 +219,20 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
         <td className={`${CELL_TOP} font-mono text-xs`}>
           <span className="text-console-text">{profile.name}</span>
           {profile.is_default && (
-            <span className="border-console-border text-console-muted ml-2 rounded border px-1.5 py-0.5">
-              default
-            </span>
+            <>
+              <span className="border-console-border text-console-muted ml-2 rounded border px-1.5 py-0.5">
+                default
+              </span>
+              {/* What the chip means, said rather than hovered: the launch
+                  form starts on it, and the API refuses to delete it. */}
+              <span
+                id={defaultNoteId}
+                className="text-console-muted block pt-1 font-sans"
+              >
+                Pre-selected in the project&rsquo;s launch form; cannot be
+                deleted.
+              </span>
+            </>
           )}
         </td>
 
@@ -296,13 +310,14 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
               Edit
             </SubmitButton>
             {/* A project always keeps one default profile, so the API refuses
-                to delete it; the button says so before the request. */}
+                to delete it; the button is disabled before the request and
+                described by the note under the name. */}
             <SubmitButton
               type="button"
               variant="danger"
               loading={remove.isPending}
               disabled={profile.is_default || confirming}
-              title={profile.is_default ? "default profile" : undefined}
+              aria-describedby={profile.is_default ? defaultNoteId : undefined}
               onClick={() => {
                 setConfirming(true);
               }}

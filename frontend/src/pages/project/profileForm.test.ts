@@ -9,6 +9,7 @@ import {
   DEFAULT_IDLE_TIMEOUT_SECS,
   defaultInputForKind,
   idleTimeoutError,
+  idleTimeoutHint,
   maxConcurrentError,
   mergeSecretOptions,
   MIN_IDLE_TIMEOUT_SECS,
@@ -251,6 +252,24 @@ describe("idleTimeoutError", () => {
     // without having to be given a longer one first.
     expect(MIN_IDLE_TIMEOUT_SECS).toBe(1);
     expect(idleTimeoutError("30")).toBeNull();
+  });
+});
+
+describe("idleTimeoutHint", () => {
+  // `ARCHITECTURE.md`, "Stop semantics": the reaper parks one kind and fails
+  // the other, and idle is silence, not the absence of a turn.
+  it("parks a conversational session", () => {
+    const hint = idleTimeoutHint("conversational");
+    expect(hint).toContain("parked");
+    expect(hint).not.toContain("stalled");
+    expect(hint).toContain("counts as idle");
+  });
+
+  it("fails an ephemeral session as stalled", () => {
+    const hint = idleTimeoutHint("ephemeral");
+    expect(hint).toContain("stalled");
+    expect(hint).not.toContain("parked");
+    expect(hint).toContain("counts as idle");
   });
 });
 

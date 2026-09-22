@@ -1,16 +1,17 @@
 ---
 id: zqzcm
 title: "Help content: getting started, git credential, agent credentials, secrets, profiles and skills"
-status: open
+status: done
 priority: P2
 created: "2026-09-22T19:08:28.053474886Z"
-updated: "2026-09-22T19:08:28.053474886Z"
+updated: "2026-09-22T21:22:54.771929235Z"
 tags:
   - frontend
   - docs
 depends_on:
   - ujccg
 parent: gtbp5
+attempts: 1
 ---
 
 Write the Markdown for these `src/help/` topics. Plain, task-oriented prose for a user of the console; every claim must agree with the source docs (cite nothing to the user, but check against them). Where a doc turns out wrong, fix the doc in the same commit.

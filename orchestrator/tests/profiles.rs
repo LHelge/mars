@@ -36,8 +36,8 @@ const TEST_REMOTE: &str = "https://example.invalid/org/repo.git";
 /// a profile that names none is stored with.
 const TEST_IMAGE: &str = "mars-session-stub:test";
 
-/// The twenty fields of `Profile` (`SPEC.md`, "Agent profiles"), sorted.
-const PROFILE_FIELDS: [&str; 20] = [
+/// The twenty-four fields of `Profile` (`SPEC.md`, "Agent profiles"), sorted.
+const PROFILE_FIELDS: [&str; 24] = [
     "auto_launch",
     "backend",
     "created_at",
@@ -46,14 +46,18 @@ const PROFILE_FIELDS: [&str; 20] = [
     "image",
     "is_default",
     "kind",
+    "last_scheduled_at",
     "max_concurrent",
     "mcp_tools",
     "model",
     "name",
+    "next_scheduled_at",
     "partial_messages",
     "permission_mode",
     "project_id",
     "runtime",
+    "schedule_cron",
+    "schedule_prompt",
     "secrets",
     "serves_states",
     "system_prompt",
@@ -1178,4 +1182,299 @@ async fn max_concurrent_is_valid_on_any_ephemeral_profile_and_never_below_one() 
     }
 
     assert_eq!(names(&list(&app, &user, pid).await), seeded_and(&["scout"]));
+}
+
+// ---- schedules (`ARCHITECTURE.md`, "Scheduled agents"; ADR 0043) ----
+
+/// The refusal a schedule without a credential the jobs could use gets
+/// (`secrets::NO_UNATTENDED_CREDENTIAL_FOR_SCHEDULE`).
+const NO_CREDENTIAL_FOR_SCHEDULE: &str =
+    "schedule_cron requires this backend's agent credential at global or project scope";
+
+/// The refusal a schedule on a profile that talks to a person gets.
+const SCHEDULE_NOT_EPHEMERAL: &str = "schedule_cron requires an ephemeral profile";
+
+/// The refusal an expression that is not five plain fields gets.
+const BAD_EXPRESSION: &str = "schedule_cron must be a 5-field cron expression (minute hour \
+     day-of-month month day-of-week) evaluated in UTC, with no seconds field, no year field \
+     and no @-form";
+
+/// The refusal an expression with no prompt gets.
+const NO_PROMPT: &str = "schedule_prompt is required when schedule_cron is set";
+
+/// The `next_scheduled_at` of a response, which must be there.
+fn next_run(profile: &Value) -> chrono::DateTime<chrono::Utc> {
+    profile["next_scheduled_at"]
+        .as_str()
+        .expect("a scheduled profile carries its next run")
+        .parse()
+        .expect("next_scheduled_at is RFC 3339")
+}
+
+/// The body of a scheduled profile, which must be ephemeral.
+fn scheduled_body(name: &str, cron: &str) -> Value {
+    json!({
+        "name": name,
+        "kind": "ephemeral",
+        "schedule_cron": cron,
+        "schedule_prompt": "scan the repository for tech debt and file tasks",
+    })
+}
+
+#[tokio::test]
+async fn a_profile_without_a_schedule_carries_four_nulls() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let scout = created(&app, &user, pid, &json!({ "name": "scout" })).await;
+    for field in [
+        "schedule_cron",
+        "schedule_prompt",
+        "last_scheduled_at",
+        "next_scheduled_at",
+    ] {
+        assert_eq!(scout[field], Value::Null, "{field} is not null");
+    }
+
+    // None of the seeded role profiles is scheduled either.
+    for profile in list(&app, &user, pid).await {
+        assert_eq!(
+            profile["schedule_cron"],
+            Value::Null,
+            "{} is scheduled",
+            profile["name"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_schedule_is_set_updated_and_cleared_through_the_profile() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+    seed_credential(&app, &user, "project", Some(pid)).await;
+
+    let stored = created(&app, &user, pid, &scheduled_body("scanner", "30 3 * * *")).await;
+    assert_eq!(stored["schedule_cron"], json!("30 3 * * *"));
+    assert_eq!(
+        stored["schedule_prompt"],
+        json!("scan the repository for tech debt and file tasks")
+    );
+    assert_eq!(stored["last_scheduled_at"], Value::Null);
+    let next = next_run(&stored);
+    // 03:30 UTC, and ahead of the request that asked for it.
+    assert!(next > chrono::Utc::now());
+    assert_eq!(
+        next.time(),
+        chrono::NaiveTime::from_hms_opt(3, 30, 0).unwrap()
+    );
+
+    // A changed expression is a changed next run.
+    let id = id_of(&stored);
+    let response = put(
+        &app,
+        &user,
+        pid,
+        id,
+        &scheduled_body("scanner", "0 * * * *"),
+    )
+    .await;
+    response.assert_status_ok();
+    let updated = response.json::<Value>();
+    assert_eq!(updated["schedule_cron"], json!("0 * * * *"));
+    let next = next_run(&updated);
+    assert_eq!(chrono::Timelike::minute(&next), 0);
+    assert!(next <= chrono::Utc::now() + chrono::Duration::hours(1));
+
+    // `PUT` replaces the whole profile, so a body with no schedule clears one.
+    let response = put(
+        &app,
+        &user,
+        pid,
+        id,
+        &json!({ "name": "scanner", "kind": "ephemeral" }),
+    )
+    .await;
+    response.assert_status_ok();
+    let cleared = response.json::<Value>();
+    for field in [
+        "schedule_cron",
+        "schedule_prompt",
+        "last_scheduled_at",
+        "next_scheduled_at",
+    ] {
+        assert_eq!(cleared[field], Value::Null, "{field} survived the clear");
+    }
+
+    // And the stored row answers the same on a re-read.
+    let read = app.get_as(&user, &profile_path(pid, id)).await;
+    read.assert_status_ok();
+    assert_eq!(read.json::<Value>()["schedule_cron"], Value::Null);
+}
+
+#[tokio::test]
+async fn clearing_a_schedule_clears_the_scheduler_s_guard() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+    seed_credential(&app, &user, "project", Some(pid)).await;
+
+    let stored = created(&app, &user, pid, &scheduled_body("scanner", "30 3 * * *")).await;
+    let id = id_of(&stored);
+
+    // The column no endpoint writes: the scheduler's own, set here directly
+    // because only the job that does not exist yet would otherwise set it.
+    sqlx::query("UPDATE agent_profiles SET last_scheduled_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&app.pool)
+        .await
+        .expect("the guard is written");
+
+    let read = app.get_as(&user, &profile_path(pid, id)).await;
+    read.assert_status_ok();
+    assert_ne!(read.json::<Value>()["last_scheduled_at"], Value::Null);
+
+    // A save that only changes the expression keeps it: that tick did fire.
+    let kept = put(
+        &app,
+        &user,
+        pid,
+        id,
+        &scheduled_body("scanner", "0 4 * * *"),
+    )
+    .await;
+    kept.assert_status_ok();
+    assert_ne!(kept.json::<Value>()["last_scheduled_at"], Value::Null);
+
+    // Clearing the schedule takes it with it.
+    let cleared = put(
+        &app,
+        &user,
+        pid,
+        id,
+        &json!({ "name": "scanner", "kind": "ephemeral" }),
+    )
+    .await;
+    cleared.assert_status_ok();
+    assert_eq!(cleared.json::<Value>()["last_scheduled_at"], Value::Null);
+}
+
+#[tokio::test]
+async fn last_scheduled_at_is_read_only_over_rest() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+    seed_credential(&app, &user, "project", Some(pid)).await;
+
+    let mut body = scheduled_body("scanner", "30 3 * * *");
+    body["last_scheduled_at"] = json!("2020-01-01T00:00:00Z");
+    body["next_scheduled_at"] = json!("2020-01-01T00:00:00Z");
+
+    // The extra keys are ignored rather than refused, as every unknown key is.
+    let stored = created(&app, &user, pid, &body).await;
+    assert_eq!(stored["last_scheduled_at"], Value::Null);
+    assert!(next_run(&stored) > chrono::Utc::now());
+}
+
+#[tokio::test]
+async fn a_schedule_needs_a_credential_the_jobs_can_use() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let refused = post(&app, &user, pid, &scheduled_body("scanner", "30 3 * * *")).await;
+    assert_error(
+        &refused,
+        StatusCode::BAD_REQUEST,
+        NO_CREDENTIAL_FOR_SCHEDULE,
+    );
+    assert_eq!(names(&list(&app, &user, pid).await), seeded_and(&[]));
+
+    // The caller's own row is not one a launch with no user could resolve.
+    seed_credential(&app, &user, "user", Some(user.user.id)).await;
+    let still_refused = post(&app, &user, pid, &scheduled_body("scanner", "30 3 * * *")).await;
+    assert_error(
+        &still_refused,
+        StatusCode::BAD_REQUEST,
+        NO_CREDENTIAL_FOR_SCHEDULE,
+    );
+
+    seed_credential(&app, &user, "global", None).await;
+    let stored = created(&app, &user, pid, &scheduled_body("scanner", "30 3 * * *")).await;
+    assert_eq!(stored["schedule_cron"], json!("30 3 * * *"));
+}
+
+#[tokio::test]
+async fn a_schedule_is_refused_on_a_conversational_profile() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+    seed_credential(&app, &user, "project", Some(pid)).await;
+
+    // The kind is checked by the model, before the credential lookup, so a
+    // project that *has* a credential still gets this answer.
+    let mut body = scheduled_body("scanner", "30 3 * * *");
+    body["kind"] = json!("conversational");
+    let response = post(&app, &user, pid, &body).await;
+    assert_error(&response, StatusCode::BAD_REQUEST, SCHEDULE_NOT_EPHEMERAL);
+
+    // And the same rule on the way through `PUT`.
+    let scout = created(&app, &user, pid, &json!({ "name": "scout" })).await;
+    let response = put(&app, &user, pid, id_of(&scout), &body).await;
+    assert_error(&response, StatusCode::BAD_REQUEST, SCHEDULE_NOT_EPHEMERAL);
+}
+
+#[tokio::test]
+async fn a_bad_expression_or_a_missing_prompt_is_refused() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+    seed_credential(&app, &user, "project", Some(pid)).await;
+
+    for cron in ["0 30 3 * * *", "@daily", "* * * *", "30 3 * * * 2026"] {
+        let response = post(&app, &user, pid, &scheduled_body("scanner", cron)).await;
+        assert_error(&response, StatusCode::BAD_REQUEST, BAD_EXPRESSION);
+    }
+
+    let garbage = post(
+        &app,
+        &user,
+        pid,
+        &scheduled_body("scanner", "nope not a cron here"),
+    )
+    .await;
+    garbage.assert_status(StatusCode::BAD_REQUEST);
+    let message = garbage.json::<Value>()["error"]
+        .as_str()
+        .expect("an error carries a message")
+        .to_string();
+    assert!(
+        message.starts_with("schedule_cron is not a valid cron expression"),
+        "{message}"
+    );
+
+    for prompt in [Value::Null, json!(""), json!("   ")] {
+        let mut body = scheduled_body("scanner", "30 3 * * *");
+        body["schedule_prompt"] = prompt.clone();
+        let response = post(&app, &user, pid, &body).await;
+        assert_error(&response, StatusCode::BAD_REQUEST, NO_PROMPT);
+    }
+
+    // A prompt with nothing to run it is refused the other way round.
+    let response = post(
+        &app,
+        &user,
+        pid,
+        &json!({ "name": "scanner", "kind": "ephemeral", "schedule_prompt": "scan" }),
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::BAD_REQUEST,
+        "schedule_prompt requires schedule_cron",
+    );
+
+    // Nothing was written by any of them.
+    assert_eq!(names(&list(&app, &user, pid).await), seeded_and(&[]));
 }

@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::models::SecretName;
+use crate::models::{CronSchedule, ScheduleError, SecretName};
 // The crate convention (`CLAUDE.md`, "Backend conventions").
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -47,6 +47,11 @@ pub const MAX_IMAGE_CHARS: usize = 255;
 /// Longest accepted `system_prompt`, in bytes. A system prompt is appended to
 /// every launch of the profile, so 64 KiB is generous and still bounded.
 pub const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
+
+/// Longest accepted `schedule_prompt`, in bytes. It is the `message` of every
+/// scheduled launch, so the same bound as a system prompt is generous and
+/// still bounded.
+pub const MAX_SCHEDULE_PROMPT_BYTES: usize = 64 * 1024;
 
 /// The column default for `max_concurrent`, repeated here for the reason
 /// [`DEFAULT_IDLE_TIMEOUT_SECS`] is.
@@ -185,6 +190,22 @@ pub enum ProfileError {
     /// `max_concurrent` was below [`MIN_MAX_CONCURRENT`].
     #[error("max_concurrent must be at least 1")]
     InvalidMaxConcurrent,
+    /// `schedule_cron` was not a 5-field UTC cron expression (ADR 0043).
+    #[error(transparent)]
+    InvalidScheduleCron(#[from] ScheduleError),
+    /// A schedule was set on a profile that is not `ephemeral`, which a
+    /// scheduled launch may not be (ADR 0042, ADR 0043).
+    #[error("schedule_cron requires an ephemeral profile")]
+    ScheduleNotEphemeral,
+    /// `schedule_cron` was set without the prompt that run is given.
+    #[error("schedule_prompt is required when schedule_cron is set")]
+    ScheduleWithoutPrompt,
+    /// `schedule_prompt` was set on a profile with no schedule to use it.
+    #[error("schedule_prompt requires schedule_cron")]
+    SchedulePromptWithoutSchedule,
+    /// The schedule prompt was longer than [`MAX_SCHEDULE_PROMPT_BYTES`].
+    #[error("schedule prompt must be at most 65536 bytes")]
+    SchedulePromptTooLong,
 }
 
 impl ProfileError {
@@ -240,6 +261,17 @@ pub struct AgentProfile {
     /// How many live sessions of this profile an unattended launch may leave
     /// behind. Read by the scheduler too, whether or not `auto_launch` is set.
     pub max_concurrent: i32,
+    /// The 5-field UTC cron expression this profile is launched on, or `None`
+    /// for a profile nothing schedules (`ARCHITECTURE.md`, "Task tracker" →
+    /// "Scheduled agents"; ADR 0043).
+    pub schedule_cron: Option<String>,
+    /// What a scheduled run is told to do: the `message` of the launch. Set
+    /// exactly when [`AgentProfile::schedule_cron`] is.
+    pub schedule_prompt: Option<String>,
+    /// When the scheduler last decided a tick of this profile fires. Written
+    /// by the job in the transaction that decides it, read-only over REST, and
+    /// cleared when the schedule is.
+    pub last_scheduled_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -262,6 +294,43 @@ impl AgentProfile {
     /// for a column written by something else. The launcher resolves the
     /// credential itself (ADR 0036), and letting a listed one through would
     /// only make the declared half of the resolution compete with it.
+    /// The stored `schedule_cron` as the parsed expression the scheduler and
+    /// the API read it through, or `None` when there is no schedule.
+    ///
+    /// A stored expression that does not parse is dropped with a warning
+    /// rather than failing the read, for the reason [`secret_names`] drops an
+    /// impossible name: [`validate_schedule`] refuses one on the way in, so a
+    /// column that holds one was written by something else, and a profile that
+    /// cannot be shown is worse than one whose next run is unknown.
+    ///
+    /// [`secret_names`]: AgentProfile::secret_names
+    pub fn schedule(&self) -> Option<CronSchedule> {
+        let raw = self.schedule_cron.as_deref()?;
+
+        match CronSchedule::parse(raw) {
+            Ok(schedule) => Some(schedule),
+            Err(error) => {
+                warn!(
+                    profile_id = %self.id,
+                    %error,
+                    "a stored schedule expression does not parse"
+                );
+                None
+            }
+        }
+    }
+
+    /// The next instant this profile is due to launch, strictly after `after`.
+    ///
+    /// `None` without a schedule, and `None` for a stored expression that does
+    /// not parse or can never fire — which is what `SPEC.md`, "Agent profiles"
+    /// documents `next_scheduled_at` as. It is computed rather than stored so
+    /// that an expression and its next run cannot disagree, and it is answered
+    /// here so no frontend needs a cron parser (ADR 0043).
+    pub fn next_scheduled_at(&self, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.schedule()?.next_after(after)
+    }
+
     pub fn secret_names(&self) -> Vec<SecretName> {
         self.secrets
             .iter()
@@ -321,6 +390,8 @@ pub struct NewAgentProfile {
     pub is_default: bool,
     pub auto_launch: bool,
     pub max_concurrent: i32,
+    pub schedule_cron: Option<String>,
+    pub schedule_prompt: Option<String>,
     /// When this profile was created, for the one caller that cannot let the
     /// column default decide: project creation.
     ///
@@ -364,6 +435,8 @@ impl NewAgentProfile {
             is_default: false,
             auto_launch: false,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
+            schedule_cron: None,
+            schedule_prompt: None,
             created_at: None,
         };
         profile.validate()?;
@@ -392,6 +465,11 @@ impl NewAgentProfile {
         self.serves_states = deduplicate(&self.serves_states);
         self.partial_messages = Some(self.partial_messages());
         validate_unattended(self.kind, self.auto_launch, self.max_concurrent)?;
+        (self.schedule_cron, self.schedule_prompt) = validate_schedule(
+            self.kind,
+            self.schedule_cron.as_deref(),
+            self.schedule_prompt.as_deref(),
+        )?;
 
         Ok(())
     }
@@ -434,6 +512,8 @@ pub struct ProfileUpdate {
     pub is_default: Option<bool>,
     pub auto_launch: bool,
     pub max_concurrent: i32,
+    pub schedule_cron: Option<String>,
+    pub schedule_prompt: Option<String>,
 }
 
 impl ProfileUpdate {
@@ -451,6 +531,11 @@ impl ProfileUpdate {
         self.serves_states = deduplicate(&self.serves_states);
         self.partial_messages = Some(self.partial_messages());
         validate_unattended(self.kind, self.auto_launch, self.max_concurrent)?;
+        (self.schedule_cron, self.schedule_prompt) = validate_schedule(
+            self.kind,
+            self.schedule_cron.as_deref(),
+            self.schedule_prompt.as_deref(),
+        )?;
 
         Ok(())
     }
@@ -489,6 +574,8 @@ impl ProfileUpdate {
             is_default: self.is_default.unwrap_or(false),
             auto_launch: self.auto_launch,
             max_concurrent: self.max_concurrent,
+            schedule_cron: self.schedule_cron,
+            schedule_prompt: self.schedule_prompt,
             created_at: None,
         }
     }
@@ -515,6 +602,8 @@ impl From<&AgentProfile> for ProfileUpdate {
             is_default: Some(profile.is_default),
             auto_launch: profile.auto_launch,
             max_concurrent: profile.max_concurrent,
+            schedule_cron: profile.schedule_cron.clone(),
+            schedule_prompt: profile.schedule_prompt.clone(),
         }
     }
 }
@@ -564,6 +653,10 @@ pub struct ProfileInput {
     pub auto_launch: Option<bool>,
     #[serde(default)]
     pub max_concurrent: Option<i32>,
+    #[serde(default)]
+    pub schedule_cron: Option<String>,
+    #[serde(default)]
+    pub schedule_prompt: Option<String>,
 }
 
 impl ProfileInput {
@@ -599,6 +692,8 @@ impl ProfileInput {
             is_default: self.is_default,
             auto_launch: self.auto_launch.unwrap_or(false),
             max_concurrent: self.max_concurrent.unwrap_or(DEFAULT_MAX_CONCURRENT),
+            schedule_cron: self.schedule_cron,
+            schedule_prompt: self.schedule_prompt,
         };
         resolved.validate()?;
 
@@ -773,6 +868,55 @@ fn validate_unattended(
     Ok(())
 }
 
+/// The schedule rules of `ARCHITECTURE.md`, "Task tracker" → "Scheduled
+/// agents" that a profile can decide by itself, yielding the pair the columns
+/// store.
+///
+/// The two fields stand or fall together, which is the table's own `CHECK`:
+/// an expression with no prompt is a scheduled agent that was never told what
+/// to do, and a prompt with no expression is a setting nothing will ever read.
+/// A prompt that is blank or only whitespace is no prompt, so it is refused
+/// beside an expression and simply cleared without one — a form that sends an
+/// empty box for a schedule it is not setting is clearing the schedule, not
+/// making a mistake.
+///
+/// The expression itself is [`CronSchedule`]'s to judge (ADR 0043), the kind
+/// rule is [`validate_unattended`]'s reason in this section's words — only an
+/// `ephemeral` profile may be launched with nobody behind it — and the third
+/// rule, the backend's agent credential, is the `secrets` table's and lives
+/// with the lookup that answers it, exactly as it does for `auto_launch`.
+///
+/// The prompt keeps its own whitespace, as `system_prompt` does: it is prose
+/// the user wrote.
+fn validate_schedule(
+    kind: ProfileKind,
+    cron: Option<&str>,
+    prompt: Option<&str>,
+) -> ProfileResult<(Option<String>, Option<String>)> {
+    let prompt = prompt.filter(|text| !text.trim().is_empty());
+
+    let Some(raw) = cron.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        if prompt.is_some() {
+            return Err(ProfileError::SchedulePromptWithoutSchedule);
+        }
+        return Ok((None, None));
+    };
+
+    let schedule = CronSchedule::parse(raw)?;
+    let prompt = prompt.ok_or(ProfileError::ScheduleWithoutPrompt)?;
+    if prompt.len() > MAX_SCHEDULE_PROMPT_BYTES {
+        return Err(ProfileError::SchedulePromptTooLong);
+    }
+    if kind != ProfileKind::Ephemeral {
+        return Err(ProfileError::ScheduleNotEphemeral);
+    }
+
+    Ok((
+        Some(schedule.as_str().to_string()),
+        Some(prompt.to_string()),
+    ))
+}
+
 /// `values` without repeats, keeping the caller's order.
 ///
 /// `mcp_tools`, `secrets` and `serves_states` are sets the caller sent as
@@ -792,6 +936,8 @@ fn deduplicate(values: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use super::*;
 
     /// Not a real image: the stub the tests use everywhere (`CLAUDE.md`, rule
@@ -823,6 +969,9 @@ mod tests {
             is_default: false,
             auto_launch: false,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
+            schedule_cron: None,
+            schedule_prompt: None,
+            last_scheduled_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -843,6 +992,12 @@ mod tests {
             ProfileError::AgentCredentialSecret("ANTHROPIC_API_KEY".into()),
             ProfileError::AutoLaunchNotEphemeral,
             ProfileError::InvalidMaxConcurrent,
+            ProfileError::InvalidScheduleCron(ScheduleError::Shape),
+            ProfileError::InvalidScheduleCron(ScheduleError::Invalid("nope".into())),
+            ProfileError::ScheduleNotEphemeral,
+            ProfileError::ScheduleWithoutPrompt,
+            ProfileError::SchedulePromptWithoutSchedule,
+            ProfileError::SchedulePromptTooLong,
         ] {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
             assert!(!error.to_string().is_empty(), "{error:?} has no message");
@@ -1093,6 +1248,9 @@ mod tests {
             is_default: true,
             auto_launch: true,
             max_concurrent: 3,
+            schedule_cron: Some("30 3 * * *".into()),
+            schedule_prompt: Some("scan for tech debt".into()),
+            last_scheduled_at: Some(Utc::now()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -1108,11 +1266,15 @@ mod tests {
         assert_eq!(update.is_default, Some(row.is_default));
         assert_eq!(update.auto_launch, row.auto_launch);
         assert_eq!(update.max_concurrent, row.max_concurrent);
+        assert_eq!(update.schedule_cron, row.schedule_cron);
+        assert_eq!(update.schedule_prompt, row.schedule_prompt);
 
         // And the same values as a fresh profile of another project.
         let new = update.clone().into_new(Uuid::nil());
         assert_eq!(new.auto_launch, row.auto_launch);
         assert_eq!(new.max_concurrent, row.max_concurrent);
+        assert_eq!(new.schedule_cron, row.schedule_cron);
+        assert_eq!(new.schedule_prompt, row.schedule_prompt);
         assert_ne!(new.id, row.id);
         assert_eq!(new.project_id, Uuid::nil());
         assert_eq!(new.name, row.name);
@@ -1466,6 +1628,138 @@ mod tests {
             capped.resolve(&config),
             Err(ProfileError::InvalidMaxConcurrent)
         );
+    }
+
+    // ---- schedules (`ARCHITECTURE.md`, "Scheduled agents"; ADR 0043) ----
+
+    /// An ephemeral profile with the schedule `cron` and the prompt `prompt`.
+    fn scheduled(cron: Option<&str>, prompt: Option<&str>) -> NewAgentProfile {
+        let mut profile = profile();
+        profile.kind = ProfileKind::Ephemeral;
+        profile.schedule_cron = cron.map(str::to_string);
+        profile.schedule_prompt = prompt.map(str::to_string);
+        profile
+    }
+
+    #[test]
+    fn a_five_field_expression_with_a_prompt_is_a_schedule() {
+        let mut profile = scheduled(Some("  30 3 * * 1-5 "), Some("scan for tech debt"));
+        assert!(profile.validate().is_ok());
+
+        // Stored trimmed, and the prompt exactly as it was written.
+        assert_eq!(profile.schedule_cron.as_deref(), Some("30 3 * * 1-5"));
+        assert_eq!(
+            profile.schedule_prompt.as_deref(),
+            Some("scan for tech debt")
+        );
+    }
+
+    #[test]
+    fn an_expression_that_is_not_five_plain_fields_is_refused() {
+        // A seconds field, a year field and an `@`-form are all things
+        // `croner` itself would take; the one accepted dialect is 5 fields.
+        for cron in ["0 30 3 * * *", "30 3 * * * 2026", "@daily", "* * * *"] {
+            let mut profile = scheduled(Some(cron), Some("scan"));
+            assert_eq!(
+                profile.validate(),
+                Err(ProfileError::InvalidScheduleCron(ScheduleError::Shape)),
+                "accepted {cron:?}"
+            );
+        }
+
+        // Five fields of nonsense are the parser's own complaint.
+        let mut profile = scheduled(Some("nope not a cron here"), Some("scan"));
+        assert!(matches!(
+            profile.validate(),
+            Err(ProfileError::InvalidScheduleCron(ScheduleError::Invalid(_)))
+        ));
+    }
+
+    #[test]
+    fn a_schedule_without_a_prompt_is_refused() {
+        for prompt in [None, Some(""), Some("   \n ")] {
+            let mut profile = scheduled(Some("30 3 * * *"), prompt);
+            assert_eq!(
+                profile.validate(),
+                Err(ProfileError::ScheduleWithoutPrompt),
+                "accepted {prompt:?}"
+            );
+        }
+
+        let long = "x".repeat(MAX_SCHEDULE_PROMPT_BYTES + 1);
+        let mut profile = scheduled(Some("30 3 * * *"), Some(&long));
+        assert_eq!(profile.validate(), Err(ProfileError::SchedulePromptTooLong));
+    }
+
+    #[test]
+    fn a_prompt_without_a_schedule_is_refused_and_a_blank_one_is_cleared() {
+        let mut profile = scheduled(None, Some("scan for tech debt"));
+        assert_eq!(
+            profile.validate(),
+            Err(ProfileError::SchedulePromptWithoutSchedule)
+        );
+
+        // The two columns stand or fall together, so a body that carries an
+        // empty box and no expression is clearing the schedule.
+        let mut profile = scheduled(None, Some("  "));
+        assert!(profile.validate().is_ok());
+        assert_eq!(profile.schedule_cron, None);
+        assert_eq!(profile.schedule_prompt, None);
+    }
+
+    #[test]
+    fn a_schedule_is_refused_on_a_conversational_profile() {
+        let mut profile = scheduled(Some("30 3 * * *"), Some("scan"));
+        profile.kind = ProfileKind::Conversational;
+        assert_eq!(profile.validate(), Err(ProfileError::ScheduleNotEphemeral));
+
+        profile.kind = ProfileKind::Ephemeral;
+        assert!(profile.validate().is_ok());
+    }
+
+    #[test]
+    fn an_input_carries_a_schedule_and_clears_it_by_omission() {
+        let config = test_config();
+
+        let mut scanner = input("scanner");
+        scanner.kind = Some(ProfileKind::Ephemeral);
+        scanner.schedule_cron = Some("30 3 * * *".into());
+        scanner.schedule_prompt = Some("scan for tech debt".into());
+        let resolved = scanner.clone().resolve(&config).unwrap();
+        assert_eq!(resolved.schedule_cron.as_deref(), Some("30 3 * * *"));
+        assert_eq!(
+            resolved.schedule_prompt.as_deref(),
+            Some("scan for tech debt")
+        );
+
+        let new = scanner.resolve_new(Uuid::nil(), &config).unwrap();
+        assert_eq!(new.schedule_cron.as_deref(), Some("30 3 * * *"));
+
+        // `PUT` replaces the whole profile, so a body with neither field is a
+        // profile with no schedule.
+        let plain = input("scanner").resolve(&config).unwrap();
+        assert_eq!(plain.schedule_cron, None);
+        assert_eq!(plain.schedule_prompt, None);
+    }
+
+    #[test]
+    fn a_rows_next_run_follows_its_stored_expression() {
+        let mut row = profile_row();
+        assert_eq!(row.next_scheduled_at(Utc::now()), None);
+
+        row.schedule_cron = Some("30 3 * * *".into());
+        row.schedule_prompt = Some("scan".into());
+        let after = Utc.with_ymd_and_hms(2026, 9, 22, 4, 0, 0).unwrap();
+        assert_eq!(
+            row.next_scheduled_at(after),
+            Some(Utc.with_ymd_and_hms(2026, 9, 23, 3, 30, 0).unwrap())
+        );
+
+        // A column written by something else is not an error to report at read
+        // time: there is simply no next run to show.
+        row.schedule_cron = Some("@daily".into());
+        assert_eq!(row.next_scheduled_at(after), None);
+        assert!(row.schedule().is_none());
     }
 
     #[test]

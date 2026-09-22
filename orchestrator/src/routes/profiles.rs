@@ -22,13 +22,19 @@
 //!
 //! What this module does decide:
 //!
-//! - **`auto_launch` needs a credential the jobs can use**, which is a
-//!   question for the `secrets` table and so cannot live in
+//! - **`auto_launch` and a schedule need a credential the jobs can use**,
+//!   which is a question for the `secrets` table and so cannot live in
 //!   [`ProfileInput::resolve`] with the other field rules. Both handlers ask
-//!   [`require_unattended_credential`] — the lookup an unattended launch will
-//!   itself perform, with no user scope — right after the body resolves and
-//!   before the transaction opens, so the 400 costs no lock either
-//!   (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042);
+//!   [`require_unattended_credential_saying`] — the lookup an unattended launch
+//!   will itself perform, with no user scope — right after the body resolves
+//!   and before the transaction opens, so the 400 costs no lock either. It is
+//!   one rule for both settings, worded after the field the caller set
+//!   (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches" and "Scheduled
+//!   agents"; ADR 0042, ADR 0043);
+//! - **`next_scheduled_at` is computed on the way out**, from the profile's
+//!   own expression, so the response carries the next run without the
+//!   frontend parsing cron and without a second column that could disagree
+//!   with the first;
 //! - **one mutation, one transaction, project row locked first.**
 //!   [`TrackerMutation::begin`] opens it and takes the lock, and an
 //!   unknown project is its [`Error::NotFound`] before anything is written
@@ -56,14 +62,19 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::events::TaskActor;
-use crate::models::{AgentProfile, ProfileInput};
+use crate::models::{AgentBackend, AgentProfile, ProfileInput};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::routes::{CurrentUser, Path};
-use crate::secrets::require_unattended_credential;
+use crate::secrets::{
+    NO_UNATTENDED_CREDENTIAL, NO_UNATTENDED_CREDENTIAL_FOR_SCHEDULE,
+    require_unattended_credential_saying,
+};
 use crate::tracker::{TrackerMutation, retry_on_serialization_failure};
 
 /// The router nested under `/api/projects`.
@@ -79,17 +90,37 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
-/// The `Profile` of `SPEC.md`, "Agent profiles", as the row itself.
+/// The `Profile` of `SPEC.md`, "Agent profiles": the row, and the one field
+/// that is not a column.
 ///
-/// There is no projection here, unlike `routes::projects`: [`AgentProfile`]
-/// serialises to exactly `{ id, project_id, name, kind, backend, model,
-/// system_prompt, permission_mode, image, runtime, mcp_tools, secrets,
-/// serves_states, partial_messages, idle_timeout_secs, is_default, auto_launch,
-/// max_concurrent, created_at, updated_at }` — every documented field, no field
-/// the contract does not have and nothing skipped — so a DTO would be the same
-/// twenty fields written twice. `tests/profiles.rs` asserts the key set against a real response, so
-/// a column added to the model without a line in `SPEC.md` fails there.
-type Profile = AgentProfile;
+/// [`AgentProfile`] serialises to exactly its own columns — every documented
+/// field, no field the contract does not have and nothing skipped — so it is
+/// flattened in rather than copied out, and the only thing written here is
+/// `next_scheduled_at`: the next UTC instant the profile's `schedule_cron` is
+/// due, computed at read time so that an expression and its next run cannot
+/// disagree and so that no frontend needs a cron parser (ADR 0043). It is null
+/// for a profile with no schedule, and for one whose stored expression can
+/// never fire.
+///
+/// `tests/profiles.rs` asserts the key set against a real response, so a
+/// column added to the model without a line in `SPEC.md` fails there.
+#[derive(Debug, Serialize)]
+struct Profile {
+    #[serde(flatten)]
+    profile: AgentProfile,
+    next_scheduled_at: Option<DateTime<Utc>>,
+}
+
+impl From<AgentProfile> for Profile {
+    fn from(profile: AgentProfile) -> Self {
+        let next_scheduled_at = profile.next_scheduled_at(Utc::now());
+
+        Self {
+            profile,
+            next_scheduled_at,
+        }
+    }
+}
 
 // ---- list ----
 
@@ -109,7 +140,9 @@ async fn list(
         return Err(Error::NotFound);
     }
 
-    Ok(Json(projects.list_profiles(pid).await?))
+    let profiles = projects.list_profiles(pid).await?;
+
+    Ok(Json(profiles.into_iter().map(Profile::from).collect()))
 }
 
 // ---- create ----
@@ -129,9 +162,14 @@ async fn create(
     Json(body): Json<ProfileInput>,
 ) -> Result<(StatusCode, Json<Profile>)> {
     let profile = body.resolve_new(pid, &state.config)?;
-    if profile.auto_launch {
-        require_unattended_credential(&state.pool, pid, profile.backend).await?;
-    }
+    require_credential_if_unattended(
+        &state,
+        pid,
+        profile.backend,
+        profile.auto_launch,
+        profile.schedule_cron.is_some(),
+    )
+    .await?;
 
     let projects = ProjectRepository::new(&state.pool);
     let tasks = TaskRepository::new(&state.pool);
@@ -177,7 +215,7 @@ async fn fetch(
         .await?
         .ok_or(Error::NotFound)?;
 
-    Ok(Json(profile))
+    Ok(Json(profile.into()))
 }
 
 // ---- update ----
@@ -200,9 +238,14 @@ async fn update(
     Json(body): Json<ProfileInput>,
 ) -> Result<Json<Profile>> {
     let resolved = body.resolve(&state.config)?;
-    if resolved.auto_launch {
-        require_unattended_credential(&state.pool, pid, resolved.backend).await?;
-    }
+    require_credential_if_unattended(
+        &state,
+        pid,
+        resolved.backend,
+        resolved.auto_launch,
+        resolved.schedule_cron.is_some(),
+    )
+    .await?;
 
     let projects = ProjectRepository::new(&state.pool);
     let tasks = TaskRepository::new(&state.pool);
@@ -275,10 +318,35 @@ async fn remove(
 /// update with the ones the profile served *before* the same statement pair
 /// replaced them. One extra read is what makes the response the stored truth
 /// in board order rather than an assembly of what the handler asked for.
+/// Refuse the save unless the backend's agent credential resolves without a
+/// user, when either setting that launches without one is on.
+///
+/// Both settings mean the same launch — `created_by` NULL, no user scope to
+/// resolve a credential at — so they ask the same question and differ only in
+/// the wording of the refusal, which names the field the caller was setting
+/// (`SPEC.md`, "Agent profiles"). `auto_launch` is answered first when a
+/// profile carries both, because it is the one the form shows first.
+async fn require_credential_if_unattended(
+    state: &AppState,
+    pid: Uuid,
+    backend: AgentBackend,
+    auto_launch: bool,
+    scheduled: bool,
+) -> Result<()> {
+    let refusal = match (auto_launch, scheduled) {
+        (true, _) => NO_UNATTENDED_CREDENTIAL,
+        (false, true) => NO_UNATTENDED_CREDENTIAL_FOR_SCHEDULE,
+        (false, false) => return Ok(()),
+    };
+
+    require_unattended_credential_saying(&state.pool, pid, backend, refusal).await
+}
+
 async fn stored(state: &AppState, pid: Uuid, id: Uuid) -> Result<Profile> {
     ProjectRepository::new(&state.pool)
         .find_profile(pid, id)
         .await?
+        .map(Profile::from)
         .ok_or(Error::NotFound)
 }
 
@@ -288,20 +356,21 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::models::{AgentBackend, PERMISSION_MODE_BYPASS, ProfileKind};
+    use crate::models::{PERMISSION_MODE_BYPASS, ProfileKind};
 
     /// Not a real image: the stub the tests use everywhere (`CLAUDE.md`, rule
     /// 3).
     const TEST_IMAGE: &str = "mars-session-stub:test";
 
-    /// The documented eighteen fields, and nothing else.
+    /// The documented twenty-four fields, and nothing else.
     ///
-    /// The response type is the model itself, so this is the assertion that it
-    /// may stay that way: a column added to [`AgentProfile`] without a line in
-    /// `SPEC.md`, "Agent profiles" shows up here as an extra key.
+    /// The response is the model flattened plus `next_scheduled_at`, so this is
+    /// the assertion that it may stay that way: a column added to
+    /// [`AgentProfile`] without a line in `SPEC.md`, "Agent profiles" shows up
+    /// here as an extra key.
     #[test]
     fn the_response_carries_exactly_the_documented_fields() {
-        let row = Profile {
+        let row = AgentProfile {
             id: Uuid::from_u128(1),
             project_id: Uuid::from_u128(2),
             name: "planner".to_string(),
@@ -320,11 +389,15 @@ mod tests {
             is_default: false,
             auto_launch: false,
             max_concurrent: 1,
+            schedule_cron: None,
+            schedule_prompt: None,
+            last_scheduled_at: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
 
-        let rendered = serde_json::to_value(&row).expect("a profile serialises");
+        let response = Profile::from(row.clone());
+        let rendered = serde_json::to_value(&response).expect("a profile serialises");
 
         assert_eq!(
             rendered,
@@ -347,10 +420,57 @@ mod tests {
                 "is_default": false,
                 "auto_launch": false,
                 "max_concurrent": 1,
+                "schedule_cron": null,
+                "schedule_prompt": null,
+                "last_scheduled_at": null,
+                "next_scheduled_at": null,
                 "created_at": row.created_at,
                 "updated_at": row.updated_at,
             })
         );
+    }
+
+    /// A scheduled profile answers with the next run of its own expression.
+    #[test]
+    fn a_scheduled_profile_carries_its_next_run() {
+        let mut row = AgentProfile {
+            id: Uuid::from_u128(1),
+            project_id: Uuid::from_u128(2),
+            name: "scanner".to_string(),
+            kind: ProfileKind::Ephemeral,
+            backend: AgentBackend::Claude,
+            model: None,
+            system_prompt: None,
+            permission_mode: PERMISSION_MODE_BYPASS.to_string(),
+            image: TEST_IMAGE.to_string(),
+            runtime: None,
+            mcp_tools: Vec::new(),
+            secrets: Vec::new(),
+            serves_states: vec!["ready".to_string()],
+            partial_messages: false,
+            idle_timeout_secs: 1800,
+            is_default: false,
+            auto_launch: false,
+            max_concurrent: 1,
+            schedule_cron: Some("*/5 * * * *".to_string()),
+            schedule_prompt: Some("scan for tech debt".to_string()),
+            last_scheduled_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let before = Utc::now();
+        let next = Profile::from(row.clone())
+            .next_scheduled_at
+            .expect("a five-minute schedule has a next run");
+        // Strictly ahead, and within the period the expression asks for.
+        assert!(next > before);
+        assert!(next - before <= chrono::Duration::minutes(5));
+
+        // And nothing to show without a schedule.
+        row.schedule_cron = None;
+        row.schedule_prompt = None;
+        assert_eq!(Profile::from(row).next_scheduled_at, None);
     }
 
     /// The body is the model's own, so the only thing to assert here is that

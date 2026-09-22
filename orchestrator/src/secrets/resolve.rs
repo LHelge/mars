@@ -578,6 +578,15 @@ pub async fn preview_credential(
 pub const NO_UNATTENDED_CREDENTIAL: &str =
     "auto_launch requires this backend's agent credential at global or project scope";
 
+/// The same refusal for the other setting that launches with nobody behind it:
+/// a schedule (`SPEC.md`, "Agent profiles"; ADR 0043).
+///
+/// The same rule and the same lookup, named after the field the caller was
+/// setting, because a form that shows the answer beside the schedule should
+/// not be told about `auto_launch`.
+pub const NO_UNATTENDED_CREDENTIAL_FOR_SCHEDULE: &str =
+    "schedule_cron requires this backend's agent credential at global or project scope";
+
 /// Refuse unless `backend`'s agent credential would resolve for a launch with
 /// no user behind it.
 ///
@@ -599,10 +608,26 @@ pub async fn require_unattended_credential(
     project_id: Uuid,
     backend: crate::models::AgentBackend,
 ) -> Result<()> {
+    require_unattended_credential_saying(pool, project_id, backend, NO_UNATTENDED_CREDENTIAL).await
+}
+
+/// [`require_unattended_credential`] with the refusal the caller's own setting
+/// is described by — [`NO_UNATTENDED_CREDENTIAL`] or
+/// [`NO_UNATTENDED_CREDENTIAL_FOR_SCHEDULE`].
+///
+/// One rule, one lookup, two wordings: which field the save was refused for is
+/// the only thing that differs, and it is the part the person reading it acts
+/// on.
+pub async fn require_unattended_credential_saying(
+    pool: &PgPool,
+    project_id: Uuid,
+    backend: crate::models::AgentBackend,
+    refusal: &str,
+) -> Result<()> {
     if has_unattended_credential(pool, project_id, backend).await? {
         Ok(())
     } else {
-        Err(Error::BadRequest(NO_UNATTENDED_CREDENTIAL.to_string()))
+        Err(Error::BadRequest(refusal.to_string()))
     }
 }
 
@@ -647,6 +672,10 @@ mod tests {
         assert!(NO_UNATTENDED_CREDENTIAL.contains("global"));
         assert!(NO_UNATTENDED_CREDENTIAL.contains("project"));
         assert!(!NO_UNATTENDED_CREDENTIAL.contains("user"));
+
+        assert!(NO_UNATTENDED_CREDENTIAL_FOR_SCHEDULE.contains("global"));
+        assert!(NO_UNATTENDED_CREDENTIAL_FOR_SCHEDULE.contains("project"));
+        assert!(!NO_UNATTENDED_CREDENTIAL_FOR_SCHEDULE.contains("user"));
     }
 
     #[test]

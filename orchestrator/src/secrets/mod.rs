@@ -28,9 +28,10 @@ pub use keyring::{
     DATA_KEY_LEN, MASTER_KEY_LEN, SecretsError, SecretsKeyring, WRAP_NONCE_LEN, WrappedKey,
 };
 pub use resolve::{
-    CredentialPreview, LaunchScope, NO_UNATTENDED_CREDENTIAL, ResolvedCredential, ResolvedSecrets,
+    CredentialPreview, LaunchScope, NO_UNATTENDED_CREDENTIAL,
+    NO_UNATTENDED_CREDENTIAL_FOR_SCHEDULE, ResolvedCredential, ResolvedSecrets,
     has_unattended_credential, preview_credential, require_unattended_credential,
-    resolve_for_launch,
+    require_unattended_credential_saying, resolve_for_launch,
 };
 pub use rotation::{ROTATION_BATCH, RotationReport, rewrap_outdated};
 pub use service::{

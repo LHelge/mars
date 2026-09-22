@@ -1,8 +1,9 @@
 // The agent-profile editor of `SPEC.md`, "Frontend", Pages: one form that
 // creates (`POST /projects/{pid}/profiles`) or replaces (`PUT .../{id}`) a
-// profile. It is mounted inside the project page's profiles tab rather than on
-// a route of its own, and the tab drives it through `?profile=new|<id>`, so
-// an open editor is still a link somebody can send.
+// profile. It is not a route: it is a panel of the profiles tab, which drives
+// it through `?profile=new|<id>`, so an open editor is still a link somebody
+// can send. It lives here, beside that tab and beside `profileForm.ts`, for
+// the same reason.
 //
 // `PUT` replaces the whole profile, so the form always submits every field.
 // Two fields are fixed in v1 and shown read-only rather than hidden, because
@@ -10,42 +11,42 @@
 // `backend` is `claude` and `permission_mode` is `bypass`.
 //
 // Layout: settings on the left, the system prompt on the right, because the
-// prompt is the field people actually write in and it wants the height.
+// prompt is the field people actually write in and it wants the height. The
+// three grants below the prompt — git tools, served states, secrets — are
+// fieldsets of their own, and the two that read something of the project's
+// read it themselves.
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import type { FormEvent } from "react";
 import { Link } from "react-router";
-import { Alert } from "../components/Alert";
-import { ConfirmPanel } from "../components/ConfirmPanel";
-import { FieldShell } from "../components/FieldShell";
-import { FormField } from "../components/FormField";
-import { QueryErrorAlert } from "../components/QueryErrorAlert";
-import { SectionHeader } from "../components/SectionHeader";
-import { SubmitButton } from "../components/SubmitButton";
-import { CONTROL, FIELD } from "../components/fieldStyles";
-import { useFormSubmit } from "../hooks";
-import { AgentCredentialNotice } from "../secrets/AgentCredentialNotice";
-import { useAgentCredential } from "../secrets/useAgentCredential";
-import { ApiError } from "../services/apiClient";
+import { Alert } from "../../components/Alert";
+import { ConfirmPanel } from "../../components/ConfirmPanel";
+import { FieldShell } from "../../components/FieldShell";
+import { FormField } from "../../components/FormField";
+import { SectionHeader } from "../../components/SectionHeader";
+import { SubmitButton } from "../../components/SubmitButton";
+import { FIELD } from "../../components/fieldStyles";
+import { useFormSubmit } from "../../hooks";
+import { useAgentCredential } from "../../secrets/useAgentCredential";
+import { ApiError } from "../../services/apiClient";
 import {
   createProfile,
   listProfileTemplates,
   updateProfile,
-} from "../services/profiles";
-import { queryKeys } from "../services/queryKeys";
-import { listSecrets } from "../services/secrets";
-import { listTaskStates } from "../services/taskStates";
-import { parseProfileKind } from "../types";
-import type { Profile, ProfileKind } from "../types";
-import { PROFILE_GATED_TOOLS } from "../types";
-import { SECRET_NAME_RE, validateSecretName } from "../utils/secretName";
+} from "../../services/profiles";
+import { queryKeys } from "../../services/queryKeys";
+import { parseProfileKind } from "../../types";
+import type { Profile, ProfileKind } from "../../types";
+import { PROFILE_GATED_TOOLS } from "../../types";
+import { CheckboxList, Fieldset } from "./profileFields";
 import {
   BLANK_TEMPLATE,
+  CHECK_CLASS,
   defaultInputForKind,
   idleTimeoutError,
   maxConcurrentError,
-  mergeSecretOptions,
   MIN_IDLE_TIMEOUT_SECS,
   MIN_MAX_CONCURRENT,
   partialMessagesDecided,
@@ -53,21 +54,19 @@ import {
   prefillFromTemplate,
   PROFILE_BACKEND,
   PROFILE_PERMISSION_MODE,
+  READ_ONLY_CLASS,
   toFormState,
   toggleMember,
   toInput,
   toProfileInput,
   unattendedCredential,
-} from "./project/profileForm";
-import type { ProfileFormState } from "./project/profileForm";
+} from "./profileForm";
+import type { ProfileFormState } from "./profileForm";
+import { useQueueStates } from "./queueStates";
+import { SecretsFieldset } from "./SecretsFieldset";
+import { ServedStatesFieldset } from "./ServedStatesFieldset";
 
-/** A value the editor shows but nobody can change: quieter, and not a field. */
-const READ_ONLY_CLASS =
-  "border-console-border bg-console-raised text-console-muted rounded border px-2.5 py-1.5 font-mono text-sm";
-
-const CHECK_CLASS = "accent-console-accent size-3.5";
-
-export interface ProfileEditorPageProps {
+export interface ProfileEditorProps {
   projectId: string;
   /** The profile being edited; `null` creates a new one. */
   profile: Profile | null;
@@ -82,13 +81,13 @@ export interface ProfileEditorPageProps {
   onClose: () => void;
 }
 
-export function ProfileEditorPage({
+export function ProfileEditor({
   projectId,
   profile,
   defaultImage,
   existingNames,
   onClose,
-}: ProfileEditorPageProps) {
+}: ProfileEditorProps) {
   const queryClient = useQueryClient();
 
   const [form, setForm] = useState<ProfileFormState>(() =>
@@ -105,8 +104,9 @@ export function ProfileEditorPage({
   const [partialTouched, setPartialTouched] = useState(() =>
     partialMessagesDecided(profile),
   );
-  const [newSecret, setNewSecret] = useState("");
-  const [newSecretError, setNewSecretError] = useState<string | null>(null);
+  // The secrets fieldset's declare-name refusal, which the save path also
+  // writes: the editor is what catches the API's answer.
+  const [secretNameError, setSecretNameError] = useState<string | null>(null);
   // The server's refusal of `auto_launch`, shown at the toggle it is about.
   const [autoLaunchError, setAutoLaunchError] = useState<string | null>(null);
 
@@ -130,44 +130,9 @@ export function ProfileEditorPage({
     staleTime: Infinity,
   });
 
-  const states = useQuery({
-    queryKey: queryKeys.projects.taskStates(projectId),
-    queryFn: () => listTaskStates(projectId),
-  });
-
-  // Every scope a session of this profile draws from, in resolution order
-  // (`docs/data-model.md`, `secret_scope`): global, then project, then the
-  // launching user. A scope the caller may not list simply contributes no
-  // names; the free-text field below still accepts any of them.
-  const globalSecrets = useSecretNames("global");
-  const projectSecrets = useSecretNames("project", projectId);
-  const userSecrets = useSecretNames("user");
-
-  const secretOptions = useMemo(
-    () =>
-      mergeSecretOptions([
-        globalSecrets.data,
-        projectSecrets.data,
-        userSecrets.data,
-      ]),
-    [globalSecrets.data, projectSecrets.data, userSecrets.data],
-  );
-
-  const secretScopes = [
-    { label: "the shared secrets", query: globalSecrets },
-    { label: "this project's secrets", query: projectSecrets },
-    { label: "your own secrets", query: userSecrets },
-  ];
-
-  // A scope that answered — with its names, or with the 403 of a scope this
-  // user may not list, which contributes none of its own accord. Until every
-  // scope has, a declared name that is in none of them is unread rather than
-  // uncreated, and is left unannotated (`SPEC.md`, "Frontend", Read failures).
-  const secretsKnown = secretScopes.every(({ query }) => scopeAnswered(query));
-
-  const queueStates = (states.data ?? []).filter(
-    (state) => state.kind === "queue",
-  );
+  // The served-states fieldset renders this read; the pre-fill below needs it
+  // to know which of a template's states this project cannot serve.
+  const queueStates = useQueueStates(projectId);
 
   // The same answer the notice beside the secrets field already renders — one
   // query per project, shared — read here for the second question it happens
@@ -191,7 +156,7 @@ export function ProfileEditorPage({
       // where the name was typed, and swallowed so the page does not say the
       // same thing twice.
       if (isCredentialNameError(caught)) {
-        setNewSecretError(caught.error);
+        setSecretNameError(caught.error);
         return;
       }
       // So is a refusal of `auto_launch` — the kind, the cap or the missing
@@ -263,8 +228,8 @@ export function ProfileEditorPage({
       const prefill = prefillFromTemplate(chosen, {
         defaultImage,
         existingNames,
-        queueStates: states.isSuccess
-          ? queueStates.map((state) => state.name)
+        queueStates: queueStates.query.isSuccess
+          ? queueStates.states.map((state) => state.name)
           : null,
       });
       setForm(prefill.form);
@@ -285,23 +250,11 @@ export function ProfileEditorPage({
     setAutoLaunchError(null);
     patch({
       kind,
-      ...(partialTouched ? {} : { partial_messages: partialMessagesDefault(kind) }),
+      ...(partialTouched
+        ? {}
+        : { partial_messages: partialMessagesDefault(kind) }),
       ...(capStranded ? { max_concurrent: String(MIN_MAX_CONCURRENT) } : {}),
     });
-  }
-
-  function onAddSecret() {
-    const name = newSecret.trim().toUpperCase();
-    const invalid = validateSecretName(name);
-    if (invalid !== null) {
-      setNewSecretError(invalid);
-      return;
-    }
-    if (!form.secrets.includes(name)) {
-      patch({ secrets: [...form.secrets, name] });
-    }
-    setNewSecret("");
-    setNewSecretError(null);
   }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -573,16 +526,10 @@ export function ProfileEditorPage({
               one; `toInput` clears the flag for the other kind whatever the
               checkbox last held. */}
           {form.kind === "ephemeral" && (
-            <fieldset className="border-console-border rounded border p-3">
-              <legend className="text-console-muted px-1 text-xs">
-                Unattended launches
-              </legend>
-              <p className="text-console-muted pb-2 text-xs">
-                The dispatcher picks up tasks in the served states above and
-                runs this profile on them without anyone asking. The cap holds
-                it back only: your own launches are never refused by it.
-              </p>
-
+            <Fieldset
+              legend="Unattended launches"
+              description="The dispatcher picks up tasks in the served states above and runs this profile on them without anyone asking. The cap holds it back only: your own launches are never refused by it."
+            >
               <label className="text-console-text flex items-start gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -612,8 +559,7 @@ export function ProfileEditorPage({
                       ? "No agent credential is stored for this project."
                       : "Only your own agent credential is stored."}{" "}
                     An unattended launch has no user behind it, so it needs one
-                    at the project or shared scope.{" "}
-                    <CredentialLink />
+                    at the project or shared scope. <CredentialLink />
                   </p>
                 )}
 
@@ -646,7 +592,7 @@ export function ProfileEditorPage({
                   )}
                 </FieldShell>
               </div>
-            </fieldset>
+            </Fieldset>
           )}
         </div>
 
@@ -675,237 +621,47 @@ export function ProfileEditorPage({
             )}
           </FieldShell>
 
-          <fieldset className="border-console-border rounded border p-3">
-            <legend className="text-console-muted px-1 text-xs">
-              Git tools
-            </legend>
-            <p className="text-console-muted pb-2 text-xs">
-              The task tracker tools are always available. These four reach the
-              project&rsquo;s git mirror.
-            </p>
+          <Fieldset
+            legend="Git tools"
+            description="The task tracker tools are always available. These four reach the project’s git mirror."
+          >
             <div className="flex flex-wrap gap-x-4 gap-y-2">
-              {PROFILE_GATED_TOOLS.map((tool) => (
-                <label
-                  key={tool}
-                  className="text-console-text flex items-center gap-2 font-mono text-xs"
-                >
-                  <input
-                    type="checkbox"
-                    checked={form.mcp_tools.includes(tool)}
-                    onChange={() => {
-                      patch({ mcp_tools: toggleMember(form.mcp_tools, tool) });
-                    }}
-                    disabled={save.loading}
-                    className={CHECK_CLASS}
-                  />
-                  {tool}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-
-          <fieldset className="border-console-border rounded border p-3">
-            <legend className="text-console-muted px-1 text-xs">
-              Served states
-            </legend>
-            <p className="text-console-muted pb-2 text-xs">
-              Queue states this profile picks work up from.
-            </p>
-            {/* A failed read of the project's states must not read as "this
-                project has none" — that invites clearing a profile down to
-                serving nothing (`SPEC.md`, "Frontend", Read failures). */}
-            {states.isError && (
-              <div className="pb-2">
-                <QueryErrorAlert
-                  query={states}
-                  message="Could not load this project's task states."
-                />
-              </div>
-            )}
-
-            {queueStates.length === 0 ? (
-              states.isPending ? (
-                <p className="text-console-muted text-xs">Loading states…</p>
-              ) : (
-                states.isSuccess && (
-                  <p className="text-console-muted text-xs">
-                    This project has no queue states.
-                  </p>
-                )
-              )
-            ) : (
-              <div className="flex flex-wrap gap-x-4 gap-y-2">
-                {queueStates.map((state) => (
-                  <label
-                    key={state.id}
-                    className="text-console-text flex items-center gap-2 font-mono text-xs"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={form.serves_states.includes(state.name)}
-                      onChange={() => {
-                        patch({
-                          serves_states: toggleMember(
-                            form.serves_states,
-                            state.name,
-                          ),
-                        });
-                      }}
-                      disabled={save.loading}
-                      className={CHECK_CLASS}
-                    />
-                    {state.name}
-                  </label>
-                ))}
-              </div>
-            )}
-            {/* A state that was renamed or deleted since the profile was saved
-                would be a 400 on submit; show it so it can be cleared — but
-                only once the project's own list has actually arrived, or every
-                served state would be flagged on a cold cache. */}
-            {(states.isSuccess ? form.serves_states : [])
-              .filter((name) => !queueStates.some((s) => s.name === name))
-              .map((name) => (
-                <label
-                  key={name}
-                  className="text-state-parked flex items-center gap-2 pt-2 font-mono text-xs"
-                >
-                  <input
-                    type="checkbox"
-                    checked
-                    onChange={() => {
-                      patch({
-                        serves_states: toggleMember(form.serves_states, name),
-                      });
-                    }}
-                    disabled={save.loading}
-                    className={CHECK_CLASS}
-                  />
-                  {name}
-                  <span className="font-sans">not a queue state</span>
-                </label>
-              ))}
-          </fieldset>
-
-          <fieldset className="border-console-border rounded border p-3">
-            <legend className="text-console-muted px-1 text-xs">Secrets</legend>
-            <p className="text-console-muted pb-2 text-xs">
-              Names injected into the session container as environment
-              variables, from the global, project and your own scope. The
-              agent&rsquo;s own credential is not one of them: it is resolved
-              per launch and never declared.
-            </p>
-
-            {/* Read-only, and per caller: what *you* would launch this profile
-                with (`SPEC.md`, "Frontend", Agent credentials). */}
-            <div className="border-console-border/60 mb-2 border-b pb-2">
-              <AgentCredentialNotice
-                projectId={projectId}
-                backend={profile?.backend ?? PROFILE_BACKEND}
-              />
-            </div>
-
-            {/* One scope that failed leaves names out of the list below, so
-                the failure is said rather than implied. */}
-            {secretScopes
-              .filter(({ query }) => query.isError && !scopeAnswered(query))
-              .map(({ label, query }) => (
-                <div key={label} className="pb-2">
-                  <QueryErrorAlert
-                    kind="warning"
-                    query={query}
-                    message={`Could not load ${label}; names from that scope are missing below.`}
-                  />
-                </div>
-              ))}
-
-            <div className="flex flex-col gap-1.5">
-              {secretOptions.map((option) => {
-                const checked = form.secrets.includes(option.name);
-                return (
-                  <label
-                    key={option.name}
-                    className="text-console-text flex items-center gap-2 font-mono text-xs"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => {
-                        patch({
-                          secrets: toggleMember(form.secrets, option.name),
-                        });
-                      }}
-                      // An orchestrator-only secret cannot be added; one that
-                      // is already listed can still be taken off the list.
-                      disabled={
-                        save.loading || (option.orchestrator_only && !checked)
-                      }
-                      className={CHECK_CLASS}
-                    />
-                    {option.name}
-                    {option.orchestrator_only && (
-                      <span className="text-console-muted font-sans">
-                        never injected
-                      </span>
-                    )}
-                  </label>
-                );
-              })}
-
-              {(secretsKnown ? form.secrets : [])
-                .filter((name) => !secretOptions.some((o) => o.name === name))
-                .map((name) => (
-                  <label
-                    key={name}
-                    className="text-console-text flex items-center gap-2 font-mono text-xs"
-                  >
-                    <input
-                      type="checkbox"
-                      checked
-                      onChange={() => {
-                        patch({ secrets: toggleMember(form.secrets, name) });
-                      }}
-                      disabled={save.loading}
-                      className={CHECK_CLASS}
-                    />
-                    {name}
-                    <span className="text-console-muted font-sans">
-                      not created yet
-                    </span>
-                  </label>
-                ))}
-            </div>
-
-            <div className="flex flex-wrap items-start gap-2 pt-3">
-              <input
-                aria-label="Secret name to declare"
-                value={newSecret}
-                onChange={(event) => {
-                  setNewSecret(event.target.value.toUpperCase());
-                  setNewSecretError(null);
+              <CheckboxList
+                items={PROFILE_GATED_TOOLS.map((tool) => ({ name: tool }))}
+                selected={form.mcp_tools}
+                onToggle={(tool) => {
+                  patch({ mcp_tools: toggleMember(form.mcp_tools, tool) });
                 }}
-                placeholder="ANOTHER_SECRET"
-                autoComplete="off"
-                spellCheck={false}
-                pattern={SECRET_NAME_RE.source}
                 disabled={save.loading}
-                className={CONTROL}
               />
-              <SubmitButton
-                type="button"
-                variant="ghost"
-                disabled={save.loading || newSecret.trim() === ""}
-                onClick={onAddSecret}
-              >
-                Declare name
-              </SubmitButton>
             </div>
-            {newSecretError !== null && (
-              <p className="text-state-failed pt-1.5 text-xs">
-                {newSecretError}
-              </p>
-            )}
-          </fieldset>
+          </Fieldset>
+
+          <ServedStatesFieldset
+            projectId={projectId}
+            selected={form.serves_states}
+            onToggle={(name) => {
+              patch({ serves_states: toggleMember(form.serves_states, name) });
+            }}
+            disabled={save.loading}
+          />
+
+          <SecretsFieldset
+            projectId={projectId}
+            backend={profile?.backend ?? PROFILE_BACKEND}
+            selected={form.secrets}
+            onToggle={(name) => {
+              patch({ secrets: toggleMember(form.secrets, name) });
+            }}
+            onDeclare={(name) => {
+              if (!form.secrets.includes(name)) {
+                patch({ secrets: [...form.secrets, name] });
+              }
+            }}
+            disabled={save.loading}
+            error={secretNameError}
+            onErrorChange={setSecretNameError}
+          />
         </div>
       </div>
 
@@ -966,32 +722,5 @@ function isCredentialNameError(caught: unknown): caught is ApiError {
     caught instanceof ApiError &&
     caught.status === 400 &&
     caught.error.includes("is an agent credential")
-  );
-}
-
-/** One scope's names; a scope the caller may not read contributes none. */
-function useSecretNames(
-  scope: "global" | "project" | "user",
-  scopeId?: string,
-) {
-  return useQuery({
-    queryKey: queryKeys.secrets.list(scope, scopeId),
-    queryFn: () =>
-      listSecrets({
-        scope,
-        ...(scopeId === undefined ? {} : { scope_id: scopeId }),
-      }),
-  });
-}
-
-/**
- * Whether a scope has given its answer: its names, or the 403 of a scope this
- * user may not list, which means it contributes none. A failed read has said
- * nothing either way.
- */
-function scopeAnswered(query: { isSuccess: boolean; error: unknown }): boolean {
-  return (
-    query.isSuccess ||
-    (query.error instanceof ApiError && query.error.status === 403)
   );
 }

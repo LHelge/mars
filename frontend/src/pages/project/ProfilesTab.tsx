@@ -29,7 +29,7 @@ import { deleteProfile } from "../../services/profiles";
 import { queryKeys } from "../../services/queryKeys";
 import { projectQueries } from "../../services/queryOptions";
 import type { Profile } from "../../types";
-import { ProfileEditorPage } from "../ProfileEditorPage";
+import { ProfileEditor } from "./ProfileEditor";
 import { errorMessage } from "../../services/errorMessage";
 import type { ProjectTabPanelProps } from "./tabs";
 
@@ -108,7 +108,7 @@ export function ProfilesTab({ project }: ProjectTabPanelProps) {
     return (
       <div className="space-y-3">
         {staleWarning}
-        <ProfileEditorPage
+        <ProfileEditor
           // Remounts when the editor moves to another profile, so the form
           // starts from that profile's values instead of the previous one's.
           key={selected}

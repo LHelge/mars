@@ -2,10 +2,10 @@
 id: "579dz"
 title: Frontend technical review
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-21T10:42:56.968006926Z"
-updated: "2026-09-21T10:57:02.857686494Z"
+updated: "2026-09-22T05:19:02.905180918Z"
 tags:
   - frontend
   - technical-review

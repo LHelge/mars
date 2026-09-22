@@ -506,6 +506,123 @@ The handler subscribes before it replays, so a row committed during the replay i
 
 Input is single-writer: the WebSocket handler forwards inputs to the session's owner through the registry, which serialises them. There is one input kind, `message`, because the CLI never asks the host anything under the permission flags Mars launches it with ("Claude Code invocation", ADR 0033); an input that cannot be delivered — the session is ephemeral, or in a state that takes no input — is refused with an `input_rejected` message on the socket rather than being written to the CLI.
 
+## Server deployment
+
+A production server follows the newest tested commit of `main` by pulling it: GitHub-hosted CI builds and publishes everything a release needs, then moves one pointer; a timer of the service user on the server reads that pointer and reconciles the running stack to it (ADR 0044). Nothing reaches into the server from outside, and nothing on the server builds. This section is the contract between the publishing side (`.github/workflows/`) and the applying side (the `mars-deploy` updater); `README.md`, "Automatic deployments", is the operator's view of it.
+
+### Artifacts
+
+Everything is published to GHCR under `ghcr.io/lhelge/`, for `linux/amd64` only. A release is five images:
+
+| Image | Built from | Tag |
+| --- | --- | --- |
+| `mars-orchestrator` | `orchestrator/Dockerfile` | `sha-<commit>` |
+| `mars-nginx` | `nginx/Dockerfile` | `sha-<commit>` |
+| `mars-session-claude` | `images/claude` | `sha-<commit>` |
+| `mars-session-claude-dev` | `images/claude-dev`, `BASE_IMAGE` set to the digest of this release's `mars-session-claude` | `sha-<commit>` |
+| `mars-deploy` | the bundle below, `FROM scratch` | `sha-<commit>`; the promoted one also `main` |
+
+`<commit>` is the full 40-hex id. Tags are for people and for retention; **everything that consumes a release names images by digest** (`ghcr.io/lhelge/mars-orchestrator@sha256:…`), so a moved or deleted tag cannot change what a release is. Publishing may reuse an existing image instead of rebuilding when that image's build inputs — the git tree ids of its context directories and Dockerfile — are unchanged; it then records the reused digest, which is what lets a commit that touches only documentation deploy without replacing a container. The stub image is a test fixture and is never published.
+
+**The bundle.** `mars-deploy` is a single-layer image carrying files only, under `/bundle/`:
+
+```
+/bundle/
+├── manifest.json          the release, below
+├── compose.yml            the repository's, unchanged
+├── compose.podman.yml     the repository's, unchanged
+├── compose.release.yml    generated: `image:` of orchestrator and nginx set to this release's digests, no `build:`
+├── bin/mars-deploy        the updater of this release
+├── systemd/               the user units of this release
+└── scripts/verify-deployment.sh
+```
+
+It is never run. The updater extracts it with `podman create --entrypoint /none` (a `FROM scratch` image has no command, and `create` does not look for one), `podman cp <container>:/bundle`, and `podman rm`. An installed bundle lives in its own directory named by the bundle's digest and is never modified afterwards. `deploy/manifest.example.json` is a complete example with fake values.
+
+### The manifest
+
+`manifest.json` is JSON and is read with `jq` only: nothing in it is ever sourced, `eval`ed or interpolated into a shell command line unquoted, and every value is checked against the pattern below before use. An unknown field is ignored; a missing or malformed required one refuses the candidate.
+
+| Field | Pattern / meaning |
+| --- | --- |
+| `format` | Integer, `1`. The manifest format this bundle's updater writes and reads. |
+| `epoch` | Integer ≥ 1, the content of `deploy/EPOCH` at `source.commit`. See "Candidates". |
+| `epoch_note` | String: what the operator has to do when this epoch is new; empty when there is nothing. |
+| `source.repository` | `LHelge/mars`. |
+| `source.commit` | 40 lowercase hex. |
+| `source.sequence` | Integer, `git rev-list --count <commit>`. `main` is linear (rebase only, no merge commits), so a descendant always has a higher sequence; this is how the server orders releases without a git history of its own. |
+| `source.run_id`, `source.run_attempt` | The Release workflow run that published the bundle, for tracing. |
+| `source.published_at` | RFC 3339. Informational only; never compared, because ordering is by commit ancestry. |
+| `platform` | `linux/amd64`. The updater refuses a platform that is not the host's. |
+| `images.orchestrator`, `images.nginx`, `images.session_claude`, `images.session_claude_dev` | `ghcr.io/lhelge/<name>@sha256:<64 hex>`. |
+| `schema.migrations` | Array of every migration version under `orchestrator/migrations/`, ascending, as strings of 14 digits. |
+| `config.required` | Array of environment variable names (`^[A-Z][A-Z0-9_]*$`) the release refuses to start without; names only, never values. A pair where one of two will do, such as `SECRETS_MASTER_KEYS` and `SECRETS_MASTER_KEY_FILE`, is written `A|B`. |
+| `postgres.major` | Integer, the PostgreSQL major version the release is tested against (`18`). |
+
+### Promotion
+
+One workflow, **Release**, publishes and promotes. It runs on every push to `main`, and nowhere else: not on a pull request, not on a fork, not on `workflow_dispatch` of another ref. It runs the backend, frontend, engine, image, deployment-packaging and end-to-end suites on that exact commit as reusable workflows, unconditionally — the path filters stay on pull requests, where they save time, and do not apply here, where a skipped suite would be indistinguishable from an untested change. A final gate job depends on every suite with `if: always()` and passes only when every one of their results is `success`; `skipped`, `cancelled` and `failure` are all failure. Only after the gate does it publish the five images and the bundle for the commit, and only after all five exist does it promote.
+
+Promotion moves the `mars-deploy:main` tag to the new bundle's digest, under a workflow-level `concurrency` group with `cancel-in-progress: false`, so promotions are serialised. Inside that group it reads the manifest currently tagged `main` and moves the tag only when the candidate commit is a strict descendant of that manifest's `source.commit` (`git merge-base --is-ancestor`). A run that finishes late for an older commit therefore finds a newer commit promoted and leaves the tag alone; `main` never describes a partial release and never goes backwards. A candidate that is neither an ancestor nor a descendant — `main` rewritten — is not promoted, and the run fails saying so. The very first promotion, with no `main` tag yet, promotes.
+
+### Candidates
+
+The updater runs from the service user's timer every five minutes, at boot, and by hand. Each run takes an exclusive `flock` on the state directory for its whole duration, so a boot run, a timer run and a manual command never overlap; a second run waits for the lock with a bound and then exits reporting that another run holds it. A run decides in this order, and the first rule that applies ends the decision:
+
+1. **Paused.** Nothing is resolved; the run exits `0` and says so.
+2. **Target.** A pin names a bundle digest, and it is the target. Otherwise `mars-deploy:main` is resolved once to a digest, and that digest is the target for the rest of the run — a tag moving during the run is seen by the next run.
+3. **Unchanged.** A target equal to the current bundle is a no-op: nothing is pulled, restarted or backed up.
+4. **Known failure.** A target recorded as failed is held until the operator runs `retry` or a different digest is promoted; the timer never restarts a revision it has seen fail.
+5. **Older.** Without a pin, a target whose `source.sequence` is not higher than the current release's is ignored — the regression guard of the promotion, repeated on the server.
+6. **Epoch.** A candidate whose `epoch` is higher than the highest epoch the operator has accepted is held with its `epoch_note` until `mars-deploy accept-epoch <n>`. An epoch is bumped by a commit editing `deploy/EPOCH`, for any change an operator must act on before or after it runs: a new required action on the server, a migration that needs a manual step, a change to the bundle layout or to the updater's own contract, a changed PostgreSQL major. Everything else deploys unattended.
+7. **Configuration.** Every name in `config.required` must be set in the operator's environment file; a missing one holds the candidate, naming the variable and nothing else.
+8. **Schema.** The installed release's `schema.migrations` must be a prefix of the candidate's. Anything else — a migration removed, reordered, or inserted before the newest installed one — is held. The candidate's new migrations are then the ones the orchestrator will apply at startup.
+9. **PostgreSQL.** The running Postgres major must equal `postgres.major`; otherwise held.
+
+A pinned target skips rule 5 (a pin may name an older release on purpose) but none of the others: pinning an older release across a schema change is still refused by rule 8, which is what "Rollback" is about.
+
+### Applying
+
+A candidate that passes is applied in two phases.
+
+**Before anything running is touched**, the updater pulls the bundle and every image by digest, verifies each pulled digest, extracts and checks the bundle, renders the compose configuration with the operator's environment file and fails on any error, and takes the pre-deployment backup of the database (always, when the orchestrator image changes; its metadata records the installed and the candidate release and both migration lists). A failure here — the registry unreachable, a digest mismatch, a render error, a failed backup — leaves the running release exactly as it was, records the attempt as **deferred** with its reason, and is retried by the next timer run. Deferral is not failure: nothing about the candidate has been shown wrong.
+
+**Replacement** then stops the old orchestrator gracefully, starts the new one under the same compose project name `mars` (so the Postgres volume, the networks and the data directory are the same objects across every release directory), waits with a bound for it to become healthy — which is after its migrations and its session recovery ("Restart procedure") — recreates nginx so it resolves the new upstream, and checks `GET /api/health` through nginx and `scripts/verify-deployment.sh`. Postgres and every session container are left running throughout; nothing uses `compose down` or prunes. Old and new orchestrators never run at the same time. Only when every check passes are `current` and `previous` moved and the managed session images switched (zzr7k defines how profiles reach them).
+
+A failure during replacement marks the target **failed**, with its phase and reason, and never touches the database afterwards. What happens next depends on the schema: if the candidate added no migration, the previous release is started again automatically, since it can run on the unchanged schema, and the result is recorded; if it did add one, the old orchestrator cannot start on the migrated schema (sqlx refuses a database with a migration it does not know), so the candidate is left in place, the timer holds, and the status says manual recovery is needed. An interrupted run — the host lost power mid-replacement — is detected by the next run from the `attempted` record having no outcome, and is resolved by the same two cases.
+
+### Rollback and restore
+
+These are separate operations and neither is ever automatic beyond the no-migration case above.
+
+- **Rollback** starts an earlier installed release on the current database. It is allowed only when that release's `schema.migrations` is equal to the current one's, and is `mars-deploy rollback` (to `previous`) or `mars-deploy deploy <digest>` with a pin. It loses nothing.
+- **Restore** puts back a database backup, with its matching data directory, and is the only way to an earlier schema. It loses every write since the backup, is always done by hand following `README.md`, "Automatic deployments", with the updater paused, and is followed by deploying the release recorded in the backup's metadata. There are no down-migrations in deployment: the `.down.sql` files exist for development.
+
+PostgreSQL itself is not part of a release. Its image is set by the operator in the environment file, never changed by the updater, and a major upgrade is its own manual procedure; `postgres.major` only lets a release refuse a server it was not tested against.
+
+### State
+
+The updater keeps its state under `$XDG_STATE_HOME/mars-deploy/` (`~/.local/state/mars-deploy/` by default), outside every release directory, in one `state.json` written atomically (temporary file, `fsync`, `rename`):
+
+| Field | Meaning |
+| --- | --- |
+| `state_format` | Integer; an updater upgrades an older state file it reads and never writes a format older than it found. |
+| `current`, `previous` | `{bundle, commit, sequence, epoch, migrations, applied_at}` of the running and the last good release. |
+| `attempted` | The last attempt: target, started/finished time, outcome `deferred`, `failed` or `applied`, phase, reason. |
+| `failed` | Bundle digests that failed replacement, cleared by `retry`. |
+| `paused`, `pin` | Operator controls. A pin is a bundle digest; `deploy <ref>` resolves a commit or tag to one. |
+| `accepted_epoch` | Highest epoch the operator accepted; set to the first release's epoch at install. |
+
+`mars-deploy status` prints this, the resolved promoted target and the reason the last run did or did not deploy. Reasons are written without values: a variable is named, never shown, and registry errors are reported without credentials.
+
+### Updater evolution
+
+The installed `mars-deploy` resolves, pulls, verifies and extracts; it then runs the **candidate** bundle's `bin/mars-deploy` to check and apply it. A bundle's updater therefore only ever reads its own manifest format, and a change to the manifest, the bundle layout or the apply procedure ships in the same release that needs it. The part that cannot change without an epoch bump is what the installed updater does before it hands over: the `ghcr.io/lhelge/mars-deploy` repository and its `main` tag, the extraction of `/bundle/`, the `bin/mars-deploy apply <bundle-dir>` entry point, the lock and the state directory. Rollback runs the installed (newer) updater against the older bundle's files, so an updater keeps reading every manifest format still retained on the server.
+
+### Retention
+
+On the server, the updater keeps the bundles and images of `current`, `previous` and the three releases before them, and never removes an image an existing container uses — a running session keeps the session image it started on for as long as it lives. In GHCR, every version referenced by a bundle promoted in the last 90 days is kept, and the bundle tagged `main` and everything it references is never deleted. Only `sha-*` versions older than that are pruned, by a scheduled workflow separate from Release.
+
 ## Git model
 
 Worktrees are not used (ADR 0001). All git operations shell out to the `git` binary (ADR 0011). No session container ever holds a credential or pushes (ADR 0007). The repository called the "mirror" throughout these documents is a bare project repository, not an exact upstream mirror: upstream-tracking refs, Mars integration branches and session refs have separate ownership (ADR 0017).

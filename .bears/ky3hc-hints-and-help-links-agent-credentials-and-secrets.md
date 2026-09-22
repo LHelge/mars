@@ -1,15 +1,16 @@
 ---
 id: ky3hc
 title: "Hints and help links: agent credentials and secrets"
-status: open
+status: done
 priority: P2
 created: "2026-09-22T19:08:55.750584553Z"
-updated: "2026-09-22T19:08:55.750584553Z"
+updated: "2026-09-22T20:56:33.671438086Z"
 tags:
   - frontend
 depends_on:
   - ujccg
 parent: gtbp5
+attempts: 1
 ---
 
 Tighten hints and add `help` links. Invoke `/frontend-design` first. Update tests that assert old strings.

@@ -60,6 +60,16 @@ pub mod app;
 #[cfg(feature = "integration-tests")]
 pub mod mcp;
 
+/// The recorded requests of a pinned CLI's MCP conversation and the recorder
+/// that writes them (`tests/mcp_conformance.rs`). Plain axum and serde, so it
+/// stays ungated.
+pub mod mcp_fixtures;
+
+/// What the pinned CLI accepts on MCP protocol revision 2026-07-28, as checks
+/// over JSON (`tests/mcp_conformance.rs`). Plain `serde_json`, so it stays
+/// ungated.
+pub mod mcp_2026_07_28;
+
 /// Arranging leases, attempt counters, states, blocked flags and current
 /// hand-offs through the `tracker/` verbs, for every suite that needs one of
 /// them as a precondition (`CLAUDE.md`, "Testing expectations", "Tracker

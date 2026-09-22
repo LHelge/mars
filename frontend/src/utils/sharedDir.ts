@@ -73,7 +73,10 @@ export const SHARED_DIR_PRESETS: readonly SharedDirPreset[] = [
   {
     ecosystem: "Rust",
     name: "cargo-registry",
-    container_path: "/session/home/.cargo/registry",
+    // `$CARGO_HOME/registry`: the dev image sets `CARGO_HOME=/opt/cargo`
+    // (`ARCHITECTURE.md`, "Session image"). An image that leaves Cargo's
+    // default home would use `/session/home/.cargo/registry` instead.
+    container_path: "/opt/cargo/registry",
   },
   { ecosystem: "Node", name: "npm-cache", container_path: "/session/home/.npm" },
   { ecosystem: "Go", name: "go-mod", container_path: "/session/home/go/pkg/mod" },

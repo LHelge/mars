@@ -11,6 +11,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(git -C "$here" rev-parse --show-toplevel)
 work=$(mktemp -d)
+example="${root}/deploy/manifest.example.json"
 trap 'rm -rf "$work"' EXIT
 
 failures=0
@@ -87,7 +88,7 @@ if [ -f "$manifest" ]; then
     test "$(jq .source.sequence "$manifest")" = "$(git -C "$root" rev-list --count "$head")"
   check "compose.release.yml pins the orchestrator digest" \
     grep -q "image: $(fake mars-orchestrator)" "${work}/out/bundle/compose.release.yml"
-  for f in compose.yml compose.podman.yml scripts/verify-deployment.sh; do
+  for f in compose.yml compose.podman.yml scripts/verify-deployment.sh bin/check-env env.example; do
     check "the bundle carries ${f}" test -f "${work}/out/bundle/${f}"
   done
 fi
@@ -116,8 +117,50 @@ expect "a tag instead of a digest is refused" "" 1 bash -c "cd '$root' &&
   IMAGE_SESSION_CLAUDE=$(fake mars-session-claude) IMAGE_SESSION_CLAUDE_DEV=$(fake mars-session-claude-dev) \
   '${here}/make-bundle.sh' '${work}/tagged' >/dev/null"
 
+# --- deploy/bin/check-env ----------------------------------------------
+checkenv="${root}/deploy/bin/check-env"
+mkdir -p "${work}/env/data"
+python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${work}/env/engine.sock"
+good_env() {
+  cat <<ENV
+# a comment, then the variables a release requires
+PUBLIC_URL=https://mars.example.invalid
+JWT_SECRET="fake-jwt-secret-0123456789abcdefghijklmnop"
+POSTGRES_USER=mars
+POSTGRES_PASSWORD=fake-db-password_1.2~3
+POSTGRES_DB=mars
+POSTGRES_IMAGE=docker.io/library/postgres@sha256:$(printf '0%.0s' {1..64})
+ENGINE_SOCKET_HOST=${work}/env/engine.sock
+DATA_DIR_HOST=${work}/env/data
+SECRETS_MASTER_KEYS=1=ZmFrZS1tYXN0ZXIta2V5LWZvci10ZXN0cy1vbmx5LTEyMzQ=
+GIT_BOT_NAME='Mars Bot'
+GIT_BOT_EMAIL=mars-bot@example.invalid
+ENV
+}
+env_case() { # env_case <name> <want status> <sed expression or "">
+  good_env >"${work}/env/mars.env"
+  if [ -n "$3" ]; then sed -i "$3" "${work}/env/mars.env"; fi
+  chmod 600 "${work}/env/mars.env"
+  expect "check-env: $1" "" "$2" bash -c "'$checkenv' '${work}/env/mars.env' '$example' >/dev/null"
+}
+env_case "a complete private file passes" 0 ""
+env_case "a missing required variable fails" 1 "/^GIT_BOT_EMAIL=/d"
+env_case "either master key variable satisfies the pair" 0 "s#^SECRETS_MASTER_KEYS=.*#SECRETS_MASTER_KEY_FILE=/run/secrets/fake#"
+env_case "both master key variables fail" 1 "\$a SECRETS_MASTER_KEY_FILE=/run/secrets/fake"
+env_case "the example placeholder password fails" 1 "s#^POSTGRES_PASSWORD=.*#POSTGRES_PASSWORD=change-me-local-password#"
+env_case "a password that breaks the URL fails" 1 "s#^POSTGRES_PASSWORD=.*#POSTGRES_PASSWORD=fake@pass/word#"
+env_case "a relative data directory fails" 1 "s#^DATA_DIR_HOST=.*#DATA_DIR_HOST=./data#"
+env_case "an engine socket that is not a socket fails" 1 "s#^ENGINE_SOCKET_HOST=.*#ENGINE_SOCKET_HOST=${work}/env/data#"
+env_case "a line that is not KEY=VALUE fails" 1 "\$a export BROKEN"
+env_case "an unpinned postgres image only warns" 0 "s#^POSTGRES_IMAGE=.*#POSTGRES_IMAGE=postgres:18#"
+good_env >"${work}/env/mars.env"
+chmod 644 "${work}/env/mars.env"
+expect "check-env: a world-readable file fails" "" 1 bash -c "'$checkenv' '${work}/env/mars.env' '$example' >/dev/null"
+chmod 600 "${work}/env/mars.env"
+leak=$("$checkenv" "${work}/env/mars.env" "$example" 2>&1 || true)
+check "check-env never prints a value" bash -c '! grep -qE "fake-jwt|fake-db|ZmFrZS" <<<"$1"' _ "$leak"
+
 # --- validate-manifest.sh -----------------------------------------------
-example="${root}/deploy/manifest.example.json"
 expect "the example manifest is valid" "" 0 "${here}/validate-manifest.sh" "$example"
 broken() {
   jq "$2" "$example" >"${work}/broken.json"

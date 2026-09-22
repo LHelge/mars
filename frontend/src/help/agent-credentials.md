@@ -1,0 +1,1 @@
+How a session's agent authenticates: a Claude subscription token or an Anthropic API key, the scopes each can be stored at, and which one a launch uses. Agent credentials are [secrets](help:secrets) with a fixed name.

@@ -3,6 +3,7 @@
 // the same name on one screen have to stay apart.
 
 import { cleanup, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { FieldShell } from "./FieldShell";
@@ -127,5 +128,51 @@ describe("FormField", () => {
       "One label is too long",
       "Separated by spaces.",
     ]);
+  });
+});
+
+describe("help", () => {
+  it("links the topic beside the hint, and the control is still described by the hint alone", () => {
+    render(
+      <MemoryRouter>
+        <FormField
+          label="Credential"
+          name="project-credential"
+          value=""
+          onChange={() => undefined}
+          hint="Stored write-only."
+          help="git-credential"
+        />
+      </MemoryRouter>,
+    );
+
+    const input = screen.getByLabelText("Credential");
+    expect(describedBy(input).map(textOf)).toEqual(["Stored write-only."]);
+
+    const link = screen.getByRole("link", {
+      name: "Learn more about Git credential",
+    });
+    expect(link.getAttribute("href")).toBe("/help#git-credential");
+    // Beside the hint, not inside the text the control is described by.
+    expect(
+      document.getElementById("project-credential-hint")?.contains(link),
+    ).toBe(false);
+  });
+
+  it("links the topic with no hint and describes the control by nothing", () => {
+    render(
+      <MemoryRouter>
+        <FieldShell label="Kind" name="profile-kind" help="profiles">
+          {(control) => <select {...control} />}
+        </FieldShell>
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByLabelText("Kind").getAttribute("aria-describedby"),
+    ).toBeNull();
+    expect(
+      screen.getByRole("link", { name: "Learn more about Agent profiles" }),
+    ).toBeDefined();
   });
 });

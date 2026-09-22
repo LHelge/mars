@@ -43,6 +43,7 @@ const MARKERS = [
   { route: "/sessions/:id, /projects/:id (git)", needle: "Force push" },
   { route: "/sessions/:id, /projects/:id (git)", needle: "Rebase" },
   { route: "/projects/:id (task board)", needle: "Move to" },
+  { route: "/help", needle: "Help topics" },
 ];
 
 /**

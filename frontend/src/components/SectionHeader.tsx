@@ -3,15 +3,21 @@
 
 import type { ReactNode } from "react";
 
+import type { HelpTopic } from "../help/topics";
+import { HelpLink } from "./HelpLink";
+
 export interface SectionHeaderProps {
   title: string;
   description?: string;
+  /** The help topic a `Learn more` link after the description opens. */
+  help?: HelpTopic;
   actions?: ReactNode;
 }
 
 export function SectionHeader({
   title,
   description,
+  help,
   actions,
 }: SectionHeaderProps) {
   return (
@@ -20,8 +26,12 @@ export function SectionHeader({
         <h2 className="text-console-text text-sm font-semibold tracking-tight">
           {title}
         </h2>
-        {description && (
-          <p className="text-console-muted max-w-prose text-xs">{description}</p>
+        {(description || help) && (
+          <div className="text-console-muted max-w-prose text-xs">
+            {description && <p className="inline">{description}</p>}
+            {description && help && " "}
+            {help && <HelpLink topic={help} />}
+          </div>
         )}
       </div>
       {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}

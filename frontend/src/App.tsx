@@ -37,6 +37,9 @@ import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 const AdminPage = lazy(() =>
   import("./pages/AdminPage").then((m) => ({ default: m.AdminPage })),
 );
+const HelpPage = lazy(() =>
+  import("./pages/HelpPage").then((m) => ({ default: m.HelpPage })),
+);
 const ProjectPage = lazy(() =>
   import("./pages/ProjectPage").then((m) => ({ default: m.ProjectPage })),
 );
@@ -78,6 +81,7 @@ export function App() {
           <Route path="/sessions/:id" element={<SessionPage />} />
           <Route path="/secrets" element={<SecretsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/help" element={<HelpPage />} />
 
           <Route element={<AdminRoute />}>
             <Route path="/admin" element={<AdminPage />} />

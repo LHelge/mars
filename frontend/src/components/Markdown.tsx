@@ -25,6 +25,7 @@ import type { ComponentProps } from "react";
 import { createContext, memo, use } from "react";
 import Markdown from "react-markdown";
 import type { Components, ExtraProps } from "react-markdown";
+import { Link } from "react-router";
 import remarkGfm from "remark-gfm";
 
 // `CodeBlock` reaches the highlighter through a dynamic import, so it must
@@ -86,6 +87,28 @@ function MdA(props: Props<"a">) {
         className,
       )}
     />
+  );
+}
+
+// A link in text the application itself ships — the help page's prose — to
+// one of its own routes. It stays in the single-page application and in the
+// tab, as any other in-app link does; anything else is `MdA`. Never used for
+// agent or user text, where a path is only something someone typed.
+function MdAppA(props: Props<"a">) {
+  const { href, className, children } = props;
+  if (href === undefined || !href.startsWith("/") || href.startsWith("//")) {
+    return <MdA {...props} />;
+  }
+  return (
+    <Link
+      to={href}
+      className={cx(
+        "text-console-accent underline underline-offset-2",
+        className,
+      )}
+    >
+      {children}
+    </Link>
   );
 }
 
@@ -352,6 +375,10 @@ const COMPONENTS: Components = {
   ),
 };
 
+// The help page's set: the same elements, with application paths as in-app
+// links.
+const APP_COMPONENTS: Components = { ...COMPONENTS, a: MdAppA };
+
 const PLUGINS = [remarkGfm];
 
 export interface MarkdownBodyProps {
@@ -360,22 +387,32 @@ export interface MarkdownBodyProps {
   // bodies: `StreamingMarkdown` uses it to say that a body continues the one
   // above it, so `first:mt-0` does not eat a heading's margin mid-message.
   className?: string;
+  /**
+   * The text is the application's own, so a link to one of its paths (`/…`)
+   * navigates in place instead of opening a tab. Only for shipped prose — the
+   * help topics — never for agent or user text.
+   */
+  appLinks?: boolean;
 }
 
 // Memoised on the text it is given: parsing is the expensive part of a
 // transcript row, and a row re-renders for reasons that leave its text alone —
-// a sibling row streaming, a disclosure opening above it. Both props are
-// primitives, so the shallow comparison is the right one. Nothing in this
+// a sibling row streaming, a disclosure opening above it. Every prop is a
+// primitive, so the shallow comparison is the right one. Nothing in this
 // build memoises for us (`ARCHITECTURE.md`, "Frontend architecture").
 export const MarkdownBody = memo(function MarkdownBody({
   children,
   className,
+  appLinks = false,
 }: MarkdownBodyProps) {
   return (
     // A URL, a hash or a path with no break opportunity wraps rather than
     // widening the row; `pre` and inline code opt back out.
     <div className={cx("[overflow-wrap:anywhere]", className)}>
-      <Markdown components={COMPONENTS} remarkPlugins={PLUGINS}>
+      <Markdown
+        components={appLinks ? APP_COMPONENTS : COMPONENTS}
+        remarkPlugins={PLUGINS}
+      >
         {children}
       </Markdown>
     </div>

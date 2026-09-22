@@ -45,6 +45,15 @@ describe("PageLayout", () => {
     expect(screen.getByText("operator")).toBeDefined();
   });
 
+  it("links the help page", () => {
+    installSession({ user: user(), access_token: "test-access-token" });
+    renderLayout();
+
+    expect(
+      screen.getByRole("link", { name: "Help" }).getAttribute("href"),
+    ).toBe("/help");
+  });
+
   it("shows the Admin link to an admin", () => {
     installSession({
       user: user({ username: "root-operator", admin: true }),

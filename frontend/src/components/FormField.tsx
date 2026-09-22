@@ -6,6 +6,8 @@
 // `FieldShell` directly and is not made to invent a setter it never calls.
 
 import type { HTMLInputTypeAttribute } from "react";
+
+import type { HelpTopic } from "../help/topics";
 import { FieldShell } from "./FieldShell";
 import { CONTROL } from "./fieldStyles";
 
@@ -18,6 +20,8 @@ export interface FormFieldProps {
   onChange: (value: string) => void;
   error?: string;
   hint?: string;
+  /** The help topic a `Learn more` link after the hint opens (`FieldShell`). */
+  help?: HelpTopic;
   /**
    * Passed through verbatim. A password field always says which password it is
    * — `current-password` or `new-password` — and never falls back to `on`.
@@ -37,6 +41,7 @@ export function FormField({
   onChange,
   error,
   hint,
+  help,
   autoComplete,
   placeholder,
   required,
@@ -49,6 +54,7 @@ export function FormField({
       name={name}
       error={error}
       hint={hint}
+      help={help}
       required={required}
     >
       {(control) => (

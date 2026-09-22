@@ -6,9 +6,39 @@
 import { ApiError } from "../../services/apiClient";
 import { errorMessage } from "../../services/errorMessage";
 
-/** `ARCHITECTURE.md`, "Secrets": the resolution order, in one line. */
+/**
+ * `ARCHITECTURE.md`, "Secrets", Resolution at launch: which secrets reach a
+ * session at all, and which scope wins a name. Agent credentials are the one
+ * exception to the first half — injected without being listed (ADR 0036) —
+ * which matters on a project's tab, where they are in the same table.
+ */
 export const PRECEDENCE_HELP =
-  "At launch, project secrets override global ones and your user secrets override both; orchestrator-only secrets are never injected.";
+  "A secret reaches a session only when the session's profile lists its name; agent credentials need no listing. Where the name is set at several scopes, the launching user's secret overrides the project's, which overrides the global one. Orchestrator-only secrets are never injected.";
+
+/**
+ * The name rule of `utils/secretName.ts` (`docs/data-model.md`, `secrets`:
+ * `^[A-Z][A-Z0-9_]{0,127}$`) in words, before anything is typed.
+ */
+export const SECRET_NAME_HINT =
+  "Environment variable name: A–Z, 0–9 and _, starting with a letter.";
+
+/**
+ * What the orchestrator-only flag does (`ARCHITECTURE.md`, "Secrets",
+ * Resolution at launch): a winning row with the flag is skipped, and no
+ * lower-precedence row takes its place.
+ */
+export const ORCHESTRATOR_ONLY_HINT =
+  "Kept for Mars itself (e.g. git); never injected into a session, even if a profile declares it.";
+
+/** The flag's short form, beside a row that carries it. */
+export const ORCHESTRATOR_ONLY_BADGE = "never injected";
+
+/**
+ * The project's git credential (`SPEC.md`, "Projects"): what it is for and
+ * the two things to know about keeping it.
+ */
+export const GIT_CREDENTIAL_NOTE =
+  "Used by git operations for this project. Replace it when the token expires; keep it orchestrator-only.";
 
 /** 409 from a create or a rename: the scope already has that name. */
 export const DUPLICATE_SECRET_MESSAGE =

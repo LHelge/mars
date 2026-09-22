@@ -141,8 +141,13 @@ describe("SecretsManager", () => {
     // `created_by` resolved through the users list.
     expect(within(table).getAllByText("operator").length).toBe(2);
     expect(
-      screen.getByText(/project secrets override global ones/),
+      screen.getByText(/only when the session's profile lists its name/),
     ).toBeDefined();
+    expect(
+      screen
+        .getByRole("link", { name: "Learn more about Secrets" })
+        .getAttribute("href"),
+    ).toBe("/help#secrets");
   });
 
   it("creates a secret and keeps no value afterwards", async () => {

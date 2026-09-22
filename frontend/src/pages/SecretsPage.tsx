@@ -36,6 +36,15 @@ const CHOICES: { value: Choice; label: string; adminOnly?: boolean }[] = [
   { value: "user", label: "Another user", adminOnly: true },
 ];
 
+/**
+ * What each scope can reach (`ARCHITECTURE.md`, "Secrets", Resolution at
+ * launch): the resolver looks a name up at `global`, the session's project and
+ * the launching user, so a project secret never leaves its project and a user
+ * secret never reaches a session somebody else launched.
+ */
+const SCOPE_HINT =
+  "Global secrets can reach every project's sessions, project secrets only that project's, and user secrets only the sessions their owner launches.";
+
 const SELECT_CLASS =
   "border-console-border bg-console-bg text-console-text rounded border px-2 py-1 font-mono text-xs";
 
@@ -154,7 +163,10 @@ export function SecretsPage() {
         />
 
         <div className="space-y-5">
-          <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <fieldset
+            className="flex flex-wrap items-center gap-x-4 gap-y-2"
+            aria-describedby="secret-scope-hint"
+          >
             <legend className="text-console-muted mb-1 text-xs">Scope</legend>
 
             {CHOICES.filter((entry) => !entry.adminOnly || isAdmin).map(
@@ -217,6 +229,13 @@ export function SecretsPage() {
                 ))}
               </select>
             )}
+
+            <p
+              id="secret-scope-hint"
+              className="text-console-muted w-full max-w-prose text-xs"
+            >
+              {SCOPE_HINT}
+            </p>
           </fieldset>
 
           {needsId ? (

@@ -90,7 +90,11 @@ export function SecretsManager({
 
   return (
     <section className="space-y-3">
-      <SectionHeader title={title} description={PRECEDENCE_HELP} />
+      <SectionHeader
+        title={title}
+        description={PRECEDENCE_HELP}
+        help="secrets"
+      />
 
       {secrets.isError &&
         (forbidden ? (

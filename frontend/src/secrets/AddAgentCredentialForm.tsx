@@ -14,6 +14,7 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { Alert } from "../components/Alert";
 import { FormField } from "../components/FormField";
+import { HelpLink } from "../components/HelpLink";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { createSecret } from "../services/secrets";
@@ -27,6 +28,15 @@ import { invalidateSecretQueries } from "./invalidate";
 
 const SELECT_CLASS =
   "border-console-border bg-console-bg text-console-text rounded border px-2 py-1 font-mono text-xs disabled:opacity-50";
+
+/**
+ * What `Applies to` decides (`ARCHITECTURE.md`, "Secrets", Agent credentials,
+ * and "Task tracker" → "Unattended launches"): a person's launch resolves the
+ * most specific of their own, the project's and the global credential, and an
+ * unattended one has no user, so only the last two can ever reach it.
+ */
+const APPLIES_TO_HINT =
+  "Your own launches use the most specific credential that applies: yours, then the project's, then Everyone's. Automatic and scheduled runs have no user behind them, so they need a project or Everyone credential.";
 
 /** The third field, in the order it is offered; `Me` is the default. */
 const APPLIES_TO: { value: AppliesTo; label: string }[] = [
@@ -111,7 +121,10 @@ export function AddAgentCredentialForm({
           )}
         </fieldset>
 
-        <fieldset className="flex flex-col gap-1.5">
+        <fieldset
+          className="flex flex-col gap-1.5"
+          aria-describedby="agent-credential-applies-to-hint"
+        >
           <legend className="text-console-muted mb-1.5 text-xs">
             Applies to
           </legend>
@@ -165,6 +178,15 @@ export function AddAgentCredentialForm({
               </select>
             )
           )}
+
+          {/* The link sits beside the hint, outside what the fieldset's
+              `aria-describedby` names (`SPEC.md`, "Frontend", Help). */}
+          <div className="text-console-muted max-w-prose text-xs">
+            <p id="agent-credential-applies-to-hint" className="inline">
+              {APPLIES_TO_HINT}
+            </p>{" "}
+            <HelpLink topic="agent-credentials" />
+          </div>
         </fieldset>
       </div>
 

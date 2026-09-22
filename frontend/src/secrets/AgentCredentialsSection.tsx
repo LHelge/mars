@@ -138,6 +138,7 @@ export function AgentCredentialsSection({
       <SectionHeader
         title="Agent credentials"
         description="What agents authenticate with. Every session picks up the most specific credential that applies to the user who launches it."
+        help="agent-credentials"
       />
 
       {failed && (

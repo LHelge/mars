@@ -32,6 +32,10 @@ function profile(
     is_default: false,
     auto_launch: false,
     max_concurrent: 1,
+    schedule_cron: null,
+    schedule_prompt: null,
+    last_scheduled_at: null,
+    next_scheduled_at: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };

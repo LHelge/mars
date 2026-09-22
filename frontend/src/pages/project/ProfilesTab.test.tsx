@@ -1,6 +1,11 @@
 // What a failed read does to the profiles tab (`SPEC.md`, "Frontend", Read
 // failures): a refetch that fails over an open editor is a banner, and a first
 // read that fails is never an empty list.
+//
+// And what automation looks like from here (`SPEC.md`, "Frontend", Unattended
+// launches and Scheduled profiles): the list says what runs a profile without
+// a person, and the editor renders the schedule the server stored — its two
+// timestamps in both zones, and its refusals on the field they are about.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -15,11 +20,13 @@ import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../services/apiClient";
 import { clearAuth, installSession } from "../../services/auth";
-import { listProfiles } from "../../services/profiles";
+import { listProfiles, updateProfile } from "../../services/profiles";
 import { queryKeys } from "../../services/queryKeys";
 import { getAgentCredentials, listSecrets } from "../../services/secrets";
 import { listTaskStates } from "../../services/taskStates";
 import type { Profile, Project } from "../../types";
+import { formatDateTime, formatUtc } from "../../utils/format";
+import { PROFILE_AUTOMATION } from "../../utils/testIds";
 import { ProfilesTab } from "./ProfilesTab";
 
 vi.mock("../../services/profiles", () => ({
@@ -77,8 +84,27 @@ function profile(): Profile {
     is_default: true,
     auto_launch: false,
     max_concurrent: 1,
+    schedule_cron: null,
+    schedule_prompt: null,
+    last_scheduled_at: null,
+    next_scheduled_at: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
+  };
+}
+
+/** The same profile, ephemeral and on a schedule the server has answered for. */
+function scheduled(): Profile {
+  return {
+    ...profile(),
+    name: "tech-debt-scan",
+    kind: "ephemeral",
+    is_default: false,
+    auto_launch: true,
+    schedule_cron: "0 6 * * *",
+    schedule_prompt: "Scan the repository for tech debt and file tasks.",
+    last_scheduled_at: "2026-02-01T06:00:00Z",
+    next_scheduled_at: "2026-02-02T06:00:00Z",
   };
 }
 
@@ -149,6 +175,71 @@ describe("ProfilesTab", () => {
     expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
     const still = screen.getByLabelText<HTMLInputElement>(/^Name/);
     expect(still.value).toBe("scout");
+  });
+
+  it("marks what runs a profile without a person, in the list", async () => {
+    vi.mocked(listProfiles).mockResolvedValue([profile(), scheduled()]);
+
+    renderTab("?tab=profiles");
+
+    const cells = await screen.findAllByTestId(PROFILE_AUTOMATION);
+    expect(cells).toHaveLength(2);
+    // Nothing launches the first one by itself.
+    expect(cells[0]?.textContent).toBe("manual");
+    expect(cells[1]?.textContent).toContain("auto-launch");
+    expect(cells[1]?.textContent).toContain("schedule");
+    // The expression itself is a hover away, so the column stays narrow.
+    expect(cells[1]?.querySelector("[title]")?.getAttribute("title")).toContain(
+      "The dispatcher may launch this profile",
+    );
+  });
+
+  it("shows the schedule of an ephemeral profile in UTC and in local time", async () => {
+    vi.mocked(listProfiles).mockResolvedValue([scheduled()]);
+
+    renderTab(`?tab=profiles&profile=${PROFILE_ID}`);
+
+    const cron = await screen.findByLabelText<HTMLInputElement>(
+      "Cron expression (UTC)",
+    );
+    expect(cron.value).toBe("0 6 * * *");
+    const prompt = screen.getByLabelText<HTMLTextAreaElement>("Schedule prompt");
+    expect(prompt.value).toContain("Scan the repository");
+
+    // The server's two timestamps, the local one first and the UTC instant
+    // beside it — both readable without hovering anything.
+    const next = screen.getByLabelText("Next run");
+    expect(next.textContent).toContain(formatDateTime("2026-02-02T06:00:00Z"));
+    expect(next.textContent).toContain(formatUtc("2026-02-02T06:00:00Z"));
+    expect(screen.getByLabelText("Last run").textContent).toContain(
+      formatDateTime("2026-02-01T06:00:00Z"),
+    );
+  });
+
+  it("shows the server's refusal of an expression at the expression", async () => {
+    vi.mocked(listProfiles).mockResolvedValue([scheduled()]);
+    vi.mocked(updateProfile).mockRejectedValue(
+      new ApiError(
+        400,
+        "schedule_cron is not a valid cron expression: invalid digit",
+      ),
+    );
+
+    renderTab(`?tab=profiles&profile=${PROFILE_ID}`);
+
+    const cron = await screen.findByLabelText<HTMLInputElement>(
+      "Cron expression (UTC)",
+    );
+    fireEvent.change(cron, { target: { value: "0 6 * * 9" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+
+    // At the field, in the server's own words, and not as a form-wide alert:
+    // the bundle carries no cron parser, so this is the only judgement there is.
+    const message = await screen.findByText(
+      "schedule_cron is not a valid cron expression: invalid digit",
+    );
+    expect(message.id).toBe("profile-schedule-cron-error");
+    expect(cron.getAttribute("aria-invalid")).toBe("true");
   });
 
   it("shows no empty state when the first read fails", async () => {

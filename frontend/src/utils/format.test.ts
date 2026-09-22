@@ -4,6 +4,7 @@ import {
   formatRelative,
   formatTokens,
   formatUsd,
+  formatUtc,
   PLACEHOLDER,
   shortId,
 } from "./format";
@@ -37,6 +38,23 @@ describe("formatDateTime", () => {
 
   it("formats a real timestamp", () => {
     expect(formatDateTime("2026-03-01T12:00:00Z")).not.toBe(PLACEHOLDER);
+  });
+});
+
+describe("formatUtc", () => {
+  it("answers the placeholder for a missing timestamp", () => {
+    expect(formatUtc(null)).toBe(PLACEHOLDER);
+    expect(formatUtc("")).toBe(PLACEHOLDER);
+    expect(formatUtc("not a date")).toBe(PLACEHOLDER);
+  });
+
+  it("says which zone it is in, and shows that zone's clock", () => {
+    const formatted = formatUtc("2026-03-01T12:00:00Z");
+
+    expect(formatted).toMatch(/ UTC$/);
+    // Whatever the runner's locale, the hour is the UTC one and not the
+    // machine's — the whole point of showing it beside the local time.
+    expect(formatted).toContain("12:00");
   });
 });
 

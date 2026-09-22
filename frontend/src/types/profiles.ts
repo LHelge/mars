@@ -64,6 +64,26 @@ export interface Profile {
    * behind; at least 1, and read whether or not `auto_launch` is set.
    */
   max_concurrent: number;
+  /**
+   * The UTC 5-field cron expression a session of this profile is launched on,
+   * or `null` for a profile nothing schedules. Only an `ephemeral` profile may
+   * carry one, and only while the backend's agent credential resolves without
+   * a user (`SPEC.md`, "Agent profiles" → "Scheduled profiles"; ADR 0043).
+   */
+  schedule_cron: string | null;
+  /** The `message` a scheduled run is given; set exactly when `schedule_cron` is. */
+  schedule_prompt: string | null;
+  /**
+   * When the scheduler last decided a tick of this profile fires. Read-only —
+   * the job is its only writer — and cleared when the schedule is.
+   */
+  last_scheduled_at: string | null;
+  /**
+   * The first occurrence of `schedule_cron` strictly after now, in UTC,
+   * computed by the server on every read so no client needs a cron parser.
+   * `null` without a schedule, and for an expression that can never fire.
+   */
+  next_scheduled_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -113,4 +133,12 @@ export interface ProfileInput {
   auto_launch?: boolean;
   /** Defaults to 1 when omitted, on `PUT` as well as on `POST`. */
   max_concurrent?: number;
+  /**
+   * The schedule. The two fields stand or fall together: an expression without
+   * a non-blank prompt is a 400, a prompt without an expression is a 400, and
+   * both absent or blank is the profile having no schedule. `last_scheduled_at`
+   * and `next_scheduled_at` are the scheduler's and are never sent.
+   */
+  schedule_cron?: string | null;
+  schedule_prompt?: string | null;
 }

@@ -56,6 +56,22 @@ export function formatDateTime(iso: string | null | undefined): string {
   return date === null ? PLACEHOLDER : DATE_TIME.format(date);
 }
 
+const UTC_DATE_TIME = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "UTC",
+});
+
+/**
+ * The same instant in UTC, named as such. A schedule is written in UTC and
+ * read in the viewer's own zone, so the two are shown together and the UTC
+ * one has to say which one it is.
+ */
+export function formatUtc(iso: string | null | undefined): string {
+  const date = parse(iso);
+  return date === null ? PLACEHOLDER : `${UTC_DATE_TIME.format(date)} UTC`;
+}
+
 /** What a single session's spend is shown to: four decimals, in one place. */
 export const COST_DECIMALS = 4;
 

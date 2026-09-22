@@ -1,16 +1,18 @@
 ---
 id: "23pue"
 title: "Hints and help links: task board, states, hand-offs, sessions, admin invites and dashboard"
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-22T19:08:55.783831647Z"
-updated: "2026-09-22T19:09:01.124440055Z"
+updated: "2026-09-22T21:22:54.828105025Z"
 tags:
   - frontend
 depends_on:
   - ujccg
   - snn6t
+  - v9rjg
 parent: gtbp5
+attempts: 1
 ---
 
 Tighten hints and add `help` links. Invoke `/frontend-design` first. Update tests that assert old strings.

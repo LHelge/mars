@@ -1,10 +1,10 @@
 ---
 id: v9rjg
 title: Switch the icon set to Lucide behind one icon map, and add icons across the console
-status: open
+status: done
 priority: P2
 created: "2026-09-22T19:16:23.765882974Z"
-updated: "2026-09-22T19:16:23.765882974Z"
+updated: "2026-09-22T21:22:54.791232405Z"
 tags:
   - frontend
   - docs
@@ -13,8 +13,8 @@ depends_on:
   - snn6t
   - ky3hc
   - "34y5m"
-  - "23pue"
 parent: gtbp5
+attempts: 1
 ---
 
 Heroicons (~300 icons, 7 used in 8 files) has no git icons (branch, merge, commit, pull request), and git is a large part of the console. Switch to `lucide-react` (same 24px outline style, git/terminal/bot icons, tree-shaken per icon). Invoke `/frontend-design` first.

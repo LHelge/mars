@@ -1,10 +1,10 @@
 ---
 id: "4qa8f"
 title: "Help content: automation, branches in Mars, task flow and hand-offs, shared directories"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-22T19:08:28.070395061Z"
-updated: "2026-09-22T19:08:55.718018330Z"
+updated: "2026-09-22T21:22:54.809927271Z"
 tags:
   - frontend
   - docs
@@ -12,6 +12,7 @@ depends_on:
   - ujccg
   - u9jp4
 parent: gtbp5
+attempts: 1
 ---
 
 Write the Markdown for these `src/help/` topics, same rules as the sibling content task (agree with the docs; fix a wrong doc in the same commit).

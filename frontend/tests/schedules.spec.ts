@@ -206,7 +206,11 @@ test("a due schedule launches a session nobody asked for, and a pause stops the 
 
   // ---- the user gives the profile a schedule ----
   const editor = await openEditor(page, project, profile);
-  await editor.getByLabel("Cron expression (UTC)").fill(CRON);
+  // The checkbox owns the fieldset: the fields are disabled until it is on.
+  const cronField = editor.getByLabel("Cron expression (UTC)");
+  await expect(cronField).toBeDisabled();
+  await editor.getByLabel(/Run this profile on a schedule/).check();
+  await cronField.fill(CRON);
   await editor.getByLabel("Schedule prompt").fill(PROMPT);
   await editor.getByRole("button", { name: "Save profile" }).click();
 

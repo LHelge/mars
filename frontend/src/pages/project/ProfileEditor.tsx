@@ -656,8 +656,30 @@ export function ProfileEditor({
                 and when it next fires, are the server's answers (ADR 0043). */}
               <Fieldset
                 legend="Schedule"
-                description="A cron expression starts a session of this profile by itself, on the clock, and gives it the prompt below. Leave both empty for no schedule."
+                description="A cron expression starts a session of this profile by itself, on the clock, and gives it the prompt below."
               >
+                {/* The checkbox owns the fieldset: off, the two fields keep
+                  what was typed but are disabled and nothing is sent, so
+                  turning a schedule off is a tick and not an emptied box. */}
+                <label className="text-console-text flex items-start gap-2 pb-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.scheduled}
+                    onChange={(event) => {
+                      patchSchedule({ scheduled: event.target.checked });
+                    }}
+                    disabled={save.loading}
+                    className={`${CHECK_CLASS} mt-1`}
+                  />
+                  <span>
+                    Run this profile on a schedule
+                    <span className="text-console-muted block text-xs">
+                      Off: the expression and prompt below are kept but nothing
+                      runs on the clock.
+                    </span>
+                  </span>
+                </label>
+
                 <FieldShell
                   label="Cron expression (UTC)"
                   name="profile-schedule-cron"
@@ -671,10 +693,10 @@ export function ProfileEditor({
                       onChange={(event) => {
                         patchSchedule({ schedule_cron: event.target.value });
                       }}
-                      placeholder="no schedule"
+                      placeholder="0 6 * * *"
                       autoComplete="off"
                       spellCheck={false}
-                      disabled={save.loading}
+                      disabled={save.loading || !form.scheduled}
                       className={FIELD}
                     />
                   )}
@@ -709,7 +731,7 @@ export function ProfileEditor({
                           });
                         }}
                         spellCheck={false}
-                        disabled={save.loading}
+                        disabled={save.loading || !form.scheduled}
                         className={`${FIELD} resize-y`}
                       />
                     )}
@@ -718,7 +740,7 @@ export function ProfileEditor({
 
                 {/* Before the save, from the answer the secrets notice already
                   read; after it, in the server's own words at the field. */}
-                {form.schedule_cron.trim() !== "" && scheduleError === null && (
+                {form.scheduled && scheduleError === null && (
                   <UnattendedCredentialNotice unattended={unattended} />
                 )}
 

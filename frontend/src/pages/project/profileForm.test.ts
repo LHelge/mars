@@ -451,6 +451,8 @@ describe("prefillFromTemplate", () => {
     });
 
     expect(form.kind).toBe("ephemeral");
+    // The template's schedule arrives switched on.
+    expect(form.scheduled).toBe(true);
     expect(form.schedule_cron).toBe("0 4 * * *");
     expect(form.schedule_prompt).toBe("Scan this project for technical debt.");
     // Partial messages follow the kind the template brought, not the
@@ -557,10 +559,18 @@ describe("the schedule pair", () => {
       schedule_cron: cron,
       schedule_prompt: prompt,
     });
+  /** The checkbox on, over fields that may still be empty. */
+  const switchedOn = (cron: string, prompt: string) => ({
+    ...ephemeral("", ""),
+    scheduled: true,
+    schedule_cron: cron,
+    schedule_prompt: prompt,
+  });
 
-  it("round-trips a stored schedule through the form", () => {
+  it("round-trips a stored schedule through the form, with the checkbox on", () => {
     const state = toFormState(toProfileInput(STORED));
 
+    expect(state.scheduled).toBe(true);
     expect(state.schedule_cron).toBe("0 6 * * *");
     expect(state.schedule_prompt).toBe("Scan the repository for tech debt.");
     expect(toInput(state).schedule_cron).toBe("0 6 * * *");
@@ -569,25 +579,37 @@ describe("the schedule pair", () => {
     );
   });
 
-  it("sends both fields as null to clear the schedule", () => {
-    const input = toInput(ephemeral("", ""));
+  it("starts with the checkbox off for a profile with no schedule", () => {
+    expect(ephemeral("", "").scheduled).toBe(false);
+  });
+
+  it("sends both fields as null while the checkbox is off, whatever the boxes hold", () => {
+    const off = { ...ephemeral("0 6 * * *", "Scan."), scheduled: false };
+    const input = toInput(off);
 
     expect(input.schedule_cron).toBeNull();
     expect(input.schedule_prompt).toBeNull();
+    // The boxes keep what was typed, so ticking the box again restores it.
+    expect(toInput({ ...off, scheduled: true }).schedule_cron).toBe(
+      "0 6 * * *",
+    );
   });
 
   it("treats a whitespace-only prompt as no prompt", () => {
-    expect(toInput(ephemeral("", "   \n")).schedule_prompt).toBeNull();
+    expect(
+      toInput(switchedOn("0 6 * * *", "   \n")).schedule_prompt,
+    ).toBeNull();
   });
 
   it("keeps the whitespace inside a prompt that was written", () => {
     expect(
-      toInput(ephemeral("0 6 * * *", "Do this.\n\nThen that.")).schedule_prompt,
+      toInput(switchedOn("0 6 * * *", "Do this.\n\nThen that."))
+        .schedule_prompt,
     ).toBe("Do this.\n\nThen that.");
   });
 
   it("trims the expression, which is never prose", () => {
-    expect(toInput(ephemeral("  0 6 * * *  ", "Scan.")).schedule_cron).toBe(
+    expect(toInput(switchedOn("  0 6 * * *  ", "Scan.")).schedule_cron).toBe(
       "0 6 * * *",
     );
   });
@@ -602,19 +624,27 @@ describe("the schedule pair", () => {
     expect(toInput(scheduled).schedule_cron).toBe("0 6 * * *");
   });
 
-  it("asks for the prompt an expression needs, and the expression a prompt needs", () => {
-    expect(scheduleErrors(ephemeral("0 6 * * *", "")).prompt).not.toBeNull();
-    expect(scheduleErrors(ephemeral("0 6 * * *", "")).cron).toBeNull();
-    expect(scheduleErrors(ephemeral("", "Scan.")).cron).not.toBeNull();
-    expect(scheduleErrors(ephemeral("", "Scan.")).prompt).toBeNull();
-  });
-
-  it("calls both empty no schedule rather than a mistake", () => {
-    expect(scheduleErrors(ephemeral("", ""))).toEqual({
+  it("requires both fields once the checkbox is on", () => {
+    expect(scheduleErrors(switchedOn("", ""))).toEqual({
+      cron: "Required.",
+      prompt: "Required.",
+    });
+    expect(scheduleErrors(switchedOn("0 6 * * *", "")).prompt).not.toBeNull();
+    expect(scheduleErrors(switchedOn("0 6 * * *", "")).cron).toBeNull();
+    expect(scheduleErrors(switchedOn("", "Scan.")).cron).not.toBeNull();
+    expect(scheduleErrors(switchedOn("", "Scan.")).prompt).toBeNull();
+    expect(scheduleErrors(switchedOn("0 6 * * *", "Scan."))).toEqual({
       cron: null,
       prompt: null,
     });
-    expect(scheduleErrors(ephemeral("0 6 * * *", "Scan."))).toEqual({
+  });
+
+  it("refuses nothing while the checkbox is off", () => {
+    // Half-filled boxes under an unticked checkbox are not sent, so they are
+    // not a mistake either.
+    expect(
+      scheduleErrors({ ...ephemeral("0 6 * * *", ""), scheduled: false }),
+    ).toEqual({
       cron: null,
       prompt: null,
     });
@@ -623,9 +653,9 @@ describe("the schedule pair", () => {
   it("judges no expression itself", () => {
     // Nonsense that only the server can refuse still passes the local check:
     // the bundle carries no cron parser (ADR 0043).
-    expect(scheduleErrors(ephemeral("@daily", "Scan.")).cron).toBeNull();
+    expect(scheduleErrors(switchedOn("@daily", "Scan.")).cron).toBeNull();
     expect(
-      scheduleErrors(ephemeral("not cron at all", "Scan.")).cron,
+      scheduleErrors(switchedOn("not cron at all", "Scan.")).cron,
     ).toBeNull();
   });
 });

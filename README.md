@@ -303,7 +303,7 @@ The credential entered when creating a project is stored as the project secret `
 | GitHub | Classic PAT | `repo` (plus `workflow` for the same reason). Prefer a fine-grained token: a classic one reaches every repository you can. |
 | GitLab | Project access token, or a personal access token | `read_repository` and `write_repository`; the role must be allowed to push to the branches Mars pushes. |
 
-A read-only token (Contents: Read-only, `read_repository`) is enough to clone and fetch, and every push then fails with the host's refusal. A public repository needs no token until the first push. Replace an expired token by replacing the value of the project's `GIT_CREDENTIAL` secret on the Secrets page.
+A read-only token (Contents: Read-only, `read_repository`) is enough to clone and fetch, and every push then fails with the host's refusal. A public repository needs no token until the first push; add one then as a project secret named `GIT_CREDENTIAL` with `orchestrator only` set. Replace an expired token by replacing the value of the project's `GIT_CREDENTIAL` secret on the Secrets page. Keep that secret orchestrator-only, so no profile that declares the name can put it into a session, and do not rename it: the orchestrator finds it by that exact name, and under any other the project has no credential.
 
 #### Skills and plugins
 

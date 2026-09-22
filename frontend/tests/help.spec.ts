@@ -53,7 +53,7 @@ test("the help page's contents and topic links move between anchored sections", 
   // A `help:` link in one topic's prose goes to another in place.
   await page
     .getByRole("region", { name: "Agent credentials" })
-    .getByRole("link", { name: "secrets" })
+    .getByRole("link", { name: "secrets", exact: true })
     .click();
   await expect(page).toHaveURL(/\/help#secrets$/);
   const secrets = page.getByRole("heading", { name: "Secrets", exact: true });

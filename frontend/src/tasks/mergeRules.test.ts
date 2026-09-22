@@ -1,7 +1,8 @@
 // The merge button mirrors the server's approval gate, so the predicate is
-// tested against every review status a hand-off can be in, and the conflict
-// parsing against the two failures the endpoint distinguishes: 422 with paths
-// and 409 without.
+// tested against every review status a hand-off can be in. The other failure
+// the endpoint distinguishes — the 422 that carries the conflicting paths — is
+// `useGitAction`'s to read, and is tested in
+// `src/components/git/formState.test.ts`.
 
 import { describe, expect, it } from "vitest";
 
@@ -10,7 +11,6 @@ import type { Handoff, ReviewStatus, TaskDetail } from "../types";
 import {
   canMerge,
   isStaleMerge,
-  mergeConflict,
   mergeCoverLine,
   mergeErrorMessage,
   mergedMessage,
@@ -47,28 +47,6 @@ describe("canMerge", () => {
 
   it("allows an approved current hand-off", () => {
     expect(canMerge(task(handoff("approved")))).toBe(true);
-  });
-});
-
-describe("mergeConflict", () => {
-  it("reads the paths and the sentence off a 422", () => {
-    const error = new ApiError(422, "merge conflict", [
-      "src/one.ts",
-      "src/two.ts",
-    ]);
-
-    expect(mergeConflict(error)).toEqual({
-      paths: ["src/one.ts", "src/two.ts"],
-      message: "merge conflict",
-    });
-  });
-
-  it("is not a conflict without the paths, whatever the status", () => {
-    expect(mergeConflict(new ApiError(422, "merge conflict"))).toBeNull();
-    expect(
-      mergeConflict(new ApiError(409, "hand-off is not approved")),
-    ).toBeNull();
-    expect(mergeConflict(new Error("offline"))).toBeNull();
   });
 });
 

@@ -38,13 +38,12 @@ import { useFormSubmit } from "../hooks/useFormSubmit";
 import type { Handoff, TaskDetail } from "../types";
 import {
   REVIEW_ACTION,
-  STATE_HINT,
   reviewCoverLine,
   reviewErrorMessage,
 } from "./handoffRules";
 import type { ReviewDecision } from "./handoffRules";
 import { useDrawerEscape } from "./drawerEscape";
-import { useTaskStore } from "./taskStore";
+import { TargetStateSelect } from "./TargetStateSelect";
 import { useUpdateTask } from "./taskWrites";
 
 export interface ReviewFormProps {
@@ -66,7 +65,6 @@ export function ReviewForm({
   decision,
   onDone,
 }: ReviewFormProps) {
-  const states = useTaskStore((store) => store.states);
   const updateTask = useUpdateTask(projectId, task.number);
 
   // The hand-off under review, captured once. `handoff` goes on naming the
@@ -131,28 +129,13 @@ export function ReviewForm({
         </Alert>
       )}
 
-      <FieldShell label="Move to" name="review-state" hint={STATE_HINT}>
-        {(control) => (
-          <select
-            {...control}
-            value={state}
-            disabled={send.loading}
-            onChange={(event) => {
-              setState(event.target.value);
-            }}
-            className={FIELD}
-          >
-            <option value="">Choose a state</option>
-            {states
-              .filter((row) => row.name !== task.state)
-              .map((row) => (
-                <option key={row.id} value={row.name}>
-                  {row.name}
-                </option>
-              ))}
-          </select>
-        )}
-      </FieldShell>
+      <TargetStateSelect
+        id="review-state"
+        task={task}
+        value={state}
+        onChange={setState}
+        disabled={send.loading}
+      />
 
       <FieldShell label="Comment" name="review-comment">
         {(control) => (

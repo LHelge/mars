@@ -51,7 +51,7 @@ The task tools are always available. Four further tools act on the project's git
 
 `push` is the one that reaches outside Mars, and the starter profiles don't grant it. Grant it only to a profile whose job is to publish. An implementer doesn't need `rebase` either, because it can fetch and rebase inside its own clone. [Branches and merging](help:branches) explains the branches these tools act on.
 
-### Secrets
+### Declared secrets
 
 These are the names of any [secrets](help:secrets) the agent's job needs as environment variables, such as a package registry token. The [agent credential](help:agent-credentials) is never listed here, because every session receives it anyway. The profile editor shows which credential a launch would use.
 

@@ -1,0 +1,35 @@
+{
+  "method": "POST",
+  "path": "/mcp",
+  "headers": {
+    "accept": "application/json, text/event-stream",
+    "content-type": "application/json",
+    "host": "orchestrator:7001",
+    "mcp-method": "server/discover",
+    "mcp-protocol-version": "2026-07-28"
+  },
+  "body": {
+    "id": "server-discover-probe-1",
+    "jsonrpc": "2.0",
+    "method": "server/discover",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/clientCapabilities": {
+          "elicitation": {},
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "description": "Anthropic's agentic coding tool",
+          "name": "claude-code",
+          "title": "Claude Code",
+          "version": "2.1.274",
+          "websiteUrl": "https://claude.com/claude-code"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+      }
+    }
+  },
+  "status": 200
+}

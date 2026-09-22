@@ -8,11 +8,6 @@
 // while its panel is the open one, so closing the panel — by any route — is
 // what drops the plaintext (`CLAUDE.md`, rule 3).
 
-import {
-  ChevronDownIcon,
-  ChevronRightIcon,
-  LockClosedIcon,
-} from "@heroicons/react/24/outline";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { invalidateSecretQueries } from "../../secrets/invalidate";
@@ -28,6 +23,7 @@ import {
 import { Alert } from "../Alert";
 import { ConfirmPanel } from "../ConfirmPanel";
 import { HelpLink } from "../HelpLink";
+import { Icon, ICON_CLASS } from "../icons";
 import { SubmitButton } from "../SubmitButton";
 import { CELL, ROW, SPAN_CELL_ROOMY } from "../tableStyles";
 import { SECRET_COLUMNS } from "./columns";
@@ -170,7 +166,7 @@ export function SecretRow({
                 about the row that decides whether a session ever sees it. */}
             {secret.orchestrator_only && (
               <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                <LockClosedIcon aria-hidden="true" className="size-3.5" />
+                <Icon.lock aria-hidden="true" className={ICON_CLASS} />
                 {ORCHESTRATOR_ONLY_BADGE}
               </span>
             )}
@@ -241,18 +237,12 @@ export function SecretRow({
               variant="ghost"
               disabled={busy}
               aria-expanded={panel === "uses"}
+              icon={panel === "uses" ? Icon.collapse : Icon.expand}
               onClick={() => {
                 togglePanel("uses");
               }}
             >
-              <span className="inline-flex items-center gap-1">
-                {panel === "uses" ? (
-                  <ChevronDownIcon aria-hidden="true" className="size-3.5" />
-                ) : (
-                  <ChevronRightIcon aria-hidden="true" className="size-3.5" />
-                )}
-                Uses
-              </span>
+              Uses
             </SubmitButton>
             <SubmitButton
               type="button"

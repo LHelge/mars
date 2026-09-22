@@ -9,6 +9,7 @@
 // which the hand-off panel's commit copy follows too, over the same
 // `useClipboardCopy` that `CodeBlock`'s `Copy` uses.
 
+import { Icon, ICON_CLASS } from "./icons";
 import { useCopyToClipboard } from "./useClipboardCopy";
 
 export interface CopyLinkButtonProps {
@@ -22,14 +23,16 @@ export function CopyLinkButton({ path, label = "Link" }: CopyLinkButtonProps) {
   const url = `${window.location.origin}${path}`;
   // A new resource is a new link: the hook drops whatever the last one said.
   const { copied, manual, copy, fieldRef } = useCopyToClipboard(url);
+  const Glyph = copied ? Icon.copied : Icon.link;
 
   return (
     <span className="inline-flex min-w-0 items-center gap-2">
       <button
         type="button"
         onClick={copy}
-        className="text-console-muted hover:text-console-text border-console-border hover:bg-console-raised rounded border px-2 py-0.5 font-mono text-xs"
+        className="text-console-muted hover:text-console-text border-console-border hover:bg-console-raised inline-flex items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-xs"
       >
+        <Glyph aria-hidden="true" className={ICON_CLASS} />
         {copied ? "Link copied" : "Copy link"}
       </button>
       {manual && (

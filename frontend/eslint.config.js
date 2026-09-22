@@ -55,6 +55,15 @@ const lazyBarrels = ["session", "launch", "project", "secrets", "tasks"]
       "architecture\"; scripts/check-entry-chunk.mjs enforces the result).",
   }));
 
+// Icons come from the one map of `src/components/icons.ts` (ADR 0047), which is
+// the only file that names the library.
+const iconLibrary = {
+  name: "lucide-react",
+  message:
+    "Import `Icon` from components/icons.ts, the console's one icon map " +
+    "(ADR 0047).",
+};
+
 export default tseslint.config(
   { ignores: ["dist", "node_modules", "coverage"] },
   {
@@ -92,16 +101,25 @@ export default tseslint.config(
   },
   {
     files: ["src/**/*.{ts,tsx}"],
-    rules: { "no-restricted-imports": ["error", { paths: goneBarrels }] },
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        { paths: [...goneBarrels, iconLibrary] },
+      ],
+    },
   },
   {
     files: ENTRY_PATH,
     rules: {
       "no-restricted-imports": [
         "error",
-        { paths: [...goneBarrels, ...lazyBarrels] },
+        { paths: [...goneBarrels, ...lazyBarrels, iconLibrary] },
       ],
     },
+  },
+  {
+    files: ["src/components/icons.ts"],
+    rules: { "no-restricted-imports": ["error", { paths: goneBarrels }] },
   },
   {
     // The Playwright suite is Node, not React. A fixture is

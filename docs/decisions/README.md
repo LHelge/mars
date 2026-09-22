@@ -52,3 +52,6 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0044](0044-pull-deploy-promoted-bundle-on-a-user-timer.md) | The server pulls a promoted release bundle from GHCR on a user timer | accepted |
 | [0045](0045-merge-approved-handoffs-in-the-orchestrator.md) | Approved hand-offs are merged by the orchestrator, configured on the state; a conflict sends the task back | accepted |
 | [0046](0046-bound-implementation-rounds-per-task.md) | Implementation rounds are counted per task and bound send-backs; `attempts` keeps resetting | accepted |
+| [0044](0044-merge-approved-handoffs-in-the-orchestrator.md) | Approved hand-offs are merged by the orchestrator, configured on the state; a conflict sends the task back | accepted |
+| [0045](0045-bound-implementation-rounds-per-task.md) | Implementation rounds are counted per task and bound send-backs; `attempts` keeps resetting | accepted |
+| [0047](0047-lucide-icons-behind-one-map.md) | Icons are Lucide, behind one concept-named map; not Heroicons, and not two sets mixed | accepted |

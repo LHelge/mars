@@ -13,8 +13,9 @@
 // at somebody who does have a credential, and must never block on this read —
 // the server launches either way and reports a `launch_warning` if it has to.
 
-import { ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import { Link } from "react-router";
+
+import { Icon, ICON_CLASS } from "../components/icons";
 
 import type { AgentCredential } from "../types";
 import { labelForCredential } from "./agentCredentials";
@@ -44,7 +45,7 @@ export function AgentCredentialNotice({
   if (credential === null) {
     return (
       <p className="text-state-parked flex items-start gap-1.5 text-xs">
-        <ExclamationTriangleIcon className="mt-px size-3.5 shrink-0" />
+        <Icon.warning aria-hidden="true" className={`mt-px ${ICON_CLASS}`} />
         <span>
           {MISSING}.{" "}
           <Link to="/secrets" className="underline">

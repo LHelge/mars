@@ -6,6 +6,8 @@
 // `pages/projects/ProjectStatusPill`, which colours its `error` red.
 
 import type { SessionState } from "../types";
+import { Icon, ICON_CLASS } from "./icons";
+import type { IconComponent } from "./icons";
 
 export interface StatusBadgeProps {
   state: SessionState;
@@ -19,6 +21,16 @@ const COLOURS: Record<SessionState, string> = {
   creating: "text-console-muted",
 };
 
+/** Beside the label, never instead of it: the shape tells states apart where
+ * colour alone would not. */
+const ICONS: Record<SessionState, IconComponent> = {
+  running: Icon.running,
+  parked: Icon.parked,
+  failed: Icon.failed,
+  done: Icon.done,
+  creating: Icon.creating,
+};
+
 const LABELS: Record<SessionState, string> = {
   running: "running",
   parked: "parked",
@@ -28,11 +40,12 @@ const LABELS: Record<SessionState, string> = {
 };
 
 export function StatusBadge({ state }: StatusBadgeProps) {
+  const Glyph = ICONS[state];
   return (
     <span
       className={`border-console-border bg-console-surface inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 font-mono text-xs ${COLOURS[state]}`}
     >
-      <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
+      <Glyph aria-hidden="true" className={ICON_CLASS} />
       {LABELS[state]}
     </span>
   );

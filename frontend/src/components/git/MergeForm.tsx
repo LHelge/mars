@@ -20,6 +20,7 @@ import { FieldShell } from "../FieldShell";
 import { FIELD } from "../fieldStyles";
 import { FormField } from "../FormField";
 import { HelpLink } from "../HelpLink";
+import { Icon } from "../icons";
 import { SubmitButton } from "../SubmitButton";
 import {
   chosenOr,
@@ -167,7 +168,11 @@ export function MergeForm({
       </p>
 
       <div className="flex items-center gap-3">
-        <SubmitButton loading={action.loading} disabled={disabled || !ready}>
+        <SubmitButton
+          loading={action.loading}
+          disabled={disabled || !ready}
+          icon={Icon.merge}
+        >
           Merge
         </SubmitButton>
         {action.result !== null && (

@@ -33,6 +33,7 @@ import { Link, useNavigate } from "react-router";
 import { Alert } from "../components/Alert";
 import { FieldShell } from "../components/FieldShell";
 import { FIELD } from "../components/fieldStyles";
+import { Icon } from "../components/icons";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import {
@@ -288,6 +289,7 @@ export function LaunchForTask({ projectId, task }: LaunchForTaskProps) {
               variant={noCredential ? "ghost" : "primary"}
               loading={launch.loading}
               disabled={selected === undefined}
+              icon={Icon.launch}
             >
               {noCredential ? "Launch anyway" : ACTION[kind]}
             </SubmitButton>

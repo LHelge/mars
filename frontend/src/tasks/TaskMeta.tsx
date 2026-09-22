@@ -9,6 +9,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 
+import { Icon, ICON_CLASS } from "../components/icons";
 import type { TaskDetail as TaskDetailData } from "../types";
 import { formatDateTime, formatRelative, shortId } from "../utils/format";
 import { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
@@ -138,8 +139,12 @@ export function TaskMeta({ projectId, task }: TaskMetaProps) {
       </dl>
 
       {task.needs_human_reason !== null && (
-        <p className="text-state-human border-state-human/50 max-w-prose border-l-2 pl-2 text-sm">
-          {task.needs_human_reason}
+        <p className="text-state-human border-state-human/50 flex max-w-prose items-start gap-1.5 border-l-2 pl-2 text-sm">
+          <Icon.needsHuman
+            aria-hidden="true"
+            className={`mt-[0.2rem] ${ICON_CLASS}`}
+          />
+          <span className="min-w-0">{task.needs_human_reason}</span>
         </p>
       )}
     </div>

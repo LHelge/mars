@@ -20,6 +20,7 @@
 import { memo } from "react";
 import { Link } from "react-router";
 
+import { Icon, ICON_CLASS } from "../components/icons";
 import type { Task } from "../types";
 import { taskCardTestId } from "../utils/testIds";
 import { taskPath } from "./taskLink";
@@ -75,8 +76,9 @@ function TaskCardView({ task, selected }: TaskCardProps) {
         </div>
 
         {task.needs_human_reason !== null && (
-          <p className="text-state-human mt-1 truncate text-xs">
-            {task.needs_human_reason}
+          <p className="text-state-human mt-1 flex items-center gap-1.5 text-xs">
+            <Icon.needsHuman aria-hidden="true" className={ICON_CLASS} />
+            <span className="min-w-0 truncate">{task.needs_human_reason}</span>
           </p>
         )}
 

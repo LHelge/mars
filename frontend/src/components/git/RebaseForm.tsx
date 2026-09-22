@@ -13,6 +13,7 @@ import { Alert } from "../Alert";
 import { FieldShell } from "../FieldShell";
 import { FIELD } from "../fieldStyles";
 import { HelpLink } from "../HelpLink";
+import { Icon } from "../icons";
 import { SubmitButton } from "../SubmitButton";
 import { chosenOr, refsOfKind, useGitAction, useReportBusy } from "./formState";
 import type { ReportBusy } from "./formState";
@@ -111,6 +112,7 @@ export function RebaseForm({
         <SubmitButton
           loading={action.loading}
           disabled={disabled || onto === ""}
+          icon={Icon.rebase}
         >
           Rebase
         </SubmitButton>

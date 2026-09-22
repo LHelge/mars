@@ -13,6 +13,8 @@ import type { ReactNode } from "react";
 import { Link } from "react-router";
 import type { SessionBranch } from "../../types";
 import { formatRelative, shortSha } from "../../utils/format";
+import { Icon, ICON_CLASS } from "../icons";
+import type { IconComponent } from "../icons";
 import { TableHead } from "../TableHead";
 import { CELL, ROW, TABLE, type TableColumn } from "../tableStyles";
 
@@ -46,10 +48,10 @@ const COLUMNS: readonly TableColumn[] = [
   { label: "Actions", className: "pr-0 text-right", srOnly: true },
 ];
 
-const ACTIONS: { action: RowAction; label: string }[] = [
-  { action: "merge", label: "Merge into…" },
-  { action: "rebase", label: "Rebase onto…" },
-  { action: "push", label: "Push…" },
+const ACTIONS: { action: RowAction; label: string; icon: IconComponent }[] = [
+  { action: "merge", label: "Merge into…", icon: Icon.merge },
+  { action: "rebase", label: "Rebase onto…", icon: Icon.rebase },
+  { action: "push", label: "Push…", icon: Icon.push },
 ];
 
 export function SessionBranchTable({
@@ -179,12 +181,13 @@ function BranchRows({
               onClick={() => {
                 onToggle(row.session_id, entry.action);
               }}
-              className={`ml-2 font-mono text-xs disabled:opacity-50 ${
+              className={`ml-2 inline-flex items-center gap-1.5 font-mono text-xs disabled:opacity-50 ${
                 opened === entry.action
                   ? "text-console-accent"
                   : "text-console-muted hover:text-console-text"
               }`}
             >
+              <entry.icon aria-hidden="true" className={ICON_CLASS} />
               {entry.label}
             </button>
           ))}

@@ -12,6 +12,7 @@ import type { PushResult } from "../../types";
 import { shortSha } from "../../utils/format";
 import { Alert } from "../Alert";
 import { FormField } from "../FormField";
+import { Icon } from "../icons";
 import { SubmitButton } from "../SubmitButton";
 import {
   compareUrlFor,
@@ -139,6 +140,7 @@ export function PushForm({
         <SubmitButton
           loading={action.loading}
           disabled={disabled || remoteBranch.trim() === ""}
+          icon={Icon.push}
         >
           Push
         </SubmitButton>

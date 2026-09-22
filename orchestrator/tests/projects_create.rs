@@ -23,7 +23,9 @@ use mars_orchestrator::models::{
     TaskStateKind,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::projects::{NewProjectRequest, create_project, profile_templates};
+use mars_orchestrator::projects::{
+    NewProjectRequest, create_project, profile_templates, seeded_profile_templates,
+};
 use mars_orchestrator::repositories::{ProjectRepository, SecretRepository, TaskRepository};
 use mars_orchestrator::secrets::{GIT_CREDENTIAL_NAME, GitUseContext, project_git_credential};
 use uuid::Uuid;
@@ -163,7 +165,17 @@ async fn the_seeded_profiles_are_the_four_role_templates() {
     let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, ["planner", "implementer", "reviewer", "merger"]);
 
-    for (profile, template) in profiles.iter().zip(profile_templates()) {
+    // Exactly four, whatever else `GET /profile-templates` offers: a template
+    // that would spend money on a schedule is offered and never seeded
+    // (`SPEC.md`, "Role profile templates").
+    assert_eq!(profiles.len(), 4);
+    assert!(
+        profile_templates().len() > seeded_profile_templates().count(),
+        "this assertion is only worth making while something is offered but \
+         not seeded",
+    );
+
+    for (profile, template) in profiles.iter().zip(seeded_profile_templates()) {
         assert_eq!(profile.name, template.name);
         let serves: Vec<&str> = profile.serves_states.iter().map(String::as_str).collect();
         let tools: Vec<&str> = profile.mcp_tools.iter().map(String::as_str).collect();
@@ -177,6 +189,10 @@ async fn the_seeded_profiles_are_the_four_role_templates() {
 
         // Everything else is the documented default of "Agent profiles".
         assert_eq!(profile.kind, ProfileKind::Conversational);
+        // Nothing a new project starts with runs by itself.
+        assert_eq!(profile.schedule_cron, None);
+        assert_eq!(profile.schedule_prompt, None);
+        assert!(!profile.auto_launch);
         assert_eq!(profile.backend, AgentBackend::Claude);
         assert_eq!(profile.permission_mode, "bypass");
         // The configured image, not a literal of this test's own: the value

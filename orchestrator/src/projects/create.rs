@@ -3,8 +3,9 @@
 //! `POST /api/projects` takes `{name, remote_url, default_branch?,
 //! credential?}` and answers a `cloning` project (`SPEC.md`, "Projects"), but
 //! a project is never only its row. It starts with the default task states,
-//! with the four role profiles of [`profile_templates`] — `planner`,
-//! `implementer`, `reviewer`, `merger` — on the built-in Claude image, and —
+//! with the four seeded role profiles of [`seeded_profile_templates`] —
+//! `planner`, `implementer`, `reviewer`, `merger` — on the built-in Claude
+//! image, and —
 //! when the caller supplied one — with its remote credential stored as the
 //! project-scoped, orchestrator-only secret `GIT_CREDENTIAL`
 //! (`docs/data-model.md`, `task_states`, `profile_states`, `agent_profiles`,
@@ -32,7 +33,7 @@ use zeroize::Zeroizing;
 
 use crate::models::{BranchName, NewProject, Project};
 use crate::prelude::*;
-use crate::projects::profile_templates::profile_templates;
+use crate::projects::profile_templates::seeded_profile_templates;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::secrets::insert_project_git_credential;
 use crate::tracker::Locked;
@@ -129,8 +130,7 @@ pub async fn create_project(
     // and would give all four the same value, leaving `ORDER BY created_at,
     // name` to sort them alphabetically (`NewAgentProfile::created_at`).
     let seeded_at = Utc::now();
-    let profiles: Vec<_> = profile_templates()
-        .iter()
+    let profiles: Vec<_> = seeded_profile_templates()
         .enumerate()
         .map(|(index, template)| {
             let mut profile =

@@ -407,8 +407,13 @@ export interface TemplateContext {
 /**
  * A role template as the form that would create it (`SPEC.md`, "Role profile
  * templates"). Everything the template does not carry is the ordinary default
- * of a new profile, and `is_default` is never applied: the flag is moved by
- * its own action, not by creating a profile.
+ * of a new profile *of its kind*, and `is_default` is never applied: the flag
+ * is moved by its own action, not by creating a profile.
+ *
+ * A scheduled template brings its cron expression and its run prompt with it,
+ * so the schedule fieldset the `ephemeral` kind reveals is filled in and
+ * editable before the first save. Nothing here judges the expression: whether
+ * it is valid is the server's answer alone (ADR 0043).
  */
 export function prefillFromTemplate(
   template: ProfileTemplate,
@@ -431,6 +436,8 @@ export function prefillFromTemplate(
       system_prompt: template.system_prompt,
       mcp_tools: [...template.mcp_tools],
       serves_states: kept,
+      schedule_cron: template.schedule_cron,
+      schedule_prompt: template.schedule_prompt,
     }),
     droppedStates,
   };

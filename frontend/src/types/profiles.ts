@@ -90,7 +90,7 @@ export interface Profile {
 
 /**
  * One role template of `SPEC.md`, "Role profile templates", as
- * `GET /profile-templates` serves it: the same four for every caller, with no
+ * `GET /profile-templates` serves it: the same list for every caller, with no
  * project and no ids. Deliberately not a whole `Profile` — a template says
  * what makes the role a role, and every other field of a profile created from
  * one is the documented default of "Agent profiles".
@@ -107,6 +107,15 @@ export interface ProfileTemplate {
   mcp_tools: ProfileGatedTool[];
   system_prompt: string;
   is_default: boolean;
+  /**
+   * The cron expression a scheduled template runs on, or `null` on a template
+   * a person launches. Set exactly with `schedule_prompt`, and only on a
+   * template whose `kind` is `ephemeral` (`SPEC.md`, "Agent profiles" →
+   * "Scheduled profiles").
+   */
+  schedule_cron: string | null;
+  /** The `message` each scheduled run is given; `null` exactly when `schedule_cron` is. */
+  schedule_prompt: string | null;
 }
 
 /**

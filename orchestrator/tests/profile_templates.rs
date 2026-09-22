@@ -1,19 +1,23 @@
 //! The role prompts in the code are the role prompts in `SPEC.md`.
 //!
-//! "The four texts below are the templates verbatim" (`SPEC.md`, "Role profile
+//! "The texts below are the templates verbatim" (`SPEC.md`, "Role profile
 //! templates"). This test parses the document itself, so the embedded files
 //! cannot drift from it: a reworded sentence, a changed backtick or a lost
 //! paragraph fails here and the document wins. It is the same arrangement
-//! `tests/mcp_descriptions.rs` has for the tool descriptions.
+//! `tests/mcp_descriptions.rs` has for the tool descriptions. A scheduled
+//! template has two texts — the system prompt and the prompt each run is
+//! given — and the subsection's fenced blocks are read in that order.
 //!
-//! It also checks the table beside those texts — served states, tool lists and
-//! which one is the default — and runs the deny-list of
+//! It also checks the table beside those texts — kind, served states, tool
+//! lists, the schedule expression, which one is the default and which ones
+//! creation seeds — and runs the deny-list of
 //! `tests/common/tracker_products.rs` over each prompt: a prompt tells the
 //! agent to use the task tools of its own session, and a product name in it
 //! would send the agent looking for something else.
 //!
 //! No database, no container engine: it reads a file and compares strings.
 
+use mars_orchestrator::models::ProfileKind;
 use mars_orchestrator::projects::profile_templates;
 
 // The one deny-list, shared with `tests/mcp_descriptions.rs`: the MCP
@@ -41,13 +45,14 @@ fn section() -> Vec<&'static str> {
     body.lines().collect()
 }
 
-/// The fenced block that follows a template's heading, joined back into the
-/// text the file is supposed to hold.
+/// The fenced blocks of a template's subsection, in the order they appear,
+/// each joined back into the text its file is supposed to hold.
 ///
-/// Nothing is trimmed, unescaped or reflowed: the lines between the opening
-/// and closing fences are the prompt, and the trailing newline every text file
-/// ends with is added back.
-fn documented_prompt(name: &str) -> String {
+/// Nothing is trimmed, unescaped or reflowed: the lines between an opening and
+/// its closing fence are the prompt, and the trailing newline every text file
+/// ends with is added back. A template a person launches has one block, a
+/// scheduled one has two — the system prompt and then the run prompt.
+fn documented_blocks(name: &str) -> Vec<String> {
     let lines = section();
     let heading = format!("### `{name}`");
 
@@ -55,27 +60,45 @@ fn documented_prompt(name: &str) -> String {
         .iter()
         .position(|line| line.starts_with(&heading))
         .unwrap_or_else(|| panic!("SPEC.md has a `{name}` subsection"));
-
-    let open = start
-        + lines[start..]
+    let end = start
+        + 1
+        + lines[start + 1..]
             .iter()
-            .position(|line| *line == "```text")
-            .unwrap_or_else(|| panic!("`{name}` has a ```text block"))
-        + 1;
-    let close = open
-        + lines[open..]
+            .position(|line| line.starts_with("### "))
+            .unwrap_or(lines.len() - start - 1);
+
+    let mut blocks = Vec::new();
+    let mut rest = &lines[start..end];
+
+    while let Some(open) = rest.iter().position(|line| *line == "```text") {
+        let body = &rest[open + 1..];
+        let close = body
             .iter()
             .position(|line| *line == "```")
             .unwrap_or_else(|| panic!("`{name}`'s block is closed"));
 
-    let mut prompt = lines[open..close].join("\n");
-    prompt.push('\n');
+        let mut prompt = body[..close].join("\n");
+        prompt.push('\n');
+        blocks.push(prompt);
 
-    prompt
+        rest = &body[close + 1..];
+    }
+
+    assert!(!blocks.is_empty(), "`{name}` has a ```text block");
+
+    blocks
 }
 
-/// The `| name | serves | tools | default |` row of the table, as its four
-/// cells.
+/// The system prompt of `name`, which is its subsection's first block.
+fn documented_prompt(name: &str) -> String {
+    documented_blocks(name)
+        .into_iter()
+        .next()
+        .expect("a subsection has at least one block")
+}
+
+/// The `| name | kind | serves | tools | cron | default | seeded |` row of the
+/// table, as its seven cells.
 fn documented_row(name: &str) -> Vec<String> {
     let cell = format!("| `{name}` |");
     let line = section()
@@ -105,6 +128,17 @@ fn owned(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| (*name).to_string()).collect()
 }
 
+/// A kind as the document spells it, which is also how the API serialises it.
+///
+/// A `match` and not a cast: a kind added to the enum fails to compile here
+/// until the table says what it is called.
+fn kind_name(kind: ProfileKind) -> &'static str {
+    match kind {
+        ProfileKind::Conversational => "conversational",
+        ProfileKind::Ephemeral => "ephemeral",
+    }
+}
+
 #[test]
 fn every_prompt_matches_the_document_byte_for_byte() {
     for template in profile_templates() {
@@ -118,7 +152,39 @@ fn every_prompt_matches_the_document_byte_for_byte() {
 }
 
 #[test]
-fn the_document_defines_exactly_the_four_templates_the_code_knows() {
+fn every_schedule_prompt_matches_the_document_byte_for_byte() {
+    for template in profile_templates() {
+        let blocks = documented_blocks(template.name);
+
+        match template.schedule_prompt {
+            Some(prompt) => {
+                assert_eq!(
+                    blocks.len(),
+                    2,
+                    "`{}` is scheduled, so its subsection holds its system \
+                     prompt and its run prompt",
+                    template.name,
+                );
+                assert_eq!(
+                    Some(prompt),
+                    blocks.get(1).map(String::as_str),
+                    "`{}`: the schedule prompt and SPEC.md disagree; the \
+                     document wins",
+                    template.name,
+                );
+            }
+            None => assert_eq!(
+                blocks.len(),
+                1,
+                "`{}` has no schedule, so its subsection holds one text",
+                template.name,
+            ),
+        }
+    }
+}
+
+#[test]
+fn the_document_defines_exactly_the_templates_the_code_knows() {
     let headings: Vec<String> = section()
         .into_iter()
         .filter(|line| line.starts_with("### `"))
@@ -137,24 +203,42 @@ fn the_document_defines_exactly_the_four_templates_the_code_knows() {
 fn the_table_says_what_the_templates_say() {
     for template in profile_templates() {
         let row = documented_row(template.name);
-        assert_eq!(row.len(), 4, "`{}`: four cells", template.name);
+        assert_eq!(row.len(), 7, "`{}`: seven cells", template.name);
 
         assert_eq!(
             cell_names(&row[1]),
+            owned(&[kind_name(template.kind)]),
+            "`{}`: kind",
+            template.name,
+        );
+        assert_eq!(
+            cell_names(&row[2]),
             owned(template.serves_states),
             "`{}`: served states",
             template.name,
         );
         assert_eq!(
-            cell_names(&row[2]),
+            cell_names(&row[3]),
             owned(template.mcp_tools),
             "`{}`: tools",
             template.name,
         );
         assert_eq!(
-            row[3],
+            cell_names(&row[4]),
+            owned(&template.schedule_cron.into_iter().collect::<Vec<_>>()),
+            "`{}`: the cron expression",
+            template.name,
+        );
+        assert_eq!(
+            row[5],
             if template.is_default { "yes" } else { "no" },
             "`{}`: the default flag",
+            template.name,
+        );
+        assert_eq!(
+            row[6],
+            if template.seeded { "yes" } else { "no" },
+            "`{}`: whether project creation seeds it",
             template.name,
         );
     }

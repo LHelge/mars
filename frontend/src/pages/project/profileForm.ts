@@ -7,7 +7,7 @@
 // `toProfileInput` copies the stored profile in full and why `toInput` never
 // drops a field: the two together mean "what is on screen is what is stored".
 //
-// It lives beside `ProfileEditorPage.tsx` rather than in it because a module
+// It lives beside `ProfileEditor.tsx` rather than in it because a module
 // that renders a component exports nothing else
 // (`react-refresh/only-export-components`).
 
@@ -46,6 +46,13 @@ export const PROFILE_BACKEND: AgentBackend = "claude";
 
 /** `SPEC.md`: `permission_mode` must be `bypass`. */
 export const PROFILE_PERMISSION_MODE: PermissionMode = "bypass";
+
+/** A value the editor shows but nobody can change: quieter, and not a field. */
+export const READ_ONLY_CLASS =
+  "border-console-border bg-console-raised text-console-muted rounded border px-2.5 py-1.5 font-mono text-sm";
+
+/** Every checkbox in the editor, wherever it is rendered. */
+export const CHECK_CLASS = "accent-console-accent size-3.5";
 
 /**
  * The kind's `partial_messages` default: on for a conversation the user

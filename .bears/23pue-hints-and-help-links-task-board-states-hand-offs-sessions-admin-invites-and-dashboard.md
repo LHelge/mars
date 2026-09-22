@@ -1,10 +1,10 @@
 ---
 id: "23pue"
 title: "Hints and help links: task board, states, hand-offs, sessions, admin invites and dashboard"
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-22T19:08:55.783831647Z"
-updated: "2026-09-22T21:22:54.828105025Z"
+updated: "2026-09-22T21:48:34.307991217Z"
 tags:
   - frontend
 depends_on:

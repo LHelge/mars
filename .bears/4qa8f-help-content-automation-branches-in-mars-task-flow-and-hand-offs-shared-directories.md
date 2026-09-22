@@ -1,10 +1,10 @@
 ---
 id: "4qa8f"
 title: "Help content: automation, branches in Mars, task flow and hand-offs, shared directories"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-22T19:08:28.070395061Z"
-updated: "2026-09-22T21:22:54.809927271Z"
+updated: "2026-09-22T21:48:34.289017038Z"
 tags:
   - frontend
   - docs

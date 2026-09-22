@@ -538,3 +538,125 @@ async fn an_unscheduled_profile_is_not_in_the_scan() {
     );
     assert!(fixture.sessions(&app).await.is_empty());
 }
+
+// ---- the test-only route that makes a tick due ----
+//
+// `POST /api/test/scheduler-tick` is how the Playwright suite fires a schedule
+// without waiting for a minute boundary (`SPEC.md`, "Test-only routes";
+// `frontend/tests/schedules.spec.ts`). It is the same job the scenarios above
+// drive directly, reached over HTTP with both ends of the window in the body,
+// so what is asserted here is only that seam: which instants it uses, what it
+// reports, and that a body it cannot read is refused.
+
+/// One call of the route, answering the counters it reported.
+async fn tick(app: &TestApp, body: Value) -> Value {
+    let response = app
+        .server
+        .post("/api/test/scheduler-tick")
+        .json(&body)
+        .await;
+    response.assert_status_ok();
+
+    response.json::<Value>()
+}
+
+#[tokio::test]
+async fn the_test_route_fires_a_due_tick_with_the_window_it_is_given() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let profile_id = fixture
+        .scheduled_profile(&app, "scout", EVERY_MINUTE, 4)
+        .await;
+
+    let now = at(3, 1);
+    let report = tick(
+        &app,
+        json!({
+            "now": now.to_rfc3339(),
+            "started_at": at(2, 59).to_rfc3339(),
+        }),
+    )
+    .await;
+
+    assert_eq!(report, json!({ "items": 1, "skipped": 0, "failures": 0 }));
+    // `now` is the window's end *and* what a fired tick records, so a caller
+    // that placed the window also knows what the row now holds.
+    assert_eq!(fixture.last_scheduled_at(&app, profile_id).await, Some(now));
+    assert_eq!(fixture.sessions(&app).await.len(), 1);
+
+    // And the tick is spent: the same window again launches nothing.
+    assert_eq!(
+        tick(
+            &app,
+            json!({
+                "now": now.to_rfc3339(),
+                "started_at": at(2, 59).to_rfc3339(),
+            }),
+        )
+        .await,
+        json!({ "items": 0, "skipped": 0, "failures": 0 }),
+    );
+}
+
+#[tokio::test]
+async fn the_test_route_reports_a_claimed_tick_a_pause_refused() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    fixture
+        .scheduled_profile(&app, "scout", EVERY_MINUTE, 4)
+        .await;
+    fixture.set_paused(&app, true).await;
+
+    // Claimed and then refused, which is `skipped` and not `items`: a paused
+    // schedule is spent, not queued (`ARCHITECTURE.md`, "Task tracker" →
+    // "Scheduled agents").
+    assert_eq!(
+        tick(
+            &app,
+            json!({
+                "now": at(3, 1).to_rfc3339(),
+                "started_at": at(2, 59).to_rfc3339(),
+            }),
+        )
+        .await,
+        json!({ "items": 0, "skipped": 1, "failures": 0 }),
+    );
+    assert!(fixture.sessions(&app).await.is_empty());
+}
+
+#[tokio::test]
+async fn the_test_route_without_a_floor_has_no_window_at_all() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    fixture
+        .scheduled_profile(&app, "scout", EVERY_MINUTE, 4)
+        .await;
+
+    // The floor defaults to `now`, and `(now, now]` holds nothing: a body
+    // without one is the inert call, so a due window is always something the
+    // caller asked for in writing.
+    assert_eq!(
+        tick(&app, json!({ "now": at(3, 1).to_rfc3339() })).await,
+        json!({ "items": 0, "skipped": 0, "failures": 0 }),
+    );
+    assert!(fixture.sessions(&app).await.is_empty());
+}
+
+#[tokio::test]
+async fn the_test_route_refuses_a_body_it_cannot_read() {
+    let app = TestApp::spawn().await;
+
+    // `now` is required and an unknown field is refused, both as the one
+    // malformed-body 400 every route answers with (`prelude::Json`).
+    for body in [
+        json!({}),
+        json!({ "now": at(3, 1).to_rfc3339(), "when": 1 }),
+    ] {
+        let response = app
+            .server
+            .post("/api/test/scheduler-tick")
+            .json(&body)
+            .await;
+        response.assert_status(StatusCode::BAD_REQUEST);
+    }
+}

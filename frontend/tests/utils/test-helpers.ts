@@ -77,6 +77,7 @@ export {
   listBranches,
   listProjectSessions,
   moveTask,
+  runSchedulerTick,
   seedAgentCredential,
   setAutomationPaused,
   sendInput,
@@ -85,6 +86,7 @@ export {
   waitForSessionState,
   type CreateProjectOptions,
   type LaunchSessionOptions,
+  type SchedulerTickReport,
 } from "./resources";
 
 export {
@@ -97,6 +99,7 @@ export { loggedEmail } from "./log";
 
 export {
   LAUNCH_SOURCE,
+  PROFILE_AUTOMATION,
   STREAMING_CURSOR,
   SUBAGENT_CHILDREN,
   TASK_COLUMN_PREFIX,

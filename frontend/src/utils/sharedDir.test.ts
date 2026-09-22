@@ -46,6 +46,7 @@ describe("validateContainerPath", () => {
       "/session/workspace",
       "/session/work-tree",
       "/session/home/.cargo/registry",
+      "/opt/cargo/registry",
       "/session/log/keep",
       "/session/mcp.json.bak",
       "/cache",

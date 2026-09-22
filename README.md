@@ -285,13 +285,13 @@ Operator controls: `mars-deploy status` (installed, promoted and last attempted 
 
   | Ecosystem | Share (name → container path) | Keep per session |
   | --- | --- | --- |
-  | Rust | `target` → `/session/work/target`; `cargo-registry` → `/session/home/.cargo/registry` | |
+  | Rust | `target` → `/session/work/target`; `cargo-registry` → `/opt/cargo/registry` | |
   | Node | `npm-cache` → `/session/home/.npm`, or the pnpm store | `node_modules` (rewritten in place; branches disagree on lockfiles) |
   | Go | `go-mod` → `/session/home/go/pkg/mod`; `go-build` → `/session/home/.cache/go-build` | |
   | Python | `uv-cache` → `/session/home/.cache/uv` (or the pip cache) | virtualenvs |
   | JVM | `m2` → `/session/home/.m2`; `gradle` → `/session/home/.gradle` | `build/` |
 
-  A shared directory grows across branches; empty it from the project page when disk gets tight. Both emptying and removing are refused while a session of the project is running.
+  The Cargo registry lives under `$CARGO_HOME/registry`, so its path follows the session image: the dev image sets `CARGO_HOME=/opt/cargo` (`ARCHITECTURE.md`, "Session image"), and an image that keeps Cargo's default home uses `/session/home/.cargo/registry`. A shared directory grows across branches; empty it from the project page when disk gets tight. Both emptying and removing are refused while a session of the project is running.
 
 #### Repository credentials
 

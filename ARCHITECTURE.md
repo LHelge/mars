@@ -194,6 +194,7 @@ orchestrator/
 | Logging | `tracing`, `tracing-subscriber` (`env-filter`) |
 | Email | `reqwest` (default features off, `json`, `rustls`) against the Resend HTTP API (no SDK crate) |
 | Ids, time | `uuid` (`v4`, `serde`), `chrono` (`serde`) |
+| Cron expressions | `croner` (`chrono`), for the scheduled agents' 5-field UTC expressions and their next occurrence after a given instant ("Task tracker" → "Scheduled agents"; ADR 0043) |
 | Config | `dotenvy` |
 | Tests | `axum-test`, `testcontainers-modules` (`postgres`), `tempfile` |
 
@@ -663,7 +664,7 @@ Sending happens after the mutation has committed, never inside it, and it is `tr
 
 ### Unattended launches
 
-Nothing in v1 launched a session by itself. The rules in this section are v2's and hold for every launch no person made: the dispatcher below applies them now, and the scheduled agents of "After v1" will apply the same ones. They touch profiles, projects, sessions and jobs only, never the task tables (ADR 0042).
+Nothing in v1 launched a session by itself. The rules in this section are v2's and hold for every launch no person made: the dispatcher below applies them now, and the scheduled agents below apply the same ones. They touch profiles, projects, sessions and jobs only, never the task tables (ADR 0042).
 
 An **unattended launch** is a launch with no user behind it: one made by the dispatcher below, or by a scheduled agent. Its session has `created_by` NULL and `launch_source` `dispatcher` or `schedule` — `user` for every launch a person makes — and its tracker actor is `System`. `created_by` alone says nothing, because deleting a user leaves the same NULL on the sessions that user launched, so `sessions.launch_source` is the record of who launched a session.
 
@@ -693,9 +694,17 @@ It honours served states, which a user launch does not: it considers only the `q
 
 Task order is exactly that of `tracker::leases::ready_summaries` — priority, then task number — so the task the dispatcher picks is the first row the MCP `ready` tool would have offered the same profile. When two `auto_launch` profiles serve the same state, the older profile by `agent_profiles.created_at` wins.
 
-### After v1: scheduled agents
+### Scheduled agents
 
-A profile gains a cron expression. A job launches an ephemeral session of that profile, without a task, at each tick, under the unattended-launch rules above. The tech-debt scanner that files `ready` tasks once a day and the agent that turns new GitHub issues into `backlog` tasks are instances; both need only `create_task`, and the latter needs GitHub access, which is on the roadmap in `README.md`.
+A profile gains a cron expression, and a job launches an ephemeral session of that profile — without a task — at each tick. Every rule about *whether* such a launch may happen is the one above: it is an **unattended launch** in the sense of "Unattended launches", so `created_by` is NULL, `launch_source` is `schedule`, the tracker actor is `System`, the profile must be `ephemeral` with an agent credential resolving at `global` or `project` scope, and `unattended_capacity` is what decides, including the project's `automation_paused`, which stops schedules exactly as it stops the dispatcher. The tech-debt scanner that files `ready` tasks once a day and the agent that turns new GitHub issues into `backlog` tasks are instances; both need only `create_task`, and the latter needs GitHub access, which is on the roadmap in `README.md`. The rules of this section were settled before the code and are recorded, with the alternatives rejected, in ADR 0043.
+
+**The expression** is a standard 5-field cron — minute, hour, day of month, month, day of week — evaluated in **UTC**, always. No time zone is stored on the instance or on the profile; the UI shows the *next run* in the viewer's own local time, which is the only place a zone is needed. Parsing and evaluation are the `croner` crate ("Orchestrator internals"), whose 5-field mode and `find_next_occurrence` over a `DateTime<Utc>` are what this shape asks for.
+
+**A tick fires at most once, and only while the orchestrator is up.** `agent_profiles.last_scheduled_at` is written in the same transaction that decides to fire, before the launch, so a restart inside a tick's minute cannot fire it twice; a crash between the write and the launch loses that one run, which is the direction this trades in. Missed ticks are never caught up: an occurrence that came due while the service was down is gone, and nothing replays it at startup. `last_scheduled_at` is therefore a guard against firing twice and not a cursor to catch up from.
+
+**A tick the caps refuse is spent.** When `unattended_capacity` says no — the pause, the profile's `max_concurrent`, the project's `max_concurrent_sessions` or `AUTOMATION_MAX_SESSIONS` — the tick is skipped and logged at `info` with the bound that refused, not queued and not retried before the next occurrence. This is also what bounds overlap: a run that outlives its own period piles up against the profile's `max_concurrent`, and setting that to 1 is how a user says "never two of these at once".
+
+**The prompt** is `agent_profiles.schedule_prompt`, required whenever a schedule is set: `system_prompt` says who the agent is, `schedule_prompt` says what this run does. It is passed as the `message` of the launch, which is what an ephemeral launch with no task must have (`validate_launch_prompt`), so a scheduled launch is the ordinary launch path with nobody behind it.
 
 ## Engine adapter
 

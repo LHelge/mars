@@ -1,10 +1,10 @@
 ---
 id: uz3wt
 title: Correct frontend lifecycle comments and remove stale implementation narratives
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-21T10:44:44.930812371Z"
-updated: "2026-09-21T10:56:43.116750758Z"
+updated: "2026-09-22T00:04:07.518944278Z"
 tags:
   - frontend
   - technical-review
@@ -20,6 +20,7 @@ depends_on:
   - xreap
   - h2uej
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: several comments promise lifecycle behavior the code does not implement, including session-store reset on ID changes and automatic login navigation after repeated socket auth rejection. Extensive implementation narration makes these inaccuracies difficult to spot.

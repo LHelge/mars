@@ -1,10 +1,10 @@
 ---
 id: "6wv7e"
 title: "Shared UI primitives: table styles, one confirm flow, one copy-to-clipboard hook, one task path"
-status: open
+status: done
 priority: P3
 created: "2026-09-21T10:55:57.503816726Z"
-updated: "2026-09-21T10:55:57.503816726Z"
+updated: "2026-09-22T00:13:28.734892095Z"
 tags:
   - frontend
   - technical-review
@@ -14,6 +14,7 @@ tags:
 depends_on:
   - s9rxc
 parent: "579dz"
+attempts: 1
 ---
 
 Problem:

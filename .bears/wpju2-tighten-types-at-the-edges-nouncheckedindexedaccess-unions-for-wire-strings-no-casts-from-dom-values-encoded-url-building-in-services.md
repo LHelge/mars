@@ -1,16 +1,17 @@
 ---
 id: wpju2
 title: "Tighten types at the edges: noUncheckedIndexedAccess, unions for wire strings, no casts from DOM values, encoded URL building in services"
-status: open
+status: done
 priority: P3
 created: "2026-09-21T10:56:30.956675752Z"
-updated: "2026-09-21T10:56:30.956675752Z"
+updated: "2026-09-22T00:13:31.144223389Z"
 tags:
   - frontend
   - technical-review
   - typescript
   - refactor
 parent: "579dz"
+attempts: 1
 ---
 
 Problem: type discipline is good overall (no `any`, no non-null `!`, ApiError narrowed by instanceof at all 44 sites, types/ matches SPEC.md). What remains:

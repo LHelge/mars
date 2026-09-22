@@ -8,6 +8,11 @@
 // the address the invite was sent to. The token stays in the route param: it is
 // never rendered, copied into a query string or written to storage. The link
 // itself may have come from the orchestrator's log in development (ADR 0026).
+//
+// The route's param is a `string | undefined` and everything below needs a
+// token, so the guard is a component boundary: `AcceptInvitePage` decides
+// whether there is an invitation to act on, and `AcceptInviteForm` is only ever
+// mounted with one.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
@@ -17,6 +22,8 @@ import { AuthLayout } from "../components/AuthLayout";
 import { FieldShell } from "../components/FieldShell";
 import { FormField } from "../components/FormField";
 import { LoadingState } from "../components/LoadingState";
+import { NewPasswordFields } from "../components/NewPasswordFields";
+import { useNewPassword } from "../components/newPassword";
 import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { SubmitButton } from "../components/SubmitButton";
 import { CONTROL } from "../components/fieldStyles";
@@ -25,7 +32,6 @@ import { ApiError } from "../services/apiClient";
 import { acceptInvite, lookupInvite } from "../services/auth";
 import { UNREACHABLE, errorMessage } from "../services/errorMessage";
 import { formatDateTime } from "../utils/format";
-import { validatePassword } from "../utils/password";
 
 /** Every rejection of an invite token reads the same: unknown, used or expired. */
 const INVALID_INVITE =
@@ -74,24 +80,27 @@ function DeadEnd() {
 
 export function AcceptInvitePage() {
   const { token } = useParams<{ token: string }>();
+
+  if (token === undefined || token === "") {
+    return <DeadEnd />;
+  }
+
+  return <AcceptInviteForm token={token} />;
+}
+
+function AcceptInviteForm({ token }: { token: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { user } = useAuth();
 
-  const hasToken = token !== undefined && token !== "";
-
   const lookup = useQuery({
     queryKey: [INVITE_KEY_ROOT, token],
-    queryFn: () => lookupInvite(token ?? ""),
-    enabled: hasToken,
+    queryFn: () => lookupInvite(token),
   });
 
   const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
   const [usernameError, setUsernameError] = useState<string | null>(null);
-  const [passwordError, setPasswordError] = useState<string | null>(null);
-  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const chosen = useNewPassword();
   // Set when the orchestrator itself refuses the accept, which may mean the
   // invite expired while the form was open: the login link is then the exit.
   const [rejected, setRejected] = useState(false);
@@ -102,9 +111,9 @@ export function AcceptInvitePage() {
         // `acceptInvite` installs the returned pair itself, replacing whatever
         // session the visitor arrived with.
         await acceptInvite({
-          token: token ?? "",
+          token,
           username: username.trim(),
-          password,
+          password: chosen.password,
         });
       } catch (caught) {
         setRejected(caught instanceof ApiError && caught.status === 400);
@@ -124,10 +133,6 @@ export function AcceptInvitePage() {
     },
     { mapError: acceptFailure },
   );
-
-  if (!hasToken) {
-    return <DeadEnd />;
-  }
 
   // A rejected token (400) is a dead end whenever it comes, since the invite
   // itself is gone; a network failure or a 5xx says nothing about the invite.
@@ -158,19 +163,11 @@ export function AcceptInvitePage() {
       trimmed.length > USERNAME_MAX_LENGTH
         ? USERNAME_LENGTH_MESSAGE
         : null;
-    const nextPasswordError = validatePassword(password);
-    const nextConfirmError =
-      nextPasswordError === null && confirm !== password
-        ? "Passwords do not match"
-        : null;
     setUsernameError(nextUsernameError);
-    setPasswordError(nextPasswordError);
-    setConfirmError(nextConfirmError);
-    if (
-      nextUsernameError !== null ||
-      nextPasswordError !== null ||
-      nextConfirmError !== null
-    ) {
+    // Both halves are checked whichever one fails, so every field that is
+    // wrong says so at once.
+    const chosenOk = chosen.validate();
+    if (nextUsernameError !== null || !chosenOk) {
       return;
     }
 
@@ -243,32 +240,10 @@ export function AcceptInvitePage() {
           disabled={loading}
         />
 
-        <FormField
+        <NewPasswordFields
+          fields={chosen}
           label="Password"
-          name="password"
-          type="password"
-          value={password}
-          onChange={(value) => {
-            setPassword(value);
-            setPasswordError(null);
-          }}
-          error={passwordError ?? undefined}
-          hint="10–128 characters."
-          autoComplete="new-password"
-          disabled={loading}
-        />
-
-        <FormField
-          label="Repeat password"
-          name="confirm"
-          type="password"
-          value={confirm}
-          onChange={(value) => {
-            setConfirm(value);
-            setConfirmError(null);
-          }}
-          error={confirmError ?? undefined}
-          autoComplete="new-password"
+          confirmLabel="Repeat password"
           disabled={loading}
         />
 

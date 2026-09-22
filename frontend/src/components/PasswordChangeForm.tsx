@@ -28,9 +28,10 @@ import { ApiError } from "../services/apiClient";
 import { installSession } from "../services/auth";
 import { MessageError } from "../services/errorMessage";
 import { changePassword } from "../services/users";
-import { validatePassword } from "../utils/password";
 import { Alert } from "./Alert";
 import { FormField } from "./FormField";
+import { NewPasswordFields } from "./NewPasswordFields";
+import { useNewPassword } from "./newPassword";
 import { SubmitButton } from "./SubmitButton";
 
 /**
@@ -62,11 +63,8 @@ export function PasswordChangeForm({ onSuccess }: PasswordChangeFormProps) {
   const { user } = useAuth();
 
   const [currentPassword, setCurrentPassword] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
   const [currentError, setCurrentError] = useState<string | null>(null);
-  const [passwordError, setPasswordError] = useState<string | null>(null);
-  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const chosen = useNewPassword();
 
   const { submit, loading, error } = useFormSubmit(async () => {
     if (user === null) {
@@ -79,7 +77,7 @@ export function PasswordChangeForm({ onSuccess }: PasswordChangeFormProps) {
     try {
       auth = await changePassword(user.id, {
         current_password: currentPassword,
-        password,
+        password: chosen.password,
       });
     } catch (caught) {
       if (isWrongCurrentPassword(caught)) {
@@ -93,8 +91,7 @@ export function PasswordChangeForm({ onSuccess }: PasswordChangeFormProps) {
       }
       // Any other refusal is about the new password: keep the current one so
       // a mistyped new one costs one field, not all three.
-      setPassword("");
-      setConfirm("");
+      chosen.reset();
       throw caught;
     }
 
@@ -105,8 +102,7 @@ export function PasswordChangeForm({ onSuccess }: PasswordChangeFormProps) {
     }
 
     setCurrentPassword("");
-    setPassword("");
-    setConfirm("");
+    chosen.reset();
 
     // `installSession` is what makes the response the current user; there is
     // no second copy to keep in step (`SPEC.md`, "Frontend", Rules).
@@ -119,19 +115,11 @@ export function PasswordChangeForm({ onSuccess }: PasswordChangeFormProps) {
 
     const nextCurrentError =
       currentPassword === "" ? "Enter your current password" : null;
-    const nextPasswordError = validatePassword(password);
-    const nextConfirmError =
-      nextPasswordError === null && confirm !== password
-        ? "Passwords do not match"
-        : null;
     setCurrentError(nextCurrentError);
-    setPasswordError(nextPasswordError);
-    setConfirmError(nextConfirmError);
-    if (
-      nextCurrentError !== null ||
-      nextPasswordError !== null ||
-      nextConfirmError !== null
-    ) {
+    // Both halves are checked whichever one fails, so every field that is
+    // wrong says so at once.
+    const chosenOk = chosen.validate();
+    if (nextCurrentError !== null || !chosenOk) {
       return;
     }
 
@@ -157,32 +145,10 @@ export function PasswordChangeForm({ onSuccess }: PasswordChangeFormProps) {
         disabled={loading}
       />
 
-      <FormField
+      <NewPasswordFields
+        fields={chosen}
         label="New password"
-        name="password"
-        type="password"
-        value={password}
-        onChange={(value) => {
-          setPassword(value);
-          setPasswordError(null);
-        }}
-        error={passwordError ?? undefined}
-        hint="10–128 characters."
-        autoComplete="new-password"
-        disabled={loading}
-      />
-
-      <FormField
-        label="Repeat new password"
-        name="confirm"
-        type="password"
-        value={confirm}
-        onChange={(value) => {
-          setConfirm(value);
-          setConfirmError(null);
-        }}
-        error={confirmError ?? undefined}
-        autoComplete="new-password"
+        confirmLabel="Repeat new password"
         disabled={loading}
       />
 

@@ -10,14 +10,16 @@
 # builds all three images and runs `images/smoke-test.sh` against them, once on
 # Docker and once on rootless Podman: ADR 0004 makes rootless Podman the target
 # engine and Docker the one that must keep working, so the image contract is
-# proven on both. Nothing is pushed to a registry in v1 and no secret is
-# referenced; the tags exist only for the length of the job.
+# proven on both. Nothing is pushed to a registry here and no secret is
+# referenced; the tags exist only for the length of the job. The Release
+# workflow calls this one and publishes the images only after it passes.
 name: Images
 
 on:
-  push:
-    branches: [main]
-    paths: ["images/**", ".github/workflows/images.yml"]
+  # main is tested by the Release workflow, which calls this one on every
+  # push to main without a path filter (ARCHITECTURE.md, "Server
+  # deployment", "Promotion"); pull requests keep the path filter.
+  workflow_call:
   pull_request:
     paths: ["images/**", ".github/workflows/images.yml"]
   workflow_dispatch:

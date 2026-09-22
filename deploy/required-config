@@ -1,0 +1,18 @@
+# Variables a release refuses to start without, one per line; `A|B` where
+# either of two will do. Copied into the manifest's `config.required`
+# (ARCHITECTURE.md, "Server deployment", "The manifest"), where the updater
+# holds a release that names a variable the operator's environment file lacks.
+# Keep this in step with README.md, "Configuration": a new required variable
+# added without a default belongs here, and usually also bumps deploy/EPOCH.
+# Variables compose sets for the orchestrator itself (DATABASE_URL,
+# DOCKER_HOST, DATA_DIR) are not listed.
+PUBLIC_URL
+JWT_SECRET
+POSTGRES_USER
+POSTGRES_PASSWORD
+POSTGRES_DB
+ENGINE_SOCKET_HOST
+DATA_DIR_HOST
+SECRETS_MASTER_KEYS|SECRETS_MASTER_KEY_FILE
+GIT_BOT_NAME
+GIT_BOT_EMAIL

@@ -246,7 +246,7 @@ Code hand-offs keep the producing session, branch, exact commit and a comment to
 
 ### Automatic deployments
 
-**Status: contract only.** The rules below are fixed (`ARCHITECTURE.md`, "Server deployment"; ADR 0044); the publishing workflow, the `mars-deploy` updater, its units and the installation steps are being built under Bears epic `2uqww`, and this section gains the exact commands as they land. Until then a server is installed as described above.
+**Status: publishing exists; applying does not yet.** The rules below are fixed (`ARCHITECTURE.md`, "Server deployment"; ADR 0044) and the Release workflow publishes and promotes by them. The `mars-deploy` updater, its units and the installation steps are being built under Bears epic `2uqww`, and this section gains the exact commands as they land. Until then a server is installed as described above.
 
 A production server follows `main` by pulling: every push to `main` runs the full test suites on that commit in the **Release** workflow, publishes the orchestrator, nginx and both session images for `linux/amd64` to `ghcr.io/lhelge/`, and publishes a release bundle, `ghcr.io/lhelge/mars-deploy`, whose `main` tag is moved only forward and only after everything the release names exists. A user systemd timer of the service user runs `mars-deploy` every five minutes; it compares the promoted bundle with what is installed and, when it is newer and passes its checks, applies it. Nothing connects to the server from outside and nothing is built on it. `deploy/manifest.example.json` shows what a release describes.
 
@@ -260,6 +260,8 @@ What the operator can rely on:
 - **PostgreSQL is yours.** Its image is set in your environment file and never changed by an update; a major version upgrade is a separate manual procedure.
 
 Operator controls: `mars-deploy status` (installed, promoted and last attempted release, and why the last run did or did not deploy), `pause` and `resume` (the timer does nothing while paused), `deploy <commit|digest>` (pins that release and applies it; the timer then stays on it), `unpin`, `retry` (lets the timer try a release that failed once more), and `rollback` (starts the previous release).
+
+**GitHub and registry settings.** The Release workflow pushes with the run's own `GITHUB_TOKEN`, so it needs no stored secret; what it needs from the repository settings is that Actions may use `packages: write` where the workflow asks for it (Settings → Actions → General → Workflow permissions: the default read-only is fine, because the workflow requests `packages: write` itself for its two publishing jobs). The first push creates the packages `mars-orchestrator`, `mars-nginx`, `mars-session-claude`, `mars-session-claude-dev` and `mars-deploy` under the `lhelge` account; the `org.opencontainers.image.source` label links each to this repository, and a package created from a private repository is private. If one ends up unlinked, link it under the package's settings ("Manage Actions access": this repository, role *Write*), or the next push is refused. Only a push to `main` publishes, so whoever can push to `main` can release: protect `main` against force pushes (a rewritten `main` also stops promotion, which refuses to move `main` sideways). The server pulls private packages with a classic personal access token carrying only `read:packages` — GHCR does not accept fine-grained tokens — stored in the service user's persistent registry auth file, not in `/run`; the installation steps give the exact command.
 
 **Rollback is not restore.** `rollback` and deploying an older pin are allowed only to a release with exactly the current set of database migrations, and lose nothing. Going back past a migration means restoring the backup taken before it, together with its data directory: every write since that backup is lost, it is always done by hand with updates paused, and it is followed by deploying the release recorded in the backup. Updates never run a down-migration and never restore a database on their own.
 
@@ -439,6 +441,8 @@ The stack sets every orchestrator variable itself and ignores the repository's `
 
 ### CI
 
+The path filters below apply to pull requests. On `main` the six suites are not triggered by path: the **Release** workflow calls every one of them on every push and publishes only when all six succeed ("Automatic deployments").
+
 | Workflow | Triggers on | Checks |
 | --- | --- | --- |
 | Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests under `cargo nextest` plus the doctests, with `SQLX_OFFLINE=true`; a second job reruns the git tests that need no database or engine inside two older gits rather than the runner's — `rust:1.98.1-trixie`, the Dockerfile's builder base and so the git the orchestrator image ships, and `rust:1.98.1-bookworm`, which carries the documented minimum, git 2.39.5; a third job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
@@ -446,7 +450,8 @@ The stack sets every orchestrator variable itself and ignores the repository's `
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build; `npm run build` ends in `scripts/check-entry-chunk.mjs`, which fails if the chunks a first paint fetches carry feature UI or exceed the first-paint byte budget (`SPEC.md`, "Frontend", "Code splitting") |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright against a real orchestrator, Postgres and the stub session image on rootless Podman, all brought up by `frontend/tests/e2e-stack.sh`; the report, traces and orchestrator log are uploaded on failure |
 | Images | `images/**` | Lint the entrypoint, Dockerfiles and stub; build all three session images — base, dev and stub — on Docker and Podman; run `images/smoke-test.sh` over them |
-| Deploy | Dockerfiles, `nginx/`, compose files | Build orchestrator and nginx images on Docker and Podman; `nginx -t`; the Content-Security-Policy on real responses from the nginx image; compose config for both overrides |
+| Deploy | Dockerfiles, `nginx/`, compose files | Build orchestrator and nginx images on Docker and Podman; `nginx -t`; the Content-Security-Policy on real responses from the nginx image; compose config for both overrides; `release-scripts` shellchecks `scripts/release/` and runs `scripts/release/test.sh` (promotion decision, bundle assembly with a podman-compose render, manifest validation). Its filter also covers `scripts/release/**`, `deploy/**` and `release.yml` |
+| Release | every push to `main` only | Calls the six suites above on the commit; a gate passes only when all six report `success`; then publishes the five images and the bundle to `ghcr.io/lhelge/` (reusing images whose inputs are unchanged) and moves `mars-deploy:main` forwards (`ARCHITECTURE.md`, "Server deployment") |
 
 ## Roadmap after v1
 

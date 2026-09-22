@@ -18,26 +18,19 @@
 # This workflow is about packaging, not compilation: `orchestrator/src/**` is
 # deliberately absent from the `paths` filter below, because Orchestrator CI
 # already compiles and tests every source change and the image build is a cold
-# release build. Nothing is pushed to a registry and no secret is referenced;
-# v1 builds on the host (README.md, "Start").
+# release build. Nothing is pushed to a registry and no secret is referenced
+# here; publishing is the Release workflow's, which calls this one first.
+#
+# A third job, `release-scripts`, shellchecks and tests scripts/release/, the
+# pieces of the Release workflow that can run without a registry: the
+# promotion decision, the bundle assembly and the manifest validator.
 name: Deploy
 
 on:
-  push:
-    branches: [main]
-    # Repeated verbatim under pull_request: GitHub does not expand YAML
-    # anchors in workflow files.
-    paths:
-      - "orchestrator/Dockerfile"
-      - "orchestrator/.dockerignore"
-      - "nginx/**"
-      - "compose.yml"
-      - "compose.podman.yml"
-      - "compose.docker.yml"
-      - "compose.hostrun.yml"
-      - ".env.example"
-      - ".dockerignore"
-      - ".github/workflows/deploy.yml"
+  # main is tested by the Release workflow, which calls this one on every
+  # push to main without a path filter (ARCHITECTURE.md, "Server
+  # deployment", "Promotion"); pull requests keep the path filter.
+  workflow_call:
   pull_request:
     paths:
       - "orchestrator/Dockerfile"
@@ -50,6 +43,10 @@ on:
       - ".env.example"
       - ".dockerignore"
       - ".github/workflows/deploy.yml"
+      - ".github/workflows/release.yml"
+      - "scripts/release/**"
+      - "scripts/verify-deployment.sh"
+      - "deploy/**"
   workflow_dispatch:
 
 concurrency:
@@ -355,3 +352,31 @@ jobs:
               exit 1
             fi
           done
+
+  release-scripts:
+    name: Test the release scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The full history: the scripts count commits for the manifest's
+      # sequence and read files from the commit, not the working tree.
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Shellcheck the release scripts
+        run: shellcheck scripts/release/*.sh
+
+      # podman-compose so the test also renders the generated release override
+      # over compose.yml and compose.podman.yml, as the server will.
+      - name: Install podman-compose
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          python3 -m venv "${RUNNER_TEMP}/podman-compose"
+          "${RUNNER_TEMP}/podman-compose/bin/pip" install --quiet podman-compose
+          echo "${RUNNER_TEMP}/podman-compose/bin" >> "$GITHUB_PATH"
+
+      - name: Test the release scripts
+        run: scripts/release/test.sh

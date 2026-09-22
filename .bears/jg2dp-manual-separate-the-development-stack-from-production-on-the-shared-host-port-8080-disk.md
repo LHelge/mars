@@ -25,3 +25,6 @@ To do before the first production install (sswjj):
 - Rootless Podman keeps storage, networks and the socket per user, so `lhelge`'s development containers and `mars`'s production containers do not share `mars-sessions`/`mars-egress` or images. Only host ports and disk are shared. E2E uses ports 5433/7000/7001 on loopback and does not collide with 8080.
 
 Acceptance: port 8080 on 192.0.2.50 belongs to the `mars` user's nginx only (or is free for it), reachability from outside is limited as decided, and the disk budget is written down here.
+## Progress
+
+- 2026-09-22: Linus stopped the development stack with `podman-compose down`. Nothing listens on 8080 now (`ss -ltn`), so the port is free for the `mars` user's nginx. Still open: the access limit (bind address and firewall) and the disk budget.

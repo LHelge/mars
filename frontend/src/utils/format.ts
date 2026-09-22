@@ -1,6 +1,6 @@
-// Display formatting shared by every list and detail view. All three helpers
-// take a value that may be missing and answer an em dash for it, so a caller
-// never has to branch before calling them.
+// Display formatting shared by every list and detail view. Every helper here
+// takes a value that may be missing and answers `PLACEHOLDER` for it, so a
+// caller never has to branch before calling them.
 
 /** What a missing or unreadable value looks like everywhere in the UI. */
 export const PLACEHOLDER = "—";

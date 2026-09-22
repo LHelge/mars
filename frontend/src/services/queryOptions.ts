@@ -7,8 +7,8 @@
 // options are two different reads of one cache entry: TanStack keeps one entry
 // but one observer per call site, so a poll spelled in one of them runs only
 // while that one is mounted, and an option the other forgot silently changes
-// what the first sees. The project detail had four such spellings, each with
-// its own idea of whether a cloning project is re-read.
+// what the first sees. The project detail is the example: whether a cloning
+// project is re-read is part of the answer, not of one caller.
 //
 // A call site still adds what is genuinely its own — `enabled`, a placeholder,
 // a poll that belongs to that screen — by spreading the factory and overriding

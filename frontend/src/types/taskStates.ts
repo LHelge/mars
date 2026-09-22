@@ -15,7 +15,10 @@ export function parseTaskStateKind(value: string): TaskStateKind | undefined {
 export interface TaskState {
   id: string;
   project_id: string;
-  /** 1–32 characters matching `[a-z0-9][a-z0-9_-]*`; tasks reference states by id. */
+  /**
+   * 1–32 characters matching `[a-z0-9][a-z0-9_-]*`; a task's `state` is this
+   * name, and a rename moves every task with it.
+   */
   name: string;
   kind: TaskStateKind;
   position: number;

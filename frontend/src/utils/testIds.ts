@@ -13,9 +13,8 @@
 // (a scroll container, a nesting wrapper) or where the name is not unique
 // (a board column, a card).
 //
-// This module is deliberately *not* re-exported from `src/utils/index.ts`: that
-// barrel is in the entry chunk, and every consumer here is behind a lazily
-// loaded route (`SPEC.md`, "Frontend" → "Code splitting"). Import it by path.
+// Imported by its own path, like everything under `utils/` (`ARCHITECTURE.md`,
+// "Frontend architecture", Barrels and the first-paint path).
 
 /** The transcript's virtualised scroll container (`src/session/Transcript.tsx`). */
 export const TRANSCRIPT_SCROLL = "transcript-scroll";

@@ -2,10 +2,9 @@
 // view that makes one (`SPEC.md`, "Projects").
 //
 // Two writes answer the project itself — `POST /projects/{id}/fetch` and
-// `POST /projects/{id}/clone/retry` — and one takes it away. Both the projects
-// table and the project page offer the first pair and used to keep their own
-// idea of what to do afterwards; they share this one instead, so a retry from
-// the list and a retry from the page leave the cache in the same state.
+// `POST /projects/{id}/retry-clone` — and one takes it away. Both the projects
+// table and the project page offer that pair and share this module, so a retry
+// from the list and a retry from the page leave the cache in the same state.
 //
 // The keys matter more than they look. `queryKeys.projects.detail(id)` is
 // `["projects", id]`, the prefix every read *of that project* extends —

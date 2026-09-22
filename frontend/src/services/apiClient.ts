@@ -21,12 +21,9 @@
 // an abort rejects with the runtime's `AbortError` untouched, like any other
 // network failure.
 //
-// `query` is the one way a query string is built here: a record whose defined
-// values go through `URLSearchParams` and whose `undefined` ones are simply
-// absent, so an optional filter is spelled `{ state }` and not with a
-// conditional `?`. Path parts are encoded with `seg()` — every id, name or
-// number that a caller interpolates into a path goes through it, so nothing
-// depends on a route-level UUID check far away for correctness.
+// `query` is the one way a query string is built, and `seg()` the one way a
+// path part is encoded (`ARCHITECTURE.md`, "Frontend architecture", One way to
+// build a request).
 //
 // This module and `./auth` import each other (refresh uses the client, the
 // client reads the token). Neither calls across the cycle at module load.

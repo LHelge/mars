@@ -276,8 +276,8 @@ function AgentCredentialRow({
               onClick={() => {
                 setError(null);
                 setConfirmingDelete(false);
-                // Closing this way used to keep the typed value for the next
-                // time the panel was opened (`CLAUDE.md`, rule 3).
+                // Toggling the panel shut drops the typed value: a plaintext
+                // must not survive a closed panel (`CLAUDE.md`, rule 3).
                 setValue("");
                 setReplacing((open) => !open);
               }}

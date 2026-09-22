@@ -2,8 +2,8 @@
 // `/projects/:id/tasks/:number` is the board with that task's drawer open, and
 // "Copy links": the absolute form of that same route on the current origin).
 //
-// Pure, and free of `window`, so the board, the drawer and their tests all
-// spell the link the one way.
+// Pure, and free of `window`, so the board, the drawer, the session and
+// dashboard panels and their tests all spell the link the one way.
 
 /** The canonical application path of one task. */
 export function taskPath(projectId: string, number: number): string {

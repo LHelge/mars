@@ -4,10 +4,8 @@
 // `GET /users/me`, `PATCH /users/me` and — through `PasswordChangeForm` —
 // `POST /users/{id}/password` (`SPEC.md`, "Users (`/api/users`)").
 //
-// The escalation opt-out is the one of `SPEC.md`, "User-facing features":
-// "Every escalation into the human state emails the task's assignee, or every
-// admin when there is none; each user can opt out", stored as
-// `users.notify_email` (`docs/data-model.md`).
+// The escalation opt-out is the one of `SPEC.md`, "User-facing features",
+// stored as `users.notify_email` (`docs/data-model.md`).
 //
 // There is one current user, the one in `services/auth` that `PageLayout`,
 // `AdminRoute` and `ProtectedRoute` read, and this page reads it through

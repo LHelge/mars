@@ -2,7 +2,9 @@
 // the central factory in `services/queryKeys.ts` rather than spelling arrays
 // out again, so an invalidation from the board hits the very same keys the
 // dashboard, the session view and the profile editor already hold. Every task
-// module uses these helpers; no module writes an inline key array.
+// and task-state key comes from here and the other keys a task module needs
+// come straight from `services/queryKeys`; no module writes an inline key
+// array.
 
 import { queryKeys } from "../services/queryKeys";
 import type { TaskPathRef } from "../services/tasks";

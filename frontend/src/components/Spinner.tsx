@@ -1,6 +1,5 @@
 // The one spinner in the kit, shared by `SubmitButton` and `LoadingState`.
-// Internal: pages compose the two components above it, so it is deliberately
-// not re-exported from `components/index.ts`.
+// Internal: pages compose `SubmitButton` and `LoadingState` rather than this.
 
 export interface SpinnerProps {
   /** Tailwind size classes, e.g. `size-4`. */

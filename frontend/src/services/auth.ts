@@ -2,8 +2,8 @@
 // "Authentication", "Auth (`/api/auth`)" and "Frontend").
 //
 // The access token lives in memory and is mirrored to `localStorage` so a page
-// reload stays signed in; the user object is not persisted — the router reloads
-// `GET /users/me` at authenticated startup. Deliberately framework-free (a
+// reload stays signed in; the user object is not persisted — `AuthBootstrap`
+// reloads `GET /users/me` at authenticated startup. Deliberately framework-free (a
 // plain module object and a `Set` of listeners, not Zustand) so `apiClient` can
 // import it without pulling in React.
 //
@@ -165,9 +165,9 @@ export function onSignOut(handler: SignOutHandler): () => void {
  * exec PTY — its shell, its working directory and any foreground build — every
  * quarter of an hour.
  *
- * The session transcript and task board stream hooks subscribe to this from
- * their providers and reconnect their event streams with the fresh access
- * token; pending inputs are not replayed. Returns the unregister function.
+ * The session socket and task stream controllers subscribe to this when they
+ * start and reconnect with the fresh access token; pending inputs are not
+ * replayed. Returns the unregister function.
  */
 export function onCredentialsReplaced(
   handler: CredentialsReplacedHandler,

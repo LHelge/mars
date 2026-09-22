@@ -1,1 +1,47 @@
-How work runs without anyone launching it: the dispatcher that picks up tasks for auto-launch profiles, scheduled profiles, and the caps and pause that hold both back.
+Mars can start sessions with nobody launching them, in two ways: the **dispatcher** picks up tasks as they arrive, and a **schedule** runs a profile on the clock. Both are settings of an ephemeral profile. Only an ephemeral profile can run unattended, because nobody is there to answer a conversational one. A session nobody launched carries a `dispatcher` or `schedule` tag wherever it is listed.
+
+### Launching for tasks as they arrive
+
+Tick **Let the dispatcher launch this profile** in the profile's **Unattended launches** section. The dispatcher then watches the states the profile serves and launches a session of it for a task that can be claimed there. It picks the same task the agent's `ready` tool would offer first: highest priority first, then the lowest task number. The launch works like yours from a task: the task is claimed in the same step, the agent is told which task it holds, and the session starts from the task's current hand-off, if it has one.
+
+The dispatcher reacts to the board, so a task moved into a served state is normally picked up within a second. A timer sweeps behind it in case a change was missed. A few more rules:
+
+- It only takes tasks in the profile's served states. A task that is held, blocked, in the human state or closed is never dispatched, so a task escalated to a person waits for that person.
+- When two profiles serve the same state, the older profile gets the task.
+- A launch that fails releases its task, and the failure counts as an attempt. After `max_attempts` of them the task goes to the human state, which is the only back-off there is ([Task flow](help:task-flow)).
+
+### Scheduled runs
+
+Tick **Run this profile on a schedule** and give it a cron expression and a prompt. Each time the expression comes due, a session of the profile starts with the prompt as its message and no task, from the project's default branch. It is titled after the profile and the time it ran. The profile's system prompt says who the agent is, and the schedule prompt says what this run does.
+
+The expression has five fields: minute, hour, day of month, month and day of week. It is **always read in UTC**, whatever your own time zone. A seconds field, a year field and forms like `@daily` are refused. For example:
+
+| Expression | Runs |
+| --- | --- |
+| `0 4 * * *` | every day at 04:00 UTC |
+| `*/30 * * * *` | every 30 minutes |
+| `0 7 * * 1-5` | weekdays at 07:00 UTC |
+
+The profile editor shows the next and the last run once you have saved, and the **Profiles** tab marks the profile with a `schedule` chip.
+
+**A tick is never caught up.** A run that came due while Mars was down is skipped, not replayed when it comes back. A tick refused by a cap, by the pause or by a missing credential is spent too. The next occurrence is the retry. A schedule means "run at these times", not "run this many times". The `tech-debt-scanner` template, offered under **Start from** when you add a profile, is a ready-made example that runs once a day.
+
+### The three caps
+
+Three limits hold unattended launches back. A launch happens only while every one of them has room:
+
+| Cap | Where it is set | Default |
+| --- | --- | --- |
+| Live sessions of this profile | The profile's **Unattended launches** section | 1 |
+| Live sessions in this project | The project's **Settings** | No cap |
+| Live sessions on the instance | `AUTOMATION_MAX_SESSIONS`, set by whoever runs Mars | 4 |
+
+A live session is one that is creating or running, whoever launched it, so your own sessions use up room too. A parked session doesn't count. The caps only ever hold automation back: a session you launch by hand is never refused by one. A launch the caps refuse is skipped, not queued. The dispatcher simply tries again once a session ends, while a scheduled tick is spent. Setting a scheduled profile's cap to 1 is how you say "never two of these at once".
+
+### Pausing a project
+
+**Pause automation**, in the project's **Settings**, stops every unattended launch in the project until you turn it off. There's no restart, and the project header says it is paused. Sessions that are already running carry on, and you can still launch sessions by hand. To stop a single profile instead, untick its dispatcher or schedule setting.
+
+### The credential unattended runs use
+
+An unattended session has no person behind it, so a credential stored for **Me** can't reach it. It needs an [agent credential](help:agent-credentials) stored for the project or for **Everyone**. A profile can't be saved with the dispatcher or a schedule turned on until one exists. If that credential is deleted later, the profile's runs are skipped and claim nothing until one is back.

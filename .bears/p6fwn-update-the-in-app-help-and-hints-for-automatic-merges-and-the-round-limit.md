@@ -17,7 +17,7 @@ depends_on:
 parent: tykeu
 ---
 
-The in-app help (epic gtbp5; `SPEC.md` "Frontend" → Help, topics in `frontend/src/help/*.md`, titles in `help/topics.ts`) describes Mars as it was before this epic. Once auto-merge, the new seeding and `max_rounds` are implemented, bring it in line — nothing here documents behaviour ahead of the code. Check each claim against `SPEC.md`/`ARCHITECTURE.md` as this epic left them (ADR 0044, 0045).
+The in-app help (epic gtbp5; `SPEC.md` "Frontend" → Help, topics in `frontend/src/help/*.md`, titles in `help/topics.ts`) describes Mars as it was before this epic. Once auto-merge, the new seeding and `max_rounds` are implemented, bring it in line — nothing here documents behaviour ahead of the code. Check each claim against `SPEC.md`/`ARCHITECTURE.md` as this epic left them (ADR 0045, 0046).
 
 - `getting-started.md` "The starter profiles": the seeded set without `merger` (planner, implementer, reviewer) and a `merge` state with auto-merge on; a new project's reviewed work lands on the default branch by itself and waits there to be pushed.
 - `task-flow.md`: auto-merge states (what moving an approved task into one does, the conflict state and its conflicting paths, that pausing automation pauses it), `max_rounds` (what counts as a round, the escalation to the human state, default 5) beside `max_attempts`; hand-offs: when the task's manual merge action is still needed.

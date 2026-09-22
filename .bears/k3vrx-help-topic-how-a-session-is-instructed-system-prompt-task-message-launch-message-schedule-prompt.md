@@ -1,10 +1,10 @@
 ---
 id: k3vrx
 title: "Help topic: how a session is instructed (system prompt, task message, launch message, schedule prompt)"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-22T21:14:32.718525124Z"
-updated: "2026-09-22T21:22:54.844340994Z"
+updated: "2026-09-22T21:48:34.326188250Z"
 tags:
   - frontend
   - docs

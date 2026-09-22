@@ -2,10 +2,10 @@
 id: gtbp5
 title: "In-app help: a Help page and pointers from the forms that need them"
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-09-22T19:07:55.661019081Z"
-updated: "2026-09-22T19:07:55.661019081Z"
+updated: "2026-09-22T21:48:34.344759092Z"
 tags:
   - frontend
   - docs

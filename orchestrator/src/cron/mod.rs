@@ -19,6 +19,8 @@
 //! - `cron/dispatcher.rs` — launch an ephemeral session for the best
 //!   claimable task of each `auto_launch` profile, on its timer and woken by
 //!   the event fan-out in between (the one job that is more than a loop);
+//! - `cron/schedules.rs` — launch an ephemeral, task-less session of every
+//!   scheduled profile whose cron expression came due since the last tick;
 //! - `cron/token_cleanup.rs` — expired credentials and orphaned secret rows;
 //! - `cron/secret_rotation.rs` — re-wrap rows behind the newest master key;
 //! - `cron/orphan_cleanup.rs` — leftover containers, `/data/tmp` and refs.
@@ -44,6 +46,7 @@ pub mod idle_reaper;
 mod mirror_fetch;
 pub mod orphan_cleanup;
 pub mod scheduler;
+mod schedules;
 mod secret_rotation;
 mod stuck_tasks;
 mod token_cleanup;
@@ -52,6 +55,14 @@ pub use scheduler::spawn_job;
 
 /// How often the two reapers run (`ARCHITECTURE.md`, "Background jobs").
 const REAPER_PERIOD: Duration = Duration::from_secs(60);
+
+/// How often the scheduled-agent job runs (`ARCHITECTURE.md`, "Background
+/// jobs").
+///
+/// One minute, and no configuration variable: it is the resolution of the
+/// 5-field cron expressions it fires, not a knob (ADR 0043; "Scheduled
+/// agents").
+const SCHEDULER_PERIOD: Duration = Duration::from_secs(60);
 
 /// How often the hourly jobs run: token cleanup, secret rotation and orphan
 /// cleanup (`ARCHITECTURE.md`, "Background jobs").
@@ -69,6 +80,7 @@ pub enum JobName {
     IdleReaper,
     StuckTaskReaper,
     Dispatcher,
+    Scheduler,
     TokenCleanup,
     SecretRotation,
     OrphanCleanup,
@@ -77,11 +89,12 @@ pub enum JobName {
 impl JobName {
     /// Every job, in the table's order. [`CronService::start`] spawns one loop
     /// per entry, so a variant added here is a variant that runs.
-    pub const ALL: [JobName; 7] = [
+    pub const ALL: [JobName; 8] = [
         JobName::MirrorFetch,
         JobName::IdleReaper,
         JobName::StuckTaskReaper,
         JobName::Dispatcher,
+        JobName::Scheduler,
         JobName::TokenCleanup,
         JobName::SecretRotation,
         JobName::OrphanCleanup,
@@ -95,6 +108,7 @@ impl JobName {
             JobName::IdleReaper => "idle_reaper",
             JobName::StuckTaskReaper => "stuck_task_reaper",
             JobName::Dispatcher => "dispatcher",
+            JobName::Scheduler => "scheduler",
             JobName::TokenCleanup => "token_cleanup",
             JobName::SecretRotation => "secret_rotation",
             JobName::OrphanCleanup => "orphan_cleanup",
@@ -108,10 +122,16 @@ impl JobName {
     /// and the dispatcher, whose timer is the fallback behind its `task_events`
     /// wake-up and therefore the one knob over how long a missed wake-up can go
     /// unnoticed (`DISPATCHER_INTERVAL_SECS`; `README.md`, "Configuration").
+    ///
+    /// The scheduler is deliberately not one of them. Its period *is* the
+    /// finest period a 5-field cron expression can express, so a longer one
+    /// would silently drop ticks and a shorter one would find nothing new
+    /// (ADR 0043).
     pub fn period(&self, config: &Config) -> Duration {
         match self {
             JobName::MirrorFetch => Duration::from_secs(config.mirror_fetch_interval_secs),
             JobName::Dispatcher => Duration::from_secs(config.dispatcher_interval_secs),
+            JobName::Scheduler => SCHEDULER_PERIOD,
             JobName::IdleReaper | JobName::StuckTaskReaper => REAPER_PERIOD,
             JobName::TokenCleanup | JobName::SecretRotation | JobName::OrphanCleanup => {
                 HOURLY_PERIOD
@@ -163,14 +183,41 @@ pub struct CronService {
     /// more sightings and nothing else, whereas a table would make a leftover
     /// ref's bookkeeping into rows of its own to clean up.
     handoff_sightings: tokio::sync::Mutex<HashMap<(Uuid, Uuid), DateTime<Utc>>>,
+    /// When this service was built, which in the binary is the moment the
+    /// process finished recovering and started its jobs.
+    ///
+    /// The floor under every scheduled agent's window: an occurrence that came
+    /// due before it is never caught up (`cron/schedules.rs`;
+    /// `ARCHITECTURE.md`, "Task tracker" → "Scheduled agents"). It is a field
+    /// rather than a `Utc::now()` inside the job so that it is injectable —
+    /// [`CronService::with_started_at`] — because a test of "a tick before the
+    /// process started is skipped" has no other way to place one.
+    started_at: DateTime<Utc>,
 }
 
 impl CronService {
+    /// The jobs over `state`, with the process-start floor at this moment.
     pub fn new(state: AppState) -> Self {
+        Self::with_started_at(state, Utc::now())
+    }
+
+    /// The jobs over `state`, with the process-start floor placed by the
+    /// caller.
+    ///
+    /// For a test — or the test-only route that makes a scheduled tick due —
+    /// that needs the floor somewhere other than "now": see
+    /// [`CronService::started_at`].
+    pub fn with_started_at(state: AppState, started_at: DateTime<Utc>) -> Self {
         CronService {
             state,
             handoff_sightings: tokio::sync::Mutex::new(HashMap::new()),
+            started_at,
         }
+    }
+
+    /// The floor under every scheduled agent's window (see the field).
+    pub fn started_at(&self) -> DateTime<Utc> {
+        self.started_at
     }
 
     /// Run one job now, with the clock the caller chose.
@@ -183,6 +230,7 @@ impl CronService {
             JobName::IdleReaper => self.idle_reaper(now).await,
             JobName::StuckTaskReaper => self.stuck_task_reaper(now).await,
             JobName::Dispatcher => self.dispatcher(now).await,
+            JobName::Scheduler => self.scheduler(now).await,
             JobName::TokenCleanup => self.token_cleanup(now).await,
             JobName::SecretRotation => self.secret_rotation(now).await,
             JobName::OrphanCleanup => self.orphan_cleanup(now).await,

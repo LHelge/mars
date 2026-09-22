@@ -17,6 +17,7 @@
 //! `READ COMMITTED` (ADR 0021). Neither primitive enforces anything by itself;
 //! the compositions live with the routes and the tracker's own repository.
 
+use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
@@ -919,6 +920,95 @@ impl<'a> ProjectRepository<'a> {
         .await?;
 
         Ok(profiles)
+    }
+
+    /// The project's profiles that carry a cron schedule, oldest first.
+    ///
+    /// The scheduler job's scan (`ARCHITECTURE.md`, "Task tracker" →
+    /// "Scheduled agents"). `auto_launch` is not consulted: a schedule is a
+    /// second, independent reason to launch a profile unattended, and a
+    /// profile can have either, both or neither.
+    ///
+    /// A separate query rather than a filter over
+    /// [`ProjectRepository::list_profiles`], and for the same reason
+    /// [`ProjectRepository::list_auto_launch_profiles`] is one: the predicate
+    /// is the partial index `agent_profiles_schedule_idx (project_id) WHERE
+    /// schedule_cron IS NOT NULL`, so a job that ticks over every ready
+    /// project once a minute reads only the few rows that can fire.
+    pub async fn list_scheduled_profiles(&self, project_id: Uuid) -> Result<Vec<AgentProfile>> {
+        let profiles = sqlx::query_as!(
+            AgentProfile,
+            r#"
+            SELECT p.id, p.project_id, p.name, p.kind as "kind: ProfileKind",
+                   p.backend as "backend: AgentBackend", p.model, p.system_prompt,
+                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,
+                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
+                       as "serves_states!",
+                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,
+                   p.max_concurrent, p.schedule_cron, p.schedule_prompt, p.last_scheduled_at,
+                   p.created_at, p.updated_at
+            FROM agent_profiles AS p
+            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
+            LEFT JOIN task_states AS ts ON ts.id = ps.state_id
+            WHERE p.project_id = $1 AND p.schedule_cron IS NOT NULL
+            GROUP BY p.id
+            ORDER BY p.created_at, p.name
+            "#,
+            project_id,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(profiles)
+    }
+
+    /// Claim a scheduled tick by advancing `last_scheduled_at` from the value
+    /// the caller read to `fired_at`, and answer whether this call is the one
+    /// that claimed it.
+    ///
+    /// The whole of "a tick fires at most once" (`ARCHITECTURE.md`, "Task
+    /// tracker" → "Scheduled agents"). One statement, with the old value in
+    /// the `WHERE` and no lock taken: two writers that read the same
+    /// `last_scheduled_at` cannot both move it, so the second one answers
+    /// `false` and launches nothing. That is what makes a restart inside a
+    /// tick's own minute safe — the row remembers, not the process.
+    ///
+    /// `previous` is matched with `IS NOT DISTINCT FROM`, so the very first
+    /// tick of a profile, whose column is NULL, is claimed by the same
+    /// statement as every later one.
+    ///
+    /// `schedule_cron IS NOT NULL` is part of the claim rather than a check
+    /// before it: a save that cleared the schedule between the scan and the
+    /// claim also cleared `last_scheduled_at`, and this is what keeps the
+    /// scheduler from writing the column of a profile that no longer has a
+    /// schedule ([`ProjectRepository::update_profile`]).
+    ///
+    /// **The caller launches after this returns `true`, never before.** A
+    /// crash in between loses that one run, which is the direction "Scheduled
+    /// agents" trades in; a launch first would double it.
+    pub async fn claim_schedule_tick(
+        &self,
+        profile_id: Uuid,
+        previous: Option<DateTime<Utc>>,
+        fired_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let claimed = sqlx::query!(
+            r#"
+            UPDATE agent_profiles
+            SET last_scheduled_at = $3
+            WHERE id = $1
+              AND last_scheduled_at IS NOT DISTINCT FROM $2
+              AND schedule_cron IS NOT NULL
+            "#,
+            profile_id,
+            previous,
+            fired_at,
+        )
+        .execute(self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(claimed > 0)
     }
 
     /// Replace a profile's configuration and return the stored row, or `None`

@@ -105,6 +105,29 @@ impl CronSchedule {
     pub fn next_after(&self, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
         self.cron.find_next_occurrence(&after, false).ok()
     }
+
+    /// Is there an occurrence in the half-open window `(after, until]`?
+    ///
+    /// The one question the scheduler job has (`ARCHITECTURE.md`, "Task
+    /// tracker" → "Scheduled agents"): its window opens strictly after the
+    /// last instant already accounted for — the later of `last_scheduled_at`
+    /// and the moment the process started — and closes at the `now` the run
+    /// was given, which is included so that a tick landing exactly on a run's
+    /// instant is that run's.
+    ///
+    /// **Several occurrences in one window are one answer.** It asks only
+    /// whether the *first* occurrence after `after` has arrived yet, so a
+    /// window widened by a long previous run — or by a minute-by-minute
+    /// expression and a job that took two minutes — fires once and not once
+    /// per occurrence. Ticks are never caught up, so counting them would have
+    /// nothing to do with them.
+    ///
+    /// `false` for a window that is empty or inverted, and `false` for an
+    /// expression that can never fire.
+    pub fn has_occurrence_in(&self, after: DateTime<Utc>, until: DateTime<Utc>) -> bool {
+        self.next_after(after)
+            .is_some_and(|occurrence| occurrence <= until)
+    }
 }
 
 impl PartialEq for CronSchedule {
@@ -169,6 +192,66 @@ mod tests {
         let schedule = CronSchedule::parse("0 0 30 2 *").expect("five fields parse");
 
         assert_eq!(schedule.next_after(Utc::now()), None);
+    }
+
+    #[test]
+    fn an_occurrence_inside_the_window_is_due_and_one_after_it_is_not() {
+        let schedule = CronSchedule::parse("30 3 * * *").expect("five fields parse");
+        let floor = Utc.with_ymd_and_hms(2026, 9, 22, 3, 0, 0).unwrap();
+
+        assert!(
+            schedule
+                .has_occurrence_in(floor, Utc.with_ymd_and_hms(2026, 9, 22, 3, 30, 0).unwrap(),)
+        );
+        assert!(
+            !schedule
+                .has_occurrence_in(floor, Utc.with_ymd_and_hms(2026, 9, 22, 3, 29, 59).unwrap(),)
+        );
+    }
+
+    #[test]
+    fn the_window_excludes_its_own_floor() {
+        let schedule = CronSchedule::parse("30 3 * * *").expect("five fields parse");
+        let occurrence = Utc.with_ymd_and_hms(2026, 9, 22, 3, 30, 0).unwrap();
+
+        // The floor is the last instant already accounted for, so the tick it
+        // sits on has already fired and must not fire again.
+        assert!(!schedule.has_occurrence_in(occurrence, occurrence));
+        assert!(!schedule.has_occurrence_in(
+            occurrence,
+            Utc.with_ymd_and_hms(2026, 9, 23, 3, 29, 0).unwrap(),
+        ));
+    }
+
+    #[test]
+    fn several_occurrences_in_one_window_are_one_answer() {
+        let schedule = CronSchedule::parse("* * * * *").expect("five fields parse");
+
+        // Nothing here counts: the caller fires once for a `true`.
+        assert!(schedule.has_occurrence_in(
+            Utc.with_ymd_and_hms(2026, 9, 22, 3, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 9, 22, 3, 10, 0).unwrap(),
+        ));
+    }
+
+    #[test]
+    fn an_empty_or_inverted_window_is_never_due() {
+        let schedule = CronSchedule::parse("* * * * *").expect("five fields parse");
+        let earlier = Utc.with_ymd_and_hms(2026, 9, 22, 3, 0, 0).unwrap();
+        let later = Utc.with_ymd_and_hms(2026, 9, 22, 4, 0, 0).unwrap();
+
+        assert!(!schedule.has_occurrence_in(later, earlier));
+        assert!(!schedule.has_occurrence_in(earlier, earlier));
+    }
+
+    #[test]
+    fn a_schedule_that_can_never_fire_is_never_due() {
+        let schedule = CronSchedule::parse("0 0 30 2 *").expect("five fields parse");
+
+        assert!(!schedule.has_occurrence_in(
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2036, 1, 1, 0, 0, 0).unwrap(),
+        ));
     }
 
     #[test]

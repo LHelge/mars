@@ -1,0 +1,306 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT p.id, p.project_id, p.name, p.kind as \"kind: ProfileKind\",\n                   p.backend as \"backend: AgentBackend\", p.model, p.system_prompt,\n                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,\n                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)\n                       as \"serves_states!\",\n                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,\n                   p.max_concurrent, p.schedule_cron, p.schedule_prompt, p.last_scheduled_at,\n                   p.created_at, p.updated_at\n            FROM agent_profiles AS p\n            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id\n            LEFT JOIN task_states AS ts ON ts.id = ps.state_id\n            WHERE p.project_id = $1 AND p.schedule_cron IS NOT NULL\n            GROUP BY p.id\n            ORDER BY p.created_at, p.name\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "project_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "kind: ProfileKind",
+        "type_info": {
+          "Custom": {
+            "name": "profile_kind",
+            "kind": {
+              "Enum": [
+                "conversational",
+                "ephemeral"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "backend: AgentBackend",
+        "type_info": {
+          "Custom": {
+            "name": "agent_backend",
+            "kind": {
+              "Enum": [
+                "claude"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "backend"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "model"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "system_prompt",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "system_prompt"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "permission_mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "permission_mode"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "image",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "image"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "runtime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "runtime"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "mcp_tools",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "mcp_tools"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "secrets",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "secrets"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "serves_states!",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "partial_messages",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "partial_messages"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "idle_timeout_secs",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "idle_timeout_secs"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "is_default",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "is_default"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "auto_launch",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "auto_launch"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "max_concurrent",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "max_concurrent"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "schedule_cron",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "schedule_cron"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "schedule_prompt",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "schedule_prompt"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "last_scheduled_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "last_scheduled_at"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "1276e58bc0371771a36aa94365287352b0782a012e3f6815e275d9978cbbb107"
+}

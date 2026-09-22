@@ -18,13 +18,23 @@
 # this file alone — without an override the orchestrator cannot open the engine
 # socket (README.md, "Start").
 
+# A fixed project name, so the Postgres volume (`mars_pgdata`) and the
+# containers are the same objects whichever directory compose runs from: a
+# production release runs from its own versioned directory
+# (ARCHITECTURE.md, "Server deployment", "Applying").
+name: mars
+
 services:
   postgres:
-    image: postgres:18
+    # Pinned by the operator, never by a release: an application update does
+    # not change the database server (README.md, "Configuration").
+    image: ${POSTGRES_IMAGE:-postgres:18}
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      # `:?` makes compose refuse to render without the variable, so a
+      # missing one fails before any service is touched.
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
     # postgres:18 sets PGDATA=/var/lib/postgresql/18/docker and declares its
     # volume at /var/lib/postgresql, one level up from the /var/lib/postgresql/data
     # of postgres:17 and earlier. The named volume therefore covers the whole
@@ -68,8 +78,8 @@ services:
       # varies through ENGINE_SOCKET_HOST, the container side never does.
       DOCKER_HOST: unix:///run/engine.sock
     volumes:
-      - "${DATA_DIR_HOST}:/data"
-      - "${ENGINE_SOCKET_HOST}:/run/engine.sock"
+      - "${DATA_DIR_HOST:?set DATA_DIR_HOST to the absolute data directory}:/data"
+      - "${ENGINE_SOCKET_HOST:?set ENGINE_SOCKET_HOST to the engine socket path}:/run/engine.sock"
     # ARCHITECTURE.md, "Trust boundaries": the orchestrator holds the engine
     # socket, so its root filesystem is read-only. The git wrapper writes a
     # temporary 0600 config file, so /tmp must be writable (orchestrator/Dockerfile).

@@ -171,6 +171,7 @@ Copy `.env.example` to `.env` and set:
 | `JWT_SECRET` | Secret for signing access tokens. |
 | `DATABASE_URL` | Postgres connection string (compose sets it for the orchestrator). |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Database bootstrap. Compose interpolates all three into the `DATABASE_URL` it gives the orchestrator, so `POSTGRES_PASSWORD` must use URL-safe characters (letters, digits, `-`, `_`, `.`, `~`); setting `DATABASE_URL` in `.env` does not help, because compose's `environment:` overrides it. |
+| `POSTGRES_IMAGE` | **Compose only.** The PostgreSQL image (default `postgres:18`). A release never changes it (`ARCHITECTURE.md`, "Server deployment"), so a server pins it by digest — `podman pull docker.io/library/postgres:18` and then `podman image inspect --format '{{.Digest}}' docker.io/library/postgres:18` gives the value to append after `docker.io/library/postgres@` — and upgrading the major version is a manual procedure of its own. |
 | `DOCKER_HOST` | Engine socket, `unix://$XDG_RUNTIME_DIR/podman/podman.sock` for rootless Podman — the path "Podman setup" printed, which is `/run/user/<uid>/…` for the service user's own uid and not necessarily 1000. Compose overrides it inside the orchestrator container to the mounted socket path (`unix:///run/engine.sock`), so the value here is what `podman-compose`/`docker compose` itself and a host-run orchestrator use. |
 | `ENGINE_SOCKET_HOST` | **Compose only.** Host path of the engine socket, bind-mounted into the orchestrator at `/run/engine.sock`; `$XDG_RUNTIME_DIR/podman/podman.sock` for rootless Podman (again the service user's own uid, not necessarily 1000), `/var/run/docker.sock` for Docker. A path, not a `unix://` URL, and compose does not expand `$XDG_RUNTIME_DIR` for you: write the resolved path. |
 | `DATA_DIR_HOST` | Host path of the data directory; mounted at `/data` in the orchestrator and used as the source of session bind mounts. A bind-mount source must be absolute, so a relative path is resolved against the orchestrator's working directory at startup. |
@@ -262,6 +263,49 @@ What the operator can rely on:
 Operator controls: `mars-deploy status` (installed, promoted and last attempted release, and why the last run did or did not deploy), `pause` and `resume` (the timer does nothing while paused), `deploy <commit|digest>` (pins that release and applies it; the timer then stays on it), `unpin`, `retry` (lets the timer try a release that failed once more), and `rollback` (starts the previous release).
 
 **GitHub and registry settings.** The Release workflow pushes with the run's own `GITHUB_TOKEN`, so it needs no stored secret; what it needs from the repository settings is that Actions may use `packages: write` where the workflow asks for it (Settings → Actions → General → Workflow permissions: the default read-only is fine, because the workflow requests `packages: write` itself for its two publishing jobs). The first push creates the packages `mars-orchestrator`, `mars-nginx`, `mars-session-claude`, `mars-session-claude-dev` and `mars-deploy` under the `lhelge` account; the `org.opencontainers.image.source` label links each to this repository, and a package created from a private repository is private. If one ends up unlinked, link it under the package's settings ("Manage Actions access": this repository, role *Write*), or the next push is refused. Only a push to `main` publishes, so whoever can push to `main` can release: protect `main` against force pushes (a rewritten `main` also stops promotion, which refuses to move `main` sideways). The server pulls private packages with a classic personal access token carrying only `read:packages` — GHCR does not accept fine-grained tokens — stored in the service user's persistent registry auth file, not in `/run`; the installation steps give the exact command.
+
+#### Installing a published release
+
+The server needs neither `git` nor a build toolchain: the service user with rootless Podman from "Podman setup", `podman-compose`, `jq` and `flock`. Everything of Mars's lives under one directory owned by the service user, `/srv/mars` below (mode `0700`):
+
+```
+/srv/mars/
+├── mars.env                  the operator's environment file, mode 0600; never inside a release
+├── data/                     DATA_DIR_HOST
+├── releases/sha256-<hex>/    one extracted bundle per release, named by its digest, never edited
+└── state/                    the updater's state
+```
+
+A release directory holds `compose.yml`, `compose.podman.yml`, the generated `compose.release.yml` that pins the orchestrator and nginx images by digest, `manifest.json`, `env.example`, `bin/check-env` and `scripts/verify-deployment.sh`. It gets one addition at install, a `.env` symlink to `../../mars.env`: compose reads `.env` from the directory it runs in, both for interpolation and for the orchestrator's `env_file`, so the operator's file stays in one place outside every release. `compose.yml` names the project `mars`, so every release directory drives the same containers, the same `mars_pgdata` volume and the same networks, and `up -d` from a new release directory recreates only the services whose configuration changed — the orchestrator and nginx — and leaves PostgreSQL running (verified on podman-compose 1.6.0). A missing `POSTGRES_*`, `DATA_DIR_HOST` or `ENGINE_SOCKET_HOST` makes compose refuse to render before anything is touched.
+
+**Registry access.** The packages are private. As the service user, log in once with a classic personal access token carrying only `read:packages`, into the persistent auth file rather than the default one under `/run`, which is gone after a reboot; paste the token at the prompt so it stays out of shell history:
+
+```bash
+podman login ghcr.io --username <github-user> --authfile ~/.config/containers/auth.json
+```
+
+Podman reads `~/.config/containers/auth.json` when the runtime file does not exist, so later pulls, from a login shell or a user unit, use it.
+
+**The environment file.** Start from the bundle's `env.example` (below), `chmod 600`, and set at least: `PUBLIC_URL` to the `https://` URL users open; `JWT_SECRET`, `POSTGRES_PASSWORD` (URL-safe) and `SECRETS_MASTER_KEYS` to fresh values, keeping the master keys in a second safe place; `DATA_DIR_HOST=/srv/mars/data`; `ENGINE_SOCKET_HOST=/run/user/<uid>/podman/podman.sock` and `DOCKER_HOST=unix://` plus the same path; `POSTGRES_IMAGE` pinned by digest; and `HTTP_PORT`, loopback-only (`127.0.0.1:8080`) when the TLS proxy runs on the same host, or the one LAN address the proxy reaches otherwise. `SESSION_IMAGE_DEFAULT` is the manifest's `images.session_claude_dev` until managed session images land (epic `2uqww`, task `zzr7k`). `bin/check-env` checks the file against a release — required variables, placeholders, file mode, the data directory and the socket — and prints names, never values.
+
+**Installing or switching to a release by hand.** Until `mars-deploy` exists this is the procedure; it is the same for the first install and for moving to another release. The digest is the one the Release run's summary names, or the one `mars-deploy:main` resolves to:
+
+```bash
+digest=sha256:<hex>                                  # the bundle to install
+rel=/srv/mars/releases/${digest/:/-}
+podman pull "ghcr.io/lhelge/mars-deploy@${digest}"
+c=$(podman create --entrypoint /none "ghcr.io/lhelge/mars-deploy@${digest}")
+podman cp "${c}:/bundle" "$rel" && podman rm "$c"
+ln -s ../../mars.env "${rel}/.env"
+"${rel}/bin/check-env" /srv/mars/mars.env "${rel}/manifest.json"
+jq -r '.images[]' "${rel}/manifest.json" | xargs -n1 podman pull
+podman pull "$(sed -n 's/^POSTGRES_IMAGE=//p' /srv/mars/mars.env)"
+cd "$rel" && podman-compose -f compose.yml -f compose.podman.yml -f compose.release.yml up -d
+HTTP_PORT=8080 COMPOSE_CMD="podman-compose -f compose.yml -f compose.podman.yml -f compose.release.yml" \
+  scripts/verify-deployment.sh
+```
+
+Every image is pulled before `up`: the release override leaves `compose.yml`'s `build:` sections in place and the bundle has nothing to build from, so an image that is not present fails with `Dockerfile not found` rather than being built. Never run `compose down` to switch releases; `up -d` from the new directory is the switch, and `down` would stop PostgreSQL and try to remove `mars-sessions` under running sessions ("Operating notes").
 
 **Rollback is not restore.** `rollback` and deploying an older pin are allowed only to a release with exactly the current set of database migrations, and lose nothing. Going back past a migration means restoring the backup taken before it, together with its data directory: every write since that backup is lost, it is always done by hand with updates paused, and it is followed by deploying the release recorded in the backup. Updates never run a down-migration and never restore a database on their own.
 

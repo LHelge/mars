@@ -543,7 +543,7 @@ Everything is published to GHCR under `ghcr.io/lhelge/`, for `linux/amd64` only.
 
 `scripts/release/make-bundle.sh` assembles it from the commit itself (`git show`, never the working tree); `bin/` and `systemd/` join it with the updater and unit tasks of epic `2uqww`. `compose.yml`'s `build:` sections are left in place, because podman-compose 1.6.0 crashes on `build: !reset null`: compose starts an image that is present without building, the updater pulls every image by digest before `up`, and the bundle carries no build context, so a missing image fails with `Dockerfile not found` rather than building on the server.
 
-The bundle is never run. The updater extracts it with `podman create --entrypoint /none` (a `FROM scratch` image has no command, and `create` does not look for one), `podman cp <container>:/bundle`, and `podman rm`. An installed bundle lives in its own directory named by the bundle's digest and is never modified afterwards. `deploy/manifest.example.json` is a complete example with fake values.
+The bundle is never run. The updater extracts it with `podman create --entrypoint /none` (a `FROM scratch` image has no command, and `create` does not look for one), `podman cp <container>:/bundle`, and `podman rm`. An installed bundle lives in its own directory named by the bundle's digest and is never modified afterwards, except for the one `.env` symlink to the operator's environment file that install adds. `compose.yml` fixes the project name `mars`, so compose run from any release directory drives the same containers, volume and networks. `deploy/manifest.example.json` is a complete example with fake values.
 
 ### The manifest
 
@@ -608,7 +608,7 @@ PostgreSQL itself is not part of a release. Its image is set by the operator in 
 
 ### State
 
-The updater keeps its state under `$XDG_STATE_HOME/mars-deploy/` (`~/.local/state/mars-deploy/` by default), outside every release directory, in one `state.json` written atomically (temporary file, `fsync`, `rename`):
+Everything the deployment keeps on the server lives under one root owned by the service user, `/srv/mars` by default (`README.md`, "Installing a published release"): the operator's `mars.env`, the data directory, `releases/sha256-<hex>/` with one extracted bundle each, and `state/`. The updater keeps its state in `state/`, outside every release directory, in one `state.json` written atomically (temporary file, `fsync`, `rename`):
 
 | Field | Meaning |
 | --- | --- |

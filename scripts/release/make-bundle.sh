@@ -35,12 +35,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 show() { git show "${commit}:$1"; }
 
 bundle="${out}/bundle"
-mkdir -p "${bundle}/scripts"
+mkdir -p "${bundle}/scripts" "${bundle}/bin"
 
 show compose.yml >"${bundle}/compose.yml"
 show compose.podman.yml >"${bundle}/compose.podman.yml"
 show scripts/verify-deployment.sh >"${bundle}/scripts/verify-deployment.sh"
-chmod 0755 "${bundle}/scripts/verify-deployment.sh"
+show deploy/bin/check-env >"${bundle}/bin/check-env"
+show .env.example >"${bundle}/env.example"
+chmod 0755 "${bundle}/scripts/verify-deployment.sh" "${bundle}/bin/check-env"
 
 # The two services the release replaces, pinned to this release's digests.
 # compose.yml's `build:` sections stay: `build: !reset null` would drop them,
@@ -69,10 +71,11 @@ migrations=$(git ls-tree --name-only "${commit}:orchestrator/migrations" |
   sed -n 's/^\([0-9]\{14\}\)_.*\.up\.sql$/\1/p' | sort | jq -R . | jq -s .)
 required=$(show deploy/required-config | sed -e 's/#.*//' -e 's/[[:space:]]//g' | grep -v '^$' |
   jq -R . | jq -s .)
-# The one PostgreSQL image compose.yml names, `postgres:<major>`.
-postgres_major=$(show compose.yml | sed -n 's/^[[:space:]]*image:[[:space:]]*postgres:\([0-9][0-9]*\).*$/\1/p' | head -1)
+# The PostgreSQL major compose.yml defaults to, `${POSTGRES_IMAGE:-postgres:<major>}`.
+postgres_major=$(show compose.yml |
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\${POSTGRES_IMAGE:-postgres:\([0-9][0-9]*\)[^}]*}.*$/\1/p' | head -1)
 if [ -z "$postgres_major" ]; then
-  echo "compose.yml names no postgres:<major> image" >&2
+  echo 'compose.yml names no ${POSTGRES_IMAGE:-postgres:<major>} image' >&2
   exit 1
 fi
 

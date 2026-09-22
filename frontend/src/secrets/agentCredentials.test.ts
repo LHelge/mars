@@ -17,14 +17,14 @@ describe("the credential table", () => {
     ]);
   });
 
-  it("labels each of them, and hints where the token comes from", () => {
+  it("labels each of them, and hints where each comes from", () => {
     const [token, key] = AGENT_CREDENTIALS.claude;
     expect(token?.label).toBe("Claude subscription token");
     expect(token?.hint).toContain("claude setup-token");
     expect(token?.hint).toContain("Pro or Max");
     expect(key?.label).toBe("Anthropic API key");
-    // The API key needs no explaining beyond its label.
-    expect(key?.hint).toBeUndefined();
+    expect(key?.hint).toContain("Anthropic Console");
+    expect(key?.hint).toContain("billed per use");
   });
 
   it("flattens every backend's credentials into one list", () => {

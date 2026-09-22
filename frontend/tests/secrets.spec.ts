@@ -211,12 +211,8 @@ test("a global secret is created, replaced, renamed, flagged and deleted without
   // checkbox follows the answer.
   await flag.click();
   await expect(flag).toBeChecked();
-  // The lock badge beside the checkbox is the row's visual mark.
-  await expect(
-    renamedRow.locator(
-      'label[title="Never injected into session containers"] svg',
-    ),
-  ).toBeVisible();
+  // The badge beside the checkbox says in words what the flag means.
+  await expect(renamedRow.getByText("never injected")).toBeVisible();
   expect(
     (await readSecret(api, "?scope=global", renamed)).orchestrator_only,
   ).toBe(true);

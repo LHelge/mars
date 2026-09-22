@@ -17,7 +17,7 @@ export interface AgentCredentialKind {
   name: string;
   /** What the user picks and what a row is listed under. */
   label: string;
-  /** Where the value comes from, when that is not obvious. */
+  /** Where the value comes from and what it costs, in one line. */
   hint?: string;
 }
 
@@ -36,6 +36,7 @@ export const AGENT_CREDENTIALS: Record<AgentBackend, AgentCredentialKind[]> = {
     {
       name: "ANTHROPIC_API_KEY",
       label: "Anthropic API key",
+      hint: "Created in the Anthropic Console; billed per use.",
     },
   ],
 };

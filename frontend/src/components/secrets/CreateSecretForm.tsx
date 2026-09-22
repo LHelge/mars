@@ -18,7 +18,11 @@ import { FieldShell } from "../FieldShell";
 import { CONTROL } from "../fieldStyles";
 import { FormField } from "../FormField";
 import { SubmitButton } from "../SubmitButton";
-import { secretErrorMessage } from "./messages";
+import {
+  ORCHESTRATOR_ONLY_HINT,
+  SECRET_NAME_HINT,
+  secretErrorMessage,
+} from "./messages";
 import { logUnexpected } from "../../services/errorMessage";
 
 export interface CreateSecretFormProps {
@@ -99,21 +103,31 @@ export function CreateSecretForm({ scope, scopeId }: CreateSecretFormProps) {
             setNameError(null);
           }}
           error={nameError ?? undefined}
+          hint={SECRET_NAME_HINT}
           autoComplete="off"
           required
         />
 
-        <label className="text-console-muted flex items-center gap-2 text-xs">
-          <input
-            type="checkbox"
-            checked={orchestratorOnly}
-            onChange={(event) => {
-              setOrchestratorOnly(event.target.checked);
-            }}
-            className="accent-console-accent size-3.5"
-          />
-          Orchestrator only
-        </label>
+        <div className="flex flex-col gap-1">
+          <label className="text-console-muted flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={orchestratorOnly}
+              onChange={(event) => {
+                setOrchestratorOnly(event.target.checked);
+              }}
+              aria-describedby="secret-orchestrator-only-hint"
+              className="accent-console-accent size-3.5"
+            />
+            Orchestrator only
+          </label>
+          <p
+            id="secret-orchestrator-only-hint"
+            className="text-console-muted text-xs"
+          >
+            {ORCHESTRATOR_ONLY_HINT}
+          </p>
+        </div>
       </div>
 
       <div className="flex flex-col gap-3">

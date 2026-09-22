@@ -27,13 +27,18 @@ import {
 } from "../../utils/format";
 import { Alert } from "../Alert";
 import { ConfirmPanel } from "../ConfirmPanel";
+import { HelpLink } from "../HelpLink";
 import { SubmitButton } from "../SubmitButton";
 import { CELL, ROW, SPAN_CELL_ROOMY } from "../tableStyles";
 import { SECRET_COLUMNS } from "./columns";
 import { SecretRenameForm } from "./SecretRenameForm";
 import { SecretReplaceForm } from "./SecretReplaceForm";
 import { SecretUsesList } from "./SecretUsesList";
-import { secretErrorMessage } from "./messages";
+import {
+  GIT_CREDENTIAL_NOTE,
+  ORCHESTRATOR_ONLY_BADGE,
+  secretErrorMessage,
+} from "./messages";
 
 /** The project credential of `SPEC.md`, "Projects". */
 const GIT_CREDENTIAL = "GIT_CREDENTIAL";
@@ -142,17 +147,14 @@ export function SecretRow({
         <td className={`${CELL} font-mono text-xs`}>
           <span className="text-console-text">{secret.name}</span>
           {isGitCredential && (
-            <span className="text-console-muted block font-sans text-xs">
-              Used by git operations for this project
+            <span className="text-console-muted block max-w-xs font-sans text-xs">
+              {GIT_CREDENTIAL_NOTE} <HelpLink topic="git-credential" />
             </span>
           )}
         </td>
 
         <td className={CELL}>
-          <label
-            title="Never injected into session containers"
-            className="text-console-muted inline-flex items-center gap-1.5"
-          >
+          <label className="text-console-muted inline-flex items-center gap-1.5 text-xs">
             <input
               type="checkbox"
               checked={secret.orchestrator_only}
@@ -164,8 +166,13 @@ export function SecretRow({
               }}
               className="accent-console-accent size-3.5"
             />
+            {/* Said in words, not left to a tooltip: this is the one fact
+                about the row that decides whether a session ever sees it. */}
             {secret.orchestrator_only && (
-              <LockClosedIcon aria-hidden="true" className="size-3.5" />
+              <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                <LockClosedIcon aria-hidden="true" className="size-3.5" />
+                {ORCHESTRATOR_ONLY_BADGE}
+              </span>
             )}
           </label>
         </td>

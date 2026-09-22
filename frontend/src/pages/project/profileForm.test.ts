@@ -84,9 +84,9 @@ describe("defaultInputForKind", () => {
     const first = defaultInputForKind("conversational", "img:1");
     first.serves_states?.push("backlog");
 
-    expect(defaultInputForKind("conversational", "img:1").serves_states).toEqual(
-      ["ready"],
-    );
+    expect(
+      defaultInputForKind("conversational", "img:1").serves_states,
+    ).toEqual(["ready"]);
   });
 });
 
@@ -161,9 +161,9 @@ describe("toFormState and toInput", () => {
   });
 
   it("defaults partial messages to the kind when the input leaves it out", () => {
-    expect(toFormState({ name: "one", kind: "ephemeral" }).partial_messages).toBe(
-      false,
-    );
+    expect(
+      toFormState({ name: "one", kind: "ephemeral" }).partial_messages,
+    ).toBe(false);
     expect(toFormState({ name: "two" }).partial_messages).toBe(true);
   });
 
@@ -219,9 +219,9 @@ describe("partialMessagesDecided", () => {
         partial_messages: false,
       }),
     ).toBe(false);
-    expect(
-      partialMessagesDecided({ ...STORED, kind: "conversational" }),
-    ).toBe(false);
+    expect(partialMessagesDecided({ ...STORED, kind: "conversational" })).toBe(
+      false,
+    );
   });
 });
 
@@ -355,6 +355,21 @@ describe("prefillFromTemplate", () => {
     mcp_tools: ["list_session_branches"],
     system_prompt: "You are a reviewer of this project.",
     is_default: true,
+    schedule_cron: null,
+    schedule_prompt: null,
+  };
+
+  /** The scheduled template of `SPEC.md`, "Role profile templates". */
+  const SCHEDULED: ProfileTemplate = {
+    name: "tech-debt-scanner",
+    kind: "ephemeral",
+    backend: "claude",
+    serves_states: ["ready"],
+    mcp_tools: [],
+    system_prompt: "You are the tech-debt scanner of this project.",
+    is_default: false,
+    schedule_cron: "0 4 * * *",
+    schedule_prompt: "Scan this project for technical debt.",
   };
 
   it("fills name, states, tools and prompt and leaves the rest at the defaults", () => {
@@ -415,6 +430,41 @@ describe("prefillFromTemplate", () => {
     expect(droppedStates).toEqual([]);
   });
 
+  it("leaves the schedule empty for a template that has none", () => {
+    const { form } = prefillFromTemplate(TEMPLATE, {
+      defaultImage: "img:1",
+      existingNames: [],
+      queueStates: ["review"],
+    });
+
+    expect(form.schedule_cron).toBe("");
+    expect(form.schedule_prompt).toBe("");
+    expect(toInput(form).schedule_cron).toBeNull();
+    expect(toInput(form).schedule_prompt).toBeNull();
+  });
+
+  it("pre-fills the schedule of a scheduled template", () => {
+    const { form } = prefillFromTemplate(SCHEDULED, {
+      defaultImage: "img:1",
+      existingNames: [],
+      queueStates: ["ready"],
+    });
+
+    expect(form.kind).toBe("ephemeral");
+    expect(form.schedule_cron).toBe("0 4 * * *");
+    expect(form.schedule_prompt).toBe("Scan this project for technical debt.");
+    // Partial messages follow the kind the template brought, not the
+    // conversational default.
+    expect(form.partial_messages).toBe(false);
+    // Nothing local refuses the pair, and both go on the wire together.
+    expect(scheduleErrors(form)).toEqual({ cron: null, prompt: null });
+    const input = toInput(form);
+    expect(input.schedule_cron).toBe("0 4 * * *");
+    expect(input.schedule_prompt).toBe("Scan this project for technical debt.");
+    // A schedule is not an auto-launch: the template turns on neither.
+    expect(input.auto_launch).toBe(false);
+  });
+
   it("never carries the template's is_default into the form", () => {
     const { form } = prefillFromTemplate(TEMPLATE, {
       defaultImage: "img:1",
@@ -463,7 +513,9 @@ describe("auto-launch and the concurrency cap", () => {
   });
 
   it("still sends the cap for a conversational profile", () => {
-    expect(toInput(toFormState({ name: "one", max_concurrent: 2 })).max_concurrent).toBe(2);
+    expect(
+      toInput(toFormState({ name: "one", max_concurrent: 2 })).max_concurrent,
+    ).toBe(2);
   });
 
   it("refuses a cap below one, a blank one and a fraction", () => {
@@ -529,9 +581,9 @@ describe("the schedule pair", () => {
   });
 
   it("keeps the whitespace inside a prompt that was written", () => {
-    expect(toInput(ephemeral("0 6 * * *", "Do this.\n\nThen that.")).schedule_prompt).toBe(
-      "Do this.\n\nThen that.",
-    );
+    expect(
+      toInput(ephemeral("0 6 * * *", "Do this.\n\nThen that.")).schedule_prompt,
+    ).toBe("Do this.\n\nThen that.");
   });
 
   it("trims the expression, which is never prose", () => {
@@ -572,7 +624,9 @@ describe("the schedule pair", () => {
     // Nonsense that only the server can refuse still passes the local check:
     // the bundle carries no cron parser (ADR 0043).
     expect(scheduleErrors(ephemeral("@daily", "Scan.")).cron).toBeNull();
-    expect(scheduleErrors(ephemeral("not cron at all", "Scan.")).cron).toBeNull();
+    expect(
+      scheduleErrors(ephemeral("not cron at all", "Scan.")).cron,
+    ).toBeNull();
   });
 });
 
@@ -591,16 +645,18 @@ describe("scheduleErrorField", () => {
         "schedule_cron is not a valid cron expression: unexpected token",
       ),
     ).toBe("cron");
-    expect(scheduleErrorField("schedule_cron requires an ephemeral profile")).toBe(
-      "cron",
-    );
+    expect(
+      scheduleErrorField("schedule_cron requires an ephemeral profile"),
+    ).toBe("cron");
     expect(
       scheduleErrorField(
         "schedule_cron requires this backend's agent credential at global or project scope",
       ),
     ).toBe("cron");
     expect(
-      scheduleErrorField("schedule_prompt is required when schedule_cron is set"),
+      scheduleErrorField(
+        "schedule_prompt is required when schedule_cron is set",
+      ),
     ).toBe("prompt");
     expect(scheduleErrorField("schedule_prompt requires schedule_cron")).toBe(
       "prompt",

@@ -270,6 +270,10 @@ export function ProfileEditor({
   /** The chosen template, once there is nothing left to ask about. */
   function applyTemplate(next: string) {
     setPendingTemplate(null);
+    // The whole form is replaced, so a refusal about what a field used to
+    // hold describes nothing on screen any more.
+    setAutoLaunchError(null);
+    setScheduleError(null);
 
     const chosen = (templates.data ?? []).find(
       (template) => template.name === next,
@@ -366,7 +370,7 @@ export function ProfileEditor({
             <FieldShell
               label="Start from"
               name="profile-template"
-              hint="A role template fills the name, served states, git tools and prompt; you can change anything before saving."
+              hint="A role template fills the name, kind, served states, git tools, prompt and — on a scheduled role — its schedule; you can change anything before saving."
             >
               {(control) => (
                 <>
@@ -389,7 +393,7 @@ export function ProfileEditor({
                   {pendingTemplate !== null && (
                     <ConfirmPanel
                       tone="caution"
-                      message={`Start from ${pendingTemplate === BLANK_TEMPLATE ? "a blank profile" : pendingTemplate}? It overwrites the name, served states, git tools and system prompt you have filled in.`}
+                      message={`Start from ${pendingTemplate === BLANK_TEMPLATE ? "a blank profile" : pendingTemplate}? It overwrites the name, kind, served states, git tools, system prompt and schedule you have filled in.`}
                       confirmLabel={`Start from ${pendingTemplate === BLANK_TEMPLATE ? "blank" : pendingTemplate}`}
                       cancelLabel="Keep what I wrote"
                       onConfirm={() => {

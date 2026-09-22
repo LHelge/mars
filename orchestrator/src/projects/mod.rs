@@ -12,15 +12,19 @@
 //!
 //! [`create::create_project`] is what `POST /api/projects` runs: one
 //! transaction that writes the project row, the default task states, the four
-//! role profiles of [`profile_templates`] and — when the caller supplied one —
+//! role profiles of [`seeded_profile_templates`] and — when the caller
+//! supplied one —
 //! the project-scoped `GIT_CREDENTIAL` secret, or none of them. It touches
 //! neither git nor the filesystem, so a rolled-back creation leaves nothing on
 //! the volume.
 //!
-//! [`profile_templates::profile_templates`] is where those four roles are
-//! written down: a name, the queue states it serves, the git tools it needs
-//! and a system prompt embedded from `templates/<name>.md`. Creation copies
-//! them into the project's own rows and nothing reads them again (ADR 0038).
+//! [`profile_templates::profile_templates`] is where the roles are written
+//! down: a name, the kind, the queue states it serves, the git tools it needs,
+//! a system prompt embedded from `templates/<name>.md` and, for a scheduled
+//! role, its cron expression and run prompt. Creation copies the seeded ones —
+//! [`profile_templates::seeded_profile_templates`] — into the project's own
+//! rows and nothing reads them again (ADR 0038); the rest are offered by
+//! `GET /profile-templates` alone.
 //!
 //! [`clone_job`] is the background half, started after that transaction
 //! committed and again by `POST /api/projects/{id}/retry-clone`: under the
@@ -46,7 +50,7 @@ pub mod profile_templates;
 pub use create::{NewProjectRequest, create_project};
 pub use delete::delete_project;
 pub use layout::{ProjectLayout, session_dir};
-pub use profile_templates::{ProfileTemplate, profile_templates};
+pub use profile_templates::{ProfileTemplate, profile_templates, seeded_profile_templates};
 
 // The crate convention (`CLAUDE.md`, "Backend conventions"); this module is a
 // facade, so nothing here uses it.

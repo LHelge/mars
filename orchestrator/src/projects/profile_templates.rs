@@ -1,4 +1,5 @@
-//! The four role profiles every project is created with.
+//! The role profiles a project is created with, and the ones it is only
+//! offered.
 //!
 //! A role in Mars is not code: it is a profile's served states plus its system
 //! prompt (`ARCHITECTURE.md`, "Task tracker" → "State is a queue"). A project
@@ -7,17 +8,28 @@
 //! them: a planner over `backlog`, an implementer over `ready`, a reviewer
 //! over `review` and a merger over `merge` (ADR 0038).
 //!
+//! **Seeded is not the same as offered.** [`profile_templates`] is what
+//! `GET /profile-templates` serves, and [`seeded_profile_templates`] — the
+//! four queue roles, the ones carrying [`ProfileTemplate::seeded`] — is what
+//! project creation writes. The `tech-debt-scanner` is offered and not
+//! seeded: it is the first scheduled template (`ARCHITECTURE.md`, "Scheduled
+//! agents"), and a schedule spends money on a cadence nobody asked for, so
+//! turning one on is a person's decision and not a side effect of creating a
+//! project (ADR 0038 seeds the queue roles alone).
+//!
 //! **Copied, not referenced.** [`create_project`](super::create::create_project)
 //! writes each prompt into the project's own `agent_profiles` row. From that
 //! moment the text is the project's: editing a profile edits nothing else, and
 //! upgrading Mars changes no existing project's agents. The templates here are
 //! only what a *new* project starts from.
 //!
-//! The prompts live beside this file as `templates/<name>.md` and are embedded
-//! with [`include_str!`], so they are one text with no escaping, reviewable as
-//! prose in a diff. `SPEC.md`, "Role profile templates" reproduces all four
-//! verbatim and `tests/profile_templates.rs` compares the two, the way
-//! `tests/mcp_descriptions.rs` does for the tool descriptions.
+//! The prompts live beside this file as `templates/<name>.md` — and a
+//! scheduled template's run prompt as `templates/<name>.schedule.md` — and are
+//! embedded with [`include_str!`], so they are one text with no escaping,
+//! reviewable as prose in a diff. `SPEC.md`, "Role profile templates"
+//! reproduces every one of them verbatim and `tests/profile_templates.rs`
+//! compares the two, the way `tests/mcp_descriptions.rs` does for the tool
+//! descriptions.
 //!
 //! They name the seeded state names (`backlog`, `ready`, `review`, `merge`,
 //! `done`) and the MCP tools of `SPEC.md`, "MCP tool contracts", and nothing
@@ -35,21 +47,25 @@
 
 use uuid::Uuid;
 
-use crate::models::{NewAgentProfile, ProfileResult};
+use crate::models::{NewAgentProfile, ProfileKind, ProfileResult};
 // The crate convention (`CLAUDE.md`, "Backend conventions").
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-/// One seeded role: everything about it that is not a documented default.
+/// One offered role: everything about it that is not a documented default.
 ///
-/// Kind, backend, permission mode, idle timeout, partial messages, model,
-/// runtime and secrets are deliberately absent — a template says what makes
-/// the role a role, and [`NewAgentProfile::new`] supplies the rest, so a
-/// changed default reaches the seeded profiles without being repeated here.
+/// Backend, permission mode, idle timeout, partial messages, model, runtime
+/// and secrets are deliberately absent — a template says what makes the role a
+/// role, and [`NewAgentProfile::new`] supplies the rest, so a changed default
+/// reaches the profiles created from a template without being repeated here.
+/// `kind` is here because a scheduled role has to be `ephemeral` to carry a
+/// schedule at all (`SPEC.md`, "Agent profiles" → "Scheduled profiles").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProfileTemplate {
     /// The profile's name, which is also the role.
     pub name: &'static str,
+    /// Whether the role talks to a person or runs one prompt and ends.
+    pub kind: ProfileKind,
     /// The queue states the role picks work up from.
     pub serves_states: &'static [&'static str],
     /// The profile-gated git tools the role needs; task tools are always
@@ -58,8 +74,17 @@ pub struct ProfileTemplate {
     /// Whether this is the profile a project launches from unless told
     /// otherwise. Exactly one template has it.
     pub is_default: bool,
+    /// Whether project creation writes this role into a new project. The four
+    /// queue roles do; a scheduled role is offered only (ADR 0038).
+    pub seeded: bool,
     /// The system prompt, appended to every launch of the profile.
     pub system_prompt: &'static str,
+    /// The UTC 5-field cron expression a scheduled role runs on, or `None` for
+    /// a role a person launches.
+    pub schedule_cron: Option<&'static str>,
+    /// The message each scheduled run is given; set exactly when
+    /// [`ProfileTemplate::schedule_cron`] is.
+    pub schedule_prompt: Option<&'static str>,
 }
 
 impl ProfileTemplate {
@@ -72,6 +97,14 @@ impl ProfileTemplate {
     /// as it is on one a user posts.
     pub fn to_new_profile(&self, project_id: Uuid, image: &str) -> ProfileResult<NewAgentProfile> {
         let mut profile = NewAgentProfile::new(project_id, self.name, image)?;
+        profile.kind = self.kind;
+        // `NewAgentProfile::new` validated a conversational profile and so
+        // resolved this to that kind's default; a template never states it, so
+        // the kind set just above is what decides (`SPEC.md`, "Agent
+        // profiles").
+        profile.partial_messages = None;
+        profile.schedule_cron = self.schedule_cron.map(str::to_string);
+        profile.schedule_prompt = self.schedule_prompt.map(str::to_string);
         profile.system_prompt = Some(self.system_prompt.to_string());
         profile.mcp_tools = self.mcp_tools.iter().map(|t| (*t).to_string()).collect();
         profile.serves_states = self
@@ -86,9 +119,10 @@ impl ProfileTemplate {
     }
 }
 
-/// The four templates, in the order a task travels through them, which is the
-/// order they are seeded and therefore listed in
-/// (`SPEC.md`, "Role profile templates").
+/// Every template, in the order of the table of `SPEC.md`, "Role profile
+/// templates": the four queue roles first, in the order a task travels through
+/// them, which is the order they are seeded in, and the offered-only roles
+/// after them.
 ///
 /// `push` is given to nobody: nothing in a session may reach the upstream
 /// remote by itself (ADR 0007). `rebase` is given to nobody either. The
@@ -101,35 +135,77 @@ pub fn profile_templates() -> &'static [ProfileTemplate] {
     const TEMPLATES: &[ProfileTemplate] = &[
         ProfileTemplate {
             name: "planner",
+            kind: ProfileKind::Conversational,
             serves_states: &["backlog"],
             mcp_tools: &[],
             is_default: false,
+            seeded: true,
             system_prompt: include_str!("templates/planner.md"),
+            schedule_cron: None,
+            schedule_prompt: None,
         },
         ProfileTemplate {
             name: "implementer",
+            kind: ProfileKind::Conversational,
             serves_states: &["ready"],
             mcp_tools: &[],
             is_default: true,
+            seeded: true,
             system_prompt: include_str!("templates/implementer.md"),
+            schedule_cron: None,
+            schedule_prompt: None,
         },
         ProfileTemplate {
             name: "reviewer",
+            kind: ProfileKind::Conversational,
             serves_states: &["review"],
             mcp_tools: &["list_session_branches"],
             is_default: false,
+            seeded: true,
             system_prompt: include_str!("templates/reviewer.md"),
+            schedule_cron: None,
+            schedule_prompt: None,
         },
         ProfileTemplate {
             name: "merger",
+            kind: ProfileKind::Conversational,
             serves_states: &["merge"],
             mcp_tools: &["list_session_branches", "merge"],
             is_default: false,
+            seeded: true,
             system_prompt: include_str!("templates/merger.md"),
+            schedule_cron: None,
+            schedule_prompt: None,
+        },
+        // The first scheduled template (`ARCHITECTURE.md`, "Scheduled
+        // agents"). Ephemeral because only an ephemeral profile may carry a
+        // schedule; `ready` as its served state because `ready` — the one tool
+        // that lists tasks — lists the calling profile's served states alone,
+        // and a scanner that cannot see what is already queued would file the
+        // same task every day; no git tool because filing a task needs none.
+        ProfileTemplate {
+            name: "tech-debt-scanner",
+            kind: ProfileKind::Ephemeral,
+            serves_states: &["ready"],
+            mcp_tools: &[],
+            is_default: false,
+            seeded: false,
+            system_prompt: include_str!("templates/tech-debt-scanner.md"),
+            schedule_cron: Some("0 4 * * *"),
+            schedule_prompt: Some(include_str!("templates/tech-debt-scanner.schedule.md")),
         },
     ];
 
     TEMPLATES
+}
+
+/// The templates project creation seeds, in the order it writes them: the four
+/// queue roles of ADR 0038, and nothing that would start spending money by
+/// itself (`SPEC.md`, "Role profile templates").
+pub fn seeded_profile_templates() -> impl Iterator<Item = &'static ProfileTemplate> {
+    profile_templates()
+        .iter()
+        .filter(|template| template.seeded)
 }
 
 #[cfg(test)]
@@ -152,6 +228,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("`{}` is a valid profile: {e}", template.name));
 
             assert_eq!(profile.name, template.name);
+            assert_eq!(profile.kind, template.kind);
             assert_eq!(profile.serves_states, owned(template.serves_states));
             assert_eq!(profile.mcp_tools, owned(template.mcp_tools));
             assert_eq!(profile.is_default, template.is_default);
@@ -159,6 +236,65 @@ mod tests {
                 profile.system_prompt.as_deref(),
                 Some(template.system_prompt)
             );
+            assert_eq!(profile.schedule_cron.as_deref(), template.schedule_cron);
+            assert_eq!(profile.schedule_prompt.as_deref(), template.schedule_prompt);
+            // Resolved from the template's own kind, not from the
+            // conversational default `NewAgentProfile::new` starts at.
+            assert_eq!(
+                profile.partial_messages,
+                Some(template.kind.default_partial_messages()),
+                "`{}`: partial messages follow the kind",
+                template.name,
+            );
+        }
+    }
+
+    #[test]
+    fn exactly_the_four_queue_roles_are_seeded() {
+        let seeded: Vec<&str> = seeded_profile_templates().map(|t| t.name).collect();
+
+        assert_eq!(seeded, ["planner", "implementer", "reviewer", "merger"]);
+    }
+
+    #[test]
+    fn no_seeded_template_carries_a_schedule() {
+        // A schedule spends money on a cadence nobody asked for, so it is
+        // never a side effect of creating a project.
+        for template in seeded_profile_templates() {
+            assert_eq!(
+                template.schedule_cron, None,
+                "`{}` is seeded and scheduled",
+                template.name,
+            );
+        }
+    }
+
+    #[test]
+    fn a_scheduled_template_is_ephemeral_and_carries_its_run_prompt() {
+        for template in profile_templates() {
+            assert_eq!(
+                template.schedule_cron.is_some(),
+                template.schedule_prompt.is_some(),
+                "`{}`: the two schedule fields stand or fall together",
+                template.name,
+            );
+            if template.schedule_cron.is_some() {
+                assert_eq!(
+                    template.kind,
+                    ProfileKind::Ephemeral,
+                    "`{}` is scheduled and must be ephemeral",
+                    template.name,
+                );
+                assert!(
+                    !template
+                        .schedule_prompt
+                        .expect("a scheduled template has a run prompt")
+                        .trim()
+                        .is_empty(),
+                    "`{}` has a blank run prompt",
+                    template.name,
+                );
+            }
         }
     }
 
@@ -174,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn the_templates_are_the_four_roles_in_board_order() {
+    fn the_templates_are_the_four_roles_in_board_order_then_the_offered_ones() {
         let roles: Vec<(&str, &[&str])> = profile_templates()
             .iter()
             .map(|t| (t.name, t.serves_states))
@@ -187,6 +323,7 @@ mod tests {
                 ("implementer", &["ready"][..]),
                 ("reviewer", &["review"][..]),
                 ("merger", &["merge"][..]),
+                ("tech-debt-scanner", &["ready"][..]),
             ]
         );
     }

@@ -28,21 +28,41 @@ const TEST_REMOTE: &str = "https://example.invalid/org/repo.git";
 /// The one path.
 const PATH: &str = "/api/profile-templates";
 
-/// The seven fields of `ProfileTemplate` (`SPEC.md`, "Agent profiles"),
+/// The nine fields of `ProfileTemplate` (`SPEC.md`, "Agent profiles"),
 /// sorted.
-const TEMPLATE_FIELDS: [&str; 7] = [
+const TEMPLATE_FIELDS: [&str; 9] = [
     "backend",
     "is_default",
     "kind",
     "mcp_tools",
     "name",
+    "schedule_cron",
+    "schedule_prompt",
     "serves_states",
     "system_prompt",
 ];
 
-/// The four roles in the order of the table of `SPEC.md`, "Role profile
-/// templates", which is the order they are served in.
-const ROLES: [&str; 4] = ["planner", "implementer", "reviewer", "merger"];
+/// Every role in the order of the table of `SPEC.md`, "Role profile
+/// templates", which is the order they are served in: the four seeded ones
+/// first, then the offered-only scanner.
+const ROLES: [&str; 5] = [
+    "planner",
+    "implementer",
+    "reviewer",
+    "merger",
+    "tech-debt-scanner",
+];
+
+/// The scheduled template, which project creation does not seed.
+const SCANNER: &str = "tech-debt-scanner";
+
+/// The Claude adapter's preferred credential name, which a schedule needs at
+/// `global` or `project` scope (`SPEC.md`, "Agent profiles" → "Scheduled
+/// profiles").
+const OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/// Not a real credential (rule 3).
+const FAKE_CREDENTIAL: &str = "fake-value-not-a-credential";
 
 /// An obviously fake password of the length `POST /api/test/users` requires
 /// (rule 3).
@@ -69,7 +89,7 @@ async fn templates(app: &TestApp, user: &AuthenticatedUser) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn the_four_templates_are_served_in_the_documented_shape_and_order() {
+async fn the_templates_are_served_in_the_documented_shape_and_order() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
 
@@ -82,11 +102,20 @@ async fn the_four_templates_are_served_in_the_documented_shape_and_order() {
     assert_eq!(names, ROLES);
 
     for template in &templates {
-        // Both come from `NewAgentProfile::new`, not from the template
-        // (`SPEC.md`, "Role profile templates": "Every other field is the
-        // documented default").
-        assert_eq!(template["kind"], json!("conversational"));
+        // Not from the template (`SPEC.md`, "Role profile templates": "Every
+        // other field is the documented default").
         assert_eq!(template["backend"], json!("claude"));
+        // The four queue roles talk to a person; the scheduled one runs one
+        // prompt and ends, which is what lets it carry a schedule at all.
+        let scheduled = template["name"] == json!(SCANNER);
+        assert_eq!(
+            template["kind"],
+            json!(if scheduled {
+                "ephemeral"
+            } else {
+                "conversational"
+            }),
+        );
 
         let prompt = template["system_prompt"]
             .as_str()
@@ -125,6 +154,25 @@ async fn the_four_templates_are_served_in_the_documented_shape_and_order() {
         templates[3]["mcp_tools"],
         json!(["list_session_branches", "merge"])
     );
+
+    // The schedule pair: null on every role a person launches, both set on
+    // the scanner, whose expression fires once a day.
+    for template in &templates[..4] {
+        assert_eq!(template["schedule_cron"], json!(null));
+        assert_eq!(template["schedule_prompt"], json!(null));
+    }
+    let scanner = &templates[4];
+    assert_eq!(scanner["schedule_cron"], json!("0 4 * * *"));
+    assert!(
+        !scanner["schedule_prompt"]
+            .as_str()
+            .expect("the scheduled template carries its run prompt")
+            .trim()
+            .is_empty(),
+    );
+    // Filing a task needs no git tool; the task tools are served to every
+    // session (`SPEC.md`, "MCP tool contracts").
+    assert_eq!(scanner["mcp_tools"], json!([]));
 
     // Informational, and exactly one of them (`SPEC.md`, "Agent profiles").
     let defaults: Vec<&str> = templates
@@ -175,6 +223,104 @@ async fn a_template_is_a_body_the_profiles_endpoint_accepts() {
     assert_eq!(created["backend"], template["backend"]);
     // Dropped on the way, so creating from a template never moves the flag.
     assert_eq!(created["is_default"], json!(false));
+}
+
+#[tokio::test]
+async fn the_scheduled_template_is_a_body_the_profiles_endpoint_accepts() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "hedy").await;
+
+    let response = app
+        .post_as(&user, "/api/projects")
+        .json(&json!({ "name": "mars", "remote_url": TEST_REMOTE }))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let pid: Uuid = response.json::<Value>()["id"]
+        .as_str()
+        .expect("a project carries an id")
+        .parse()
+        .expect("the id is a uuid");
+
+    // A schedule needs an agent credential the jobs can resolve without a
+    // user, so the scanner is offered to everyone and created by a project
+    // that has one (`SPEC.md`, "Agent profiles" → "Scheduled profiles").
+    let stored = app
+        .post_as(&user, "/api/secrets")
+        .json(&json!({
+            "scope": "project",
+            "scope_id": pid.to_string(),
+            "name": OAUTH_TOKEN,
+            "value": FAKE_CREDENTIAL,
+        }))
+        .await;
+    stored.assert_status(StatusCode::CREATED);
+
+    let scanner = templates(&app, &user)
+        .await
+        .into_iter()
+        .find(|t| t["name"] == json!(SCANNER))
+        .expect("the scheduled template is offered");
+
+    let mut body = scanner.clone();
+    body.as_object_mut()
+        .expect("a template is an object")
+        .remove("is_default");
+
+    let created = app
+        .post_as(&user, &format!("/api/projects/{pid}/profiles"))
+        .json(&body)
+        .await;
+
+    created.assert_status(StatusCode::CREATED);
+    let created = created.json::<Value>();
+    assert_eq!(created["kind"], json!("ephemeral"));
+    assert_eq!(created["schedule_cron"], scanner["schedule_cron"]);
+    assert_eq!(created["schedule_prompt"], scanner["schedule_prompt"]);
+    assert_eq!(created["serves_states"], scanner["serves_states"]);
+    assert_eq!(created["system_prompt"], scanner["system_prompt"]);
+    // Stored and read back with the next run the server computed, so no
+    // client parses cron.
+    assert_ne!(created["next_scheduled_at"], json!(null));
+    // Offered, never seeded: the schedule is the only automation, and
+    // `auto_launch` stays off until someone turns it on.
+    assert_eq!(created["auto_launch"], json!(false));
+}
+
+#[tokio::test]
+async fn the_scheduled_template_is_not_seeded_into_a_new_project() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "katherine").await;
+
+    let response = app
+        .post_as(&user, "/api/projects")
+        .json(&json!({ "name": "mars", "remote_url": TEST_REMOTE }))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let pid = response.json::<Value>()["id"]
+        .as_str()
+        .expect("a project carries an id")
+        .to_string();
+
+    let profiles = app
+        .get_as(&user, &format!("/api/projects/{pid}/profiles"))
+        .await;
+    profiles.assert_status_ok();
+    let names: Vec<String> = profiles
+        .json::<Value>()
+        .as_array()
+        .expect("the listing is an array")
+        .iter()
+        .map(|p| {
+            p["name"]
+                .as_str()
+                .expect("a profile carries a name")
+                .to_string()
+        })
+        .collect();
+
+    // A schedule spends money on a cadence nobody asked for, so creation
+    // seeds the four queue roles and nothing else (ADR 0038).
+    assert_eq!(names, ROLES[..4]);
 }
 
 #[tokio::test]

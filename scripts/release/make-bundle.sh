@@ -72,9 +72,11 @@ migrations=$(git ls-tree --name-only "${commit}:orchestrator/migrations" |
 required=$(show deploy/required-config | sed -e 's/#.*//' -e 's/[[:space:]]//g' | grep -v '^$' |
   jq -R . | jq -s .)
 # The PostgreSQL major compose.yml defaults to, `${POSTGRES_IMAGE:-postgres:<major>}`.
+# shellcheck disable=SC2016 # the ${…} is compose syntax matched literally, not shell
 postgres_major=$(show compose.yml |
   sed -n 's/^[[:space:]]*image:[[:space:]]*\${POSTGRES_IMAGE:-postgres:\([0-9][0-9]*\)[^}]*}.*$/\1/p' | head -1)
 if [ -z "$postgres_major" ]; then
+  # shellcheck disable=SC2016 # printed literally: it names compose syntax
   echo 'compose.yml names no ${POSTGRES_IMAGE:-postgres:<major>} image' >&2
   exit 1
 fi

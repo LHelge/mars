@@ -158,6 +158,7 @@ chmod 644 "${work}/env/mars.env"
 expect "check-env: a world-readable file fails" "" 1 bash -c "'$checkenv' '${work}/env/mars.env' '$example' >/dev/null"
 chmod 600 "${work}/env/mars.env"
 leak=$("$checkenv" "${work}/env/mars.env" "$example" 2>&1 || true)
+# shellcheck disable=SC2016 # $1 is expanded by the inner bash, not here
 check "check-env never prints a value" bash -c '! grep -qE "fake-jwt|fake-db|ZmFrZS" <<<"$1"' _ "$leak"
 
 # --- validate-manifest.sh -----------------------------------------------

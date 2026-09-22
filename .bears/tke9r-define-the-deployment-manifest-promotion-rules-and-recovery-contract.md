@@ -1,10 +1,10 @@
 ---
 id: tke9r
 title: Define the deployment manifest, promotion rules and recovery contract
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-22T07:32:11.833493Z"
-updated: "2026-09-22T21:24:17.166847865Z"
+updated: "2026-09-22T21:38:44.852408761Z"
 tags:
   - deployment
   - implementation

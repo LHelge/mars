@@ -1,10 +1,10 @@
 ---
 id: duexz
 title: Package a production Compose deployment using immutable images
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-22T07:32:16.949877Z"
-updated: "2026-09-22T21:50:40.807613580Z"
+updated: "2026-09-22T22:12:33.098505123Z"
 tags:
   - deployment
   - implementation

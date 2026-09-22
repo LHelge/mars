@@ -1,13 +1,14 @@
 ---
 id: ujccg
 title: "Help page infrastructure: /help route, nav entry, topic anchors and a HelpLink prop on field and section components"
-status: open
+status: done
 priority: P2
 created: "2026-09-22T19:08:05.750060375Z"
-updated: "2026-09-22T19:08:05.750060375Z"
+updated: "2026-09-22T20:30:24.683436716Z"
 tags:
   - frontend
 parent: gtbp5
+attempts: 1
 ---
 
 Implements the epic's shape (`SPEC.md`, "Frontend" — add the route there; `CLAUDE.md` frontend conventions — add `HelpLink` to the shared UI list). Invoke `/frontend-design` first.

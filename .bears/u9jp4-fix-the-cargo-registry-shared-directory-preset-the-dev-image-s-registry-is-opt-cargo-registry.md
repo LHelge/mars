@@ -1,15 +1,16 @@
 ---
 id: u9jp4
 title: "Fix the cargo-registry shared-directory preset: the dev image's registry is /opt/cargo/registry"
-status: open
+status: done
 priority: P2
 created: "2026-09-22T19:08:28.086248735Z"
-updated: "2026-09-22T19:08:28.086248735Z"
+updated: "2026-09-22T20:30:24.704037022Z"
 tags:
   - frontend
   - docs
   - bug
 parent: gtbp5
+attempts: 1
 ---
 
 `frontend/src/utils/sharedDir.ts` (`SHARED_DIR_PRESETS`, `cargo-registry`) and the README "Operating notes" shared-directories table share `/session/home/.cargo/registry`, but `images/claude-dev/Dockerfile` sets `CARGO_HOME=/opt/cargo` (ARCHITECTURE.md "Session image", which already recommends `/opt/cargo/registry`). On the default dev image the preset shares a directory Cargo never uses.

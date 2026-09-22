@@ -41,8 +41,9 @@ show compose.yml >"${bundle}/compose.yml"
 show compose.podman.yml >"${bundle}/compose.podman.yml"
 show scripts/verify-deployment.sh >"${bundle}/scripts/verify-deployment.sh"
 show deploy/bin/check-env >"${bundle}/bin/check-env"
+show deploy/bin/session-images >"${bundle}/bin/session-images"
 show .env.example >"${bundle}/env.example"
-chmod 0755 "${bundle}/scripts/verify-deployment.sh" "${bundle}/bin/check-env"
+chmod 0755 "${bundle}/scripts/verify-deployment.sh" "${bundle}/bin/check-env" "${bundle}/bin/session-images"
 
 # The two services the release replaces, pinned to this release's digests.
 # compose.yml's `build:` sections stay: `build: !reset null` would drop them,

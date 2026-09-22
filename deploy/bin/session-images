@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Managed session images (ARCHITECTURE.md, "Server deployment", "Session
+# images"). On a deployed server the two local names
+#
+#   mars-session-claude:latest       the base image
+#   mars-session-claude-dev:latest   the dev image, SESSION_IMAGE_DEFAULT
+#
+# are aliases this tool moves; nothing else writes them. Profiles store the
+# alias, the launcher pulls only an image that is absent, so a moved alias is
+# what the next launch, resume or retry of such a profile runs, while running
+# containers keep the image they were created from and a profile naming any
+# other image is never affected.
+#
+#   session-images get
+#       prints `<alias> <image id>` per alias, `-` when an alias is absent
+#   session-images set <base-image> <dev-image>
+#       points the aliases at two images already present locally (by digest
+#       reference or image id); checks both before moving either
+#
+# Uses the podman CLI of the service user, never pulls.
+set -euo pipefail
+
+# Overridable for scripts/release/test.sh only, so a test on a developer
+# machine never moves that developer's own images.
+BASE_ALIAS=${SESSION_IMAGES_BASE_ALIAS:-mars-session-claude:latest}
+DEV_ALIAS=${SESSION_IMAGES_DEV_ALIAS:-mars-session-claude-dev:latest}
+
+usage() {
+  echo "usage: $0 get | set <base-image> <dev-image>" >&2
+  exit 2
+}
+
+image_id() { podman image inspect --format '{{.Id}}' "$1" 2>/dev/null; }
+
+case "${1:-}" in
+get)
+  [ "$#" -eq 1 ] || usage
+  for alias in "$BASE_ALIAS" "$DEV_ALIAS"; do
+    printf '%s %s\n' "$alias" "$(image_id "$alias" || echo -)"
+  done
+  ;;
+set)
+  [ "$#" -eq 3 ] || usage
+  base_id=$(image_id "$2") || {
+    echo "base image $2 is not present; pull it first" >&2
+    exit 1
+  }
+  dev_id=$(image_id "$3") || {
+    echo "dev image $3 is not present; pull it first" >&2
+    exit 1
+  }
+  # Dev first: it is the one launches use, and the base alias only matters
+  # to an operator's own image built FROM it.
+  podman tag "$dev_id" "$DEV_ALIAS"
+  podman tag "$base_id" "$BASE_ALIAS"
+  printf '%s %s\n%s %s\n' "$BASE_ALIAS" "$base_id" "$DEV_ALIAS" "$dev_id"
+  ;;
+*) usage ;;
+esac

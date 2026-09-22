@@ -23,6 +23,7 @@ import { useNavigate } from "react-router";
 
 import { Alert } from "../components/Alert";
 import { ConfirmPanel } from "../components/ConfirmPanel";
+import { Icon } from "../components/icons";
 import { SubmitButton } from "../components/SubmitButton";
 import { SYNC_TITLE } from "../components/git/syncHint";
 import { errorMessage, logUnexpected } from "../services/errorMessage";
@@ -140,6 +141,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
             type="button"
             variant="danger"
             disabled={stop.stopping}
+            icon={Icon.stop}
             onClick={() => {
               begin();
               stop.requestStop();
@@ -154,6 +156,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
             type="button"
             variant="ghost"
             loading={end.isPending}
+            icon={Icon.end}
             disabled={confirming === "end"}
             onClick={() => {
               begin();
@@ -169,6 +172,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
             type="button"
             variant="ghost"
             loading={sync.isPending}
+            icon={Icon.sync}
             title={SYNC_TITLE}
             onClick={() => {
               begin();
@@ -183,6 +187,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
           <SubmitButton
             type="button"
             variant="ghost"
+            icon={Icon.retry}
             onClick={() => {
               begin();
               setRetryOpen((open) => !open);
@@ -197,6 +202,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
             type="button"
             variant="danger"
             loading={remove.isPending}
+            icon={Icon.delete}
             disabled={confirming === "delete"}
             onClick={() => {
               begin();
@@ -252,7 +258,9 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
             }}
             className="bg-console-surface border-console-border text-console-text placeholder:text-console-muted min-w-0 flex-1 rounded border px-2 py-1 font-mono text-xs"
           />
-          <SubmitButton loading={retry.isPending}>Relaunch</SubmitButton>
+          <SubmitButton loading={retry.isPending} icon={Icon.launch}>
+            Relaunch
+          </SubmitButton>
         </form>
       )}
 

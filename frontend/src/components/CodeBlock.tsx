@@ -22,6 +22,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
+import { Icon, ICON_CLASS } from "./icons";
 import { useClipboardCopy } from "./useClipboardCopy";
 
 /** How long the code must hold still before the highlighter is asked. */
@@ -128,8 +129,13 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
           onClick={() => {
             void copy(code);
           }}
-          className="text-console-muted hover:text-console-text hover:bg-console-raised shrink-0 rounded px-1.5 py-0.5 font-mono text-[0.7rem]"
+          className="text-console-muted hover:text-console-text hover:bg-console-raised inline-flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-[0.7rem]"
         >
+          {copied ? (
+            <Icon.copied aria-hidden="true" className={ICON_CLASS} />
+          ) : (
+            <Icon.copy aria-hidden="true" className={ICON_CLASS} />
+          )}
           {copied ? "Copied" : "Copy"}
         </button>
       </div>

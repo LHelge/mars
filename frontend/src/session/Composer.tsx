@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Alert } from "../components/Alert";
+import { Icon } from "../components/icons";
 import { SubmitButton } from "../components/SubmitButton";
 import { useSessionSocketApi } from "./SessionSocketContext";
 import { getSessionStore, optimisticId, useSessionStore } from "./sessionStore";
@@ -195,6 +196,7 @@ export function Composer({ sessionId }: ComposerProps) {
             type="button"
             variant="danger"
             disabled={stop.stopping}
+            icon={Icon.stop}
             onClick={stop.requestStop}
           >
             {stop.label}

@@ -17,11 +17,8 @@
 
 import { Suspense, useId, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import {
-  ChevronDoubleLeftIcon,
-  ChevronDoubleRightIcon,
-} from "@heroicons/react/24/outline";
 
+import { Icon, ICON_CLASS } from "../components/icons";
 import { LoadingState } from "../components/LoadingState";
 import type { Session } from "../types";
 import { panelsFor } from "./sidePanels";
@@ -93,7 +90,7 @@ export function SidePanel({ session, panels }: SidePanelProps) {
           }}
           className="text-console-muted hover:text-console-text p-1"
         >
-          <ChevronDoubleLeftIcon aria-hidden="true" className="size-4" />
+          <Icon.panelOpen aria-hidden="true" className={ICON_CLASS} />
         </button>
       </aside>
     );
@@ -147,7 +144,7 @@ export function SidePanel({ session, panels }: SidePanelProps) {
           }}
           className="text-console-muted hover:text-console-text p-1"
         >
-          <ChevronDoubleRightIcon aria-hidden="true" className="size-4" />
+          <Icon.panelClose aria-hidden="true" className={ICON_CLASS} />
         </button>
       </div>
 

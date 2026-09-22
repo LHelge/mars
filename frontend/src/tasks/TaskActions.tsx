@@ -12,13 +12,13 @@
 // flight disables Release and nothing else, and a 409 is shown beside the
 // button that caused it, in the API's own words.
 
-import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { Alert } from "../components/Alert";
 import { ConfirmPanel } from "../components/ConfirmPanel";
+import { Icon } from "../components/icons";
 import { SubmitButton } from "../components/SubmitButton";
 import { errorMessage } from "../services/errorMessage";
 import type { TaskDetail } from "../types";
@@ -75,14 +75,12 @@ export function TaskActions({
           type="button"
           variant="ghost"
           disabled={editing}
+          icon={Icon.edit}
           onClick={() => {
             onEditingChange(true);
           }}
         >
-          <span className="flex items-center gap-1.5">
-            <PencilSquareIcon aria-hidden="true" className="size-4" />
-            Edit
-          </span>
+          Edit
         </SubmitButton>
 
         <SubmitButton
@@ -106,14 +104,12 @@ export function TaskActions({
             type="button"
             variant="danger"
             disabled={confirmingDelete || remove.isPending}
+            icon={Icon.delete}
             onClick={() => {
               setConfirmingDelete(true);
             }}
           >
-            <span className="flex items-center gap-1.5">
-              <TrashIcon aria-hidden="true" className="size-4" />
-              Delete
-            </span>
+            Delete
           </SubmitButton>
         </div>
       </div>

@@ -21,6 +21,7 @@ import { Alert } from "../Alert";
 import { EmptyState } from "../EmptyState";
 import { LoadingState } from "../LoadingState";
 import { SectionHeader } from "../SectionHeader";
+import { Icon } from "../icons";
 import { SubmitButton } from "../SubmitButton";
 import { MergeForm } from "./MergeForm";
 import { PushForm } from "./PushForm";
@@ -219,6 +220,7 @@ export function GitActionsPanel({
             type="button"
             variant="ghost"
             loading={sessionBranches.isFetching}
+            icon={Icon.refresh}
             onClick={() => {
               void sessionBranches.refetch();
             }}
@@ -250,6 +252,7 @@ export function GitActionsPanel({
                 type="button"
                 variant="ghost"
                 loading={syncing}
+                icon={Icon.sync}
                 onClick={onSync}
                 title={SYNC_TITLE}
               >

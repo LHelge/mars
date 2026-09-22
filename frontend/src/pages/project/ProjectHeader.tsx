@@ -17,6 +17,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Alert } from "../../components/Alert";
 import { ConfirmPanel } from "../../components/ConfirmPanel";
+import { Icon } from "../../components/icons";
 import { SubmitButton } from "../../components/SubmitButton";
 import {
   deleteProject,
@@ -151,6 +152,7 @@ export function ProjectHeader({
             type="button"
             variant="ghost"
             loading={fetchNow.isPending}
+            icon={Icon.fetch}
             disabled={busy}
             title={`Fetch the remote into origin/*; never moves ${project.default_branch ?? "the default branch"} or any other Mars branch.`}
             onClick={() => {
@@ -166,6 +168,7 @@ export function ProjectHeader({
               type="button"
               variant="primary"
               loading={retry.isPending}
+              icon={Icon.retry}
               disabled={busy}
               onClick={() => {
                 setError(null);
@@ -189,6 +192,7 @@ export function ProjectHeader({
             type="button"
             variant="danger"
             disabled={busy}
+            icon={Icon.delete}
             onClick={() => {
               setError(null);
               setConfirmingDelete(true);

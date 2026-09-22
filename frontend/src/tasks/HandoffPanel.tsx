@@ -31,6 +31,7 @@ import { Link } from "react-router";
 
 import { MarkdownBody } from "../components/Markdown";
 import { SubmitButton } from "../components/SubmitButton";
+import { Icon, ICON_CLASS } from "../components/icons";
 import { useCopyToClipboard } from "../components/useClipboardCopy";
 import type { Handoff, TaskDetail } from "../types";
 import {
@@ -281,8 +282,13 @@ function CopyCommit({ commit }: { commit: string }) {
         type="button"
         aria-label="Copy commit id"
         onClick={copy}
-        className="text-console-muted hover:text-console-text border-console-border hover:bg-console-raised rounded border px-1.5 py-px font-mono text-[0.6875rem]"
+        className="text-console-muted hover:text-console-text border-console-border hover:bg-console-raised inline-flex items-center gap-1.5 rounded border px-1.5 py-px font-mono text-[0.6875rem]"
       >
+        {copied ? (
+          <Icon.copied aria-hidden="true" className={ICON_CLASS} />
+        ) : (
+          <Icon.copy aria-hidden="true" className={ICON_CLASS} />
+        )}
         {copied ? "Copied" : "Copy"}
       </button>
       {manual && (

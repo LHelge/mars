@@ -26,6 +26,7 @@ import { Alert } from "../../components/Alert";
 import { FieldShell } from "../../components/FieldShell";
 import { FormField } from "../../components/FormField";
 import { SectionHeader } from "../../components/SectionHeader";
+import { Icon } from "../../components/icons";
 import { SubmitButton } from "../../components/SubmitButton";
 import { FIELD } from "../../components/fieldStyles";
 import { useFormSubmit } from "../../hooks/useFormSubmit";
@@ -301,6 +302,7 @@ export function LaunchSessionForm({ project }: LaunchSessionFormProps) {
         <SubmitButton
           variant={noCredential ? "ghost" : "primary"}
           loading={launch.loading}
+          icon={Icon.launch}
           disabled={
             !ready ||
             selected === undefined ||

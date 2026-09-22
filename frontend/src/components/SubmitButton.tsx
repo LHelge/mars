@@ -8,8 +8,14 @@
 // why such buttons were hand-rolled or wrapped in a `<span title>` that the
 // keyboard cannot reach. `className` is not among them: the variants below are
 // the button's looks.
+//
+// `icon` is one entry of the icon map (`components/icons.ts`), drawn before the
+// label and hidden from assistive technology: it adds recognition, never a
+// name.
 
 import type { ComponentProps, ReactNode } from "react";
+import { ICON_CLASS } from "./icons";
+import type { IconComponent } from "./icons";
 import { Spinner } from "./Spinner";
 
 export type SubmitButtonVariant = "primary" | "danger" | "ghost";
@@ -20,6 +26,8 @@ export interface SubmitButtonProps
   loading?: boolean;
   children: ReactNode;
   variant?: SubmitButtonVariant;
+  /** An entry of `Icon`, drawn before the label. */
+  icon?: IconComponent;
 }
 
 const VARIANTS: Record<SubmitButtonVariant, string> = {
@@ -37,6 +45,7 @@ export function SubmitButton({
   disabled,
   variant = "primary",
   type = "submit",
+  icon: IconGlyph,
   ...rest
 }: SubmitButtonProps) {
   return (
@@ -48,7 +57,14 @@ export function SubmitButton({
       className={`relative inline-flex items-center justify-center rounded border px-3 py-1.5 text-sm transition-opacity disabled:opacity-60 ${VARIANTS[variant]}`}
     >
       {/* The label stays in flow while loading, so the width never changes. */}
-      <span className={loading ? "invisible" : undefined}>{children}</span>
+      <span
+        className={`inline-flex items-center gap-1.5 ${loading ? "invisible" : ""}`}
+      >
+        {IconGlyph !== undefined && (
+          <IconGlyph aria-hidden="true" className={ICON_CLASS} />
+        )}
+        {children}
+      </span>
       {loading && (
         <span className="absolute inset-0 flex items-center justify-center">
           <Spinner />

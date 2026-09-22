@@ -25,7 +25,7 @@ Mars runs coding-agent sessions (Claude Code in v1, behind a pluggable `AgentBac
 
 ## Frontend conventions
 
-**Stack**: Vite, React 19, TypeScript (strict), Tailwind CSS 4, React Router 7, TanStack Query, Zustand, `@tanstack/react-virtual`, `react-markdown` with `remark-gfm`, `lowlight` (lazy chunk), `xterm.js`, Heroicons (`@heroicons/react/24/outline`), ESLint, Vitest, Playwright.
+**Stack**: Vite, React 19, TypeScript (strict), Tailwind CSS 4, React Router 7, TanStack Query, Zustand, `@tanstack/react-virtual`, `react-markdown` with `remark-gfm`, `lowlight` (lazy chunk), `xterm.js`, Lucide (`lucide-react`, through `components/icons.ts` only), ESLint, Vitest, Playwright.
 
 - Functional components with hooks only; named exports.
 - All API calls go through `src/services/`; components never call `fetch`. Use `apiGet`/`apiPost`/`apiPut`/`apiPatch`/`apiDelete` from `services/apiClient.ts`, which attaches the access token and refreshes once on 401. A service never builds a URL by hand: a path part is encoded with `seg()` and a query string is the `query` option, which serialises defined values through `URLSearchParams` and omits `undefined` ones, alongside `signal` in the same `init` (`ARCHITECTURE.md`, "Frontend architecture", One way to build a request).
@@ -38,6 +38,7 @@ Mars runs coding-agent sessions (Claude Code in v1, behind a pluggable `AgentBac
 - A failed read never unmounts a view that has data and never reads as an empty one; the retry policy lives in `queryClient.ts` alone (`SPEC.md`, "Frontend", Read failures).
 - One `errorMessage(caught, fallback?)`, in `services/errorMessage.ts`, turns a caught failure into what the user reads (`SPEC.md`, "Frontend", Failure messages): a feature helper adds only its own special cases on top of it, a form's own wording goes through `useFormSubmit(action, { mapError })` and never through a forged `ApiError`, an empty message never reaches an `Alert`, and the failure is logged once where it is caught, with `logUnexpected`, never from render.
 - Types in `src/types/` mirror the shapes in `SPEC.md` exactly, field names in `snake_case` as the API sends them: a set that document closes is a union derived from a `const` array beside it, a set it leaves open stays open, and a DOM string reaches a union through the `parseX(value): X | undefined` over that array rather than through a cast. `noUncheckedIndexedAccess` is on, so an index is `T | undefined` and gets a real branch, never a `!` (`ARCHITECTURE.md`, "Frontend architecture", Types at the edges).
+- An icon is `Icon.<concept>` from `components/icons.ts`, sized by its `ICON_CLASS` — never an import from `lucide-react`, which ESLint refuses outside that file; a concept with no entry gets one there. It sits beside its text and never replaces a label: `aria-hidden`, and an icon-only button keeps its `aria-label`. `SubmitButton` takes it as `icon` (`ARCHITECTURE.md`, "Frontend architecture", One icon map).
 - Invoke the `/frontend-design` skill before creating or reshaping UI. The tone is a focused, dense operator console: dark-friendly, monospace where content is code or logs, quiet colour reserved for state (running, parked, failed, needs human).
 
 ## API conventions

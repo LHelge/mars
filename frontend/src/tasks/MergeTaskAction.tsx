@@ -36,6 +36,7 @@ import {
   refsOfKind,
   useGitAction,
 } from "../components/git/formState";
+import { Icon } from "../components/icons";
 import { SubmitButton } from "../components/SubmitButton";
 import { merge } from "../services/git";
 import { queryKeys } from "../services/queryKeys";
@@ -250,6 +251,7 @@ function MergeHandoffForm({
         <SubmitButton
           loading={form.loading}
           disabled={target === "" || merged !== null}
+          icon={Icon.merge}
         >
           Merge
         </SubmitButton>

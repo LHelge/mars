@@ -5,6 +5,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { Icon } from "./icons";
 import { SubmitButton } from "./SubmitButton";
 
 afterEach(() => {
@@ -29,6 +30,19 @@ describe("SubmitButton", () => {
     expect(button.getAttribute("aria-expanded")).toBe("false");
     expect(button.getAttribute("title")).toBe("default profile");
     expect(button.getAttribute("data-testid")).toBe("toggle-uses");
+  });
+
+  it("draws its icon hidden, so the label alone names the button", () => {
+    render(
+      <SubmitButton type="button" icon={Icon.push}>
+        Push
+      </SubmitButton>,
+    );
+
+    const button = screen.getByRole("button", { name: "Push" });
+    const svg = button.querySelector("svg");
+    expect(svg).not.toBeNull();
+    expect(svg?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("is not loading and not busy unless it is told to be", () => {

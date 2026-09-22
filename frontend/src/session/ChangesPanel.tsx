@@ -12,10 +12,10 @@
 // work after the branch it started from has moved on.
 
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { useEffect, useRef, useState } from "react";
 
 import { Alert } from "../components/Alert";
+import { Icon, ICON_CLASS } from "../components/icons";
 import { LoadingState } from "../components/LoadingState";
 import { DiffBody } from "../components/git/DiffBody";
 import { getDiff } from "../services/git";
@@ -111,9 +111,9 @@ export function ChangesPanel({ session }: SessionPanelProps) {
             }}
             className="text-console-accent ml-auto flex items-center gap-1"
           >
-            <ArrowPathIcon
+            <Icon.refresh
               aria-hidden="true"
-              className={`size-3 ${diff.isFetching ? "animate-spin" : ""}`}
+              className={`${ICON_CLASS} ${diff.isFetching ? "animate-spin" : ""}`}
             />
             Refresh
           </button>

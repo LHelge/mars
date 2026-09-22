@@ -5,13 +5,11 @@
 // work happens, so it sits in the right-hand cluster beside the account rather
 // than among the work areas.
 
-import {
-  ArrowRightStartOnRectangleIcon,
-  QuestionMarkCircleIcon,
-} from "@heroicons/react/24/outline";
 import type { ReactNode } from "react";
 import { NavLink } from "react-router";
 import { useAuth } from "../hooks/useAuth";
+import { Icon, ICON_CLASS } from "./icons";
+import type { IconComponent } from "./icons";
 
 export interface PageLayoutProps {
   title?: string;
@@ -22,22 +20,23 @@ export interface PageLayoutProps {
 interface NavEntry {
   to: string;
   label: string;
+  icon: IconComponent;
   /** Only `/` needs it; every other entry owns its subtree. */
   end?: boolean;
   adminOnly?: boolean;
 }
 
 const NAV: NavEntry[] = [
-  { to: "/", label: "Dashboard", end: true },
-  { to: "/projects", label: "Projects" },
-  { to: "/secrets", label: "Secrets" },
-  { to: "/settings", label: "Settings" },
-  { to: "/admin", label: "Admin", adminOnly: true },
+  { to: "/", label: "Dashboard", icon: Icon.dashboard, end: true },
+  { to: "/projects", label: "Projects", icon: Icon.projects },
+  { to: "/secrets", label: "Secrets", icon: Icon.secrets },
+  { to: "/settings", label: "Settings", icon: Icon.settings },
+  { to: "/admin", label: "Admin", icon: Icon.admin, adminOnly: true },
 ];
 
 function navClass({ isActive }: { isActive: boolean }): string {
   return [
-    "shrink-0 border-b-2 px-1 py-2 text-sm whitespace-nowrap",
+    "inline-flex shrink-0 items-center gap-1.5 border-b-2 px-1 py-2 text-sm whitespace-nowrap",
     isActive
       ? "border-console-accent text-console-text"
       : "border-transparent text-console-muted hover:text-console-text",
@@ -68,6 +67,7 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
                 end={entry.end}
                 className={navClass}
               >
+                <entry.icon aria-hidden="true" className={ICON_CLASS} />
                 {entry.label}
               </NavLink>
             ))}
@@ -85,7 +85,7 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
                 ].join(" ")
               }
             >
-              <QuestionMarkCircleIcon aria-hidden="true" className="size-4" />
+              <Icon.help aria-hidden="true" className={ICON_CLASS} />
               {/* Icon-only below `sm`, where the work areas need the room. */}
               <span className="max-sm:sr-only">Help</span>
             </NavLink>
@@ -100,10 +100,7 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
               }}
               className="text-console-muted hover:text-console-text inline-flex items-center gap-1 py-2 text-xs"
             >
-              <ArrowRightStartOnRectangleIcon
-                aria-hidden="true"
-                className="size-4"
-              />
+              <Icon.logout aria-hidden="true" className={ICON_CLASS} />
               Log out
             </button>
           </div>

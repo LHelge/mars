@@ -1,8 +1,9 @@
 // A one-message banner. An error is announced immediately (`role="alert"`);
 // everything else is polite (`role="status"`).
 
-import { XMarkIcon } from "@heroicons/react/24/outline";
 import type { ReactNode } from "react";
+
+import { Icon, ICON_CLASS } from "./icons";
 
 export type AlertKind = "error" | "success" | "info" | "warning";
 
@@ -33,7 +34,7 @@ export function Alert({ kind, children, onDismiss }: AlertProps) {
           aria-label="Dismiss"
           className="text-console-muted hover:text-console-text -m-1 shrink-0 p-1"
         >
-          <XMarkIcon aria-hidden="true" className="size-4" />
+          <Icon.close aria-hidden="true" className={ICON_CLASS} />
         </button>
       )}
     </div>

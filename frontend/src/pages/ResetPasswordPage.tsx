@@ -5,17 +5,21 @@
 // user in; they then log in with the new password." So this page installs no
 // session and ends on a link to `/login`. The token stays in the route param:
 // it is never rendered, copied into a query string or logged.
+//
+// The route's param is a `string | undefined` and the form needs a token, so
+// the guard is a component boundary: `ResetPasswordPage` decides whether there
+// is a link to act on, and `ResetPasswordForm` is only ever mounted with one.
 
 import { useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router";
 import { Alert } from "../components/Alert";
 import { AuthLayout } from "../components/AuthLayout";
-import { FormField } from "../components/FormField";
+import { NewPasswordFields } from "../components/NewPasswordFields";
+import { useNewPassword } from "../components/newPassword";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks";
 import { ApiError } from "../services/apiClient";
 import { resetPassword } from "../services/auth";
-import { validatePassword } from "../utils/password";
 
 /**
  * The 400 body every reset-token rejection shares (unknown, used or expired).
@@ -44,16 +48,21 @@ function InvalidLink() {
 export function ResetPasswordPage() {
   const { token } = useParams<{ token: string }>();
 
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [passwordError, setPasswordError] = useState<string | null>(null);
-  const [confirmError, setConfirmError] = useState<string | null>(null);
+  if (token === undefined || token === "") {
+    return <InvalidLink />;
+  }
+
+  return <ResetPasswordForm token={token} />;
+}
+
+function ResetPasswordForm({ token }: { token: string }) {
+  const chosen = useNewPassword();
   const [invalidLink, setInvalidLink] = useState(false);
   const [done, setDone] = useState(false);
 
   const { submit, loading, error } = useFormSubmit(async () => {
     try {
-      await resetPassword(token ?? "", password);
+      await resetPassword(token, chosen.password);
     } catch (caught) {
       if (
         caught instanceof ApiError &&
@@ -71,7 +80,7 @@ export function ResetPasswordPage() {
     setDone(true);
   });
 
-  if (token === undefined || token === "" || invalidLink) {
+  if (invalidLink) {
     return <InvalidLink />;
   }
 
@@ -95,18 +104,9 @@ export function ResetPasswordPage() {
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
-
-    const nextPasswordError = validatePassword(password);
-    const nextConfirmError =
-      nextPasswordError === null && confirm !== password
-        ? "Passwords do not match"
-        : null;
-    setPasswordError(nextPasswordError);
-    setConfirmError(nextConfirmError);
-    if (nextPasswordError !== null || nextConfirmError !== null) {
+    if (!chosen.validate()) {
       return;
     }
-
     void submit();
   }
 
@@ -115,34 +115,12 @@ export function ResetPasswordPage() {
       <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
         {error !== null && <Alert kind="error">{error}</Alert>}
 
-        <FormField
+        <NewPasswordFields
+          fields={chosen}
           label="New password"
-          name="password"
-          type="password"
-          value={password}
-          onChange={(value) => {
-            setPassword(value);
-            setPasswordError(null);
-          }}
-          error={passwordError ?? undefined}
-          hint="10–128 characters."
-          autoComplete="new-password"
+          confirmLabel="Repeat new password"
+          disabled={loading}
           autoFocus
-          disabled={loading}
-        />
-
-        <FormField
-          label="Repeat new password"
-          name="confirm"
-          type="password"
-          value={confirm}
-          onChange={(value) => {
-            setConfirm(value);
-            setConfirmError(null);
-          }}
-          error={confirmError ?? undefined}
-          autoComplete="new-password"
-          disabled={loading}
         />
 
         <SubmitButton loading={loading}>Set password</SubmitButton>

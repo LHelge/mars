@@ -13,6 +13,7 @@ import automation from "./automation.md?raw";
 import branches from "./branches.md?raw";
 import gettingStarted from "./getting-started.md?raw";
 import gitCredential from "./git-credential.md?raw";
+import instructions from "./instructions.md?raw";
 import profiles from "./profiles.md?raw";
 import secrets from "./secrets.md?raw";
 import sharedDirectories from "./shared-directories.md?raw";
@@ -28,6 +29,7 @@ export const HELP_SOURCES: Record<HelpTopic, string> = {
   "agent-credentials": agentCredentials,
   secrets,
   profiles,
+  instructions,
   skills,
   automation,
   branches,

@@ -251,7 +251,12 @@ export function LaunchForTask({ projectId, task }: LaunchForTaskProps) {
             </div>
           </details>
 
-          <FieldShell label="First message (optional)" name="launch-message">
+          <FieldShell
+            label="First message (optional)"
+            name="launch-message"
+            hint="Sent after the message Mars writes naming the task. The agent reads the task itself, so say only what it doesn't."
+            help="instructions"
+          >
             {(control) => (
               <textarea
                 {...control}

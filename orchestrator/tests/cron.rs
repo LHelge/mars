@@ -76,6 +76,9 @@ async fn every_job_has_the_documented_name_and_interval() {
             Duration::from_secs(60),
         ),
         (JobName::Dispatcher, "dispatcher", dispatcher),
+        // Not configurable: one minute is the resolution of the cron
+        // expressions this job fires, not a knob (ADR 0043).
+        (JobName::Scheduler, "scheduler", Duration::from_secs(60)),
         (
             JobName::TokenCleanup,
             "token_cleanup",

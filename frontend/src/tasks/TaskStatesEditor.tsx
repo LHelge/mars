@@ -41,7 +41,7 @@ import { useTaskStore } from "./taskStore";
 
 /** `SPEC.md`, "Task states", in the one line the tab has room for. */
 const STATES_HELP =
-  "The columns of this project's board, in order. Agents claim work from a queue state, escalations land in the human state, and a terminal state closes the task.";
+  "The columns of this project's board, in order. Agents claim work from a queue state, escalations land in the one human state, and a terminal state closes the task. A state's kind is fixed once it exists; rename or reorder it freely.";
 
 export interface TaskStatesEditorProps {
   projectId: string;
@@ -101,7 +101,11 @@ export function TaskStatesEditor({ projectId }: TaskStatesEditorProps) {
 
   return (
     <section className="space-y-3">
-      <SectionHeader title="Task states" description={STATES_HELP} />
+      <SectionHeader
+        title="Task states"
+        description={STATES_HELP}
+        help="task-flow"
+      />
 
       {states.isError && (
         <QueryErrorAlert query={states} message={errorMessage(states.error)} />

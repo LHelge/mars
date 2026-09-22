@@ -45,6 +45,7 @@ import type { Branch, Handoff, TaskDetail } from "../types";
 import {
   MERGE_ACTION,
   MERGE_BLOCKED,
+  MERGE_TITLE,
   canMerge,
   isStaleMerge,
   mergeCoverLine,
@@ -69,7 +70,7 @@ export function MergeTaskAction({ projectId, task }: MergeTaskActionProps) {
     <>
       {/* Compact, like the row it sits in: the summary line is one line of
           mono, and a form-sized button would break it. */}
-      <span title={allowed ? undefined : MERGE_BLOCKED}>
+      <span title={allowed ? MERGE_TITLE : MERGE_BLOCKED}>
         <button
           type="button"
           disabled={!allowed || handoff === null || opened !== null}

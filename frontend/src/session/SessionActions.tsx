@@ -6,9 +6,10 @@
 // tested; this file is what the buttons do.
 //
 // Ephemeral sessions run one prompt and end; they are never retried, so the
-// button is not there to be refused. Destructive actions confirm in place, in
-// the console's one confirmation panel (`components/ConfirmPanel.tsx`), rather
-// than in a modal: the header is already the place the operator is looking.
+// button is not there to be refused, and a failed one says to launch a new
+// one instead. Destructive actions confirm in place, in the console's one
+// confirmation panel (`components/ConfirmPanel.tsx`), rather than in a modal:
+// the header is already the place the operator is looking.
 //
 // Every refusal is the server's own sentence: `SPEC.md` phrases why a sync on a
 // `creating` session or a delete of a running one cannot happen better than the
@@ -19,7 +20,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 import { Alert } from "../components/Alert";
 import { ConfirmPanel } from "../components/ConfirmPanel";
@@ -41,6 +42,10 @@ export interface SessionActionsProps {
   /** The socket's stop, which falls back to `POST /sessions/{id}/stop`. */
   onStop: () => void;
 }
+
+/** What a retry does (`SPEC.md`, "Sessions": `POST /sessions/{id}/retry`). */
+const RETRY_HINT =
+  "Resumes the conversation. With a message it relaunches at once; without one it parks until you send one.";
 
 function message(caught: unknown, fallback: string): string {
   logUnexpected(caught);
@@ -240,28 +245,46 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
         </div>
       )}
 
+      {/* The button is not there to be refused (above), so the header says
+          what to do instead. */}
+      {session.state === "failed" && session.kind === "ephemeral" && (
+        <p className="text-console-muted max-w-md text-right text-xs">
+          An ephemeral session cannot be retried;{" "}
+          <Link
+            to={`/projects/${session.project_id}?tab=sessions`}
+            className="text-console-accent hover:underline"
+          >
+            launch a new one
+          </Link>{" "}
+          instead.
+        </p>
+      )}
+
       {retryOpen && can.retry && (
-        <form
-          className="flex w-full max-w-md items-center gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            begin();
-            retry.mutate(retryMessage.trim());
-          }}
-        >
-          <input
-            aria-label="Retry message"
-            value={retryMessage}
-            placeholder="Message to relaunch with (optional)"
-            onChange={(event) => {
-              setRetryMessage(event.target.value);
+        <div className="flex w-full max-w-md flex-col items-end gap-1">
+          <form
+            className="flex w-full items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              begin();
+              retry.mutate(retryMessage.trim());
             }}
-            className="bg-console-surface border-console-border text-console-text placeholder:text-console-muted min-w-0 flex-1 rounded border px-2 py-1 font-mono text-xs"
-          />
-          <SubmitButton loading={retry.isPending} icon={Icon.launch}>
-            Relaunch
-          </SubmitButton>
-        </form>
+          >
+            <input
+              aria-label="Retry message"
+              value={retryMessage}
+              placeholder="Message to relaunch with (optional)"
+              onChange={(event) => {
+                setRetryMessage(event.target.value);
+              }}
+              className="bg-console-surface border-console-border text-console-text placeholder:text-console-muted min-w-0 flex-1 rounded border px-2 py-1 font-mono text-xs"
+            />
+            <SubmitButton loading={retry.isPending} icon={Icon.launch}>
+              Relaunch
+            </SubmitButton>
+          </form>
+          <p className="text-console-muted text-xs">{RETRY_HINT}</p>
+        </div>
       )}
 
       {notice !== null && (

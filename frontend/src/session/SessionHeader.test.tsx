@@ -90,6 +90,12 @@ describe("SessionHeader", () => {
   it("never offers Retry for an ephemeral session", () => {
     mount(session("failed", "ephemeral"));
     expect(actions()).toEqual(["Delete"]);
+    // ...and says what to do instead (`ARCHITECTURE.md`, "Session lifecycle").
+    expect(
+      screen
+        .getByRole("link", { name: "launch a new one" })
+        .getAttribute("href"),
+    ).toContain("?tab=sessions");
   });
 
   it("offers Sync and Delete once the session is done", () => {

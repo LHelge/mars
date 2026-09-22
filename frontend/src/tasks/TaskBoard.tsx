@@ -130,6 +130,7 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
       <SectionHeader
         title="Task board"
         description={BOARD_HELP}
+        help="task-flow"
         actions={
           <>
             {loaded && (slowRefresh || stream !== "live") && (

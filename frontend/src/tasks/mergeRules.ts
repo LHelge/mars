@@ -22,6 +22,10 @@ import { shortSha } from "../utils/format";
 /** Why the merge button is disabled, in the words it carries in its `title`. */
 export const MERGE_BLOCKED = "Requires an approved current hand-off";
 
+/** What the enabled button says on its `title`: the pinned commit, not a tip. */
+export const MERGE_TITLE =
+  "Merges the approved hand-off's commit, not the latest tip of its branch";
+
 /** What the button says it does. */
 export const MERGE_ACTION = "Merge approved hand-off";
 

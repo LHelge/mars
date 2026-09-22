@@ -7,6 +7,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../services/apiClient";
 import { listTasks } from "../services/tasks";
@@ -82,7 +83,10 @@ function renderEditor() {
   });
   return render(
     <QueryClientProvider client={client}>
-      <TaskStatesEditor projectId={PROJECT_ID} />
+      {/* The header's `Learn more` is a router link. */}
+      <MemoryRouter>
+        <TaskStatesEditor projectId={PROJECT_ID} />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }

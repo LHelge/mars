@@ -151,9 +151,10 @@ A project is one git repository, stored as a bare project repository under `/dat
 | `created_by` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |
 | `last_fetched_at` | `TIMESTAMPTZ` | NULL | Updated by the periodic mirror fetch, by the clone that finished it and by `POST /projects/{id}/fetch`; unchanged when the fetch failed. |
 | `max_attempts` | `SMALLINT` | NOT NULL DEFAULT 3, CHECK 1–20 | How many claims a task may go through in one state before a release sends it to the project's human state instead. See `tasks`. |
+| `max_rounds` | `SMALLINT` | NOT NULL DEFAULT 5, CHECK 1–50 | How many revision hand-offs a task may go through before a send-back by a session or the system sends it to the project's human state instead. See `tasks.rounds` (ADR 0046). |
 | `next_task_number` | `INTEGER` | NOT NULL DEFAULT 1 | Counter for `tasks.number`, taken with `UPDATE ... RETURNING` inside the task insert transaction, which serialises concurrent inserts on the project row. |
 | `max_concurrent_sessions` | `INTEGER` | NULL, CHECK >= 1 | How many live sessions (`creating` or `running`) the project may have before an unattended launch is held back. NULL means no project cap. Counts every session, whoever launched it, and never refuses a launch by a person (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042). |
-| `automation_paused` | `BOOLEAN` | NOT NULL DEFAULT FALSE | While true, no unattended launch happens in this project. Sessions already running are unaffected and people can still launch by hand. |
+| `automation_paused` | `BOOLEAN` | NOT NULL DEFAULT FALSE | While true, no unattended launch and no automatic merge happens in this project. Sessions already running are unaffected and people can still launch and merge by hand. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
@@ -177,7 +178,7 @@ Constraints and indexes:
 
 ### `agent_profiles`
 
-Per-project configuration of one kind of agent. Every project gets four conversational profiles on creation — `planner`, `implementer` (the default one), `reviewer` and `merger` — each with the served state, tool list and `system_prompt` of its role copied from the templates in `SPEC.md`, "Role profile templates" (ADR 0038). They are ordinary rows from then on.
+Per-project configuration of one kind of agent. Every project gets three conversational profiles on creation — `planner`, `implementer` (the default one) and `reviewer` — each with the served state, tool list and `system_prompt` of its role copied from the templates in `SPEC.md`, "Role profile templates" (ADR 0038). No `merger` is seeded: the `merge` state is merged by the orchestrator (ADR 0045). They are ordinary rows from then on.
 
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
@@ -201,7 +202,7 @@ Per-project configuration of one kind of agent. Every project gets four conversa
 | `schedule_cron` | `TEXT` | NULL | The 5-field UTC cron expression this profile is launched on, or NULL for a profile nothing schedules. Refused on a `conversational` profile and refused at save unless the backend's agent credential resolves at `global` or `project` scope, exactly as `auto_launch` is; the finest period the form can express is one minute, which is the scheduler's tick (`ARCHITECTURE.md`, "Task tracker" → "Scheduled agents"; ADR 0043). |
 | `schedule_prompt` | `TEXT` | NULL | What a scheduled run is told to do: the `message` of that launch. Set exactly when `schedule_cron` is. |
 | `last_scheduled_at` | `TIMESTAMPTZ` | NULL | When the scheduler last decided a tick of this profile fires, advanced before that tick's launch in one statement that carries the value the scan read (`... WHERE id = $1 AND last_scheduled_at IS NOT DISTINCT FROM $2 AND schedule_cron IS NOT NULL`), so two writers cannot both move it. A guard against firing one tick twice, never a cursor to catch up from (ADR 0043). Read-only over REST, and cleared when the schedule is. |
-| `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | Project creation supplies it instead of taking the default: `NOW()` is the transaction's start, so the four seeded profiles would share it and `ORDER BY created_at` could not put them in role order. |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | Project creation supplies it instead of taking the default: `NOW()` is the transaction's start, so the seeded profiles would share it and `ORDER BY created_at` could not put them in role order. |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
 Constraints and indexes:
@@ -299,13 +300,17 @@ The states a project's tasks can be in, in board order. Every project is created
 | `name` | `TEXT` | NOT NULL | 1–32 chars matching `[a-z0-9][a-z0-9_-]*`. The API and agents use the name; the id is internal. |
 | `kind` | `task_state_kind` | NOT NULL | `queue`: agents claim from it. `human`: agents never claim from it; escalations land here. `terminal`: closes the task and satisfies dependencies. Immutable after creation. |
 | `position` | `INTEGER` | NOT NULL | Board column order, ascending. |
+| `auto_merge` | `BOOLEAN` | NOT NULL DEFAULT FALSE | The orchestrator merges approved hand-offs of tasks in this state (`ARCHITECTURE.md`, "Task tracker" → "Automatic merges"; ADR 0045). `queue` states only. |
+| `conflict_state_id` | `UUID` | NULL, FK `task_states(id)` ON DELETE RESTRICT | Where a task goes when its automatic merge conflicts. A `queue` state of the same project other than this one (repository check). |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
 Constraints and indexes:
 
 - `UNIQUE (project_id, name)`.
+- `CHECK (auto_merge = (conflict_state_id IS NOT NULL))`: the flag and its conflict state are set and cleared together.
+- `CHECK (NOT auto_merge OR kind = 'queue')`. The API validates both rules first so a caller reads its message, not a constraint violation.
 - Partial unique index `task_states_one_human_idx ON task_states (project_id) WHERE kind = 'human'`: at most one human state per project.
-- The repository refuses to delete the human state, the last queue state, the last terminal state, or any state a task is in (`tasks.state_id` is `ON DELETE RESTRICT`).
+- The repository refuses to delete the human state, the last queue state, the last terminal state, any state a task is in (`tasks.state_id` is `ON DELETE RESTRICT`), or a state another state names as its `conflict_state_id` (also `ON DELETE RESTRICT`; the repository checks first so the answer names that state).
 - The default state for a new task is the `queue` state with the lowest position.
 
 Default set, created with the project:
@@ -315,7 +320,7 @@ Default set, created with the project:
 | `backlog` | `queue` | 0 | Requests and ideas that need planning before work can start. |
 | `ready` | `queue` | 1 | Planned work an implementer can pick up. |
 | `review` | `queue` | 2 | Implemented; waiting for review. |
-| `merge` | `queue` | 3 | Approved; waiting to be merged. |
+| `merge` | `queue` | 3 | Approved; merged by the orchestrator as it arrives. The one default state with `auto_merge` set, with `ready` as its `conflict_state_id`. |
 | `needs_human` | `human` | 4 | An agent asked for a decision, or the task ran out of attempts. |
 | `done` | `terminal` | 5 | Finished. |
 | `cancelled` | `terminal` | 6 | Will not be done. Satisfies dependencies like `done`. |
@@ -329,7 +334,7 @@ Which states an agent profile serves. The MCP `ready` tool lists, and `claim` cl
 | `profile_id` | `UUID` | NOT NULL, FK `agent_profiles(id)` ON DELETE CASCADE |
 | `state_id` | `UUID` | NOT NULL, FK `task_states(id)` ON DELETE CASCADE |
 
-Constraint: `PRIMARY KEY (profile_id, state_id)`. Both rows must belong to the same project (repository check). Only `queue` states may be served (repository check). The default profile of a new project serves `ready`.
+Constraint: `PRIMARY KEY (profile_id, state_id)`. Both rows must belong to the same project (repository check). Only `queue` states may be served (repository check). The default profile of a new project serves `ready`. An `auto_merge` state may be served too; the auto-merge job skips a task while a session holds it.
 
 ### `tasks`
 
@@ -349,6 +354,7 @@ Constraint: `PRIMARY KEY (profile_id, state_id)`. Both rows must belong to the s
 | `lease_holder_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | Session currently working on the task. NULL means nobody. |
 | `lease_since` | `TIMESTAMPTZ` | NULL | When the current holder claimed it; NULL iff `lease_holder_session_id` is NULL. |
 | `attempts` | `SMALLINT` | NOT NULL DEFAULT 0 | Claims since the task last changed state. Incremented on claim, reset to 0 on every state change. |
+| `rounds` | `SMALLINT` | NOT NULL DEFAULT 0 | Revision hand-offs published since the task last left the project's human state. Incremented by revision publication, reset to 0 by any state change out of the human state; a send-back by a session or the system at `projects.max_rounds` goes to the human state instead (ADR 0046). |
 | `needs_human_reason` | `TEXT` | NULL | Why the task was last escalated; set by the `needs_human` tool and by the reaper. |
 | `current_handoff_id` | `UUID` | NULL, FK `task_handoffs(id)` ON DELETE SET NULL | Current immutable code hand-off; must belong to this task (repository check). Added after `task_handoffs` is created. |
 | `created_by_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |
@@ -386,9 +392,11 @@ RETURNING *;
 
 Zero rows returned means the claim lost; the caller gets a conflict, never a partial state.
 
-A **hand-off** changes to a different state. Assigning the current `state_id` preserves the lease, `attempts` and `closed_at` and emits no state-change event; other supplied changes still apply. Code publication with an unchanged state is rejected. In one transaction the orchestrator sets `state_id`, clears the lease, resets `attempts`, sets or clears `closed_at` according to the new state's kind, recomputes `blocked` on every dependant when a terminal state is entered or left, and writes the `task_events` row. When code is published or forwarded, that same transaction also inserts `task_handoffs` and its required `task_comments` row, updates `current_handoff_id`, upserts the relevant source/calling session links, and emits the comment event. The immutable git ref is prepared first; the transaction rechecks state, holder and the previous current-hand-off id before publishing (`ARCHITECTURE.md`, "Code hand-offs"). A plain state move, release or automatic parent closure leaves `current_handoff_id` unchanged.
+A **hand-off** changes to a different state. Assigning the current `state_id` preserves the lease, `attempts` and `closed_at` and emits no state-change event; other supplied changes still apply. Code publication with an unchanged state is rejected. In one transaction the orchestrator sets `state_id`, clears the lease, resets `attempts`, sets or clears `closed_at` according to the new state's kind, recomputes `blocked` on every dependant when a terminal state is entered or left, and writes the `task_events` row. A change out of the human state also resets `rounds` to 0. When code is published or forwarded, that same transaction also inserts `task_handoffs` and its required `task_comments` row, increments `rounds` for a new revision, updates `current_handoff_id`, upserts the relevant source/calling session links, and emits the comment event. The immutable git ref is prepared first; the transaction rechecks state, holder and the previous current-hand-off id before publishing (`ARCHITECTURE.md`, "Code hand-offs"). A plain state move, release or automatic parent closure leaves `current_handoff_id` unchanged.
 
 A **release** clears the lease and keeps the state. When the release comes from an agent (`release` tool) or from the reaper and `attempts` has reached `projects.max_attempts`, the same transaction moves the task to the project's human state instead, sets `needs_human_reason`, and writes a system comment. A release by a user never escalates.
+
+A **send-back** — a forward recording `changes_requested`, or the auto-merge job's move to a conflict state — by a session or by the system, of a task whose `rounds` has reached `projects.max_rounds`, is written as a move to the project's human state instead: the same transaction sets `needs_human_reason`, writes the send-back's comment and an `escalated` event rather than `state_changed`. The forward's review decision is still recorded on its `task_handoffs` row. A user's move is never redirected.
 
 The `blocked` flag is stored so that the claimable query is a plain indexed read and so that the transition to unblocked can emit a `TaskEvent`. The orchestrator recomputes it for every dependant inside the same transaction that adds or removes a `blocks` dependency, moves a task into or out of a terminal state, or deletes a prerequisite. Before deleting a task, capture its surviving dependants and parent; after the foreign-key cascades, recompute their flags from the remaining edges and children in the same transaction. Emit `dependency_removed` for surviving dependants whose edges were removed, plus `blocked`/`unblocked` on flag changes.
 
@@ -550,5 +558,7 @@ Migrations are created with `sqlx migrate add -r <name>` and applied automatical
 8. `strip_agent_credentials_from_profiles` — removes `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` from every `agent_profiles.secrets` array (ADR 0036).
 9. `dispatcher_columns` — the `session_launch_source` type and `sessions.launch_source`, `agent_profiles.auto_launch` and `max_concurrent`, `projects.max_concurrent_sessions` and `automation_paused`, and `agent_profiles_auto_launch_idx` (ADR 0042).
 10. `schedule_columns` — `agent_profiles.schedule_cron`, `schedule_prompt` and `last_scheduled_at`, their pair `CHECK` and `agent_profiles_schedule_idx` (ADR 0043).
+11. `round_limit` — `projects.max_rounds` and `tasks.rounds` (ADR 0046).
+12. `auto_merge_states` — `task_states.auto_merge` and `conflict_state_id` with their pair `CHECK`. Existing rows get `auto_merge = false`; no project is changed (ADR 0045).
 
 Each `.down.sql` drops exactly what its `.up.sql` created, in reverse order. A migration that changes rows rather than schema has nothing to drop: `strip_agent_credentials_from_profiles` reverses to a documented `SELECT 1;`, because the entries it removed carried no information the launcher does not already act on.

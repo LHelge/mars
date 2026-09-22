@@ -43,10 +43,12 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0035](0035-compose-engine-variants-as-override-files.md) | Carry the Podman/Docker compose difference in one-line override files | accepted |
 | [0036](0036-agent-credentials-belong-to-the-backend.md) | Agent credentials belong to the backend and are resolved implicitly | accepted |
 | [0037](0037-nextest-runs-the-backend-suite.md) | `cargo nextest` runs the backend suite; the live engine suites keep `cargo test` | accepted |
-| [0038](0038-seed-role-profiles-at-project-creation.md) | Seed the four role profiles at project creation, copied not referenced | accepted |
+| [0038](0038-seed-role-profiles-at-project-creation.md) | Seed the four role profiles at project creation, copied not referenced | accepted; `merger` no longer seeded (0045) |
 | [0039](0039-layered-dev-session-image.md) | A layered dev session image on top of the contract base | accepted |
 | [0040](0040-render-markdown-in-the-browser.md) | Markdown is rendered in the browser from text; no server-side HTML | accepted |
 | [0041](0041-tracker-row-locks-are-no-key-update.md) | Tracker row locks are `FOR NO KEY UPDATE`, so they never block a foreign-key check | accepted |
 | [0042](0042-bound-unattended-launches.md) | Unattended launches are capped, pausable per project, and recorded by launch source | accepted |
 | [0043](0043-schedule-agents-on-utc-cron.md) | Scheduled agents fire on a 5-field UTC cron, skip what they miss, and carry their own prompt | accepted |
 | [0044](0044-pull-deploy-promoted-bundle-on-a-user-timer.md) | The server pulls a promoted release bundle from GHCR on a user timer | accepted |
+| [0045](0045-merge-approved-handoffs-in-the-orchestrator.md) | Approved hand-offs are merged by the orchestrator, configured on the state; a conflict sends the task back | accepted |
+| [0046](0046-bound-implementation-rounds-per-task.md) | Implementation rounds are counted per task and bound send-backs; `attempts` keeps resetting | accepted |

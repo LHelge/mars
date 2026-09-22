@@ -59,7 +59,7 @@ These steps have been walked through end to end on both engines — rootless Pod
 - A directory for persistent data, for example `/srv/mars/data`, owned by the service user (uid 1000 under Docker). It is `DATA_DIR_HOST` and must exist before the first start: compose bind-mounts it, and the orchestrator refuses to start if it is missing or not writable by the uid it runs as.
 - On Docker, the service user in the `docker` group, and that group's gid in `DOCKER_GID` — see the Docker paragraph at the end of "Podman setup".
 - `git` is **not** needed on the host: the orchestrator image ships it, and it is the only thing that runs `git`. The one exception is the host-run fallback under "Podman setup", where the orchestrator is a host process and uses the host's `git`.
-- For private repositories: a fine-grained GitHub personal access token scoped to the repository.
+- For private repositories, and for any repository Mars should push to: a personal access token. Mars fetches and pushes with it, so it needs write access to the repository's contents — see "Repository credentials" under "Operating notes".
 - Model credentials: an Anthropic API key, or a subscription token from `claude setup-token` (requires a Pro or Max subscription). They are entered in the UI after the first login, not in `.env` — see "Start".
 
 ### Podman setup (once, as the service user)
@@ -292,6 +292,27 @@ Operator controls: `mars-deploy status` (installed, promoted and last attempted 
   | JVM | `m2` → `/session/home/.m2`; `gradle` → `/session/home/.gradle` | `build/` |
 
   A shared directory grows across branches; empty it from the project page when disk gets tight. Both emptying and removing are refused while a session of the project is running.
+
+#### Repository credentials
+
+The credential entered when creating a project is stored as the project secret `GIT_CREDENTIAL` and is used only by the orchestrator, for every fetch from and push to the remote; session containers never see it. It is sent as HTTP basic auth with the username `x-access-token`, which GitHub and GitLab both accept with a personal access token. Give it the least that works:
+
+| Host | Token | Permissions |
+| --- | --- | --- |
+| GitHub | Fine-grained PAT, "Only select repositories" → the project's repository | Repository permissions: **Contents: Read and write** (Metadata: Read-only is added automatically). Add **Workflows: Read and write** if agents may change files under `.github/workflows/`, or GitHub rejects the push. |
+| GitHub | Classic PAT | `repo` (plus `workflow` for the same reason). Prefer a fine-grained token: a classic one reaches every repository you can. |
+| GitLab | Project access token, or a personal access token | `read_repository` and `write_repository`; the role must be allowed to push to the branches Mars pushes. |
+
+A read-only token (Contents: Read-only, `read_repository`) is enough to clone and fetch, and every push then fails with the host's refusal. A public repository needs no token until the first push. Replace an expired token by replacing the value of the project's `GIT_CREDENTIAL` secret on the Secrets page.
+
+#### Skills and plugins
+
+Sessions load Claude Code skills from two places, and both are already shared between the sessions of a project; no shared directory is needed for them.
+
+- **The repository.** A skill committed at `.claude/skills/<name>/SKILL.md` is loaded by every session whose checkout contains it, because sessions run the CLI in non-bare mode (`ARCHITECTURE.md`, "Agent process model"). This is the recommended place: the skill is versioned and reviewed with the code, and a session sees the skills of the branch it started from. Plugins the repository enables in `.claude/settings.json` (`extraKnownMarketplaces`, `enabledPlugins`) come the same way.
+- **The project's CLI state directory**, `DATA_DIR_HOST/projects/<project_id>/claude/`, which every session of the project mounts read-write as `CLAUDE_CONFIG_DIR` (ADR 0015). It takes the place of `~/.claude`, so a skill placed at `skills/<name>/SKILL.md` under it is a user-level skill for every session of that project and of no other project. Use it for skills that do not belong in the repository. Files put there by hand must be owned by the uid the orchestrator runs as ("Uid contract" in `ARCHITECTURE.md`). An agent can also install into it from inside a session — a plugin installed with `claude plugin install` lands there — and every other session of the project then loads it: sessions of one project trust each other (ADR 0015).
+
+`/session/home/.claude` is **not** read: `CLAUDE_CONFIG_DIR` overrides it, and `HOME` is per session anyway. A skill is picked up by the next CLI process, so a new session or the next resume of a parked one. Mars does not display which skills a session loaded; the `system`/`init` line at the top of `DATA_DIR/sessions/<session_id>/log/stream.jsonl` lists them. Removing the project removes its CLI state directory and everything installed in it.
 
 ## Development
 

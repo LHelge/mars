@@ -198,6 +198,9 @@ Per-project configuration of one kind of agent. Every project gets four conversa
 | `is_default` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Exactly one per project. |
 | `auto_launch` | `BOOLEAN` | NOT NULL DEFAULT FALSE | Whether the dispatcher may start a session of this profile by itself. Refused on a `conversational` profile, and refused at save unless the backend's agent credential resolves at `global` or `project` scope (ADR 0036, ADR 0042). |
 | `max_concurrent` | `INTEGER` | NOT NULL DEFAULT 1, CHECK >= 1 | How many live sessions of this profile an unattended launch may leave behind. Valid on any ephemeral profile whether or not `auto_launch` is set: the scheduler reads it too. |
+| `schedule_cron` | `TEXT` | NULL | The 5-field UTC cron expression this profile is launched on, or NULL for a profile nothing schedules. Refused on a `conversational` profile and refused at save unless the backend's agent credential resolves at `global` or `project` scope, exactly as `auto_launch` is; the finest period the form can express is one minute, which is the scheduler's tick (`ARCHITECTURE.md`, "Task tracker" → "Scheduled agents"; ADR 0043). |
+| `schedule_prompt` | `TEXT` | NULL | What a scheduled run is told to do: the `message` of that launch. Set exactly when `schedule_cron` is. |
+| `last_scheduled_at` | `TIMESTAMPTZ` | NULL | When the scheduler last decided a tick of this profile fires, written in the transaction that decides it. A guard against firing one tick twice, never a cursor to catch up from (ADR 0043). Read-only over REST, and cleared when the schedule is. |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | Project creation supplies it instead of taking the default: `NOW()` is the transaction's start, so the four seeded profiles would share it and `ORDER BY created_at` could not put them in role order. |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() | |
 
@@ -206,9 +209,11 @@ Constraints and indexes:
 - `UNIQUE (project_id, name)`.
 - Partial unique index `agent_profiles_one_default_idx ON agent_profiles (project_id) WHERE is_default`.
 - Partial index `agent_profiles_auto_launch_idx ON agent_profiles (project_id, created_at) WHERE auto_launch`, which is the dispatcher's selection and its oldest-profile-wins tie-break.
+- `CHECK ((schedule_cron IS NULL) = (schedule_prompt IS NULL))`: a schedule and the prompt its runs are given stand or fall together, whatever writes the row.
+- Partial index `agent_profiles_schedule_idx ON agent_profiles (project_id) WHERE schedule_cron IS NOT NULL`, which is the scheduler's scan.
 - Deleting a profile that has sessions is refused (`sessions.profile_id` is `ON DELETE RESTRICT`).
 
-Which task states a profile serves is the `profile_states` link table under "Tasks". Automatic launching (a dispatcher that starts an ephemeral session when a served state has claimable work, or a schedule that runs a profile periodically) is configured by `auto_launch` and `max_concurrent` here, by `max_concurrent_sessions` and `automation_paused` on `projects`, and recorded by `sessions.launch_source`; the jobs that read them are one per feature and change no task table (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042).
+Which task states a profile serves is the `profile_states` link table under "Tasks". Automatic launching (a dispatcher that starts an ephemeral session when a served state has claimable work, or a schedule that runs a profile periodically) is configured by `auto_launch`, `max_concurrent`, `schedule_cron` and `schedule_prompt` here, by `max_concurrent_sessions` and `automation_paused` on `projects`, and recorded by `sessions.launch_source`; the jobs that read them are one per feature and change no task table (`ARCHITECTURE.md`, "Task tracker" → "Unattended launches"; ADR 0042).
 
 ## Sessions and events
 
@@ -544,5 +549,6 @@ Migrations are created with `sqlx migrate add -r <name>` and applied automatical
 7. `secrets_claude_credential_idx` — the partial unique index above, preceded by a `DO` block that raises a readable exception naming any scope that already holds both Claude credentials (ADR 0036).
 8. `strip_agent_credentials_from_profiles` — removes `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` from every `agent_profiles.secrets` array (ADR 0036).
 9. `dispatcher_columns` — the `session_launch_source` type and `sessions.launch_source`, `agent_profiles.auto_launch` and `max_concurrent`, `projects.max_concurrent_sessions` and `automation_paused`, and `agent_profiles_auto_launch_idx` (ADR 0042).
+10. `schedule_columns` — `agent_profiles.schedule_cron`, `schedule_prompt` and `last_scheduled_at`, their pair `CHECK` and `agent_profiles_schedule_idx` (ADR 0043).
 
 Each `.down.sql` drops exactly what its `.up.sql` created, in reverse order. A migration that changes rows rather than schema has nothing to drop: `strip_agent_credentials_from_profiles` reverses to a documented `SELECT 1;`, because the entries it removed carried no information the launcher does not already act on.

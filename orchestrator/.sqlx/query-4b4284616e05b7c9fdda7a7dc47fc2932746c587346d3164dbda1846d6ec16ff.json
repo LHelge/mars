@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT p.id, p.project_id, p.name, p.kind as \"kind: ProfileKind\",\n                   p.backend as \"backend: AgentBackend\", p.model, p.system_prompt,\n                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,\n                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)\n                       as \"serves_states!\",\n                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,\n                   p.max_concurrent, p.created_at, p.updated_at\n            FROM agent_profiles AS p\n            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id\n            LEFT JOIN task_states AS ts ON ts.id = ps.state_id\n            WHERE p.id = $1 AND p.project_id = $2\n            GROUP BY p.id\n            ",
+  "query": "\n            WITH updated AS (\n                UPDATE agent_profiles\n                SET name = $3,\n                    kind = $4,\n                    backend = $5,\n                    model = $6,\n                    system_prompt = $7,\n                    permission_mode = $8,\n                    image = $9,\n                    runtime = $10,\n                    mcp_tools = $11,\n                    secrets = $12,\n                    partial_messages = $13,\n                    idle_timeout_secs = $14,\n                    is_default = $15,\n                    auto_launch = $16,\n                    max_concurrent = $17,\n                    schedule_cron = $18,\n                    schedule_prompt = $19,\n                    -- Clearing the schedule clears the guard with it: the next\n                    -- schedule set on this profile starts with nothing behind\n                    -- it (ADR 0043).\n                    last_scheduled_at = CASE\n                        WHEN $18::text IS NULL THEN NULL\n                        ELSE last_scheduled_at\n                    END,\n                    updated_at = NOW()\n                WHERE id = $1 AND project_id = $2\n                RETURNING id, project_id, name, kind, backend, model, system_prompt,\n                          permission_mode, image, runtime, mcp_tools, secrets, partial_messages,\n                          idle_timeout_secs, is_default, auto_launch, max_concurrent,\n                          schedule_cron, schedule_prompt, last_scheduled_at, created_at,\n                          updated_at\n            )\n            SELECT u.id, u.project_id, u.name, u.kind as \"kind: ProfileKind\",\n                   u.backend as \"backend: AgentBackend\", u.model, u.system_prompt,\n                   u.permission_mode, u.image, u.runtime, u.mcp_tools, u.secrets,\n                   COALESCE(\n                       (\n                           SELECT array_agg(ts.name ORDER BY ts.position)\n                           FROM profile_states AS ps\n                           JOIN task_states AS ts ON ts.id = ps.state_id\n                           WHERE ps.profile_id = u.id\n                       ),\n                       '{}'\n                   ) as \"serves_states!\",\n                   u.partial_messages, u.idle_timeout_secs, u.is_default, u.auto_launch,\n                   u.max_concurrent, u.schedule_cron, u.schedule_prompt, u.last_scheduled_at,\n                   u.created_at, u.updated_at\n            FROM updated AS u\n            ",
   "describe": {
     "columns": [
       {
@@ -217,6 +217,39 @@
       },
       {
         "ordinal": 18,
+        "name": "schedule_cron",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "schedule_cron"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "schedule_prompt",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "schedule_prompt"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "last_scheduled_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "last_scheduled_at"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -227,7 +260,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 22,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -241,7 +274,43 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "profile_kind",
+            "kind": {
+              "Enum": [
+                "conversational",
+                "ephemeral"
+              ]
+            }
+          }
+        },
+        {
+          "Custom": {
+            "name": "agent_backend",
+            "kind": {
+              "Enum": [
+                "claude"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "Bool",
+        "Int4",
+        "Bool",
+        "Bool",
+        "Int4",
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
@@ -263,9 +332,12 @@
       false,
       false,
       false,
+      true,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "07a8443193812d09462b0445b1fcf48cf0c13465f5f45d9b118e758686a7af36"
+  "hash": "4b4284616e05b7c9fdda7a7dc47fc2932746c587346d3164dbda1846d6ec16ff"
 }

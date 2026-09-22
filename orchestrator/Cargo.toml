@@ -37,6 +37,7 @@ base64 = "0.23.1"
 bollard = "0.20"
 bytes = "1.12.1"
 chrono = { version = "0.4.45", features = ["serde"] }
+croner = { version = "4.0.0", features = ["chrono"] }
 dotenvy = "0.15.7"
 futures-util = "0.3.34"
 jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }

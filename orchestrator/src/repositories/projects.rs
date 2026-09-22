@@ -731,15 +731,18 @@ impl<'a> ProjectRepository<'a> {
             INSERT INTO agent_profiles (
                 id, project_id, name, kind, backend, model, system_prompt, permission_mode,
                 image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,
-                is_default, auto_launch, max_concurrent, created_at, updated_at
+                is_default, auto_launch, max_concurrent, schedule_cron, schedule_prompt,
+                created_at, updated_at
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                    COALESCE($18::timestamptz, now()), COALESCE($18::timestamptz, now()))
+                    $18, $19,
+                    COALESCE($20::timestamptz, now()), COALESCE($20::timestamptz, now()))
             RETURNING id, project_id, name, kind as "kind: ProfileKind",
                       backend as "backend: AgentBackend", model, system_prompt, permission_mode,
                       image, runtime, mcp_tools, secrets,
                       ARRAY[]::text[] as "serves_states!", partial_messages, idle_timeout_secs,
-                      is_default, auto_launch, max_concurrent, created_at, updated_at
+                      is_default, auto_launch, max_concurrent, schedule_cron, schedule_prompt,
+                      last_scheduled_at, created_at, updated_at
             "#,
             profile.id,
             profile.project_id,
@@ -758,6 +761,8 @@ impl<'a> ProjectRepository<'a> {
             profile.is_default,
             profile.auto_launch,
             profile.max_concurrent,
+            profile.schedule_cron,
+            profile.schedule_prompt,
             profile.created_at,
         )
         .fetch_one(&mut *tx)
@@ -791,7 +796,8 @@ impl<'a> ProjectRepository<'a> {
                    array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
                        as "serves_states!",
                    p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,
-                   p.max_concurrent, p.created_at, p.updated_at
+                   p.max_concurrent, p.schedule_cron, p.schedule_prompt, p.last_scheduled_at,
+                   p.created_at, p.updated_at
             FROM agent_profiles AS p
             LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
             LEFT JOIN task_states AS ts ON ts.id = ps.state_id
@@ -821,7 +827,8 @@ impl<'a> ProjectRepository<'a> {
                    array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
                        as "serves_states!",
                    p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,
-                   p.max_concurrent, p.created_at, p.updated_at
+                   p.max_concurrent, p.schedule_cron, p.schedule_prompt, p.last_scheduled_at,
+                   p.created_at, p.updated_at
             FROM agent_profiles AS p
             LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
             LEFT JOIN task_states AS ts ON ts.id = ps.state_id
@@ -855,7 +862,8 @@ impl<'a> ProjectRepository<'a> {
                    array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
                        as "serves_states!",
                    p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,
-                   p.max_concurrent, p.created_at, p.updated_at
+                   p.max_concurrent, p.schedule_cron, p.schedule_prompt, p.last_scheduled_at,
+                   p.created_at, p.updated_at
             FROM agent_profiles AS p
             LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
             LEFT JOIN task_states AS ts ON ts.id = ps.state_id
@@ -896,7 +904,8 @@ impl<'a> ProjectRepository<'a> {
                    array_remove(array_agg(ts.name ORDER BY ts.position), NULL)
                        as "serves_states!",
                    p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,
-                   p.max_concurrent, p.created_at, p.updated_at
+                   p.max_concurrent, p.schedule_cron, p.schedule_prompt, p.last_scheduled_at,
+                   p.created_at, p.updated_at
             FROM agent_profiles AS p
             LEFT JOIN profile_states AS ps ON ps.profile_id = p.id
             LEFT JOIN task_states AS ts ON ts.id = ps.state_id
@@ -932,6 +941,14 @@ impl<'a> ProjectRepository<'a> {
     /// nothing. `Some(false)` on the current default is [`Error::Conflict`]
     /// — a project without a default profile has nothing to launch from, so the
     /// flag is moved, never dropped (`SPEC.md`, "Agent profiles").
+    ///
+    /// `last_scheduled_at` is not in the update shape at all — it is the
+    /// scheduler's own column and read-only over REST — but a save that clears
+    /// the schedule clears it too, in the same statement: the guard against
+    /// firing one tick twice has nothing left to guard, and a schedule set on
+    /// the profile later starts with nothing behind it (ADR 0043). A save that
+    /// only *changes* the expression keeps it, because the tick it records
+    /// really did fire.
     pub async fn update_profile(
         &self,
         tx: &mut PgConnection,
@@ -977,11 +994,21 @@ impl<'a> ProjectRepository<'a> {
                     is_default = $15,
                     auto_launch = $16,
                     max_concurrent = $17,
+                    schedule_cron = $18,
+                    schedule_prompt = $19,
+                    -- Clearing the schedule clears the guard with it: the next
+                    -- schedule set on this profile starts with nothing behind
+                    -- it (ADR 0043).
+                    last_scheduled_at = CASE
+                        WHEN $18::text IS NULL THEN NULL
+                        ELSE last_scheduled_at
+                    END,
                     updated_at = NOW()
                 WHERE id = $1 AND project_id = $2
                 RETURNING id, project_id, name, kind, backend, model, system_prompt,
                           permission_mode, image, runtime, mcp_tools, secrets, partial_messages,
-                          idle_timeout_secs, is_default, auto_launch, max_concurrent, created_at,
+                          idle_timeout_secs, is_default, auto_launch, max_concurrent,
+                          schedule_cron, schedule_prompt, last_scheduled_at, created_at,
                           updated_at
             )
             SELECT u.id, u.project_id, u.name, u.kind as "kind: ProfileKind",
@@ -997,7 +1024,8 @@ impl<'a> ProjectRepository<'a> {
                        '{}'
                    ) as "serves_states!",
                    u.partial_messages, u.idle_timeout_secs, u.is_default, u.auto_launch,
-                   u.max_concurrent, u.created_at, u.updated_at
+                   u.max_concurrent, u.schedule_cron, u.schedule_prompt, u.last_scheduled_at,
+                   u.created_at, u.updated_at
             FROM updated AS u
             "#,
             id,
@@ -1017,6 +1045,8 @@ impl<'a> ProjectRepository<'a> {
             is_default,
             update.auto_launch,
             update.max_concurrent,
+            update.schedule_cron,
+            update.schedule_prompt,
         )
         .fetch_optional(&mut *tx)
         .await

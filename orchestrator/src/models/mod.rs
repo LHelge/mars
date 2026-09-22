@@ -5,6 +5,7 @@ pub mod agent_profile;
 pub mod event;
 pub mod git;
 pub mod project;
+pub mod schedule;
 pub mod secret;
 pub mod session;
 pub mod shared_dir;
@@ -34,6 +35,7 @@ pub use project::{
     MaxConcurrentSessions, NewProject, Project, ProjectError, ProjectName, ProjectResult,
     ProjectStatus, ProjectUpdate, RemoteUrl, is_branch_name,
 };
+pub use schedule::{CRON_FIELDS, CronSchedule, ScheduleError};
 pub use secret::{
     MAX_SECRET_NAME_CHARS, MAX_SECRET_VALUE_BYTES, NewSecret, ScopeRef, Secret, SecretError,
     SecretMeta, SecretName, SecretResult, SecretScope, SecretUse, SecretUsePurpose,

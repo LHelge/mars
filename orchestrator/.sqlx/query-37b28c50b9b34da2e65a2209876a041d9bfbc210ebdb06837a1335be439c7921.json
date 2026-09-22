@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO agent_profiles (\n                id, project_id, name, kind, backend, model, system_prompt, permission_mode,\n                image, runtime, mcp_tools, secrets, partial_messages, idle_timeout_secs,\n                is_default, auto_launch, max_concurrent, created_at, updated_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,\n                    COALESCE($18::timestamptz, now()), COALESCE($18::timestamptz, now()))\n            RETURNING id, project_id, name, kind as \"kind: ProfileKind\",\n                      backend as \"backend: AgentBackend\", model, system_prompt, permission_mode,\n                      image, runtime, mcp_tools, secrets,\n                      ARRAY[]::text[] as \"serves_states!\", partial_messages, idle_timeout_secs,\n                      is_default, auto_launch, max_concurrent, created_at, updated_at\n            ",
+  "query": "\n            SELECT p.id, p.project_id, p.name, p.kind as \"kind: ProfileKind\",\n                   p.backend as \"backend: AgentBackend\", p.model, p.system_prompt,\n                   p.permission_mode, p.image, p.runtime, p.mcp_tools, p.secrets,\n                   array_remove(array_agg(ts.name ORDER BY ts.position), NULL)\n                       as \"serves_states!\",\n                   p.partial_messages, p.idle_timeout_secs, p.is_default, p.auto_launch,\n                   p.max_concurrent, p.schedule_cron, p.schedule_prompt, p.last_scheduled_at,\n                   p.created_at, p.updated_at\n            FROM agent_profiles AS p\n            LEFT JOIN profile_states AS ps ON ps.profile_id = p.id\n            LEFT JOIN task_states AS ts ON ts.id = ps.state_id\n            WHERE p.project_id = $1 AND p.auto_launch\n            GROUP BY p.id\n            ORDER BY p.created_at, p.name\n            ",
   "describe": {
     "columns": [
       {
@@ -217,6 +217,39 @@
       },
       {
         "ordinal": 18,
+        "name": "schedule_cron",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "schedule_cron"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "schedule_prompt",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "schedule_prompt"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "last_scheduled_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "agent_profiles",
+            "name": "last_scheduled_at"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -227,7 +260,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 22,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -240,43 +273,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
-        "Text",
-        {
-          "Custom": {
-            "name": "profile_kind",
-            "kind": {
-              "Enum": [
-                "conversational",
-                "ephemeral"
-              ]
-            }
-          }
-        },
-        {
-          "Custom": {
-            "name": "agent_backend",
-            "kind": {
-              "Enum": [
-                "claude"
-              ]
-            }
-          }
-        },
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "TextArray",
-        "TextArray",
-        "Bool",
-        "Int4",
-        "Bool",
-        "Bool",
-        "Int4",
-        "Timestamptz"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -298,9 +295,12 @@
       false,
       false,
       false,
+      true,
+      true,
+      true,
       false,
       false
     ]
   },
-  "hash": "3d566c6a5a100eb79d01f9ddd8476297c3f2b6bcf5388f9305519df98406eef0"
+  "hash": "37b28c50b9b34da2e65a2209876a041d9bfbc210ebdb06837a1335be439c7921"
 }

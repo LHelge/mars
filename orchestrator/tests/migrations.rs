@@ -444,6 +444,92 @@ async fn the_dispatcher_columns_carry_their_defaults_and_bounds() {
     );
 }
 
+/// The load-bearing details of the `schedule_columns` migration
+/// (`docs/data-model.md`, `agent_profiles`; ADR 0043).
+///
+/// Nothing fires yet, so nothing else would notice these going missing: the
+/// three nullable columns, the `CHECK` that keeps an expression and its prompt
+/// together whatever writes them, and the partial index the scheduler's scan
+/// will read.
+#[tokio::test]
+async fn the_schedule_columns_are_nullable_and_paired() {
+    let (_postgres, pool) = common::db::test_pool().await;
+
+    let columns: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT column_name::text, is_nullable::text, udt_name::text \
+         FROM information_schema.columns \
+         WHERE table_schema = 'public' \
+           AND table_name = 'agent_profiles' \
+           AND column_name IN ('schedule_cron', 'schedule_prompt', 'last_scheduled_at') \
+         ORDER BY column_name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the column catalog is readable");
+    assert_eq!(
+        columns,
+        vec![
+            (
+                "last_scheduled_at".to_string(),
+                "YES".to_string(),
+                "timestamptz".to_string()
+            ),
+            (
+                "schedule_cron".to_string(),
+                "YES".to_string(),
+                "text".to_string()
+            ),
+            (
+                "schedule_prompt".to_string(),
+                "YES".to_string(),
+                "text".to_string()
+            ),
+        ],
+        "the three schedule columns do not match the document"
+    );
+
+    // A schedule without its prompt is meaningless and a prompt without a
+    // schedule is unread, whatever wrote the row.
+    let checks: Vec<String> = sqlx::query_scalar(
+        "SELECT pg_get_constraintdef(c.oid) \
+         FROM pg_constraint c \
+         JOIN pg_class t ON t.oid = c.conrelid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
+         WHERE n.nspname = 'public' AND t.relname = 'agent_profiles' AND c.contype = 'c'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the constraint catalog is readable");
+    assert!(
+        checks
+            .iter()
+            .any(|def| def.contains("schedule_cron") && def.contains("schedule_prompt")),
+        "agent_profiles is missing the schedule pair CHECK: {checks:?}"
+    );
+
+    // The scheduler's scan, partial: a schedule is the exception, not the rule.
+    let (is_unique, predicate, definition): (bool, Option<String>, String) = sqlx::query_as(
+        "SELECT i.indisunique, pg_get_expr(i.indpred, i.indrelid), pg_get_indexdef(i.indexrelid) \
+         FROM pg_index i \
+         JOIN pg_class c ON c.oid = i.indexrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = 'public' AND c.relname = 'agent_profiles_schedule_idx'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("agent_profiles_schedule_idx exists");
+    assert!(!is_unique, "a project may have several scheduled profiles");
+    let predicate = predicate.expect("agent_profiles_schedule_idx must be partial");
+    assert!(
+        predicate.contains("schedule_cron"),
+        "the index must be predicated on schedule_cron, not {predicate:?}"
+    );
+    assert!(
+        definition.contains("project_id"),
+        "the index must carry the project the caps are asked about: {definition}"
+    );
+}
+
 /// The load-bearing details of the `tasks` migration (`docs/data-model.md`,
 /// "Tasks").
 ///

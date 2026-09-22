@@ -153,9 +153,15 @@ export interface ProfileFormState {
   auto_launch: boolean;
   /** Raw text of its number field, like the timeout above. */
   max_concurrent: string;
-  /** The cron expression as typed; empty is "no schedule". */
+  /**
+   * Whether the profile runs on a schedule at all: the checkbox that owns the
+   * schedule fieldset. Off, the two fields below are kept but disabled and
+   * nothing is sent; derived on load from whether the stored profile has one.
+   */
+  scheduled: boolean;
+  /** The cron expression as typed. */
   schedule_cron: string;
-  /** The prompt a scheduled run is given; empty is "no schedule". */
+  /** The prompt a scheduled run is given. */
   schedule_prompt: string;
 }
 
@@ -178,6 +184,7 @@ export function toFormState(input: ProfileInput): ProfileFormState {
     ),
     auto_launch: input.auto_launch ?? false,
     max_concurrent: String(input.max_concurrent ?? MIN_MAX_CONCURRENT),
+    scheduled: (input.schedule_cron ?? "").trim() !== "",
     schedule_cron: input.schedule_cron ?? "",
     schedule_prompt: input.schedule_prompt ?? "",
   };
@@ -192,11 +199,11 @@ export function toInput(state: ProfileFormState): ProfileInput {
   const model = state.model.trim();
   const runtime = state.runtime.trim();
   // The schedule is the auto-launch rule again: only an ephemeral profile may
-  // carry one, its controls are hidden for the other kind, so the kind — not a
-  // stale pair of boxes — decides what is sent. Both fields go on every save
-  // because `PUT` replaces the whole profile: `null` and `null` is the
-  // documented way to clear a schedule.
-  const scheduled = state.kind === "ephemeral";
+  // carry one, its controls are hidden for the other kind, so the kind — and
+  // the checkbox that owns the fieldset, not a stale pair of boxes — decides
+  // what is sent. Both fields go on every save because `PUT` replaces the
+  // whole profile: `null` and `null` is the documented way to clear a schedule.
+  const scheduled = state.kind === "ephemeral" && state.scheduled;
   const cron = state.schedule_cron.trim();
   // Whitespace alone is no prompt; what is left keeps the whitespace the user
   // wrote, as `system_prompt` does.
@@ -244,29 +251,25 @@ export const CRON_EXAMPLES: readonly { expression: string; meaning: string }[] =
 /**
  * What the schedule pair refuses locally, per field, or `null` each when it
  * does not. Nothing here parses cron: an expression's validity is the
- * server's answer and reaches the field as its 400. These are the two rules a
- * form can state before a request without claiming to know cron — the fields
- * stand or fall together (`SPEC.md`, "Agent profiles" → "Scheduled profiles").
+ * server's answer and reaches the field as its 400. This is the one rule a
+ * form can state before a request without claiming to know cron — a schedule
+ * that is switched on has both fields (`SPEC.md`, "Agent profiles" →
+ * "Scheduled profiles").
  *
- * Both blank is no schedule and no error, which is how a schedule is cleared.
+ * With the checkbox off nothing is sent, so nothing is refused, whatever the
+ * disabled boxes still hold.
  */
 export function scheduleErrors(state: ProfileFormState): {
   cron: string | null;
   prompt: string | null;
 } {
-  const cron = state.schedule_cron.trim();
-  const prompt = state.schedule_prompt.trim();
-
-  if (cron !== "" && prompt === "") {
-    return { cron: null, prompt: "Required with a cron expression." };
+  if (!state.scheduled) {
+    return { cron: null, prompt: null };
   }
-  if (cron === "" && prompt !== "") {
-    return {
-      cron: "Required with a schedule prompt; clear the prompt for no schedule.",
-      prompt: null,
-    };
-  }
-  return { cron: null, prompt: null };
+  return {
+    cron: state.schedule_cron.trim() === "" ? "Required." : null,
+    prompt: state.schedule_prompt.trim() === "" ? "Required." : null,
+  };
 }
 
 /** Which field one of the API's schedule 400s belongs to. */

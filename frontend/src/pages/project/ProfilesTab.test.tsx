@@ -203,8 +203,21 @@ describe("ProfilesTab", () => {
       "Cron expression (UTC)",
     );
     expect(cron.value).toBe("0 6 * * *");
-    const prompt = screen.getByLabelText<HTMLTextAreaElement>("Schedule prompt");
+    const prompt =
+      screen.getByLabelText<HTMLTextAreaElement>("Schedule prompt");
     expect(prompt.value).toContain("Scan the repository");
+
+    // A stored schedule arrives with its checkbox on; unticking it disables
+    // both fields without emptying them, which is how a schedule is turned off.
+    const toggle = screen.getByLabelText<HTMLInputElement>(
+      /Run this profile on a schedule/,
+    );
+    expect(toggle.checked).toBe(true);
+    expect(cron.disabled).toBe(false);
+    fireEvent.click(toggle);
+    expect(cron.disabled).toBe(true);
+    expect(prompt.disabled).toBe(true);
+    expect(cron.value).toBe("0 6 * * *");
 
     // The server's two timestamps, the local one first and the UTC instant
     // beside it — both readable without hovering anything.

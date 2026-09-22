@@ -1,10 +1,10 @@
 ---
 id: zzr7k
 title: Define and implement managed session-image updates for future launches
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-22T07:32:19.052082Z"
-updated: "2026-09-22T22:14:59.888602032Z"
+updated: "2026-09-22T22:19:56.043661221Z"
 tags:
   - deployment
   - implementation

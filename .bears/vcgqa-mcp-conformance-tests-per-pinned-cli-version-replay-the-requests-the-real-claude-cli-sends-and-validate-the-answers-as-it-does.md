@@ -1,14 +1,15 @@
 ---
 id: vcgqa
 title: "MCP conformance tests per pinned CLI version: replay the requests the real Claude CLI sends and validate the answers as it does"
-status: open
+status: done
 priority: P1
 created: "2026-09-20T23:39:04.846177870Z"
-updated: "2026-09-20T23:39:04.846177870Z"
+updated: "2026-09-22T18:13:29.209425363Z"
 tags:
   - orchestrator
   - mcp
   - testing
+attempts: 1
 ---
 
 ## Summary

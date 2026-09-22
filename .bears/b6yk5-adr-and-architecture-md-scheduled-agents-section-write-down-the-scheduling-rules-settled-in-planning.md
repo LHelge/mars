@@ -1,10 +1,10 @@
 ---
 id: b6yk5
 title: "ADR and ARCHITECTURE.md \"Scheduled agents\" section: write down the scheduling rules settled in planning"
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:24:54.983648270Z"
-updated: "2026-09-21T20:24:58.642409459Z"
+updated: "2026-09-22T07:37:05.619545551Z"
 tags:
   - docs
   - adr
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - jrgm7
 parent: tup8z
+attempts: 1
 ---
 
 ## Summary

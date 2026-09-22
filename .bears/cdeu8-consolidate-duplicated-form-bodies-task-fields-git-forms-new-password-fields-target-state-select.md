@@ -1,10 +1,10 @@
 ---
 id: cdeu8
 title: "Consolidate duplicated form bodies: task fields, git forms, new-password fields, target-state select"
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-21T10:55:43.142436051Z"
-updated: "2026-09-22T00:04:03.814490761Z"
+updated: "2026-09-22T05:18:58.035192920Z"
 tags:
   - frontend
   - technical-review

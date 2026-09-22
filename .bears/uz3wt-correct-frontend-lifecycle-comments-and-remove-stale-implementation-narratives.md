@@ -1,10 +1,10 @@
 ---
 id: uz3wt
 title: Correct frontend lifecycle comments and remove stale implementation narratives
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-21T10:44:44.930812371Z"
-updated: "2026-09-22T00:04:07.518944278Z"
+updated: "2026-09-22T05:19:00.434244994Z"
 tags:
   - frontend
   - technical-review

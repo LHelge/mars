@@ -88,7 +88,7 @@ if [ -f "$manifest" ]; then
     test "$(jq .source.sequence "$manifest")" = "$(git -C "$root" rev-list --count "$head")"
   check "compose.release.yml pins the orchestrator digest" \
     grep -q "image: $(fake mars-orchestrator)" "${work}/out/bundle/compose.release.yml"
-  for f in compose.yml compose.podman.yml scripts/verify-deployment.sh bin/check-env env.example; do
+  for f in compose.yml compose.podman.yml scripts/verify-deployment.sh bin/check-env bin/session-images env.example; do
     check "the bundle carries ${f}" test -f "${work}/out/bundle/${f}"
   done
 fi
@@ -160,6 +160,72 @@ chmod 600 "${work}/env/mars.env"
 leak=$("$checkenv" "${work}/env/mars.env" "$example" 2>&1 || true)
 # shellcheck disable=SC2016 # $1 is expanded by the inner bash, not here
 check "check-env never prints a value" bash -c '! grep -qE "fake-jwt|fake-db|ZmFrZS" <<<"$1"' _ "$leak"
+
+# --- deploy/bin/session-images ------------------------------------------
+# The engine behaviour the managed aliases rely on (ARCHITECTURE.md, "Server
+# deployment", "Session images"), on throwaway images and aliases under a
+# test prefix: a moved alias is what a new container gets, an existing
+# container keeps its image, an image named by anything else is untouched,
+# and moving the alias back is the rollback.
+if command -v podman >/dev/null 2>&1; then
+  tag="localhost/mars-release-test-$$"
+  export SESSION_IMAGES_BASE_ALIAS="${tag}-alias-base:latest" SESSION_IMAGES_DEV_ALIAS="${tag}-alias-dev:latest"
+  si="${root}/deploy/bin/session-images"
+  created=()
+  cleanup_images() {
+    podman rm -f "${created[@]}" >/dev/null 2>&1 || true
+    podman rmi -f "${tag}-v1" "${tag}-v2" "${tag}-custom" \
+      "$SESSION_IMAGES_BASE_ALIAS" "$SESSION_IMAGES_DEV_ALIAS" >/dev/null 2>&1 || true
+  }
+  mkimg() { # <name> <content>
+    mkdir -p "${work}/img-$1"
+    printf '%s\n' "$2" >"${work}/img-$1/version"
+    printf 'FROM scratch\nCOPY version /version\n' >"${work}/img-$1/Containerfile"
+    podman build -q -t "${tag}-$1" "${work}/img-$1" >/dev/null
+  }
+  id_of() { podman image inspect --format '{{.Id}}' "$1"; }
+  ctr_image() { podman inspect --format '{{.Image}}' "$1"; }
+  new_ctr() { # a container created from a name, as the launcher would
+    local c
+    c=$(podman create --entrypoint /none "$1")
+    created+=("$c")
+    echo "$c"
+  }
+  mkimg v1 one && mkimg v2 two && mkimg custom custom
+  v1=$(id_of "${tag}-v1")
+  v2=$(id_of "${tag}-v2")
+  custom=$(id_of "${tag}-custom")
+
+  expect "session-images: absent aliases read as -" "${SESSION_IMAGES_BASE_ALIAS} -" 0 \
+    bash -c "'$si' get | head -1"
+  expect "session-images: an absent image is refused and nothing moves" "" 1 \
+    "$si" set "${tag}-v1" "${tag}-missing"
+  check "session-images: the refused set left the dev alias absent" \
+    bash -c "! podman image exists '$SESSION_IMAGES_DEV_ALIAS'"
+
+  "$si" set "${tag}-v1" "${tag}-v1" >/dev/null
+  running=$(new_ctr "$SESSION_IMAGES_DEV_ALIAS")
+  pinned=$(new_ctr "${tag}-custom")
+  check "session-images: release A launches on A" test "$(ctr_image "$running")" = "$v1"
+
+  "$si" set "${tag}-v2" "${tag}-v2" >/dev/null
+  check "session-images: after the switch a new launch gets B" \
+    test "$(ctr_image "$(new_ctr "$SESSION_IMAGES_DEV_ALIAS")")" = "$v2"
+  check "session-images: a container from A keeps A" test "$(ctr_image "$running")" = "$v1"
+  check "session-images: a custom image is untouched" \
+    test "$(id_of "${tag}-custom")" = "$custom"
+  check "session-images: its container keeps it" test "$(ctr_image "$pinned")" = "$custom"
+  check "session-images: get reports B" \
+    bash -c "'$si' get | grep -q '^${SESSION_IMAGES_DEV_ALIAS} ${v2}\$'"
+
+  "$si" set "${tag}-v1" "${tag}-v1" >/dev/null
+  check "session-images: rolling back makes new launches A again" \
+    test "$(ctr_image "$(new_ctr "$SESSION_IMAGES_DEV_ALIAS")")" = "$v1"
+  cleanup_images
+  unset SESSION_IMAGES_BASE_ALIAS SESSION_IMAGES_DEV_ALIAS
+else
+  echo "skip session-images (podman not installed)"
+fi
 
 # --- validate-manifest.sh -----------------------------------------------
 expect "the example manifest is valid" "" 0 "${here}/validate-manifest.sh" "$example"

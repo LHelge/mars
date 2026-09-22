@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# Backups of a deployed Mars (README.md, "Backups and recovery";
+# ARCHITECTURE.md, "Server deployment", "Backups"). Ships in the release
+# bundle as bin/mars-backup and runs as the service user.
+#
+#   mars-backup db   [--label <label>] [--release <release-dir>]
+#       A pg_dump of the database, taken while everything runs. The updater
+#       takes one with --label pre-deploy before replacing the orchestrator.
+#   mars-backup full [--label <label>] [--release <release-dir>]
+#       A consistent restore point: stops the orchestrator (sessions keep
+#       running), dumps the database, archives the data directory and, when
+#       backups are encrypted, the environment file, then starts the
+#       orchestrator again whatever happened.
+#   mars-backup list
+#
+# Options before the command:
+#   --env <file>       the operator's environment file (default
+#                      $MARS_ENV_FILE, else /srv/mars/mars.env)
+#   --project <name>   the compose project (default mars)
+#
+# Settings, read from the environment file without sourcing it:
+#   MARS_BACKUP_DIR             where backup sets go (default: backups/ beside
+#                               the environment file)
+#   MARS_BACKUP_AGE_RECIPIENTS  an age recipients file (public keys only);
+#                               when set every file is encrypted with age and
+#                               the server cannot read its own backups
+#   MARS_BACKUP_KEEP_DB         db sets kept, pre-deploy ones included (14)
+#   MARS_BACKUP_KEEP_FULL       full sets kept (7)
+#   MARS_BACKUP_HOOK            a command run after each successful backup as
+#                               `<hook> <kind> <set-dir>`, e.g. an off-host sync
+#   MARS_BACKUP_INCLUDE_SHARED  `true` to include projects' shared directories,
+#                               which are caches, in full backups (false)
+#
+# Exit status: 0 done; 1 the backup failed and nothing was kept; 2 usage;
+# 3 the backup was kept but the hook failed. No value from the environment
+# file is ever printed.
+set -euo pipefail
+
+here=$(dirname "$(readlink -f "$0")")
+# shellcheck source-path=SCRIPTDIR source=../lib/envfile.sh
+. "${here}/../lib/envfile.sh"
+
+env_file=${MARS_ENV_FILE:-/srv/mars/mars.env}
+project=mars
+
+usage() {
+  sed -n '6,36p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+}
+die() {
+  echo "mars-backup: $*" >&2
+  exit 1
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  --env) env_file=${2:?}; shift 2 ;;
+  --project) project=${2:?}; shift 2 ;;
+  -h | --help) usage ;;
+  *) break ;;
+  esac
+done
+command=${1:-}
+[ -n "$command" ] || usage
+shift
+
+label=""
+release_dir=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  --label) label=${2:?}; shift 2 ;;
+  --release) release_dir=${2:?}; shift 2 ;;
+  *) usage ;;
+  esac
+done
+if [ -n "$label" ] && ! [[ "$label" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]; then
+  die "a label is lowercase letters, digits and dashes"
+fi
+
+[ -f "$env_file" ] || die "no environment file at ${env_file}"
+declare -A ENV_VARS=()
+ENV_BAD_LINES=()
+read_env_file "$env_file" || die "${env_file} has lines that are not KEY=VALUE: ${ENV_BAD_LINES[*]}"
+setting() { printf '%s' "${ENV_VARS[$1]:-${2:-}}"; }
+
+backup_dir=$(setting MARS_BACKUP_DIR "$(dirname "$(readlink -f "$env_file")")/backups")
+recipients=$(setting MARS_BACKUP_AGE_RECIPIENTS)
+keep_db=$(setting MARS_BACKUP_KEEP_DB 14)
+keep_full=$(setting MARS_BACKUP_KEEP_FULL 7)
+hook=$(setting MARS_BACKUP_HOOK)
+include_shared=$(setting MARS_BACKUP_INCLUDE_SHARED false)
+pg_user=$(setting POSTGRES_USER)
+pg_db=$(setting POSTGRES_DB)
+data_dir=$(setting DATA_DIR_HOST)
+
+for n in "$keep_db" "$keep_full"; do
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "MARS_BACKUP_KEEP_DB and MARS_BACKUP_KEEP_FULL are whole numbers of at least 1"
+done
+if [ -n "$recipients" ]; then
+  [ -f "$recipients" ] || die "MARS_BACKUP_AGE_RECIPIENTS does not name a file"
+  command -v age >/dev/null || die "MARS_BACKUP_AGE_RECIPIENTS is set but age is not installed"
+fi
+
+pg_container="${project}_postgres_1"
+orch_container="${project}_orchestrator_1"
+
+# --- list ---------------------------------------------------------------
+if [ "$command" = list ]; then
+  [ -d "$backup_dir" ] || exit 0
+  for set in "$backup_dir"/*/; do
+    [ -f "${set}metadata.json" ] || continue
+    jq -r --arg name "$(basename "$set")" '[$name, .kind, (.release.commit // "-")[0:12],
+      (.schema.migrations[-1] // "-"), (if .encrypted then "age" else "plain" end),
+      ([.files[].bytes] | add | tostring) + " bytes"] | @tsv' "${set}metadata.json"
+  done
+  exit 0
+fi
+case "$command" in db | full) ;; *) usage ;; esac
+
+[ -n "$pg_user" ] && [ -n "$pg_db" ] || die "POSTGRES_USER and POSTGRES_DB must be set in ${env_file}"
+if [ "$command" = full ]; then
+  [[ "$data_dir" = /* ]] && [ -d "$data_dir" ] || die "DATA_DIR_HOST must be an existing absolute directory"
+fi
+[ "$(podman inspect --format '{{.State.Running}}' "$pg_container" 2>/dev/null)" = true ] ||
+  die "${pg_container} is not running"
+
+# --- the set --------------------------------------------------------------
+created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+name="$(date -u +%Y%m%dT%H%M%SZ)-${command}${label:+-$label}"
+mkdir -p "$backup_dir"
+chmod 700 "$backup_dir"
+work="${backup_dir}/.partial-${name}"
+rm -rf "$work"
+mkdir -m 700 "$work"
+
+orchestrator_stopped=false
+finish() {
+  local status=$?
+  if [ "$orchestrator_stopped" = true ]; then
+    if podman start "$orch_container" >/dev/null; then
+      echo "started ${orch_container} again"
+    else
+      echo "mars-backup: could not start ${orch_container} again; start it by hand" >&2
+      status=1
+    fi
+  fi
+  rm -rf "$work"
+  exit "$status"
+}
+trap finish EXIT
+
+# Encrypts in place when backups are encrypted; a plaintext file never
+# survives the step that produced it.
+seal() { # <file>
+  if [ -n "$recipients" ]; then
+    age -R "$recipients" -o "$1.age" "$1"
+    rm -f "$1"
+  fi
+}
+
+if [ "$command" = full ]; then
+  if [ "$(podman inspect --format '{{.State.Running}}' "$orch_container" 2>/dev/null)" = true ]; then
+    # compose's stop_grace_period; stopping the orchestrator never stops a
+    # session container (ARCHITECTURE.md, "Restart procedure").
+    podman stop --time 30 "$orch_container" >/dev/null
+    orchestrator_stopped=true
+    stopped_at=$(date +%s)
+    echo "stopped ${orch_container}"
+  else
+    echo "${orch_container} is not running; nothing to stop"
+  fi
+fi
+
+schema=$(podman exec "$pg_container" psql -At -U "$pg_user" -d "$pg_db" -c \
+  "SELECT version FROM _sqlx_migrations WHERE success ORDER BY version" 2>/dev/null || true)
+server_version=$(podman exec "$pg_container" psql -At -U "$pg_user" -d "$pg_db" -c "SHOW server_version")
+
+# The dump is checked with pg_restore --list before it counts: a truncated
+# dump fails here, not at restore time.
+podman exec "$pg_container" pg_dump -Fc -U "$pg_user" -d "$pg_db" >"${work}/db.dump"
+podman exec -i "$pg_container" pg_restore --list <"${work}/db.dump" >/dev/null ||
+  die "the database dump does not read back"
+seal "${work}/db.dump"
+
+if [ "$command" = full ]; then
+  # podman unshare: files a session container created under a subordinate
+  # uid are readable there, and ownership is recorded as the containers see it.
+  excludes=()
+  if [ "$include_shared" != true ]; then
+    excludes+=(--exclude='./projects/*/shared/*')
+  fi
+  podman unshare tar -C "$data_dir" "${excludes[@]}" -czf - . >"${work}/data.tar.gz"
+  seal "${work}/data.tar.gz"
+  # The master keys are in the environment file. They go into a backup only
+  # encrypted; otherwise keeping them elsewhere is the operator's alone.
+  if [ -n "$recipients" ]; then
+    cp "$env_file" "${work}/mars.env"
+    seal "${work}/mars.env"
+  else
+    echo "not encrypted: mars.env and its master keys are not in this set; keep them elsewhere" >&2
+  fi
+  if [ "$orchestrator_stopped" = true ]; then
+    podman start "$orch_container" >/dev/null
+    orchestrator_stopped=false
+    echo "started ${orch_container} again after $(($(date +%s) - stopped_at))s"
+  fi
+fi
+
+release_json=null
+if [ -n "$release_dir" ] && [ -f "${release_dir}/manifest.json" ]; then
+  release_json=$(jq -c --arg dir "$(basename "$(readlink -f "$release_dir")")" \
+    '{commit: .source.commit, sequence: .source.sequence, release_dir: $dir}' "${release_dir}/manifest.json")
+fi
+files_json=$(cd "$work" && for f in *; do
+  jq -n --arg f "$f" --arg sha "$(sha256sum "$f" | cut -d' ' -f1)" --argjson bytes "$(stat -c %s "$f")" \
+    '{($f): {sha256: $sha, bytes: $bytes}}'
+done | jq -s 'add')
+jq -n \
+  --arg kind "$command" --arg label "$label" --arg created_at "$created_at" --arg project "$project" \
+  --argjson release "$release_json" \
+  --argjson migrations "$(printf '%s\n' "$schema" | grep -E '^[0-9]+$' | jq -R . | jq -s .)" \
+  --arg server_version "$server_version" \
+  --argjson encrypted "$([ -n "$recipients" ] && echo true || echo false)" \
+  --argjson files "$files_json" \
+  '{kind: $kind, label: $label, created_at: $created_at, project: $project, release: $release,
+    schema: {migrations: $migrations}, postgres: {server_version: $server_version},
+    encrypted: $encrypted, files: $files}' >"${work}/metadata.json"
+
+mv "$work" "${backup_dir}/${name}"
+chmod 700 "${backup_dir}/${name}"
+echo "backup ${backup_dir}/${name}"
+
+# Retention per kind: the oldest sets beyond the count go.
+keep=$keep_db
+[ "$command" = full ] && keep=$keep_full
+mapfile -t sets < <(find "$backup_dir" -mindepth 1 -maxdepth 1 -type d \
+  \( -name "*Z-${command}" -o -name "*Z-${command}-*" \) -printf '%f\n' | sort)
+excess=$((${#sets[@]} - keep))
+for ((i = 0; i < excess; i++)); do
+  rm -rf "${backup_dir:?}/${sets[$i]}"
+  echo "removed ${sets[$i]} (retention ${keep})"
+done
+
+if [ -n "$hook" ]; then
+  if ! "$hook" "$command" "${backup_dir}/${name}"; then
+    echo "mars-backup: the backup is kept, but the hook failed" >&2
+    trap - EXIT
+    exit 3
+  fi
+fi

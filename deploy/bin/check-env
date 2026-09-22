@@ -46,26 +46,15 @@ else
   ok "${env_file} is private to $(id -un)"
 fi
 
-# KEY=VALUE per line as compose reads it: blank lines and `#` comments are
-# skipped, one pair of matching surrounding quotes is removed. Anything else
-# is a line compose would misread, reported by number.
-declare -A vars=()
-line_no=0
-while IFS= read -r line || [ -n "$line" ]; do
-  line_no=$((line_no + 1))
-  trimmed="${line#"${line%%[![:space:]]*}"}"
-  case "$trimmed" in '' | '#'*) continue ;; esac
-  if ! [[ "$trimmed" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-    fail "line ${line_no} is not KEY=VALUE"
-    continue
-  fi
-  key=${BASH_REMATCH[1]}
-  value=${BASH_REMATCH[2]}
-  if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
-    value=${BASH_REMATCH[1]}
-  fi
-  vars[$key]=$value
-done <"$env_file"
+# shellcheck source-path=SCRIPTDIR source=../lib/envfile.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/envfile.sh"
+# shellcheck disable=SC2034 # filled by read_env_file, read through vars
+declare -A ENV_VARS=()
+ENV_BAD_LINES=()
+if ! read_env_file "$env_file"; then
+  for bad in "${ENV_BAD_LINES[@]}"; do fail "line ${bad} is not KEY=VALUE"; done
+fi
+declare -n vars=ENV_VARS
 
 set_nonempty() { [ -n "${vars[$1]:-}" ]; }
 

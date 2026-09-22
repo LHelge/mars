@@ -366,17 +366,36 @@ jobs:
           fetch-depth: 0
 
       - name: Shellcheck the release scripts
-        run: shellcheck scripts/release/*.sh
+        run: shellcheck -x scripts/release/*.sh deploy/bin/* deploy/lib/*.sh
 
       # podman-compose so the test also renders the generated release override
-      # over compose.yml and compose.podman.yml, as the server will.
+      # over compose.yml and compose.podman.yml, as the server will; rootless
+      # Podman and age for scripts/release/test-backup.sh.
       - name: Install podman-compose
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs age
           python3 -m venv "${RUNNER_TEMP}/podman-compose"
           "${RUNNER_TEMP}/podman-compose/bin/pip" install --quiet podman-compose
           echo "${RUNNER_TEMP}/podman-compose/bin" >> "$GITHUB_PATH"
 
+      # Rootless Podman keeps its runtime state here, and the backup test's
+      # `podman unshare tar` needs a sub-uid range; a hosted runner has
+      # neither until they are made (as in the images job above).
+      - name: Prepare rootless Podman
+        run: |
+          dir="/run/user/$(id -u)"
+          sudo mkdir -p "${dir}"
+          sudo chown "$(id -u):$(id -g)" "${dir}"
+          sudo chmod 0700 "${dir}"
+          echo "XDG_RUNTIME_DIR=${dir}" >> "$GITHUB_ENV"
+          if ! grep -q "^$(id -un):" /etc/subuid || ! grep -q "^$(id -un):" /etc/subgid; then
+            sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+            podman system migrate
+          fi
+
       - name: Test the release scripts
         run: scripts/release/test.sh
+
+      - name: Test the backup command
+        run: scripts/release/test-backup.sh

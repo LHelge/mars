@@ -40,10 +40,13 @@ mkdir -p "${bundle}/scripts" "${bundle}/bin"
 show compose.yml >"${bundle}/compose.yml"
 show compose.podman.yml >"${bundle}/compose.podman.yml"
 show scripts/verify-deployment.sh >"${bundle}/scripts/verify-deployment.sh"
+mkdir -p "${bundle}/lib"
+show deploy/lib/envfile.sh >"${bundle}/lib/envfile.sh"
 show deploy/bin/check-env >"${bundle}/bin/check-env"
 show deploy/bin/session-images >"${bundle}/bin/session-images"
+show deploy/bin/mars-backup >"${bundle}/bin/mars-backup"
 show .env.example >"${bundle}/env.example"
-chmod 0755 "${bundle}/scripts/verify-deployment.sh" "${bundle}/bin/check-env" "${bundle}/bin/session-images"
+chmod 0755 "${bundle}/scripts/verify-deployment.sh" "${bundle}/bin/check-env" "${bundle}/bin/session-images" "${bundle}/bin/mars-backup"
 
 # The two services the release replaces, pinned to this release's digests.
 # compose.yml's `build:` sections stay: `build: !reset null` would drop them,

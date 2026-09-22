@@ -1,10 +1,10 @@
 ---
 id: grkfj
 title: Implement deployment backups and explicit migration recovery
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-22T07:32:21.240546Z"
-updated: "2026-09-22T22:23:44.092104261Z"
+updated: "2026-09-22T22:33:52.292682844Z"
 tags:
   - deployment
   - implementation

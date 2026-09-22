@@ -56,7 +56,11 @@ test("the help page's contents and topic links move between anchored sections", 
     .getByRole("link", { name: "secrets", exact: true })
     .click();
   await expect(page).toHaveURL(/\/help#secrets$/);
-  const secrets = page.getByRole("heading", { name: "Secrets", exact: true });
+  const secrets = page.getByRole("heading", {
+    name: "Secrets",
+    exact: true,
+    level: 2,
+  });
   await expect(secrets).toBeInViewport();
   await expect(secrets).toBeFocused();
 });

@@ -36,6 +36,7 @@ A new project comes with a starter profile for each of its roles, and the projec
 - **planner** works on the `backlog`: it turns a request into tasks an implementer can pick up, and never writes code.
 - **implementer** works on `ready`: it claims a task, does the work and hands a commit over for review. This is the default profile.
 - **reviewer** works on `review`: it checks the handed-over commit, then approves it or sends it back with concrete comments.
+- **merger** works on `merge`: it merges the approved commit into the default branch and closes the task. It never pushes; merged work waits on the default branch until someone pushes it.
 
 Each one is an ordinary profile with a system prompt written for its role. That copy belongs to your project, so you can change it freely. [Agent profiles](help:profiles) covers what a profile decides, and [Task flow](help:task-flow) shows how a task moves between these roles.
 

@@ -1,10 +1,10 @@
 ---
 id: k73td
 title: "Frontend: schedule fields on the profile editor with the next run shown in local time, and schedule-launched sessions labelled"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-21T20:25:31.307977137Z"
-updated: "2026-09-21T20:25:31.307977137Z"
+updated: "2026-09-22T08:29:36.328952881Z"
 tags:
   - frontend
   - scheduler
@@ -13,6 +13,7 @@ depends_on:
   - "6f9uu"
   - nsvc5
 parent: tup8z
+attempts: 1
 ---
 
 ## Summary

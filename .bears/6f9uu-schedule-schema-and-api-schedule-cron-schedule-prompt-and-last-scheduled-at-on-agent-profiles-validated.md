@@ -1,10 +1,10 @@
 ---
 id: "6f9uu"
 title: "Schedule schema and API: schedule_cron, schedule_prompt and last_scheduled_at on agent_profiles, validated"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-21T20:25:08.694387419Z"
-updated: "2026-09-22T07:37:07.281118707Z"
+updated: "2026-09-22T08:29:35.076192150Z"
 tags:
   - orchestrator
   - scheduler

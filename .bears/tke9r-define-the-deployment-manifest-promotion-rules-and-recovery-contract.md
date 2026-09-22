@@ -1,14 +1,16 @@
 ---
 id: tke9r
 title: Define the deployment manifest, promotion rules and recovery contract
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-22T07:32:11.833493Z"
-updated: "2026-09-22T07:32:11.833493Z"
+updated: "2026-09-22T21:24:17.166847865Z"
 tags:
   - deployment
   - implementation
 parent: "2uqww"
+assignee: claude
+attempts: 1
 ---
 
 Owner: implementation.

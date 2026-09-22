@@ -244,6 +244,25 @@ Work flows through the project's task board. Search across its columns by title 
 
 Code hand-offs keep the producing session, branch, exact commit and a comment together. Opening the next session on that task defaults to the handed-over commit, so reviewers see the implementation they were asked to review. Review approval belongs to that commit; submitting a revised commit starts a new review. The task's merge action merges the approved revision, even if the original session branch has since changed.
 
+### Automatic deployments
+
+**Status: contract only.** The rules below are fixed (`ARCHITECTURE.md`, "Server deployment"; ADR 0044); the publishing workflow, the `mars-deploy` updater, its units and the installation steps are being built under Bears epic `2uqww`, and this section gains the exact commands as they land. Until then a server is installed as described above.
+
+A production server follows `main` by pulling: every push to `main` runs the full test suites on that commit in the **Release** workflow, publishes the orchestrator, nginx and both session images for `linux/amd64` to `ghcr.io/lhelge/`, and publishes a release bundle, `ghcr.io/lhelge/mars-deploy`, whose `main` tag is moved only forward and only after everything the release names exists. A user systemd timer of the service user runs `mars-deploy` every five minutes; it compares the promoted bundle with what is installed and, when it is newer and passes its checks, applies it. Nothing connects to the server from outside and nothing is built on it. `deploy/manifest.example.json` shows what a release describes.
+
+What the operator can rely on:
+
+- **An unchanged or older release does nothing.** No pull, no backup, no restart.
+- **Nothing running is touched until everything is ready.** Images are pulled and verified by digest, the configuration is rendered against your environment file and a database backup is taken first; if any of that fails the running release stays exactly as it was, and the next timer run tries again.
+- **An update restarts at most the orchestrator and nginx, and only those whose image changed.** PostgreSQL, the data directory, the networks and every running session container stay up; sessions are re-adopted by the new orchestrator ("Operating notes" — with the known limits on messages in flight during a restart).
+- **A release that fails its health checks is not retried by the timer.** If it added no database migration, the previous release is started again automatically. If it did, the old orchestrator cannot run on the migrated schema, so the new one is left in place, the timer holds, and `mars-deploy status` says manual recovery is needed.
+- **Some releases wait for you.** A release that needs operator action — a new setting, a manual step — carries a higher deploy epoch (`deploy/EPOCH`) and a note; it is held, showing the note, until you run `mars-deploy accept-epoch <n>`. A release that names a required variable missing from your environment file is held with that variable's name. Values are never printed.
+- **PostgreSQL is yours.** Its image is set in your environment file and never changed by an update; a major version upgrade is a separate manual procedure.
+
+Operator controls: `mars-deploy status` (installed, promoted and last attempted release, and why the last run did or did not deploy), `pause` and `resume` (the timer does nothing while paused), `deploy <commit|digest>` (pins that release and applies it; the timer then stays on it), `unpin`, `retry` (lets the timer try a release that failed once more), and `rollback` (starts the previous release).
+
+**Rollback is not restore.** `rollback` and deploying an older pin are allowed only to a release with exactly the current set of database migrations, and lose nothing. Going back past a migration means restoring the backup taken before it, together with its data directory: every write since that backup is lost, it is always done by hand with updates paused, and it is followed by deploying the release recorded in the backup. Updates never run a down-migration and never restore a database on their own.
+
 ### Operating notes
 
 - **Known v1 vulnerability:** git commands run by the orchestrator against an agent-controlled checkout can execute helpers configured by that agent, with the orchestrator's access to secrets, project data and the engine socket. This risk is explicitly accepted for v1; isolating those git operations is deferred. See [ADR 0019](docs/decisions/0019-defer-isolation-of-git-checkout-operations.md). Session containers are not a complete containment guarantee while this remains unresolved.

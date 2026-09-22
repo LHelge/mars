@@ -49,3 +49,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0041](0041-tracker-row-locks-are-no-key-update.md) | Tracker row locks are `FOR NO KEY UPDATE`, so they never block a foreign-key check | accepted |
 | [0042](0042-bound-unattended-launches.md) | Unattended launches are capped, pausable per project, and recorded by launch source | accepted |
 | [0043](0043-schedule-agents-on-utc-cron.md) | Scheduled agents fire on a 5-field UTC cron, skip what they miss, and carry their own prompt | accepted |
+| [0044](0044-pull-deploy-promoted-bundle-on-a-user-timer.md) | The server pulls a promoted release bundle from GHCR on a user timer | accepted |

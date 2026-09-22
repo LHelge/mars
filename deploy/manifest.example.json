@@ -1,0 +1,51 @@
+{
+  "format": 1,
+  "epoch": 1,
+  "epoch_note": "",
+  "source": {
+    "repository": "LHelge/mars",
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "sequence": 1234,
+    "run_id": 1000000001,
+    "run_attempt": 1,
+    "published_at": "2026-09-22T12:00:00Z"
+  },
+  "platform": "linux/amd64",
+  "images": {
+    "orchestrator": "ghcr.io/lhelge/mars-orchestrator@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "nginx": "ghcr.io/lhelge/mars-nginx@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "session_claude": "ghcr.io/lhelge/mars-session-claude@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "session_claude_dev": "ghcr.io/lhelge/mars-session-claude-dev@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "schema": {
+    "migrations": [
+      "20260917065232",
+      "20260917065233",
+      "20260917070032",
+      "20260917070033",
+      "20260917070714",
+      "20260917071417",
+      "20260921055105",
+      "20260921055132",
+      "20260921205838",
+      "20260922081500"
+    ]
+  },
+  "config": {
+    "required": [
+      "PUBLIC_URL",
+      "JWT_SECRET",
+      "POSTGRES_USER",
+      "POSTGRES_PASSWORD",
+      "POSTGRES_DB",
+      "ENGINE_SOCKET_HOST",
+      "DATA_DIR_HOST",
+      "SECRETS_MASTER_KEYS|SECRETS_MASTER_KEY_FILE",
+      "GIT_BOT_NAME",
+      "GIT_BOT_EMAIL"
+    ]
+  },
+  "postgres": {
+    "major": 18
+  }
+}

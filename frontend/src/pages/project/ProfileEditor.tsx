@@ -10,6 +10,12 @@
 // an agent's backend and permission mode are things an operator wants to see:
 // `backend` is `claude` and `permission_mode` is `bypass`.
 //
+// Two fieldsets exist only while the form's kind is `ephemeral`, because only
+// that kind can be launched with nobody behind it: unattended launches and the
+// schedule. Neither carries a rule of its own — the cron expression is judged
+// by the server alone (ADR 0043) and the credential answer is the one the
+// secrets notice already read.
+//
 // Layout: settings on the left, the system prompt on the right, because the
 // prompt is the field people actually write in and it wants the height. The
 // three grants below the prompt — git tools, served states, secrets — are

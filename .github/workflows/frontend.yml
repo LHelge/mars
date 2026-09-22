@@ -1,9 +1,10 @@
 name: Frontend CI
 
 on:
-  push:
-    branches: [main]
-    paths: ["frontend/**", ".github/workflows/frontend.yml"]
+  # main is tested by the Release workflow, which calls this one on every
+  # push to main without a path filter (ARCHITECTURE.md, "Server
+  # deployment", "Promotion"); pull requests keep the path filter.
+  workflow_call:
   pull_request:
     paths: ["frontend/**", ".github/workflows/frontend.yml"]
 

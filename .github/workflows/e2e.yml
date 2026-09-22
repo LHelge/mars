@@ -10,9 +10,10 @@
 name: E2E
 
 on:
-  push:
-    branches: [main]
-    paths: ["orchestrator/**", "frontend/**", "images/**", ".github/workflows/e2e.yml"]
+  # main is tested by the Release workflow, which calls this one on every
+  # push to main without a path filter (ARCHITECTURE.md, "Server
+  # deployment", "Promotion"); pull requests keep the path filter.
+  workflow_call:
   pull_request:
     paths: ["orchestrator/**", "frontend/**", "images/**", ".github/workflows/e2e.yml"]
   workflow_dispatch:

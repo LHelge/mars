@@ -1,0 +1,368 @@
+# Release: test the exact main commit, publish it to GHCR and promote it
+# (ARCHITECTURE.md, "Server deployment"; ADR 0044).
+#
+# Every push to main runs every suite on that commit, unconditionally: the
+# suite workflows keep their path filters for pull requests, where they save
+# time, and are called from here without one, because a skipped suite would be
+# indistinguishable from an untested change. `gate` passes only when every
+# suite's result is `success` — skipped, cancelled and failed are all failure.
+# Only then does `publish` push the five images and the bundle, and only after
+# all of them exist does `promote` move `mars-deploy:main`, and only forwards
+# along main (scripts/release/promote-decision.sh).
+#
+# Nothing here runs for a pull request or a fork: the only trigger is a push
+# to main, and GITHUB_TOKEN gets `packages: write` in the two jobs that push
+# and nowhere else.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# One release at a time. A push that arrives while one runs waits; a third
+# replaces the second in the queue, so the newest commit is always the one
+# that runs next. Not cancel-in-progress: a finished run for an older commit
+# is still worth publishing if the newer one fails its suites.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io/lhelge
+
+jobs:
+  orchestrator:
+    uses: ./.github/workflows/orchestrator.yml
+  frontend:
+    uses: ./.github/workflows/frontend.yml
+  engine:
+    uses: ./.github/workflows/engine.yml
+  images:
+    uses: ./.github/workflows/images.yml
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+  e2e:
+    uses: ./.github/workflows/e2e.yml
+
+  gate:
+    name: Every suite passed on this commit
+    needs: [orchestrator, frontend, engine, images, deploy, e2e]
+    # Runs when a suite failed or was skipped, so the failure is stated here
+    # rather than left as a silently skipped publish.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check every suite's result
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if ! echo "$NEEDS" | jq -e 'length == 6 and all(.[]; .result == "success")' >/dev/null; then
+            echo "::error::not every suite succeeded on ${GITHUB_SHA}; nothing is published"
+            exit 1
+          fi
+
+  publish:
+    name: Publish the images and the bundle
+    needs: gate
+    runs-on: ubuntu-latest
+    # The dev session image and a cold orchestrator release build dominate.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      bundle: ${{ steps.bundle.outputs.digest }}
+    steps:
+      # Full history: the manifest's sequence is the commit count, and the
+      # input keys and the bundle read files from the commit with git.
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # An image whose build inputs are unchanged since an earlier release is
+      # reused, not rebuilt (ARCHITECTURE.md, "Server deployment",
+      # "Artifacts"): each build is also tagged `inputs-<key>`, and a later
+      # commit with the same key finds it there. A not-found tag means build;
+      # any other registry error fails the job rather than being read as one.
+      - name: Look up reusable images
+        id: reuse
+        run: |
+          lookup() {
+            local ref=$1 out
+            if out=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' 2>&1); then
+              jq -r .digest <<<"$out"
+            elif grep -qi 'not found' <<<"$out"; then
+              echo ""
+            else
+              echo "::error::looking up ${ref}: ${out}" >&2
+              return 1
+            fi
+          }
+          for image in orchestrator nginx session-claude; do
+            key=$(scripts/release/input-key.sh "$image")
+            echo "${image//-/_}_key=${key}" >> "$GITHUB_OUTPUT"
+            # Assigned first: a failing lookup inside the echo would not fail the step.
+            digest=$(lookup "${REGISTRY}/mars-${image}:inputs-${key}")
+            echo "${image//-/_}=${digest}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Build the orchestrator image
+        if: steps.reuse.outputs.orchestrator == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: orchestrator
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ env.REGISTRY }}/mars-orchestrator:sha-${{ github.sha }}
+            ${{ env.REGISTRY }}/mars-orchestrator:inputs-${{ steps.reuse.outputs.orchestrator_key }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=orchestrator
+          cache-to: type=gha,mode=max,scope=orchestrator
+
+      - name: Build the nginx image
+        if: steps.reuse.outputs.nginx == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: nginx/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ env.REGISTRY }}/mars-nginx:sha-${{ github.sha }}
+            ${{ env.REGISTRY }}/mars-nginx:inputs-${{ steps.reuse.outputs.nginx_key }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=nginx
+          cache-to: type=gha,mode=max,scope=nginx
+
+      - name: Build the claude session image
+        if: steps.reuse.outputs.session_claude == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: images/claude
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ env.REGISTRY }}/mars-session-claude:sha-${{ github.sha }}
+            ${{ env.REGISTRY }}/mars-session-claude:inputs-${{ steps.reuse.outputs.session_claude_key }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=session-claude
+          cache-to: type=gha,mode=max,scope=session-claude
+
+      # A reused image gets this commit's `sha-` tag too, so every release's
+      # images carry its tag for people and for retention. The digest
+      # recorded is read back from that tag, so it is what the registry
+      # serves under it whether the image was built or reused.
+      - name: Record the orchestrator, nginx and claude digests
+        id: digests
+        env:
+          REUSE: ${{ toJSON(steps.reuse.outputs) }}
+        run: |
+          for image in orchestrator nginx session-claude; do
+            var=${image//-/_}
+            reused=$(jq -r --arg k "$var" '.[$k] // ""' <<<"$REUSE")
+            if [ -n "$reused" ]; then
+              echo "reusing mars-${image}@${reused}"
+              docker buildx imagetools create -t "${REGISTRY}/mars-${image}:sha-${GITHUB_SHA}" \
+                "${REGISTRY}/mars-${image}@${reused}"
+            fi
+            digest=$(docker buildx imagetools inspect "${REGISTRY}/mars-${image}:sha-${GITHUB_SHA}" \
+              --format '{{json .Manifest}}' | jq -r .digest)
+            echo "${var}=${REGISTRY}/mars-${image}@${digest}" >> "$GITHUB_OUTPUT"
+          done
+
+      # The dev image is built FROM this release's base by digest, so its key
+      # includes that digest: a new base is a new dev image.
+      - name: Look up a reusable dev session image
+        id: reuse_dev
+        env:
+          BASE: ${{ steps.digests.outputs.session_claude }}
+        run: |
+          key=$(scripts/release/input-key.sh session-claude-dev "$BASE")
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          ref="${REGISTRY}/mars-session-claude-dev:inputs-${key}"
+          if out=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' 2>&1); then
+            echo "digest=$(jq -r .digest <<<"$out")" >> "$GITHUB_OUTPUT"
+          elif grep -qi 'not found' <<<"$out"; then
+            echo "digest=" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::looking up ${ref}: ${out}"
+            exit 1
+          fi
+
+      - name: Build the dev session image
+        if: steps.reuse_dev.outputs.digest == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: images/claude-dev
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          build-args: BASE_IMAGE=${{ steps.digests.outputs.session_claude }}
+          tags: |
+            ${{ env.REGISTRY }}/mars-session-claude-dev:sha-${{ github.sha }}
+            ${{ env.REGISTRY }}/mars-session-claude-dev:inputs-${{ steps.reuse_dev.outputs.key }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=session-claude-dev
+          cache-to: type=gha,mode=max,scope=session-claude-dev
+
+      - name: Record the dev session image digest
+        id: dev
+        env:
+          REUSED: ${{ steps.reuse_dev.outputs.digest }}
+        run: |
+          ref="${REGISTRY}/mars-session-claude-dev"
+          if [ -n "$REUSED" ]; then
+            echo "reusing mars-session-claude-dev@${REUSED}"
+            docker buildx imagetools create -t "${ref}:sha-${GITHUB_SHA}" "${ref}@${REUSED}"
+          fi
+          digest=$(docker buildx imagetools inspect "${ref}:sha-${GITHUB_SHA}" \
+            --format '{{json .Manifest}}' | jq -r .digest)
+          echo "ref=${ref}@${digest}" >> "$GITHUB_OUTPUT"
+
+      # The manifest is written by jq and validated before this succeeds.
+      - name: Assemble the bundle
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          IMAGE_ORCHESTRATOR: ${{ steps.digests.outputs.orchestrator }}
+          IMAGE_NGINX: ${{ steps.digests.outputs.nginx }}
+          IMAGE_SESSION_CLAUDE: ${{ steps.digests.outputs.session_claude }}
+          IMAGE_SESSION_CLAUDE_DEV: ${{ steps.dev.outputs.ref }}
+        run: |
+          scripts/release/make-bundle.sh "${RUNNER_TEMP}/release"
+          cat "${RUNNER_TEMP}/release/bundle/manifest.json"
+
+      - name: Publish the bundle
+        id: bundle_push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ runner.temp }}/release
+          file: ${{ runner.temp }}/release/Containerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.REGISTRY }}/mars-deploy:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Record the bundle digest
+        id: bundle
+        env:
+          DIGEST: ${{ steps.bundle_push.outputs.digest }}
+        run: |
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::the bundle push reported no digest (${DIGEST})"
+            exit 1
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "published ${REGISTRY}/mars-deploy@${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    name: Promote the bundle
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Promotions are serialised on their own as well: the read of the
+    # promoted manifest, the decision and the tag move happen inside one job
+    # that no other promotion can interleave with.
+    concurrency:
+      group: promote-main
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only a not-found tag means "nothing promoted yet"; any other failure
+      # to read it fails the job, because promoting on a misread would be
+      # the one way to move main backwards.
+      - name: Read the promoted release
+        id: promoted
+        run: |
+          main="${REGISTRY}/mars-deploy:main"
+          if ! out=$(docker buildx imagetools inspect "$main" 2>&1); then
+            if grep -qi 'not found' <<<"$out"; then
+              echo "nothing is promoted yet"
+              echo "commit=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::reading ${main}: ${out}"
+            exit 1
+          fi
+          docker pull --quiet "$main"
+          container=$(docker create --entrypoint /none "$main")
+          docker cp "${container}:/bundle/manifest.json" "${RUNNER_TEMP}/promoted.json"
+          docker rm "$container" >/dev/null
+          commit=$(jq -r '.source.commit' "${RUNNER_TEMP}/promoted.json")
+          echo "promoted: ${commit}"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+
+      - name: Move main forwards
+        env:
+          PROMOTED: ${{ steps.promoted.outputs.commit }}
+          BUNDLE: ${{ needs.publish.outputs.bundle }}
+        run: |
+          decision=$(scripts/release/promote-decision.sh "$PROMOTED" "$GITHUB_SHA")
+          case "$decision" in
+          promote)
+            docker buildx imagetools create -t "${REGISTRY}/mars-deploy:main" \
+              "${REGISTRY}/mars-deploy@${BUNDLE}"
+            echo "promoted ${GITHUB_SHA} (${BUNDLE})" >> "$GITHUB_STEP_SUMMARY"
+            ;;
+          same)
+            echo "${GITHUB_SHA} is already promoted" >> "$GITHUB_STEP_SUMMARY"
+            ;;
+          older)
+            echo "::notice::${GITHUB_SHA} is older than the promoted ${PROMOTED}; main stays where it is"
+            echo "not promoted: ${PROMOTED} is newer" >> "$GITHUB_STEP_SUMMARY"
+            ;;
+          esac

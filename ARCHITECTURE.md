@@ -522,7 +522,7 @@ Everything is published to GHCR under `ghcr.io/lhelge/`, for `linux/amd64` only.
 | `mars-session-claude-dev` | `images/claude-dev`, `BASE_IMAGE` set to the digest of this release's `mars-session-claude` | `sha-<commit>` |
 | `mars-deploy` | the bundle below, `FROM scratch` | `sha-<commit>`; the promoted one also `main` |
 
-`<commit>` is the full 40-hex id. Tags are for people and for retention; **everything that consumes a release names images by digest** (`ghcr.io/lhelge/mars-orchestrator@sha256:…`), so a moved or deleted tag cannot change what a release is. Publishing may reuse an existing image instead of rebuilding when that image's build inputs — the git tree ids of its context directories and Dockerfile — are unchanged; it then records the reused digest, which is what lets a commit that touches only documentation deploy without replacing a container. The stub image is a test fixture and is never published.
+`<commit>` is the full 40-hex id. Tags are for people and for retention; **everything that consumes a release names images by digest** (`ghcr.io/lhelge/mars-orchestrator@sha256:…`), so a moved or deleted tag cannot change what a release is. Publishing reuses an existing image instead of rebuilding when that image's build inputs are unchanged: every build is also tagged `inputs-<key>`, where the key (`scripts/release/input-key.sh`) hashes the git tree ids of what the build reads — `orchestrator/`; `frontend/`, `nginx/` and `.dockerignore`; `images/claude/`; `images/claude-dev/` plus the digest of the base it is built on — and a later commit whose key finds that tag records the same digest under its own `sha-` tag. That is what lets a commit that touches only documentation deploy without replacing a container. The key covers the repository only, so a reused image keeps the upstream base image it was first built on until one of its own inputs changes. The stub image is a test fixture and is never published.
 
 **The bundle.** `mars-deploy` is a single-layer image carrying files only, under `/bundle/`:
 
@@ -531,23 +531,25 @@ Everything is published to GHCR under `ghcr.io/lhelge/`, for `linux/amd64` only.
 ├── manifest.json          the release, below
 ├── compose.yml            the repository's, unchanged
 ├── compose.podman.yml     the repository's, unchanged
-├── compose.release.yml    generated: `image:` of orchestrator and nginx set to this release's digests, no `build:`
+├── compose.release.yml    generated: `image:` of orchestrator and nginx set to this release's digests
 ├── bin/mars-deploy        the updater of this release
 ├── systemd/               the user units of this release
 └── scripts/verify-deployment.sh
 ```
 
-It is never run. The updater extracts it with `podman create --entrypoint /none` (a `FROM scratch` image has no command, and `create` does not look for one), `podman cp <container>:/bundle`, and `podman rm`. An installed bundle lives in its own directory named by the bundle's digest and is never modified afterwards. `deploy/manifest.example.json` is a complete example with fake values.
+`scripts/release/make-bundle.sh` assembles it from the commit itself (`git show`, never the working tree); `bin/` and `systemd/` join it with the updater and unit tasks of epic `2uqww`. `compose.yml`'s `build:` sections are left in place, because podman-compose 1.6.0 crashes on `build: !reset null`: compose starts an image that is present without building, the updater pulls every image by digest before `up`, and the bundle carries no build context, so a missing image fails with `Dockerfile not found` rather than building on the server.
+
+The bundle is never run. The updater extracts it with `podman create --entrypoint /none` (a `FROM scratch` image has no command, and `create` does not look for one), `podman cp <container>:/bundle`, and `podman rm`. An installed bundle lives in its own directory named by the bundle's digest and is never modified afterwards. `deploy/manifest.example.json` is a complete example with fake values.
 
 ### The manifest
 
-`manifest.json` is JSON and is read with `jq` only: nothing in it is ever sourced, `eval`ed or interpolated into a shell command line unquoted, and every value is checked against the pattern below before use. An unknown field is ignored; a missing or malformed required one refuses the candidate.
+`manifest.json` is JSON and is read with `jq` only (`scripts/release/validate-manifest.sh` is the check, used by CI after writing it and available to the updater): nothing in it is ever sourced, `eval`ed or interpolated into a shell command line unquoted, and every value is checked against the pattern below before use. An unknown field is ignored; a missing or malformed required one refuses the candidate.
 
 | Field | Pattern / meaning |
 | --- | --- |
 | `format` | Integer, `1`. The manifest format this bundle's updater writes and reads. |
 | `epoch` | Integer ≥ 1, the content of `deploy/EPOCH` at `source.commit`. See "Candidates". |
-| `epoch_note` | String: what the operator has to do when this epoch is new; empty when there is nothing. |
+| `epoch_note` | String: what the operator has to do when this epoch is new, from `deploy/EPOCH_NOTE`; empty when that file is absent. |
 | `source.repository` | `LHelge/mars`. |
 | `source.commit` | 40 lowercase hex. |
 | `source.sequence` | Integer, `git rev-list --count <commit>`. `main` is linear (rebase only, no merge commits), so a descendant always has a higher sequence; this is how the server orders releases without a git history of its own. |
@@ -556,7 +558,7 @@ It is never run. The updater extracts it with `podman create --entrypoint /none`
 | `platform` | `linux/amd64`. The updater refuses a platform that is not the host's. |
 | `images.orchestrator`, `images.nginx`, `images.session_claude`, `images.session_claude_dev` | `ghcr.io/lhelge/<name>@sha256:<64 hex>`. |
 | `schema.migrations` | Array of every migration version under `orchestrator/migrations/`, ascending, as strings of 14 digits. |
-| `config.required` | Array of environment variable names (`^[A-Z][A-Z0-9_]*$`) the release refuses to start without; names only, never values. A pair where one of two will do, such as `SECRETS_MASTER_KEYS` and `SECRETS_MASTER_KEY_FILE`, is written `A|B`. |
+| `config.required` | Array of environment variable names (`^[A-Z][A-Z0-9_]*$`) the release refuses to start without, from `deploy/required-config`; names only, never values. A pair where one of two will do, such as `SECRETS_MASTER_KEYS` and `SECRETS_MASTER_KEY_FILE`, is written `A|B`. |
 | `postgres.major` | Integer, the PostgreSQL major version the release is tested against (`18`). |
 
 ### Promotion

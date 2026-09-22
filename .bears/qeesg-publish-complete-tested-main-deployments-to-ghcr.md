@@ -1,16 +1,18 @@
 ---
 id: qeesg
 title: Publish complete, tested main deployments to GHCR
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-22T07:32:14.721594Z"
-updated: "2026-09-22T07:32:14.721594Z"
+updated: "2026-09-22T21:38:50.478024828Z"
 tags:
   - deployment
   - implementation
 depends_on:
   - tke9r
 parent: "2uqww"
+assignee: claude
+attempts: 1
 ---
 
 Owner: implementation.

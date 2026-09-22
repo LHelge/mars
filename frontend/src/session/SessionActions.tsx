@@ -24,6 +24,7 @@ import { useNavigate } from "react-router";
 import { Alert } from "../components/Alert";
 import { ConfirmPanel } from "../components/ConfirmPanel";
 import { SubmitButton } from "../components/SubmitButton";
+import { SYNC_TITLE } from "../components/git/syncHint";
 import { errorMessage, logUnexpected } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import { deleteSession, endSession, retrySession } from "../services/sessions";
@@ -168,6 +169,7 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
             type="button"
             variant="ghost"
             loading={sync.isPending}
+            title={SYNC_TITLE}
             onClick={() => {
               begin();
               sync.mutate();

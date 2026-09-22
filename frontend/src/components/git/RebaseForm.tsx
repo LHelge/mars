@@ -12,6 +12,7 @@ import { shortSha } from "../../utils/format";
 import { Alert } from "../Alert";
 import { FieldShell } from "../FieldShell";
 import { FIELD } from "../fieldStyles";
+import { HelpLink } from "../HelpLink";
 import { SubmitButton } from "../SubmitButton";
 import { chosenOr, refsOfKind, useGitAction, useReportBusy } from "./formState";
 import type { ReportBusy } from "./formState";
@@ -21,7 +22,7 @@ import { RefOptions } from "./RefOptions";
 
 /** `ARCHITECTURE.md`, "Git model": a dirty work tree is left for the agent. */
 const WORK_TREE_HINT =
-  "The session's checkout is reset onto the new commits only while it is clean; otherwise the session's git event asks for reconciliation.";
+  "A running session's checkout follows the rebase only if it has no uncommitted changes; otherwise the session's git event reports that it needs reconciling.";
 
 export interface RebaseFormProps {
   projectId: string;
@@ -102,7 +103,9 @@ export function RebaseForm({
         </FieldShell>
       </div>
 
-      <p className="text-console-muted text-xs">{WORK_TREE_HINT}</p>
+      <p className="text-console-muted text-xs">
+        {WORK_TREE_HINT} <HelpLink topic="branches" />
+      </p>
 
       <div className="flex items-center gap-3">
         <SubmitButton

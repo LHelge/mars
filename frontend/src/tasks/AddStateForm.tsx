@@ -88,12 +88,16 @@ export function AddStateForm({
             setNameError(null);
           }}
           error={nameError ?? undefined}
-          hint="What agents and the board call this column."
+          hint="Lowercase letters, digits, _ and -, up to 32, starting with a letter or digit. Agents and the board call the column by it."
           autoComplete="off"
           required
         />
 
-        <FieldShell label="Kind" name="task-state-kind" hint={KIND_MEANING[kind]}>
+        <FieldShell
+          label="Kind"
+          name="task-state-kind"
+          hint={`${KIND_MEANING[kind]}. Fixed once the state exists.`}
+        >
           {(control) => (
             <select
               {...control}

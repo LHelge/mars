@@ -24,6 +24,14 @@ import { shortSha } from "../utils/format";
 /** The commit id the API accepts: a full, lowercase, hexadecimal object id. */
 export const COMMIT_RULE = /^[0-9a-f]{40}$/;
 
+/**
+ * What the source picker says about publication (`ARCHITECTURE.md`, "Task
+ * tracker", "Code hand-offs"): the orchestrator syncs the branch itself, and
+ * never commits on the agent's behalf.
+ */
+export const SOURCE_HINT =
+  "Publishing syncs this session's branch first. Only committed work is included; uncommitted changes in its checkout are not.";
+
 /** What the commit field says about itself, before anything is typed into it. */
 export const COMMIT_HINT =
   "Full 40-character commit id; the session branch tip must equal it";

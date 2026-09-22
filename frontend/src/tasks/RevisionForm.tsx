@@ -29,6 +29,7 @@ import type { TaskDetail } from "../types";
 import { shortId } from "../utils/format";
 import {
   COMMIT_HINT,
+  SOURCE_HINT,
   commitIdError,
   defaultSourceSession,
   orderSessionsForPicker,
@@ -117,7 +118,11 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
         <Alert kind="error">Could not load the project&rsquo;s sessions.</Alert>
       )}
 
-      <FieldShell label="Source session" name="handoff-source">
+      <FieldShell
+        label="Source session"
+        name="handoff-source"
+        hint={SOURCE_HINT}
+      >
         {(control) => (
           <select
             {...control}

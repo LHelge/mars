@@ -5,11 +5,15 @@
 // from `TaskDetail`. It is a dense grid in the console's monospace, the way
 // the rest of the application writes ids and numbers, and a row that has
 // nothing to say — no lease, no parent, no labels — is not rendered at all.
+// Its one read is the project, for the `max_attempts` the attempt count is
+// shown against; the project page has it cached already.
 
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 
 import { Icon, ICON_CLASS } from "../components/icons";
+import { projectQueries } from "../services/queryOptions";
 import type { TaskDetail as TaskDetailData } from "../types";
 import { formatDateTime, formatRelative, shortId } from "../utils/format";
 import { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
@@ -27,6 +31,10 @@ export function TaskMeta({ projectId, task }: TaskMetaProps) {
     task.parent_id === null ? selectNothing : selectTaskById(task.parent_id),
   );
   const assignee = useUsername(task.assignee_user_id);
+  // The project page has already read the project, so this is the cache's
+  // answer, not a request of the drawer's own.
+  const project = useQuery(projectQueries.detail(projectId));
+  const maxAttempts = project.data?.max_attempts;
 
   return (
     <div className="space-y-2">
@@ -79,11 +87,13 @@ export function TaskMeta({ projectId, task }: TaskMetaProps) {
 
         {task.attempts > 1 && (
           <Row label="Attempts">
-            <span
-              className="text-console-text font-mono text-xs"
-              title="Sessions that have picked this task up"
-            >
-              {task.attempts}
+            <span className="text-console-text font-mono text-xs">
+              {maxAttempts === undefined
+                ? task.attempts
+                : `${String(task.attempts)}/${String(maxAttempts)}`}
+            </span>
+            <span className="text-console-muted ml-2 text-xs">
+              {attemptsNote(maxAttempts)}
             </span>
           </Row>
         )}
@@ -170,6 +180,17 @@ function Stamp({ iso }: { iso: string }) {
       {formatRelative(iso)}
     </time>
   );
+}
+
+/**
+ * What the attempt count means (`SPEC.md`, "Tasks"): claims since the task
+ * last changed state, and the count at which an agent's or the reaper's
+ * release sends it to the human state instead of back into its queue.
+ */
+function attemptsNote(maxAttempts: number | undefined): string {
+  return maxAttempts === undefined
+    ? "claims in this state"
+    : `claims in this state; a release at ${String(maxAttempts)} escalates`;
 }
 
 /** No parent, no lookup: a selector that subscribes to nothing that changes. */

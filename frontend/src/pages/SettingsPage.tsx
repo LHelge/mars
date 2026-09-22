@@ -141,7 +141,7 @@ export function SettingsPage() {
         <section className="space-y-3">
           <SectionHeader
             title="Notifications"
-            description="Escalation mail is the only mail Mars sends you."
+            description="When an agent escalates a task, or a release runs out of attempts, Mars emails the task's assignee, or every administrator when it has none. A person moving a task to the human state sends no email."
           />
 
           {preference.isError && (

@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { INVITE_DELIVERY } from "../components/admin/inviteDelivery";
 import { ApiError } from "../services/apiClient";
 import { clearAuth, installSession } from "../services/auth";
 import {
@@ -336,7 +337,7 @@ describe("AdminPage", () => {
 
     expect(
       await screen.findByText(
-        "Invitation sent to newbie@example.invalid. Without email configured, the link is in the orchestrator log.",
+        `Invitation created for newbie@example.invalid. ${INVITE_DELIVERY}`,
       ),
     ).toBeDefined();
 
@@ -398,7 +399,9 @@ describe("AdminPage", () => {
     await waitFor(() => {
       expect(vi.mocked(resendInvite)).toHaveBeenCalledWith(INVITE_ID);
     });
-    expect(await screen.findByText("Invitation re-sent")).toBeDefined();
+    expect(
+      await screen.findByText(/^Invitation re-sent with a new link/),
+    ).toBeDefined();
   });
 
   it("marks an invitation that has already expired", async () => {

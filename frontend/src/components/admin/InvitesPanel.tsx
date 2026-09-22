@@ -3,9 +3,10 @@
 // link is delivered by Resend or written to the orchestrator log).
 //
 // The invitation token is never part of any response (`SPEC.md`, "Users
-// (`/api/users`)"), so it appears nowhere on this page. The success message
-// says where the link is when no email is configured, which is the whole of
-// ADR 0026 from an operator's side.
+// (`/api/users`)"), so it appears nowhere on this page. The description and
+// the success message say where the link goes in either case — the page
+// cannot tell whether email is configured — which is the whole of ADR 0026
+// from an operator's side.
 //
 // This panel owns the invitation form and nothing else: resending and revoking
 // are `InviteRow`'s, one observer and one answer line per row, so the panel's
@@ -34,6 +35,7 @@ import { errorMessage } from "../../services/errorMessage";
 import { TableHead } from "../TableHead";
 import { SCROLLER, TABLE } from "../tableStyles";
 import { INVITE_COLUMNS } from "./columns";
+import { INVITE_DELIVERY } from "./inviteDelivery";
 import { InviteRow } from "./InviteRow";
 
 const DUPLICATE = "That email already has an account or an open invitation.";
@@ -112,7 +114,7 @@ export function InvitesPanel() {
     <section className="space-y-3">
       <SectionHeader
         title="Invitations"
-        description="An invitation link is good for 7 days. Revoking one takes it out of use immediately."
+        description={`An invitation link is good for 7 days. ${INVITE_DELIVERY} Revoking one takes it out of use immediately.`}
       />
 
       <form
@@ -156,7 +158,7 @@ export function InvitesPanel() {
       {error !== null && <Alert kind="error">{error}</Alert>}
       {succeeded && sentTo !== null && (
         <Alert kind="success">
-          {`Invitation sent to ${sentTo}. Without email configured, the link is in the orchestrator log.`}
+          {`Invitation created for ${sentTo}. ${INVITE_DELIVERY}`}
         </Alert>
       )}
 

@@ -15,6 +15,7 @@ import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 import { EmptyState } from "../components/EmptyState";
+import type { HelpTopic } from "../help/topics";
 import { LoadingState } from "../components/LoadingState";
 import { PageLayout } from "../components/PageLayout";
 import { QueryErrorAlert } from "../components/QueryErrorAlert";
@@ -91,6 +92,9 @@ interface SectionProps {
   rowCount: number;
   emptyTitle: string;
   emptyDescription?: string;
+  /** A line under the title, for a section whose rows ask something of you. */
+  description?: string;
+  help?: HelpTopic;
   children: ReactNode;
 }
 
@@ -107,11 +111,13 @@ function Section({
   rowCount,
   emptyTitle,
   emptyDescription,
+  description,
+  help,
   children,
 }: SectionProps) {
   return (
     <section className="space-y-3">
-      <SectionHeader title={title} />
+      <SectionHeader title={title} description={description} help={help} />
 
       {query.isError && (
         <QueryErrorAlert
@@ -356,6 +362,8 @@ export function DashboardPage() {
           rowCount={taskRows.length}
           emptyTitle="Nothing is waiting for a human"
           emptyDescription="Tasks an agent escalates land here."
+          description="Tasks waiting in a project's human state. Resolve each on its task, then move it back to a queue state."
+          help="task-flow"
         >
           <TaskRows
             tasks={taskRows}

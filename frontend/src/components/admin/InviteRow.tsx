@@ -21,6 +21,7 @@ import { SubmitButton } from "../SubmitButton";
 import { CELL, ROW, SPAN_CELL_BARE } from "../tableStyles";
 import { INVITE_COLUMNS } from "./columns";
 import { Expiry } from "./Expiry";
+import { INVITE_DELIVERY } from "./inviteDelivery";
 
 export interface InviteRowProps {
   invite: Invite;
@@ -147,7 +148,9 @@ export function InviteRow({ invite, invitedBy }: InviteRowProps) {
             {failure !== null ? (
               <Alert kind="error">{errorMessage(failure)}</Alert>
             ) : (
-              <Alert kind="success">Invitation re-sent</Alert>
+              <Alert kind="success">
+                {`Invitation re-sent with a new link, good for 7 days; the previous link no longer works. ${INVITE_DELIVERY}`}
+              </Alert>
             )}
           </td>
         </tr>

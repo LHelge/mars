@@ -25,10 +25,14 @@
 // that badge being acted on, and `View diff` on any row opens the retained
 // commit's diff inside the section rather than navigating away from the
 // argument it belongs to.
+//
+// The section opens with one line saying what a hand-off is and a link to the
+// help page's `task-flow` topic, because the rest of the panel assumes it.
 
 import { useState } from "react";
 import { Link } from "react-router";
 
+import { HelpLink } from "../components/HelpLink";
 import { MarkdownBody } from "../components/Markdown";
 import { SubmitButton } from "../components/SubmitButton";
 import { Icon, ICON_CLASS } from "../components/icons";
@@ -49,6 +53,13 @@ import { ReviewForm } from "./ReviewForm";
 import { RevisionForm } from "./RevisionForm";
 import { useUsername } from "./useUsername";
 import { ViewDiffButton } from "./ViewDiffButton";
+
+/**
+ * What a hand-off is, in the one line the section opens with (`SPEC.md`,
+ * "Code hand-offs and review").
+ */
+const HANDOFF_HELP =
+  "A hand-off pins one commit of a session's branch for the next agent to start from, with a comment and a review decision. Moving the task without one keeps the current hand-off.";
 
 export interface HandoffPanelProps {
   projectId: string;
@@ -83,6 +94,10 @@ export function HandoffPanel({ projectId, task }: HandoffPanelProps) {
 
   return (
     <div className="space-y-4">
+      <p className="text-console-muted max-w-prose text-xs">
+        {HANDOFF_HELP} <HelpLink topic="task-flow" />
+      </p>
+
       {current === null ? (
         <p className="text-console-muted text-sm">No code hand-off</p>
       ) : (

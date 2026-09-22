@@ -65,6 +65,8 @@ function project(): Project {
     status_message: null,
     last_fetched_at: null,
     max_attempts: 3,
+    max_concurrent_sessions: null,
+    automation_paused: false,
     created_at: "2026-01-01T00:00:00Z",
     has_credential: true,
   };
@@ -88,6 +90,8 @@ function profile(): Profile {
     partial_messages: true,
     idle_timeout_secs: 900,
     is_default: true,
+    auto_launch: false,
+    max_concurrent: 1,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };
@@ -130,6 +134,7 @@ function session(): Session {
     profile_id: PROFILE_ID,
     kind: "conversational",
     created_by: null,
+    launch_source: "user",
     title: "Teach the launch form one path",
     task_id: TASK_ID,
     handoff_id: null,

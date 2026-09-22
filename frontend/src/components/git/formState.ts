@@ -1,14 +1,78 @@
-// What the three git forms share: the control styling of the console's inputs
-// and the way a form tells the panel it is working.
+// What the three git forms share that is not markup: how an action's three
+// answers are held, how a form tells the panel it is working, and how a
+// preselected ref is reconciled with the refs the mirror really has.
 //
 // The orchestrator serialises git work per project, so a second merge started
 // while the first one runs only waits. The panel therefore disables every form
 // while any one of them is in flight, and a form reports its own state here
 // rather than the panel reaching into it.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { useFormSubmit } from "../../hooks/useFormSubmit";
+import { isGitConflict } from "../../services/git";
 import type { Branch } from "../../types";
 import { githubCompareUrl } from "../../utils/github";
+
+/** The conflicting paths of a 422, with the server's own sentence. */
+export interface GitConflict {
+  paths: string[];
+  message: string;
+}
+
+/** One attempt at a git action: what it produced, or what stopped it. */
+export interface GitAction<T> {
+  submit: () => void;
+  loading: boolean;
+  /** The one refusal that is not a conflict, in `useFormSubmit`'s words. */
+  error: string | null;
+  reset: () => void;
+  conflict: GitConflict | null;
+  /** What the last attempt produced, or `null` if it produced nothing. */
+  result: T | null;
+}
+
+/**
+ * A git action and its three answers.
+ *
+ * Every git form here handles a conflict rather than failing on it: a 422
+ * carries the paths git could not merge, which is a list to read and not an
+ * error banner (`SPEC.md`, "Git": conflicts come back as `{status, error,
+ * conflicts}`). The outcome and the conflict are cleared together when the
+ * next attempt starts, so a form never shows one attempt's paths beside
+ * another's result.
+ *
+ * `run` returns `null` for an attempt that produced nothing to report — a
+ * refusal the caller words itself, as a rejected push does.
+ */
+export function useGitAction<T>(run: () => Promise<T | null>): GitAction<T> {
+  const [result, setResult] = useState<T | null>(null);
+  const [conflict, setConflict] = useState<GitConflict | null>(null);
+
+  const form = useFormSubmit(async () => {
+    setResult(null);
+    setConflict(null);
+    try {
+      setResult(await run());
+    } catch (caught) {
+      if (isGitConflict(caught)) {
+        setConflict({ paths: caught.conflicts, message: caught.error });
+        return;
+      }
+      throw caught;
+    }
+  });
+
+  return {
+    submit: () => {
+      void form.submit();
+    },
+    loading: form.loading,
+    error: form.error,
+    reset: form.reset,
+    conflict,
+    result,
+  };
+}
 
 /** `(form id, in flight)`, as `GitActionsPanel` tracks it. */
 export type ReportBusy = (id: string, busy: boolean) => void;
@@ -37,10 +101,7 @@ export function refsOfKind(branches: Branch[], kind: Branch["kind"]): Branch[] {
  * session refs are pushed as `refs/heads/session/<id>`); an integration head
  * keeps its own name.
  */
-export function defaultRemoteBranch(
-  ref: string,
-  isSession: boolean,
-): string {
+export function defaultRemoteBranch(ref: string, isSession: boolean): string {
   return isSession ? `session/${ref}` : ref;
 }
 

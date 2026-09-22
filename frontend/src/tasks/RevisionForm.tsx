@@ -29,13 +29,12 @@ import type { TaskDetail } from "../types";
 import { shortId } from "../utils/format";
 import {
   COMMIT_HINT,
-  STATE_HINT,
   commitIdError,
   defaultSourceSession,
   orderSessionsForPicker,
 } from "./handoffRules";
 import { useDrawerEscape } from "./drawerEscape";
-import { useTaskStore } from "./taskStore";
+import { TargetStateSelect } from "./TargetStateSelect";
 import { useUpdateTask } from "./taskWrites";
 
 export interface RevisionFormProps {
@@ -46,7 +45,6 @@ export interface RevisionFormProps {
 }
 
 export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
-  const states = useTaskStore((store) => store.states);
   const updateTask = useUpdateTask(projectId, task.number);
 
   const sessions = useQuery(projectQueries.sessions(projectId));
@@ -185,28 +183,13 @@ export function RevisionForm({ projectId, task, onDone }: RevisionFormProps) {
         )}
       </FieldShell>
 
-      <FieldShell label="Move to" name="handoff-state" hint={STATE_HINT}>
-        {(control) => (
-          <select
-            {...control}
-            value={state}
-            disabled={publish.loading}
-            onChange={(event) => {
-              setState(event.target.value);
-            }}
-            className={FIELD}
-          >
-            <option value="">Choose a state</option>
-            {states
-              .filter((row) => row.name !== task.state)
-              .map((row) => (
-                <option key={row.id} value={row.name}>
-                  {row.name}
-                </option>
-              ))}
-          </select>
-        )}
-      </FieldShell>
+      <TargetStateSelect
+        id="handoff-state"
+        task={task}
+        value={state}
+        onChange={setState}
+        disabled={publish.loading}
+      />
 
       {publish.error !== null && <Alert kind="error">{publish.error}</Alert>}
 

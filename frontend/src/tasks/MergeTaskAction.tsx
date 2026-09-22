@@ -17,10 +17,12 @@
 // re-disables the button under the answer. The form says the revision arrived
 // as soon as it does, rather than at the refusal.
 //
-// The outcome of a merge is one thing: merged, conflicted or refused. It is
-// held as one value for that reason — three flags for three exclusive
-// outcomes can show two answers at once — and a merge that landed disarms its
-// own button, because a second press would merge the same commit twice.
+// The outcome of a merge is one thing: merged, conflicted or refused. The
+// first two are `useGitAction`'s, which clears both when the next attempt
+// starts, and the third is cleared beside them for the same reason — three
+// answers for three exclusive outcomes must not show two at once. A merge that
+// landed disarms its own button, because a second press would merge the same
+// commit twice.
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -29,9 +31,12 @@ import { Alert } from "../components/Alert";
 import { FieldShell } from "../components/FieldShell";
 import { FIELD } from "../components/fieldStyles";
 import { ConflictList } from "../components/git/ConflictList";
-import { chosenOr, refsOfKind } from "../components/git/formState";
+import {
+  chosenOr,
+  refsOfKind,
+  useGitAction,
+} from "../components/git/formState";
 import { SubmitButton } from "../components/SubmitButton";
-import { useFormSubmit } from "../hooks/useFormSubmit";
 import { merge } from "../services/git";
 import { queryKeys } from "../services/queryKeys";
 import { projectQueries } from "../services/queryOptions";
@@ -41,12 +46,10 @@ import {
   MERGE_BLOCKED,
   canMerge,
   isStaleMerge,
-  mergeConflict,
   mergeCoverLine,
   mergeErrorMessage,
   mergedMessage,
 } from "./mergeRules";
-import type { MergeConflict } from "./mergeRules";
 import { useDrawerEscape } from "./drawerEscape";
 import { useRefetchTask, useSettleTask } from "./taskWrites";
 
@@ -92,12 +95,6 @@ export function MergeTaskAction({ projectId, task }: MergeTaskActionProps) {
   );
 }
 
-/** What one merge attempt ended as; the three outcomes exclude each other. */
-type MergeOutcome =
-  | { kind: "merged"; commit: string }
-  | { kind: "conflict"; conflict: MergeConflict }
-  | { kind: "refused"; message: string };
-
 function MergeHandoffForm({
   projectId,
   task,
@@ -135,11 +132,12 @@ function MergeHandoffForm({
         );
 
   const [message, setMessage] = useState("");
-  const [outcome, setOutcome] = useState<MergeOutcome | null>(null);
+  /** The 409 this form words for itself; cleared with the other two answers. */
+  const [refused, setRefused] = useState<string | null>(null);
   const superseded = task.handoff?.id !== handoff.id;
 
-  const form = useFormSubmit(async () => {
-    setOutcome(null);
+  const form = useGitAction(async () => {
+    setRefused(null);
     try {
       const result = await merge(projectId, {
         target,
@@ -147,27 +145,23 @@ function MergeHandoffForm({
         handoff_id: handoff.id,
         ...(message.trim() === "" ? {} : { message: message.trim() }),
       });
-      setOutcome({ kind: "merged", commit: result.commit });
       // The merge moved an integration head and left the task where it was,
       // so the board's snapshot and the branch list are what went stale.
       await settle();
       void queryClient.invalidateQueries({
         queryKey: queryKeys.projects.branches(projectId),
       });
+      return result.commit;
     } catch (caught) {
-      const conflicts = mergeConflict(caught);
-      if (conflicts !== null) {
-        setOutcome({ kind: "conflict", conflict: conflicts });
-        return;
-      }
       if (isStaleMerge(caught)) {
-        setOutcome({ kind: "refused", message: mergeErrorMessage(caught) });
+        setRefused(mergeErrorMessage(caught));
         await refetchTask();
-        return;
+        return null;
       }
       throw caught;
     }
   });
+  const merged = form.result;
 
   // Escape leaves the form as `Cancel` does, and is shut while the merge is in
   // flight for the same reason it is (`drawerEscape.ts`).
@@ -178,7 +172,7 @@ function MergeHandoffForm({
       aria-label={MERGE_ACTION}
       onSubmit={(event) => {
         event.preventDefault();
-        void form.submit();
+        form.submit();
       }}
       className="border-console-border bg-console-bg basis-full space-y-3 rounded border p-3"
     >
@@ -237,15 +231,13 @@ function MergeHandoffForm({
         )}
       </FieldShell>
 
-      {outcome?.kind === "conflict" && (
+      {form.conflict !== null && (
         <ConflictList
-          paths={outcome.conflict.paths}
-          message={outcome.conflict.message}
+          paths={form.conflict.paths}
+          message={form.conflict.message}
         />
       )}
-      {outcome?.kind === "refused" && (
-        <Alert kind="error">{outcome.message}</Alert>
-      )}
+      {refused !== null && <Alert kind="error">{refused}</Alert>}
       {form.error !== null && (
         <Alert kind="error" onDismiss={form.reset}>
           {form.error}
@@ -257,7 +249,7 @@ function MergeHandoffForm({
             second press would put it there again. */}
         <SubmitButton
           loading={form.loading}
-          disabled={target === "" || outcome?.kind === "merged"}
+          disabled={target === "" || merged !== null}
         >
           Merge
         </SubmitButton>
@@ -267,11 +259,11 @@ function MergeHandoffForm({
           disabled={form.loading}
           onClick={onClose}
         >
-          {outcome?.kind === "merged" ? "Close" : "Cancel"}
+          {merged === null ? "Cancel" : "Close"}
         </SubmitButton>
-        {outcome?.kind === "merged" && (
+        {merged !== null && (
           <span className="text-state-running font-mono text-xs">
-            {mergedMessage(outcome.commit)}
+            {mergedMessage(merged)}
           </span>
         )}
       </div>

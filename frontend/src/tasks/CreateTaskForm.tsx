@@ -17,25 +17,15 @@ import type { FormEvent } from "react";
 
 import { Alert } from "../components/Alert";
 import { FieldShell } from "../components/FieldShell";
-import { FormField } from "../components/FormField";
 import { SubmitButton } from "../components/SubmitButton";
 import { createTask } from "../services/tasks";
-import { parseTaskPriority } from "../types";
-import type { Task, TaskPriority, TaskState } from "../types";
+import type { Task, TaskState } from "../types";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { CONTROL } from "../components/fieldStyles";
-import { labelsError, parseLabels } from "./taskLabels";
+import { TaskFields } from "./TaskFields";
+import { useTaskFields } from "./taskFields";
+import { parseLabels } from "./taskLabels";
 import { useTaskStore } from "./taskStore";
-
-const TITLE_MAX = 200;
-
-/** `SPEC.md`, "Tasks": 0 critical to 3 low, default 2. */
-const PRIORITIES: { value: TaskPriority; label: string }[] = [
-  { value: 0, label: "P0 — critical" },
-  { value: 1, label: "P1 — high" },
-  { value: 2, label: "P2 — normal" },
-  { value: 3, label: "P3 — low" },
-];
 
 export interface CreateTaskFormProps {
   projectId: string;
@@ -57,19 +47,20 @@ export function CreateTaskForm({
   const defaultState =
     states.find((state) => state.kind === "queue")?.name ?? states[0]?.name;
 
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const fields = useTaskFields({
+    title: "",
+    description: "",
+    priority: 2,
+    labels: "",
+    parent: "",
+  });
   const [state, setState] = useState(defaultState ?? "");
-  const [priority, setPriority] = useState<TaskPriority>(2);
-  const [labels, setLabels] = useState("");
-  const [parentId, setParentId] = useState("");
   const [dependsOn, setDependsOn] = useState<string[]>([]);
-  const [titleError, setTitleError] = useState<string | null>(null);
-  const [labelError, setLabelError] = useState<string | null>(null);
 
   const parents = tasks.filter((task) => task.parent_id === null);
 
   const create = useFormSubmit(async () => {
+    const { title, description, priority, labels, parent } = fields.values;
     const parsed = parseLabels(labels);
     await createTask(projectId, {
       title: title.trim(),
@@ -77,7 +68,7 @@ export function CreateTaskForm({
       ...(state === "" ? {} : { state }),
       priority,
       ...(parsed.labels.length === 0 ? {} : { labels: parsed.labels }),
-      ...(parentId === "" ? {} : { parent_id: parentId }),
+      ...(parent === "" ? {} : { parent_id: parent }),
       ...(dependsOn.length === 0 ? {} : { depends_on: dependsOn }),
     });
     useTaskStore.getState().invalidate();
@@ -86,20 +77,7 @@ export function CreateTaskForm({
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    const trimmed = title.trim();
-    const badTitle =
-      trimmed === ""
-        ? "A task needs a title"
-        : trimmed.length > TITLE_MAX
-          ? `A title is at most ${String(TITLE_MAX)} characters`
-          : null;
-    const badLabels = labelsError(labels);
-
-    setTitleError(badTitle);
-    setLabelError(badLabels);
-    if (badTitle !== null || badLabels !== null) return;
-
+    if (!fields.validate()) return;
     void create.submit();
   }
 
@@ -109,152 +87,67 @@ export function CreateTaskForm({
       aria-label="New task"
       className="border-console-border bg-console-surface flex flex-col gap-3 rounded border p-3"
     >
-      <FormField
-        label="Title"
-        name="task-title"
-        value={title}
-        onChange={(next) => {
-          setTitle(next);
-          setTitleError(null);
-        }}
-        error={titleError ?? undefined}
-        autoComplete="off"
-        autoFocus
-        required
+      <TaskFields
+        idPrefix="task"
+        values={fields.values}
+        onChange={fields.change}
+        errors={fields.errors}
+        parents={parents}
+        parentNoneLabel="None"
+        parentHint="The task this one is part of; it stays open until this one closes."
+        descriptionRows={4}
+        beforePriority={
+          <FieldShell label="State" name="task-state">
+            {(control) => (
+              <select
+                {...control}
+                value={state}
+                onChange={(event) => {
+                  setState(event.target.value);
+                }}
+                className={CONTROL}
+              >
+                {states.map((option) => (
+                  <option key={option.id} value={option.name}>
+                    {option.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </FieldShell>
+        }
+        besideParent={
+          <FieldShell
+            label="Blocked by"
+            name="task-depends-on"
+            hint="Tasks that must close first. Hold Ctrl or Cmd to pick several."
+          >
+            {(control) => (
+              <select
+                {...control}
+                multiple
+                size={4}
+                value={dependsOn}
+                onChange={(event) => {
+                  setDependsOn(
+                    Array.from(
+                      event.target.selectedOptions,
+                      (option) => option.value,
+                    ),
+                  );
+                }}
+                className={CONTROL}
+              >
+                {tasks.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    #{task.number} {task.title}
+                  </option>
+                ))}
+              </select>
+            )}
+          </FieldShell>
+        }
       />
-
-      <FieldShell
-        label="Description"
-        name="task-description"
-        hint="Markdown. What done looks like, and anything an agent cannot read off the repository."
-      >
-        {(control) => (
-          <textarea
-            {...control}
-            rows={4}
-            value={description}
-            onChange={(event) => {
-              setDescription(event.target.value);
-            }}
-            className={CONTROL}
-          />
-        )}
-      </FieldShell>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <FieldShell label="State" name="task-state">
-          {(control) => (
-            <select
-              {...control}
-              value={state}
-              onChange={(event) => {
-                setState(event.target.value);
-              }}
-              className={CONTROL}
-            >
-              {states.map((option) => (
-                <option key={option.id} value={option.name}>
-                  {option.name}
-                </option>
-              ))}
-            </select>
-          )}
-        </FieldShell>
-
-        <FieldShell label="Priority" name="task-priority">
-          {(control) => (
-            <select
-              {...control}
-              value={String(priority)}
-              onChange={(event) => {
-                // Every option comes from the same list `parseTaskPriority`
-                // reads back, so `undefined` is unreachable; it leaves the
-                // priority where it is rather than inventing a P0.
-                const chosen = parseTaskPriority(event.target.value);
-                if (chosen !== undefined) {
-                  setPriority(chosen);
-                }
-              }}
-              className={CONTROL}
-            >
-              {PRIORITIES.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          )}
-        </FieldShell>
-      </div>
-
-      <FormField
-        label="Labels"
-        name="task-labels"
-        value={labels}
-        onChange={(next) => {
-          setLabels(next);
-          setLabelError(null);
-        }}
-        error={labelError ?? undefined}
-        hint="Separated by commas or spaces, for example: backend migration"
-        autoComplete="off"
-      />
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <FieldShell
-          label="Parent task"
-          name="task-parent"
-          hint="The task this one is part of; it stays open until this one closes."
-        >
-          {(control) => (
-            <select
-              {...control}
-              value={parentId}
-              onChange={(event) => {
-                setParentId(event.target.value);
-              }}
-              className={CONTROL}
-            >
-              <option value="">None</option>
-              {parents.map((task) => (
-                <option key={task.id} value={task.id}>
-                  #{task.number} {task.title}
-                </option>
-              ))}
-            </select>
-          )}
-        </FieldShell>
-
-        <FieldShell
-          label="Blocked by"
-          name="task-depends-on"
-          hint="Tasks that must close first. Hold Ctrl or Cmd to pick several."
-        >
-          {(control) => (
-            <select
-              {...control}
-              multiple
-              size={4}
-              value={dependsOn}
-              onChange={(event) => {
-                setDependsOn(
-                  Array.from(
-                    event.target.selectedOptions,
-                    (option) => option.value,
-                  ),
-                );
-              }}
-              className={CONTROL}
-            >
-              {tasks.map((task) => (
-                <option key={task.id} value={task.id}>
-                  #{task.number} {task.title}
-                </option>
-              ))}
-            </select>
-          )}
-        </FieldShell>
-      </div>
 
       {create.error !== null && <Alert kind="error">{create.error}</Alert>}
 

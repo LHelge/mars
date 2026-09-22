@@ -16,7 +16,6 @@
 
 import { ApiError } from "../services/apiClient";
 import { errorMessage } from "../services/errorMessage";
-import { isGitConflict } from "../services/git";
 import type { Handoff, TaskDetail } from "../types";
 import { shortSha } from "../utils/format";
 
@@ -35,19 +34,6 @@ export const MERGE_ACTION = "Merge approved hand-off";
  */
 export function canMerge(task: Pick<TaskDetail, "handoff">): boolean {
   return task.handoff?.review_status === "approved";
-}
-
-/** The conflicting paths of a 422, with the server's sentence, or `null`. */
-export interface MergeConflict {
-  paths: string[];
-  message: string;
-}
-
-export function mergeConflict(caught: unknown): MergeConflict | null {
-  if (!isGitConflict(caught)) {
-    return null;
-  }
-  return { paths: caught.conflicts, message: caught.error };
 }
 
 /**

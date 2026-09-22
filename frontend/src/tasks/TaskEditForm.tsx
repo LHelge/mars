@@ -34,16 +34,13 @@ import type { FormEvent } from "react";
 import { Alert } from "../components/Alert";
 import { FieldShell } from "../components/FieldShell";
 import { CONTROL } from "../components/fieldStyles";
-import { FormField } from "../components/FormField";
 import { SubmitButton } from "../components/SubmitButton";
 import { useAuth } from "../hooks/useAuth";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { queryKeys } from "../services/queryKeys";
 import { listUsers } from "../services/users";
-import { parseTaskPriority } from "../types";
-import type { TaskDetail, TaskPriority, UpdateTaskInput } from "../types";
+import type { TaskDetail, UpdateTaskInput } from "../types";
 import { useDrawerEscape } from "./drawerEscape";
-import { PRIORITIES, PRIORITY_MEANING } from "./taskChrome";
 import {
   diffTaskInput,
   isEmptyUpdate,
@@ -51,12 +48,12 @@ import {
   taskEditValues,
   taskEditValuesDiffer,
 } from "./taskEdit";
-import { labelsError, parseLabels } from "./taskLabels";
+import { TaskFields } from "./TaskFields";
+import { useTaskFields } from "./taskFields";
+import { parseLabels } from "./taskLabels";
 import { useTaskStore } from "./taskStore";
 import { useUpdateTask } from "./taskWrites";
 import { useUsername } from "./useUsername";
-
-const TITLE_MAX = 200;
 
 /** `null` on the wire, `""` in a select: the empty option is "no id". */
 const NONE = "";
@@ -79,14 +76,14 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
   // time the user presses save.
   const [original] = useState(() => taskEditValues(task));
 
-  const [title, setTitle] = useState(original.title);
-  const [description, setDescription] = useState(original.description);
-  const [priority, setPriority] = useState<TaskPriority>(original.priority);
-  const [labels, setLabels] = useState(original.labels.join(" "));
+  const fields = useTaskFields({
+    title: original.title,
+    description: original.description,
+    priority: original.priority,
+    labels: original.labels.join(" "),
+    parent: original.parent_id ?? NONE,
+  });
   const [assignee, setAssignee] = useState(original.assignee_user_id ?? NONE);
-  const [parent, setParent] = useState(original.parent_id ?? NONE);
-  const [titleError, setTitleError] = useState<string | null>(null);
-  const [labelError, setLabelError] = useState<string | null>(null);
 
   // One owner for the save: the in-flight guard, the pending flag and the
   // refusal, in the API's own words (`CLAUDE.md`, "Frontend conventions",
@@ -162,18 +159,9 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const trimmed = title.trim();
-    const badTitle =
-      trimmed === ""
-        ? "A task needs a title"
-        : trimmed.length > TITLE_MAX
-          ? `A title is at most ${String(TITLE_MAX)} characters`
-          : null;
-    const badLabels = labelsError(labels);
-    setTitleError(badTitle);
-    setLabelError(badLabels);
-    if (badTitle !== null || badLabels !== null) return;
+    if (!fields.validate()) return;
 
+    const { title, description, priority, labels, parent } = fields.values;
     const input = diffTaskInput(original, {
       title,
       description,
@@ -197,133 +185,49 @@ export function TaskEditForm({ projectId, task, onDone }: TaskEditFormProps) {
       aria-label={`Edit task #${String(task.number)}`}
       className="border-console-border bg-console-bg flex flex-col gap-3 rounded border p-3"
     >
-      <FormField
-        label="Title"
-        name={`${taskFieldId(task)}-title`}
-        value={title}
-        onChange={(next) => {
-          setTitle(next);
-          setTitleError(null);
-        }}
-        error={titleError ?? undefined}
-        autoComplete="off"
-        autoFocus
-        required
-      />
-
-      <FieldShell
-        label="Description"
-        name={`${taskFieldId(task)}-description`}
-        hint="Markdown. What done looks like, and anything an agent cannot read off the repository."
-      >
-        {(control) => (
-          <textarea
-            {...control}
-            rows={8}
-            value={description}
-            onChange={(event) => {
-              setDescription(event.target.value);
-            }}
-            className={CONTROL}
-          />
-        )}
-      </FieldShell>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <FieldShell label="Priority" name={`${taskFieldId(task)}-priority`}>
-          {(control) => (
-            <select
-              {...control}
-              value={String(priority)}
-              onChange={(event) => {
-                // Every option comes from the same list `parseTaskPriority`
-                // reads back, so `undefined` is unreachable; it leaves the
-                // priority where it is rather than inventing a P0.
-                const chosen = parseTaskPriority(event.target.value);
-                if (chosen !== undefined) {
-                  setPriority(chosen);
-                }
-              }}
-              className={CONTROL}
-            >
-              {PRIORITIES.map((value) => (
-                <option key={value} value={value}>
-                  {PRIORITY_MEANING[value]}
-                </option>
-              ))}
-            </select>
-          )}
-        </FieldShell>
-
-        <FieldShell
-          label="Assignee"
-          name={`${taskFieldId(task)}-assignee`}
-          hint={
-            isAdmin
-              ? "Who is accountable for the task; it does not affect which agent picks it up."
-              : "You can take the task or leave it unassigned."
-          }
-        >
-          {(control) => (
-            <select
-              {...control}
-              value={assignee}
-              onChange={(event) => {
-                setAssignee(event.target.value);
-              }}
-              className={CONTROL}
-            >
-              {assignees.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          )}
-        </FieldShell>
-      </div>
-
-      <FormField
-        label="Labels"
-        name={`${taskFieldId(task)}-labels`}
-        value={labels}
-        onChange={(next) => {
-          setLabels(next);
-          setLabelError(null);
-        }}
-        error={labelError ?? undefined}
-        hint="Separated by commas or spaces, for example: backend migration"
-        autoComplete="off"
-      />
-
-      <FieldShell
-        label="Parent task"
-        name={`${taskFieldId(task)}-parent`}
-        hint={
+      <TaskFields
+        idPrefix={taskFieldId(task)}
+        values={fields.values}
+        onChange={fields.change}
+        errors={fields.errors}
+        parents={parents}
+        parentNoneLabel="Top-level task"
+        parentHint={
           nested
             ? "This task has children of its own, and nesting is one level deep."
             : "The task this one is part of; it stays open until this one closes."
         }
-      >
-        {(control) => (
-          <select
-            {...control}
-            value={parent}
-            disabled={nested}
-            onChange={(event) => {
-              setParent(event.target.value);
-            }}
-            className={CONTROL}
+        parentDisabled={nested}
+        descriptionRows={8}
+        afterPriority={
+          <FieldShell
+            label="Assignee"
+            name={`${taskFieldId(task)}-assignee`}
+            hint={
+              isAdmin
+                ? "Who is accountable for the task; it does not affect which agent picks it up."
+                : "You can take the task or leave it unassigned."
+            }
           >
-            <option value={NONE}>Top-level task</option>
-            {parents.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                #{candidate.number} {candidate.title}
-              </option>
-            ))}
-          </select>
-        )}
-      </FieldShell>
+            {(control) => (
+              <select
+                {...control}
+                value={assignee}
+                onChange={(event) => {
+                  setAssignee(event.target.value);
+                }}
+                className={CONTROL}
+              >
+                {assignees.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            )}
+          </FieldShell>
+        }
+      />
 
       {moved && (
         <Alert kind="warning">

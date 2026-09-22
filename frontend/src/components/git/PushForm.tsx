@@ -6,7 +6,6 @@
 // upstream moved, nothing local was lost (`README.md`, "Operating notes").
 
 import { useState } from "react";
-import { useFormSubmit } from "../../hooks/useFormSubmit";
 import { ApiError } from "../../services/apiClient";
 import { push } from "../../services/git";
 import type { PushResult } from "../../types";
@@ -14,8 +13,15 @@ import { shortSha } from "../../utils/format";
 import { Alert } from "../Alert";
 import { FormField } from "../FormField";
 import { SubmitButton } from "../SubmitButton";
-import { compareUrlFor, defaultRemoteBranch, useReportBusy } from "./formState";
+import {
+  compareUrlFor,
+  defaultRemoteBranch,
+  useGitAction,
+  useReportBusy,
+} from "./formState";
 import type { ReportBusy } from "./formState";
+import { GitFormShell, GitResultNote } from "./GitFormShell";
+import { ReadOnlyField } from "./ReadOnlyField";
 
 export interface PushFormProps {
   projectId: string;
@@ -52,60 +58,50 @@ export function PushForm({
     defaultRemoteBranch(gitRef, isSession),
   );
   const [force, setForce] = useState(false);
-  const [pushed, setPushed] = useState<PushResult | null>(null);
-  const [compare, setCompare] = useState<string | null>(null);
   // The branch a 409 refused, not a flag: the advice names what was rejected,
   // and editing the field afterwards must not rewrite it.
   const [rejected, setRejected] = useState<string | null>(null);
 
-  const form = useFormSubmit(async () => {
-    setPushed(null);
-    setCompare(null);
-    setRejected(null);
-    // Trimmed once, here: what is sent, what the enable check measures and
-    // what a refusal is reported against are the same string.
-    const branch = remoteBranch.trim();
-    try {
-      const result = await push(projectId, {
-        ref: gitRef,
-        remote_branch: branch,
-        // `force` is only sent when it was asked for: the server's default is
-        // a safe push and an absent field is the same answer as `false`.
-        ...(force ? { force: true } : {}),
-      });
-      setPushed(result);
-      const url = compareUrlFor(remoteUrl, compareTarget, result.remote_branch);
-      setCompare(url);
-      onPushed(result, url);
-    } catch (caught) {
-      // A non-fast-forward (`SPEC.md`, "Git") is handled, not failed: the
-      // banner below says what to do, so it returns here as `MergeForm` does
-      // for a 422 rather than raising a second alert beside it.
-      if (caught instanceof ApiError && caught.status === 409) {
-        setRejected(branch);
-        return;
+  const action = useGitAction<{ pushed: PushResult; compare: string | null }>(
+    async () => {
+      setRejected(null);
+      // Trimmed once, here: what is sent, what the enable check measures and
+      // what a refusal is reported against are the same string.
+      const branch = remoteBranch.trim();
+      try {
+        const result = await push(projectId, {
+          ref: gitRef,
+          remote_branch: branch,
+          // `force` is only sent when it was asked for: the server's default
+          // is a safe push and an absent field is the same answer as `false`.
+          ...(force ? { force: true } : {}),
+        });
+        const url = compareUrlFor(
+          remoteUrl,
+          compareTarget,
+          result.remote_branch,
+        );
+        onPushed(result, url);
+        return { pushed: result, compare: url };
+      } catch (caught) {
+        // A non-fast-forward (`SPEC.md`, "Git") is handled, not failed: the
+        // banner below says what to do, so it reports no result rather than
+        // raising a second alert beside it.
+        if (caught instanceof ApiError && caught.status === 409) {
+          setRejected(branch);
+          return null;
+        }
+        throw caught;
       }
-      throw caught;
-    }
-  });
+    },
+  );
 
-  useReportBusy(formId, form.loading, onBusy);
+  useReportBusy(formId, action.loading, onBusy);
 
   return (
-    <form
-      className="flex flex-col gap-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void form.submit();
-      }}
-    >
+    <GitFormShell action={action}>
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
-          <span className="text-console-muted text-xs">Ref</span>
-          <p className="text-console-text truncate py-1.5 font-mono text-sm">
-            {refLabel ?? gitRef}
-          </p>
-        </div>
+        <ReadOnlyField label="Ref" value={refLabel ?? gitRef} />
 
         <FormField
           label="Remote branch"
@@ -139,19 +135,20 @@ export function PushForm({
 
       <div className="flex flex-wrap items-center gap-3">
         <SubmitButton
-          loading={form.loading}
+          loading={action.loading}
           disabled={disabled || remoteBranch.trim() === ""}
         >
           Push
         </SubmitButton>
-        {pushed !== null && (
-          <span className="text-state-running font-mono text-xs">
-            Pushed {pushed.remote_branch} at {shortSha(pushed.commit)}
-          </span>
+        {action.result !== null && (
+          <GitResultNote>
+            Pushed {action.result.pushed.remote_branch} at{" "}
+            {shortSha(action.result.pushed.commit)}
+          </GitResultNote>
         )}
-        {compare !== null && (
+        {action.result !== null && action.result.compare !== null && (
           <a
-            href={compare}
+            href={action.result.compare}
             target="_blank"
             rel="noreferrer noopener"
             className="text-console-accent font-mono text-xs underline"
@@ -166,11 +163,6 @@ export function PushForm({
           {`Push rejected: upstream has advanced. Fetch, merge origin/${rejected} and retry.`}
         </Alert>
       )}
-      {form.error !== null && (
-        <Alert kind="error" onDismiss={form.reset}>
-          {form.error}
-        </Alert>
-      )}
-    </form>
+    </GitFormShell>
   );
 }

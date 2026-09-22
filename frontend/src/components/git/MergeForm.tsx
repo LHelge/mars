@@ -4,35 +4,46 @@
 // Two shapes of the same form: a session branch's row fixes the source and
 // only asks where it goes, while the project page's generic form chooses both
 // — that is how upstream is integrated, `origin/main` into `main`
-// (`README.md`, "Operating notes").
+// (`README.md`, "Operating notes"). The props say which shape this is, so a
+// fixed source and a preselected one cannot be passed together.
 //
 // The task hand-off form of `MergeInput` (`task_id` + `handoff_id`) is the
 // board's own action and not a mode of this form: this component only ever
 // merges a branch into a head.
 
 import { useState } from "react";
-import { useFormSubmit } from "../../hooks/useFormSubmit";
-import { isGitConflict, merge } from "../../services/git";
+import { merge } from "../../services/git";
 import type { Branch } from "../../types";
 import { shortSha } from "../../utils/format";
-import { Alert } from "../Alert";
 import { FieldShell } from "../FieldShell";
 import { FIELD } from "../fieldStyles";
 import { FormField } from "../FormField";
 import { SubmitButton } from "../SubmitButton";
-import { ConflictList } from "./ConflictList";
-import { chosenOr, keptIfKnown, refsOfKind, useReportBusy } from "./formState";
+import {
+  chosenOr,
+  keptIfKnown,
+  refsOfKind,
+  useGitAction,
+  useReportBusy,
+} from "./formState";
 import type { ReportBusy } from "./formState";
+import { GitFormShell, GitResultNote } from "./GitFormShell";
+import { ReadOnlyField } from "./ReadOnlyField";
+import { RefOptions } from "./RefOptions";
 
-export interface MergeFormProps {
+/**
+ * Which of the two forms this is. A row's merge has a fixed source and may
+ * label it, because the source is an opaque session id; the generic merge
+ * chooses one and may start from a preselection. Neither set is meaningful in
+ * the other's shape, so the props are one or the other.
+ */
+type MergeSourceProps =
+  | { source: string; sourceLabel?: string; defaultSource?: never }
+  | { source?: never; sourceLabel?: never; defaultSource?: string };
+
+export type MergeFormProps = {
   projectId: string;
   branches: Branch[];
-  /** A fixed source — a row's session id — or `undefined` to choose one. */
-  source?: string;
-  /** The source's name, when the fixed source is an opaque session id. */
-  sourceLabel?: string;
-  /** Preselected source of the generic form. */
-  defaultSource?: string;
   /** Preselected target; the project's default branch. */
   defaultTarget?: string;
   /** Distinguishes this form's controls from every other one on the page. */
@@ -41,7 +52,7 @@ export interface MergeFormProps {
   onBusy: ReportBusy;
   /** A merge moved an integration head: everything git is now stale. */
   onMerged: () => void;
-}
+} & MergeSourceProps;
 
 export function MergeForm({
   projectId,
@@ -59,46 +70,26 @@ export function MergeForm({
   const [chosenSource, setChosenSource] = useState(defaultSource ?? "");
   const [chosenTarget, setChosenTarget] = useState(defaultTarget ?? "");
   const [message, setMessage] = useState("");
-  const [merged, setMerged] = useState<string | null>(null);
-  const [conflicts, setConflicts] = useState<string[] | null>(null);
-  const [conflictMessage, setConflictMessage] = useState("");
 
   const from = source ?? keptIfKnown(chosenSource, branches);
   const target = chosenOr(chosenTarget, heads);
 
-  const form = useFormSubmit(async () => {
-    setMerged(null);
-    setConflicts(null);
-    try {
-      const result = await merge(projectId, {
-        target,
-        source: from,
-        ...(message.trim() === "" ? {} : { message: message.trim() }),
-      });
-      setMerged(result.commit);
-      onMerged();
-    } catch (caught) {
-      if (isGitConflict(caught)) {
-        setConflicts(caught.conflicts);
-        setConflictMessage(caught.error);
-        return;
-      }
-      throw caught;
-    }
+  const action = useGitAction(async () => {
+    const result = await merge(projectId, {
+      target,
+      source: from,
+      ...(message.trim() === "" ? {} : { message: message.trim() }),
+    });
+    onMerged();
+    return result.commit;
   });
 
   const ready = from !== "" && target !== "";
 
-  useReportBusy(formId, form.loading, onBusy);
+  useReportBusy(formId, action.loading, onBusy);
 
   return (
-    <form
-      className="flex flex-col gap-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void form.submit();
-      }}
-    >
+    <GitFormShell action={action}>
       <div className="grid gap-3 sm:grid-cols-2">
         {source === undefined ? (
           <FieldShell label="Source" name={`${formId}-source`}>
@@ -113,13 +104,17 @@ export function MergeForm({
                 className={FIELD}
               >
                 <option value="">Choose a ref…</option>
-                <Options branches={branches} kind="upstream" label="Upstream" />
-                <Options
+                <RefOptions
+                  branches={branches}
+                  kind="upstream"
+                  label="Upstream"
+                />
+                <RefOptions
                   branches={branches}
                   kind="head"
                   label="Integration heads"
                 />
-                <Options
+                <RefOptions
                   branches={branches}
                   kind="session"
                   label="Session branches"
@@ -128,12 +123,7 @@ export function MergeForm({
             )}
           </FieldShell>
         ) : (
-          <div className="flex flex-col gap-1.5">
-            <span className="text-console-muted text-xs">Source</span>
-            <p className="text-console-text truncate py-1.5 font-mono text-sm">
-              {sourceLabel ?? source}
-            </p>
-          </div>
+          <ReadOnlyField label="Source" value={sourceLabel ?? source} />
         )}
 
         <FieldShell label="Target" name={`${formId}-target`}>
@@ -170,48 +160,13 @@ export function MergeForm({
       />
 
       <div className="flex items-center gap-3">
-        <SubmitButton loading={form.loading} disabled={disabled || !ready}>
+        <SubmitButton loading={action.loading} disabled={disabled || !ready}>
           Merge
         </SubmitButton>
-        {merged !== null && (
-          <span className="text-state-running font-mono text-xs">
-            Merged at {shortSha(merged)}
-          </span>
+        {action.result !== null && (
+          <GitResultNote>Merged at {shortSha(action.result)}</GitResultNote>
         )}
       </div>
-
-      {conflicts !== null && (
-        <ConflictList paths={conflicts} message={conflictMessage} />
-      )}
-      {form.error !== null && (
-        <Alert kind="error" onDismiss={form.reset}>
-          {form.error}
-        </Alert>
-      )}
-    </form>
-  );
-}
-
-function Options({
-  branches,
-  kind,
-  label,
-}: {
-  branches: Branch[];
-  kind: Branch["kind"];
-  label: string;
-}) {
-  const refs = refsOfKind(branches, kind);
-  if (refs.length === 0) {
-    return null;
-  }
-  return (
-    <optgroup label={label}>
-      {refs.map((branch) => (
-        <option key={branch.name} value={branch.name}>
-          {branch.name}
-        </option>
-      ))}
-    </optgroup>
+    </GitFormShell>
   );
 }

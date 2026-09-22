@@ -6,17 +6,18 @@
 // model"), so the form says so before the button rather than after the fact.
 
 import { useState } from "react";
-import { useFormSubmit } from "../../hooks/useFormSubmit";
-import { isGitConflict, rebase } from "../../services/git";
+import { rebase } from "../../services/git";
 import type { Branch } from "../../types";
 import { shortSha } from "../../utils/format";
 import { Alert } from "../Alert";
 import { FieldShell } from "../FieldShell";
 import { FIELD } from "../fieldStyles";
 import { SubmitButton } from "../SubmitButton";
-import { ConflictList } from "./ConflictList";
-import { chosenOr, refsOfKind, useReportBusy } from "./formState";
+import { chosenOr, refsOfKind, useGitAction, useReportBusy } from "./formState";
 import type { ReportBusy } from "./formState";
+import { GitFormShell, GitResultNote } from "./GitFormShell";
+import { ReadOnlyField } from "./ReadOnlyField";
+import { RefOptions } from "./RefOptions";
 
 /** `ARCHITECTURE.md`, "Git model": a dirty work tree is left for the agent. */
 const WORK_TREE_HINT =
@@ -58,44 +59,19 @@ export function RebaseForm({
   const upstream = refsOfKind(branches, "upstream");
   const [chosenOnto, setChosenOnto] = useState(defaultOnto ?? "");
   const onto = chosenOr(chosenOnto, [...heads, ...upstream]);
-  const [rebased, setRebased] = useState<string | null>(null);
-  const [conflicts, setConflicts] = useState<string[] | null>(null);
-  const [conflictMessage, setConflictMessage] = useState("");
 
-  const form = useFormSubmit(async () => {
-    setRebased(null);
-    setConflicts(null);
-    try {
-      const result = await rebase(projectId, { branch, onto });
-      setRebased(result.commit);
-      onRebased();
-    } catch (caught) {
-      if (isGitConflict(caught)) {
-        setConflicts(caught.conflicts);
-        setConflictMessage(caught.error);
-        return;
-      }
-      throw caught;
-    }
+  const action = useGitAction(async () => {
+    const result = await rebase(projectId, { branch, onto });
+    onRebased();
+    return result.commit;
   });
 
-  useReportBusy(formId, form.loading, onBusy);
+  useReportBusy(formId, action.loading, onBusy);
 
   return (
-    <form
-      className="flex flex-col gap-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void form.submit();
-      }}
-    >
+    <GitFormShell action={action}>
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
-          <span className="text-console-muted text-xs">Branch</span>
-          <p className="text-console-text truncate py-1.5 font-mono text-sm">
-            {branchLabel ?? branch}
-          </p>
-        </div>
+        <ReadOnlyField label="Branch" value={branchLabel ?? branch} />
 
         <FieldShell label="Onto" name={`${formId}-onto`}>
           {(control) => (
@@ -111,24 +87,16 @@ export function RebaseForm({
               {heads.length === 0 && upstream.length === 0 && (
                 <option value="">No ref to rebase onto</option>
               )}
-              {heads.length > 0 && (
-                <optgroup label="Integration heads">
-                  {heads.map((head) => (
-                    <option key={head.name} value={head.name}>
-                      {head.name}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {upstream.length > 0 && (
-                <optgroup label="Upstream">
-                  {upstream.map((ref) => (
-                    <option key={ref.name} value={ref.name}>
-                      {ref.name}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
+              <RefOptions
+                branches={branches}
+                kind="head"
+                label="Integration heads"
+              />
+              <RefOptions
+                branches={branches}
+                kind="upstream"
+                label="Upstream"
+              />
             </select>
           )}
         </FieldShell>
@@ -138,29 +106,19 @@ export function RebaseForm({
 
       <div className="flex items-center gap-3">
         <SubmitButton
-          loading={form.loading}
+          loading={action.loading}
           disabled={disabled || onto === ""}
         >
           Rebase
         </SubmitButton>
-        {rebased !== null && (
-          <span className="text-state-running font-mono text-xs">
-            Rebased to {shortSha(rebased)}
-          </span>
+        {action.result !== null && (
+          <GitResultNote>Rebased to {shortSha(action.result)}</GitResultNote>
         )}
       </div>
 
       {workTreeNote !== null && workTreeNote !== undefined && (
         <Alert kind="warning">{workTreeNote}</Alert>
       )}
-      {conflicts !== null && (
-        <ConflictList paths={conflicts} message={conflictMessage} />
-      )}
-      {form.error !== null && (
-        <Alert kind="error" onDismiss={form.reset}>
-          {form.error}
-        </Alert>
-      )}
-    </form>
+    </GitFormShell>
   );
 }

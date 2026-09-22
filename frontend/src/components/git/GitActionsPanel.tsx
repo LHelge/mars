@@ -28,19 +28,34 @@ import { RebaseForm } from "./RebaseForm";
 import { SessionBranchTable } from "./SessionBranchTable";
 import type { OpenRow, RowAction } from "./SessionBranchTable";
 
-export interface GitActionsPanelProps {
+/**
+ * The panel is either the project page's whole picture or one session's row,
+ * and everything but the project belongs to the second shape: a `Sync` button
+ * and a work-tree note have nothing to act on without a session. The props say
+ * so, so the project page cannot pass a note nothing would read.
+ */
+export type GitActionsPanelProps = {
   project: Project;
-  /** Set in the session view: the table is that session's branch alone. */
-  sessionId?: string;
-  /**
-   * The session header's `Sync`, offered when the session has never been
-   * synced and so has no ref in the mirror yet.
-   */
-  onSync?: () => void;
-  syncing?: boolean;
-  /** The reconciliation note of the session's latest `git` rebase event. */
-  workTreeNote?: string | null;
-}
+} & (
+  | {
+      /** The table is this session's branch alone. */
+      sessionId: string;
+      /**
+       * The session header's `Sync`, offered when the session has never been
+       * synced and so has no ref in the mirror yet.
+       */
+      onSync?: () => void;
+      syncing?: boolean;
+      /** The reconciliation note of the session's latest `git` rebase event. */
+      workTreeNote?: string | null;
+    }
+  | {
+      sessionId?: never;
+      onSync?: never;
+      syncing?: never;
+      workTreeNote?: never;
+    }
+);
 
 export function GitActionsPanel({
   project,
@@ -99,9 +114,7 @@ export function GitActionsPanel({
   }, [queryClient, project.id]);
 
   const report = useCallback((id: string, pending: boolean) => {
-    setBusy((current) =>
-      pending ? id : current === id ? null : current,
-    );
+    setBusy((current) => (pending ? id : current === id ? null : current));
   }, []);
 
   const onPushed = useCallback(

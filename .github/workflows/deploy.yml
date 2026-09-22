@@ -116,7 +116,7 @@ jobs:
 
       - name: Set up Buildx
         if: matrix.engine == 'docker'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # `load: true` puts the result in the daemon's image store, where the
       # smoke steps below look for it; nothing is pushed. The two images get
@@ -125,7 +125,7 @@ jobs:
       # repository: a fork PR's token cannot write the Actions cache.
       - name: Build the orchestrator image
         if: matrix.engine == 'docker'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: orchestrator
           tags: mars-orchestrator:ci
@@ -138,7 +138,7 @@ jobs:
       # `frontend/` and `nginx/` (nginx/Dockerfile).
       - name: Build the nginx image
         if: matrix.engine == 'docker'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: nginx/Dockerfile

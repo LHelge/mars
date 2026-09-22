@@ -1,15 +1,16 @@
 ---
 id: "34y5m"
 title: "Hints and help links: profile editor, profiles tab and shared directories"
-status: open
+status: done
 priority: P2
 created: "2026-09-22T19:08:55.767960602Z"
-updated: "2026-09-22T19:08:55.767960602Z"
+updated: "2026-09-22T20:56:33.690017260Z"
 tags:
   - frontend
 depends_on:
   - ujccg
 parent: gtbp5
+attempts: 1
 ---
 
 Tighten hints and add `help` links. Invoke `/frontend-design` first. Update tests that assert old strings.

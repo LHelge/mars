@@ -1,15 +1,16 @@
 ---
 id: snn6t
 title: "Hints and help links: project creation, project settings, git panel, sync and launch base ref"
-status: open
+status: done
 priority: P2
 created: "2026-09-22T19:08:55.734960957Z"
-updated: "2026-09-22T19:08:55.734960957Z"
+updated: "2026-09-22T20:56:33.650455479Z"
 tags:
   - frontend
 depends_on:
   - ujccg
 parent: gtbp5
+attempts: 1
 ---
 
 Tighten hints and add `help` links (topic ids from the infrastructure task). Keep hints to one accurate sentence; the help section carries the rest. Invoke `/frontend-design` first. Update unit/E2E tests that assert the old strings.

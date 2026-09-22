@@ -1,6 +1,10 @@
 // The project's identity and its project-level actions, in one dense row
 // (`SPEC.md`, "User-facing features", Projects; "Projects" table).
 //
+// `Fetch now` says on its title what a fetch moves: the upstream-tracking
+// `origin/*` refs and tags, never an integration head (`ARCHITECTURE.md`, "Git
+// model", Ref ownership).
+//
 // `Fetch now` and `Retry clone` both answer the updated `Project`, so they
 // write it straight into the page's query cache instead of asking for it
 // again. `Delete` asks first, in the console's one confirmation panel
@@ -148,6 +152,7 @@ export function ProjectHeader({
             variant="ghost"
             loading={fetchNow.isPending}
             disabled={busy}
+            title={`Fetch the remote into origin/*; never moves ${project.default_branch ?? "the default branch"} or any other Mars branch.`}
             onClick={() => {
               setError(null);
               fetchNow.mutate();

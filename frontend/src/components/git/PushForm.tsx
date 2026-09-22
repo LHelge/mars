@@ -109,6 +109,8 @@ export function PushForm({
           value={remoteBranch}
           onChange={setRemoteBranch}
           disabled={disabled}
+          hint="Branch name on the remote; pushed with the project's git credential."
+          help="git-credential"
         />
       </div>
 

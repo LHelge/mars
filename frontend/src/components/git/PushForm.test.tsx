@@ -9,6 +9,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../../services/apiClient";
@@ -32,8 +33,10 @@ const REMOTE = "https://github.com/owner/repo.git";
 
 function mount(remoteUrl = REMOTE) {
   const onPushed = vi.fn();
+  // The remote-branch hint's `Learn more` is a router link.
   render(
-    <PushForm
+    <MemoryRouter>
+      <PushForm
       projectId={PROJECT_ID}
       gitRef={SESSION_ID}
       isSession
@@ -44,7 +47,8 @@ function mount(remoteUrl = REMOTE) {
       disabled={false}
       onBusy={vi.fn()}
       onPushed={onPushed}
-    />,
+      />
+    </MemoryRouter>,
   );
   return onPushed;
 }
@@ -112,7 +116,9 @@ describe("PushForm", () => {
     submit();
 
     await screen.findByText(/Pushed session\//);
-    expect(screen.queryByRole("link")).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: "Open compare on GitHub" }),
+    ).toBeNull();
   });
 
   it("trims the remote branch once, for the request and the enable check", async () => {

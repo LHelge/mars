@@ -151,7 +151,8 @@ export function ProjectCreateForm({ onCancel }: ProjectCreateFormProps) {
           setFieldErrors((current) => ({ ...current, remoteUrl: undefined }));
         }}
         error={fieldErrors.remoteUrl}
-        hint="https://host/owner/repo.git"
+        placeholder="https://host/owner/repo.git"
+        hint="HTTPS only; no token in the URL."
         autoComplete="off"
         required
         disabled={loading}
@@ -163,6 +164,7 @@ export function ProjectCreateForm({ onCancel }: ProjectCreateFormProps) {
         value={defaultBranch}
         onChange={setDefaultBranch}
         hint="Optional; discovered from the remote when left empty."
+        help="branches"
         autoComplete="off"
         disabled={loading}
       />
@@ -173,7 +175,7 @@ export function ProjectCreateForm({ onCancel }: ProjectCreateFormProps) {
         type="password"
         value={credential}
         onChange={setCredential}
-        hint="Personal access token for a private repository; stored write-only as the project secret GIT_CREDENTIAL and never shown again"
+        hint="Personal access token Mars fetches and pushes with, so it needs GitHub Contents read and write or GitLab read_repository and write_repository; stored write-only as the project secret GIT_CREDENTIAL."
         help="git-credential"
         autoComplete="off"
         disabled={loading}

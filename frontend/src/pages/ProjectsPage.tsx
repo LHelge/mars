@@ -107,7 +107,8 @@ export function ProjectsPage() {
           projects.isSuccess && (
             <EmptyState
               title="No projects yet"
-              description="A project is a git remote Mars mirrors once and then runs every session from."
+              description="A project is a git remote Mars mirrors once and then runs every session from; its sessions also need an agent credential."
+              help="getting-started"
               action={newProjectButton}
             />
           )

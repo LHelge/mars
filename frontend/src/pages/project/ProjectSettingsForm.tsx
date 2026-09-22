@@ -1,6 +1,6 @@
 // `PUT /projects/{id}` (`SPEC.md`, "Projects"): the fields a project keeps
-// settable after it exists — its name, the integration branch sessions are
-// based on and branched from, how many claims in one state escalate a task
+// settable after it exists — its name, the default branch sessions start from
+// and merges target, how many claims in one state escalate a task
 // (`max_attempts`, 1–20), and the two that bind automation: how many live
 // sessions the project may have before an unattended launch is held back, and
 // whether unattended launches are paused altogether.
@@ -21,6 +21,7 @@ import type { FormEvent } from "react";
 import { Alert } from "../../components/Alert";
 import { FieldShell } from "../../components/FieldShell";
 import { FormField } from "../../components/FormField";
+import { HelpLink } from "../../components/HelpLink";
 import { SectionHeader } from "../../components/SectionHeader";
 import { SubmitButton } from "../../components/SubmitButton";
 import { FIELD } from "../../components/fieldStyles";
@@ -98,7 +99,7 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
     >
       <SectionHeader
         title="Settings"
-        description="Name, the integration branch sessions are based on, the attempt limit that escalates a task, and what the dispatcher may launch."
+        description="Name, the branch sessions start from, the attempt limit that escalates a task, and what the dispatcher may launch."
       />
 
       {save.error !== null && <Alert kind="error">{save.error}</Alert>}
@@ -126,8 +127,9 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
           hint={
             project.default_branch === null
               ? "Still being discovered from the remote."
-              : "An integration head, or any branch name."
+              : "The Mars branch sessions start from and merges target by default."
           }
+          help="branches"
         >
           {(control) => (
             <>
@@ -153,7 +155,8 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
         <FieldShell
           label="Max attempts"
           name="project-max-attempts"
-          hint={`${String(MIN_ATTEMPTS)}–${String(MAX_ATTEMPTS)}`}
+          hint={`How many times agents may claim a task in one state before a release escalates it to the human state (${String(MIN_ATTEMPTS)}–${String(MAX_ATTEMPTS)}).`}
+          help="task-flow"
           error={attemptsError ?? undefined}
         >
           {(control) => (
@@ -180,7 +183,8 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
         </legend>
         <p className="text-console-muted pb-3 text-xs">
           Both hold the dispatcher back and nothing else: you can still launch a
-          session by hand while the project is paused or at its cap.
+          session by hand while the project is paused or at its cap.{" "}
+          <HelpLink topic="automation" />
         </p>
 
         <div className="grid gap-3 sm:grid-cols-2">

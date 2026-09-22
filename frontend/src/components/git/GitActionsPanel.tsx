@@ -26,6 +26,7 @@ import { MergeForm } from "./MergeForm";
 import { PushForm } from "./PushForm";
 import { RebaseForm } from "./RebaseForm";
 import { SessionBranchTable } from "./SessionBranchTable";
+import { SYNC_TITLE } from "./syncHint";
 import type { OpenRow, RowAction } from "./SessionBranchTable";
 
 /**
@@ -207,6 +208,7 @@ export function GitActionsPanel({
     <section className="space-y-3">
       <SectionHeader
         title="Branches"
+        help="branches"
         description={
           sessionId === undefined
             ? `Session refs in the mirror, measured against ${project.default_branch ?? "the default branch"}.`
@@ -249,6 +251,7 @@ export function GitActionsPanel({
                 variant="ghost"
                 loading={syncing}
                 onClick={onSync}
+                title={SYNC_TITLE}
               >
                 Sync
               </SubmitButton>

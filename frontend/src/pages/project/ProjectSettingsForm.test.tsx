@@ -15,6 +15,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../../services/apiClient";
@@ -50,9 +51,12 @@ function renderForm() {
     defaultOptions: { queries: { retry: false } },
   });
   return render(
-    <QueryClientProvider client={client}>
-      <ProjectSettingsForm project={PROJECT} />
-    </QueryClientProvider>,
+    // The fields' `Learn more` links are router links.
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ProjectSettingsForm project={PROJECT} />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 

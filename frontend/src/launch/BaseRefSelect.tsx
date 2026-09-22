@@ -18,6 +18,10 @@ import { FieldShell } from "../components/FieldShell";
 import { FIELD } from "../components/fieldStyles";
 import type { Branch } from "../types";
 
+/** What the choice means, under the control in both launch forms. */
+const BASE_REF_HINT =
+  "Where the session's branch starts; pick a session branch to continue earlier work.";
+
 /** The select entry that opens the free-text field. */
 const CUSTOM = "\u0000custom";
 
@@ -29,7 +33,10 @@ export interface BaseRefSelectProps {
   /** What the empty entry is called: the hand-off commit, or the project default. */
   defaultLabel: string;
   disabled?: boolean;
-  /** Shown under the control; the hand-off override notice goes here. */
+  /**
+   * A note appended to the control's own hint; the hand-off override notice
+   * goes here.
+   */
   hint?: string;
   /**
    * The field's name, and the stem of the ids it hands its two controls. Both
@@ -61,7 +68,12 @@ export function BaseRefSelect({
   const custom = customRequested || (value !== "" && !known);
 
   return (
-    <FieldShell label="Base ref" name={name} hint={hint}>
+    <FieldShell
+      label="Base ref"
+      name={name}
+      hint={hint === undefined ? BASE_REF_HINT : `${BASE_REF_HINT} ${hint}`}
+      help="branches"
+    >
       {(control) => (
         <>
           <select

@@ -9,7 +9,8 @@
 //
 // The task hand-off form of `MergeInput` (`task_id` + `handoff_id`) is the
 // board's own action and not a mode of this form: this component only ever
-// merges a branch into a head.
+// merges a branch into a head, and says so: a branch merge records no review
+// approval (`SPEC.md`, "Git", `MergeInput`; `ARCHITECTURE.md`, "Git model").
 
 import { useState } from "react";
 import { merge } from "../../services/git";
@@ -18,6 +19,7 @@ import { shortSha } from "../../utils/format";
 import { FieldShell } from "../FieldShell";
 import { FIELD } from "../fieldStyles";
 import { FormField } from "../FormField";
+import { HelpLink } from "../HelpLink";
 import { SubmitButton } from "../SubmitButton";
 import {
   chosenOr,
@@ -158,6 +160,11 @@ export function MergeForm({
         disabled={disabled}
         hint="Left empty, git writes its own merge message."
       />
+
+      <p className="text-console-muted text-xs">
+        A branch merge grants no task approval; reviewed task work is merged
+        from the task&apos;s own merge action. <HelpLink topic="branches" />
+      </p>
 
       <div className="flex items-center gap-3">
         <SubmitButton loading={action.loading} disabled={disabled || !ready}>

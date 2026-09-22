@@ -95,11 +95,12 @@ jobs:
           '
 
       # CLAUDE.md, rule 3. The fixtures and the smoke test do carry obviously
-      # fake bearer tokens; the length bound is what tells those apart from a
-      # real one.
+      # fake bearer tokens, and the documentation names the prefixes it
+      # guards against; a length bound on every pattern is what tells those
+      # apart from a real token, which is far longer than 20 characters.
       - name: No credentials under images/
         run: |
-          if grep -rEn 'sk-ant-|ghp_|Bearer [A-Za-z0-9]{20,}' images/; then
+          if grep -rEn 'sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|Bearer [A-Za-z0-9]{20,}' images/; then
             echo "::error::credential-shaped string under images/ (CLAUDE.md, rule 3)"
             exit 1
           fi

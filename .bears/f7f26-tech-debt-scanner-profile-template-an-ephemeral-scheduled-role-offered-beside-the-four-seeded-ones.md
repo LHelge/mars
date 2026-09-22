@@ -1,10 +1,10 @@
 ---
 id: f7f26
 title: "Tech-debt scanner profile template: an ephemeral scheduled role offered beside the four seeded ones"
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-21T20:25:49.180976570Z"
-updated: "2026-09-22T09:07:05.634912153Z"
+updated: "2026-09-22T10:23:12.964385329Z"
 tags:
   - orchestrator
   - frontend

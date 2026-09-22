@@ -2,10 +2,10 @@
 id: tup8z
 title: "Scheduled agents: run an ephemeral profile on a cron expression, without a task"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-21T20:07:11.967490367Z"
-updated: "2026-09-21T20:23:15.280828353Z"
+updated: "2026-09-22T10:23:15.146295588Z"
 tags:
   - orchestrator
   - frontend

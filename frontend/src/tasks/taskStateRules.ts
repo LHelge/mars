@@ -13,7 +13,20 @@
 // that renders a component exports nothing else
 // (`react-refresh/only-export-components`).
 
+import type { TableColumn } from "../components/tableStyles";
 import type { Task, TaskState, TaskStateKind } from "../types";
+
+/** The editor's table, shared with the row that spans it for its answers. */
+export const STATE_COLUMNS: readonly TableColumn[] = [
+  { label: "#", className: "w-8" },
+  { label: "Name" },
+  { label: "Kind" },
+  { label: "Tasks", className: "text-right" },
+  { label: "Actions", className: "pr-0 text-right" },
+];
+
+/** Shown instead of a count while the task list has not been read. */
+export const COUNTS_UNKNOWN = "Task counts are not loaded";
 
 /** `SPEC.md`: 1–32 characters matching `[a-z0-9][a-z0-9_-]*`. */
 export const STATE_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;

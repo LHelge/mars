@@ -32,7 +32,7 @@ import { Link } from "react-router";
 import { MarkdownBody } from "../components/Markdown";
 import { SubmitButton } from "../components/SubmitButton";
 import { useCopyToClipboard } from "../components/useClipboardCopy";
-import type { TaskComment, Handoff, TaskDetail } from "../types";
+import type { Handoff, TaskDetail } from "../types";
 import {
   formatDateTime,
   formatRelative,
@@ -40,18 +40,14 @@ import {
   shortSha,
 } from "../utils/format";
 import { HandoffDiff } from "./HandoffDiff";
+import { HandoffHistory } from "./HandoffHistory";
 import { MergeTaskAction } from "./MergeTaskAction";
-import {
-  REVIEW_ACTION,
-  commentExcerpt,
-  handoffComment,
-  reviewLabel,
-} from "./handoffRules";
+import { REVIEW_ACTION, handoffComment, reviewLabel } from "./handoffRules";
 import type { ReviewDecision } from "./handoffRules";
 import { ReviewForm } from "./ReviewForm";
 import { RevisionForm } from "./RevisionForm";
-import { CHIP } from "./taskChrome";
 import { useUsername } from "./useUsername";
+import { ViewDiffButton } from "./ViewDiffButton";
 
 export interface HandoffPanelProps {
   projectId: string;
@@ -168,7 +164,7 @@ export function HandoffPanel({ projectId, task }: HandoffPanelProps) {
         />
       )}
 
-      <History task={task} onViewDiff={viewDiff} />
+      <HandoffHistory task={task} onViewDiff={viewDiff} />
     </div>
   );
 }
@@ -267,122 +263,6 @@ function Reviewer({ handoff }: { handoff: Handoff }) {
     </p>
   );
 }
-
-/**
- * Every revision and decision on this task, oldest first as `TaskDetail`
- * delivers them (`SPEC.md`, "Tasks").
- */
-function History({
-  task,
-  onViewDiff,
-}: {
-  task: TaskDetail;
-  onViewDiff: (handoff: Handoff) => void;
-}) {
-  if (task.handoffs.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="space-y-2">
-      <p className="text-console-muted text-xs">History, oldest first</p>
-      <ol className="border-console-border space-y-2 border-l pl-3">
-        {task.handoffs.map((handoff) => (
-          <HistoryRow
-            key={handoff.id}
-            handoff={handoff}
-            comment={handoffComment(task.comments, handoff)}
-            current={handoff.id === task.handoff?.id}
-            onViewDiff={onViewDiff}
-          />
-        ))}
-      </ol>
-    </div>
-  );
-}
-
-function HistoryRow({
-  handoff,
-  comment,
-  current,
-  onViewDiff,
-}: {
-  handoff: Handoff;
-  comment: TaskComment | null;
-  current: boolean;
-  onViewDiff: (handoff: Handoff) => void;
-}) {
-  const label = reviewLabel(handoff);
-  const username = useUsername(handoff.created_by_user_id);
-
-  return (
-    <li className={current ? "text-console-text" : "text-console-muted"}>
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <time
-          dateTime={handoff.created_at}
-          title={formatDateTime(handoff.created_at)}
-          className="font-mono text-[0.6875rem]"
-        >
-          {formatRelative(handoff.created_at)}
-        </time>
-        {handoff.created_by_session_id !== null ? (
-          <Link
-            to={`/sessions/${handoff.created_by_session_id}`}
-            title={handoff.created_by_session_id}
-            className="text-console-accent font-mono text-[0.6875rem] hover:underline"
-          >
-            {shortId(handoff.created_by_session_id, 8)}
-          </Link>
-        ) : (
-          <span className="font-mono text-[0.6875rem]">
-            @{username ?? "unknown"}
-          </span>
-        )}
-        <span className="font-mono text-[0.6875rem]" title={handoff.commit}>
-          {shortSha(handoff.commit)}
-        </span>
-        <span className={`font-mono text-[0.6875rem] ${label.tone}`}>
-          {label.text}
-        </span>
-        {current && (
-          <span
-            className={`${CHIP} border-console-accent/60 text-console-accent`}
-          >
-            current
-          </span>
-        )}
-        <span className="ml-auto">
-          <ViewDiffButton handoff={handoff} onViewDiff={onViewDiff} />
-        </span>
-      </div>
-      {comment !== null && comment.body.trim() !== "" && (
-        <p className="max-w-prose text-xs">{commentExcerpt(comment.body)}</p>
-      )}
-    </li>
-  );
-}
-
-/** Opens the retained commit of one hand-off, wherever it is listed. */
-function ViewDiffButton({
-  handoff,
-  onViewDiff,
-}: {
-  handoff: Handoff;
-  onViewDiff: (handoff: Handoff) => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        onViewDiff(handoff);
-      }}
-      className="border-console-border hover:bg-console-raised hover:text-console-text rounded border px-1.5 py-px font-mono text-[0.6875rem]"
-    >
-      View diff
-    </button>
-  );
-}
-
 /**
  * The commit, abbreviated with the full id in its `title` and on the
  * clipboard. A commit id is something people paste into a terminal, so the

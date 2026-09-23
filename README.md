@@ -54,7 +54,7 @@ These steps have been walked through end to end on both engines — rootless Pod
 
 ### Prerequisites
 
-- A Linux host with rootless Podman 4.9+ (or Docker 24+); the engine tests run on Podman 4.9.3 and 6.1.2 and on Docker 28.0.4, and the walkthrough above on Podman 6.1.2 and Docker 29.8.0.
+- A Linux host with rootless Podman 4.9+ (or Docker 24+); the engine tests and the deployment transitions run on Podman 4.9.3, the engine tests also on 6.1.2 and on Docker 28.0.4, and the walkthrough above on Podman 6.1.2 and Docker 29.8.0. `compose.podman.yml` keeps the services out of a pod (`x-podman: in_pod: false`): Podman 4.9 and 5 refuse the orchestrator's `userns_mode: keep-id` for a container in any pod.
 - `podman-compose` or `docker compose`. They differ in one place that matters here — whether `COMPOSE_FILE` is read from `.env`; `docker compose` does, `podman-compose` 1.6.0 does not — so "Start" gives the command that works on both.
 - A directory for persistent data, for example `/srv/mars/data`, owned by the service user (uid 1000 under Docker). It is `DATA_DIR_HOST` and must exist before the first start: compose bind-mounts it, and the orchestrator refuses to start if it is missing or not writable by the uid it runs as.
 - On Docker, the service user in the `docker` group, and that group's gid in `DOCKER_GID` — see the Docker paragraph at the end of "Podman setup".
@@ -82,18 +82,19 @@ echo "unix://$XDG_RUNTIME_DIR/podman/podman.sock"
 
 `systemctl --user` and `$XDG_RUNTIME_DIR` need a real session for that user. `sudo -u <user> …` does not give you one, so run the block from a login shell of the service user (`machinectl shell <user>@` or `ssh <user>@localhost`).
 
-The compose file runs the orchestrator with `userns_mode: keep-id` and mounts that socket, so the orchestrator's uid inside the container matches the service user on the host. Session containers run with `keep-id:uid=1000,gid=1000`, which maps the service user to the image's `agent` user (uid 1000) whatever the service user's uid is; the orchestrator verifies this at startup with a probe container and refuses to start if Podman does not honour it. That form of `keep-id` needs Podman 4.3 or newer, and the engine tests have verified it through the compatibility API on Podman 4.9.3 and 6.1.2. Podman resolves `keep-id` through the non-thread-safe `libsubid`, so it cannot do it for two containers at once: with twenty creates in flight on Podman 6.1.2 about one container in fourteen comes out with a broken uid mapping and then fails to start (`doesn't map UID 0`, `write to uid_map: Operation not permitted`), and the API service occasionally crashes in that call and is restarted by its socket unit. No fixed version is known, so the orchestrator creates containers one at a time per host: its engine adapter holds a lock across each container creation and releases it again before starting the container, so two sessions launched at once simply take turns creating their containers. The `podman` CLI is unaffected, because each invocation is its own process. If the compatibility API cannot apply `keep-id` to the orchestrator container, run the orchestrator on the host instead — "Running the orchestrator on the host" below. Session containers still require `keep-id:uid=1000,gid=1000` support and must pass the startup probe either way; that fallback is about the orchestrator's own container and nothing else.
+The compose file runs the orchestrator with `userns_mode: keep-id:uid=1000,gid=1000` and mounts that socket, so the orchestrator image's uid 1000 is the service user on the host, whatever the service user's uid is (plain `keep-id` would map the service user onto its own uid and leave the image's uid 1000 a sub-uid that cannot write the data directory). Session containers run with the same `keep-id:uid=1000,gid=1000`, which maps the service user to the image's `agent` user (uid 1000); the orchestrator verifies this at startup with a probe container and refuses to start if Podman does not honour it. That form of `keep-id` needs Podman 4.3 or newer, and the engine tests have verified it through the compatibility API on Podman 4.9.3 and 6.1.2. Podman resolves `keep-id` through the non-thread-safe `libsubid`, so it cannot do it for two containers at once: with twenty creates in flight on Podman 6.1.2 about one container in fourteen comes out with a broken uid mapping and then fails to start (`doesn't map UID 0`, `write to uid_map: Operation not permitted`), and the API service occasionally crashes in that call and is restarted by its socket unit. No fixed version is known, so the orchestrator creates containers one at a time per host: its engine adapter holds a lock across each container creation and releases it again before starting the container, so two sessions launched at once simply take turns creating their containers. The `podman` CLI is unaffected, because each invocation is its own process. If the compatibility API cannot apply `keep-id` to the orchestrator container, run the orchestrator on the host instead — "Running the orchestrator on the host" below. Session containers still require `keep-id:uid=1000,gid=1000` support and must pass the startup probe either way; that fallback is about the orchestrator's own container and nothing else.
 
-`podman-compose` 1.6.0 does apply `userns_mode: keep-id` to the orchestrator container. To check it on your own host, note that `podman inspect` does not echo the word back — it reports the namespace Podman ended up creating:
+`podman-compose` 1.6.0 does apply `userns_mode: keep-id:uid=1000,gid=1000` to the orchestrator container. To check it on your own host, note that `podman inspect` does not echo the word back — it reports the namespace Podman ended up creating:
 
 ```bash
 podman inspect <project>_orchestrator_1 --format '{{.HostConfig.UsernsMode}} {{json .HostConfig.IDMappings}}'
 # keep-id applied:  private {"UidMap":["0:1:1000","1000:0:1","1001:1001:64536"],…}
 # override missing: <empty> null
-podman exec <project>_orchestrator_1 id   # uid must equal the service user's uid
+podman exec <project>_orchestrator_1 id   # uid=1000, the image's user
+podman top <project>_orchestrator_1 huser # the service user's name or uid on the host
 ```
 
-The `1000:0:1` entry is the mapping that matters: container uid 1000 is the service user. Without it the container runs as a sub-uid, cannot open the bind-mounted engine socket, and the orchestrator exits with `the container engine is unreachable; refusing to start`.
+The `1000:0:1` entry is the mapping that matters: container uid 1000 is the service user, whatever its uid on the host. Without it the container runs as a sub-uid, cannot open the bind-mounted engine socket, and the orchestrator exits with `the container engine is unreachable; refusing to start`.
 
 #### Running the orchestrator on the host
 
@@ -266,7 +267,7 @@ Operator controls, all of them `/srv/mars/current/bin/mars-deploy <command>` as 
 
 | Command | What it does |
 | --- | --- |
-| `status` | The installed, previous and promoted release, the last attempt with its outcome and reason, the last check, failed releases, the pin, pause and accepted epoch. |
+| `status` | The installed, previous and promoted release, the last attempt with its outcome, reason and any recovery (`manual: …` when a failed release added a migration and was left in place), the last check, failed releases, the pin, pause and accepted epoch. |
 | `run` | What the timer runs: follow the promoted release. `run --dry-run` says what it would apply. |
 | `deploy <commit or sha256:digest>` | Pins that release and applies it; the timer then stays on it. A commit is the full 40-character id. |
 | `unpin` | Follow the promoted release again. |
@@ -282,7 +283,7 @@ Exit status: `0` applied, nothing to do, or held (`status` says why); `1` failed
 
 #### Installing a published release
 
-The server needs neither `git` nor a build toolchain: the service user with rootless Podman from "Podman setup", `podman-compose`, `jq`, `flock` and, to encrypt backups, `age`. Everything of Mars's lives under one directory owned by the service user, `/srv/mars` below (mode `0700`):
+The server needs neither `git` nor a build toolchain: the service user with rootless Podman from "Podman setup", `podman-compose`, `jq`, `flock` and, to encrypt backups, `age`. All of them must be on the user manager's `PATH` (`systemctl --user show-environment`), because the user units below run the updater there: a distribution package or a link in `/usr/local/bin` is, a `pip install --user` into `~/.local/bin` is not. Everything of Mars's lives under one directory owned by the service user, `/srv/mars` below (mode `0700`):
 
 ```
 /srv/mars/
@@ -294,7 +295,7 @@ The server needs neither `git` nor a build toolchain: the service user with root
 └── backups/                  MARS_BACKUP_DIR, one directory per backup set
 ```
 
-A release directory holds `compose.yml`, `compose.podman.yml`, the generated `compose.release.yml` that pins the orchestrator and nginx images by digest, `manifest.json`, `env.example`, `bin/check-env`, `bin/session-images`, `bin/mars-backup` and `scripts/verify-deployment.sh`. It gets one addition at install, a `.env` symlink to `../../mars.env`: compose reads `.env` from the directory it runs in, both for interpolation and for the orchestrator's `env_file`, so the operator's file stays in one place outside every release. `compose.yml` names the project `mars`, so every release directory drives the same containers, the same `mars_pgdata` volume and the same networks, and `up -d` from a new release directory recreates only the services whose configuration changed — the orchestrator and nginx — and leaves PostgreSQL running (verified on podman-compose 1.6.0). A missing `POSTGRES_*`, `DATA_DIR_HOST` or `ENGINE_SOCKET_HOST` makes compose refuse to render before anything is touched.
+A release directory holds `compose.yml`, `compose.podman.yml`, the generated `compose.release.yml` that pins the orchestrator and nginx images by digest, `manifest.json`, `env.example`, `bin/check-env`, `bin/session-images`, `bin/mars-backup` and `scripts/verify-deployment.sh`. It gets one addition at install, a `.env` symlink to `../../mars.env`: compose reads `.env` from the directory it runs in, both for interpolation and for the orchestrator's `env_file`, so the operator's file stays in one place outside every release. `compose.yml` names the project `mars`, so every release directory drives the same containers, the same `mars_pgdata` volume and the same networks, and `up -d` from a new release directory recreates only the services whose configuration changed — the orchestrator and nginx — and leaves PostgreSQL running (verified on podman-compose 1.6.0). The services run outside podman-compose's pod (`x-podman: in_pod: false` in `compose.podman.yml`, ADR 0048); on a server installed before that, the first release with it moves the orchestrator and nginx out of `pod_mars` and PostgreSQL stays in it, which is harmless because the pod shares nothing. A missing `POSTGRES_*`, `DATA_DIR_HOST` or `ENGINE_SOCKET_HOST` makes compose refuse to render before anything is touched.
 
 **Registry access.** The packages are private. As the service user, log in once with a classic personal access token carrying only `read:packages`, into the persistent auth file rather than the default one under `/run`, which is gone after a reboot; paste the token at the prompt so it stays out of shell history:
 
@@ -324,18 +325,56 @@ systemctl --user disable --now mars-deploy.timer              # stop following m
 /srv/mars/current/bin/mars-deploy pause                       # or keep the timer and pause it
 ```
 
-**The first install.** The updater is inside the bundle, so the first one is extracted by hand; every later release it fetches itself. The digest is the one `mars-deploy:main` resolves to, or the one a Release run's summary names:
+**Diagnostics.** What to look at when a run did not do what you expected, all as the service user:
 
 ```bash
+/srv/mars/current/bin/mars-deploy status                # installed, promoted, last attempt, its reason and recovery
+/srv/mars/current/bin/mars-deploy run --dry-run         # what the next run would apply
+journalctl --user -u mars-deploy --since today          # every run's output
+podman ps -a --filter name=mars_                        # the three services and their health
+podman logs --tail 100 mars_orchestrator_1              # why an orchestrator did not become healthy
+curl -s http://127.0.0.1:8080/api/health                # through nginx, as the updater checks it (your HTTP_PORT)
+/srv/mars/current/bin/check-env /srv/mars/mars.env /srv/mars/current/manifest.json
+cd /srv/mars/current && ENV_FILE=/srv/mars/mars.env \
+  COMPOSE_CMD="podman-compose -f compose.yml -f compose.podman.yml -f compose.release.yml" \
+  scripts/verify-deployment.sh                          # the deployment checks the updater ends with
+```
+
+**The first install.** The updater is inside the bundle, so the first one is extracted by hand; every later release it fetches itself. In order, as the service user unless a line says `sudo`, after "Podman setup" (linger and the socket) and the registry login above:
+
+```bash
+# 1. The deployment root, owned by the service user.
+sudo install -d -o "$USER" -g "$USER" -m 0700 /srv/mars
+mkdir -p /srv/mars/releases /srv/mars/data /srv/mars/backups
+
+# 2. The release: the digest `mars-deploy:main` resolves to, or the one a
+#    Release run's summary names.
 digest=$(podman pull -q ghcr.io/lhelge/mars-deploy:main >/dev/null && \
   podman image inspect --format '{{.Digest}}' ghcr.io/lhelge/mars-deploy:main)
 rel=/srv/mars/releases/${digest/:/-}
 c=$(podman create --entrypoint /none "ghcr.io/lhelge/mars-deploy@${digest}")
 podman cp "${c}:/bundle" "$rel" && podman rm "$c"
 ln -s ../../mars.env "${rel}/.env"
-"${rel}/bin/mars-deploy" deploy "$digest"      # checks, pulls, starts, verifies; pins it
+
+# 3. The environment file, from the release's example ("The environment
+#    file" above), checked against the release until every line is ok.
+install -m 0600 "${rel}/env.example" /srv/mars/mars.env
+"${EDITOR:-vi}" /srv/mars/mars.env
+"${rel}/bin/check-env" /srv/mars/mars.env "${rel}/manifest.json"
+
+# 4. Apply it: checks, pulls, starts, verifies, and pins it.
+"${rel}/bin/mars-deploy" deploy "$digest"
 /srv/mars/current/bin/mars-deploy status
-/srv/mars/current/bin/install-units             # boot and nightly backup; updates stay off
+
+# 5. Boot and the nightly backup; updates stay off.
+/srv/mars/current/bin/install-units
+```
+
+Then sign in as `admin` / `changeme` through the proxy and change the password ("Start"), take a first full backup and rehearse a restore from it ("Backups and recovery"), and only then follow `main`:
+
+```bash
+/srv/mars/current/bin/mars-deploy unpin
+systemctl --user enable --now mars-deploy.timer
 ```
 
 `deploy` runs every check a timer run would — the manifest, the configuration (`bin/check-env`), the platform — pulls every image by digest, points the session-image aliases at the release's images, starts PostgreSQL, the orchestrator and nginx one after another, each with a bounded wait for health, runs `scripts/verify-deployment.sh`, and records the release, linking `/srv/mars/current` to its directory. It leaves the release pinned, which is what an operator wants on a first install; `mars-deploy unpin` follows `main` from then on. Moving to another release by hand is `mars-deploy deploy <commit or digest>` in the same way, and back is `mars-deploy rollback`.
@@ -351,6 +390,8 @@ ln -s ../../mars.env "${rel}/.env"
 - **`mars-backup db`** dumps the database with `pg_dump` while everything runs, checks that the dump reads back with `pg_restore --list`, and keeps it. The updater takes one, labelled `pre-deploy`, before every deployment that replaces the orchestrator and so may migrate the schema; a failed backup defers the deployment and leaves the running release alone (`ARCHITECTURE.md`, "Server deployment", "Applying"). This is the migration safety net: the database as it was before the new release touched it.
 - **`mars-backup full`** is a consistent restore point of the whole instance. It stops the orchestrator — session containers keep running, the UI answers 502 for the duration — dumps the database, archives the data directory with `podman unshare tar` (projects' shared directories, which are build caches, are left out unless `MARS_BACKUP_INCLUDE_SHARED=true`), adds the environment file when backups are encrypted, and starts the orchestrator again, also when any step failed, followed by nginx, which has to look up the orchestrator's new address. Run it nightly: `mars-backup.timer` does ("Automatic deployments", the user units). The database and the data directory in a full set agree the way they agree after a crash: everything the orchestrator writes is quiesced, and what running agents append afterwards — transcripts, work trees — is ahead of the database, which is exactly what recovery already handles (transcripts are replayed from the committed offset; `ARCHITECTURE.md`, "Durability and recovery").
 - **`mars-backup list`** prints each set with its kind, release commit, newest migration, encryption and size.
+
+By hand, under the updater's lock as the nightly unit runs it, so it cannot meet a deployment halfway: `flock -o -w 900 /srv/mars/state/lock /srv/mars/current/bin/mars-backup full --label manual --release /srv/mars/current`. It reads `/srv/mars/mars.env` unless `--env` names another file; `list` needs no lock.
 
 Each set is one directory, `<UTC time>-<kind>[-<label>]`, written under a `.partial-` name and renamed only when complete, holding `db.dump`, for a full set `data.tar.gz` and possibly `mars.env`, each with `.age` appended when encrypted, and `metadata.json`: the kind, the time, the release directory and commit it was taken under (`--release`), the applied migrations, the PostgreSQL server version and every file's size and SHA-256. Retention keeps the newest `MARS_BACKUP_KEEP_DB` db sets and `MARS_BACKUP_KEEP_FULL` full sets. Exit status: 0 done, 1 failed and nothing kept, 2 usage, 3 kept but the hook failed.
 
@@ -576,7 +617,7 @@ The path filters below apply to pull requests. On `main` the six suites are not 
 | Frontend CI | `frontend/**` | lint, typecheck, unit tests, build; `npm run build` ends in `scripts/check-entry-chunk.mjs`, which fails if the chunks a first paint fetches carry feature UI or exceed the first-paint byte budget (`SPEC.md`, "Frontend", "Code splitting") |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright against a real orchestrator, Postgres and the stub session image on rootless Podman, all brought up by `frontend/tests/e2e-stack.sh`; the report, traces and orchestrator log are uploaded on failure |
 | Images | `images/**` | Lint the entrypoint, Dockerfiles and stub; build all three session images — base, dev and stub — on Docker and Podman; run `images/smoke-test.sh` over them |
-| Deploy | Dockerfiles, `nginx/`, compose files | Build orchestrator and nginx images on Docker and Podman; `nginx -t`; the Content-Security-Policy on real responses from the nginx image; compose config for both overrides; `release-scripts` shellchecks `scripts/release/` and runs `scripts/release/test.sh` (promotion decision, bundle assembly with a podman-compose render, manifest validation). Its filter also covers `scripts/release/**`, `deploy/**` and `release.yml` |
+| Deploy | Dockerfiles, `nginx/`, compose files | Build orchestrator and nginx images on Docker and Podman; `nginx -t`; the Content-Security-Policy on real responses from the nginx image; compose config for both overrides; `release-scripts` shellchecks `scripts/release/` and runs `scripts/release/test.sh` (promotion decision, bundle assembly with a podman-compose render, manifest validation) and `scripts/release/test-backup.sh`; `transitions`, with linger and the Podman user socket set up as on a server, builds the orchestrator and nginx images from the commit (the `images` job's cache, read only) and runs `scripts/release/test-transitions.sh`, releases applied one after another by the real `mars-deploy` on rootless Podman: first install, no-op, update with PostgreSQL and data kept, older and paused, rollback and pin, two runs at once, a failed pull, backup and health, every held rule, a run killed mid-replacement, stop and start, a failed release that added a migration left in place, and the user units (boot, deploy, backup, failure notification). Its filter also covers `scripts/release/**`, `deploy/**` and `release.yml` |
 | Release | every push to `main` only | Calls the six suites above on the commit; a gate passes only when all six report `success`; then publishes the five images and the bundle to `ghcr.io/lhelge/` (reusing images whose inputs are unchanged) and moves `mars-deploy:main` forwards (`ARCHITECTURE.md`, "Server deployment") |
 
 ## Roadmap after v1

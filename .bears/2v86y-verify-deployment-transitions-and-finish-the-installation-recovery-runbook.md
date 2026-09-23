@@ -1,10 +1,10 @@
 ---
 id: "2v86y"
 title: Verify deployment transitions and finish the installation/recovery runbook
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-22T07:32:28.449657Z"
-updated: "2026-09-22T07:32:28.449657Z"
+updated: "2026-09-23T12:55:44.728166230Z"
 tags:
   - deployment
   - implementation
@@ -12,6 +12,7 @@ depends_on:
   - hk4xs
   - "2kane"
 parent: "2uqww"
+attempts: 1
 ---
 
 Owner: implementation.
@@ -75,3 +76,12 @@ Acceptance: tests demonstrate success and failure contracts; migration fixtures 
 - **Local:** the orchestrator library suite needs `DOCKER_HOST=unix:///run/user/1000/podman/podman.sock` for its database tests. `pkill -f <pattern>` kills the shell whose own command line contains the pattern; kill by PID.
 - **The dev host is the production server:** the dev host, 192.0.2.50, a VM. Production runs as `mars` (uid 1002) under `/srv/mars`, published on 192.0.2.50:8080 behind Traefik (192.0.2.4) at https://mars.example.com. Never touch `/srv/mars` or the `mars` user's Podman from lhelge; tests use `marsproof`.
 - **Linus's working style for this epic:** step by step in the main session, not implement-epic; ask before every push to main; verify on real containers before claiming anything.
+
+## Evidence (2026-09-23)
+- `scripts/release/test-transitions.sh`, Deploy workflow job `transitions`: branch run **35871349983** green, 166 checks on Ubuntu 24.04, Podman 4.9.3, runner uid 1001, linger plus `podman.socket`, user units in the real user manager; about 10 min of transitions, 11 min for the job with a warm build cache. Locally on the dev host (Podman 6.1.2, uid 1000, project `marstrans`), 167 checks green in 642 s, including the pod-era release A and the move out of the pod. Nothing was left behind: no containers, pod, units or images.
+- Measured on the runner: `sudo loginctl enable-linger runner` starts `user@1001.service`, and `systemd-run --user --scope` works. So the units are CI-tested; only a reboot stays manual.
+- Found and fixed by it: Podman 4.9.3 and 5.7.0 refuse `--userns` in podman-compose's pod (`x-podman: in_pod: false`, ADR 0048); plain `keep-id` breaks for a service uid other than 1000 (orchestrator now `keep-id:uid=1000,gid=1000`); `status` did not show the recovery; tools must be on the user manager's PATH.
+- sswjj should install the first release **after** this commit: the 7771fc9 release still has plain `keep-id`, which fails for `mars` (uid 1002) on Podman 4.9/5 and is unmeasured on Podman 6 with a non-1000 uid.
+- The migration-added case is asserted without a real migration (manifest lists only): failed, left in place, `recovery: manual…`, no rollback attempted, pre-deploy backup present, next run held.
+- dsyc6 is cross-referenced but not claimed: this is not a fresh host and nothing measured SELinux.
+

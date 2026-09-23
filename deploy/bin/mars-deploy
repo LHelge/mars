@@ -248,7 +248,7 @@ cmd_status() {
     "current:         \(.current | rel)",
     "previous:        \(.previous | rel)",
     "promoted main:   \($promoted[0:19])",
-    "last attempt:    \(if .attempted == null then "none" else "\(.attempted.commit[0:12]) \(.attempted.outcome // "unfinished") in \(.attempted.phase) at \(.attempted.started_at)\(if .attempted.reason then ": \(.attempted.reason)" else "" end)" end)",
+    "last attempt:    \(if .attempted == null then "none" else "\(.attempted.commit[0:12]) \(.attempted.outcome // "unfinished") in \(.attempted.phase) at \(.attempted.started_at)\(if .attempted.reason then ": \(.attempted.reason)" else "" end)\(if .attempted.recovery then "; recovery \(.attempted.recovery)" else "" end)" end)",
     "last check:      \(if .last_check == null then "none" else "\(.last_check.outcome) at \(.last_check.at): \(.last_check.reason)" end)",
     "failed releases: \(if (.failed | length) == 0 then "none" else (.failed | map(.[0:19]) | join(", ")) end)"
   ' "$STATE"

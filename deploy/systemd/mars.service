@@ -1,0 +1,22 @@
+# Mars: bring the installed release up at boot and down at shutdown
+# (README.md, "Automatic deployments"; installed by bin/install-units).
+# Rootless Podman has no daemon to restart containers after a reboot, so this
+# unit is what starts them; it needs `loginctl enable-linger` for the user.
+[Unit]
+Description=Mars: the installed release
+Wants=podman.socket
+After=podman.socket
+OnFailure=mars-failed@%n.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=MARS_ROOT=@ROOT@ MARS_PROJECT=@PROJECT@
+@ENVIRONMENT@
+ExecStart=@ROOT@/current/bin/mars-deploy start
+ExecStop=@ROOT@/current/bin/mars-deploy stop
+TimeoutStartSec=900
+TimeoutStopSec=150
+
+[Install]
+WantedBy=default.target

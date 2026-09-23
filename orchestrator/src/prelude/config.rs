@@ -640,6 +640,8 @@ mod tests {
         "MARS_BACKUP_KEEP_FULL",
         "MARS_BACKUP_HOOK",
         "MARS_BACKUP_INCLUDE_SHARED",
+        // Read by bin/mars-deploy on a deployed server, not by Config.
+        "MARS_DEPLOY_NOTIFY_HOOK",
         "COMPOSE_FILE",
         "DOCKER_GID",
     ];

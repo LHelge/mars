@@ -1,0 +1,15 @@
+# Mars: the nightly full backup (README.md, "Backups and recovery"), under the
+# updater's lock so it never runs in the middle of a deployment. `flock -o`
+# keeps the lock in flock itself: the orchestrator the backup starts again
+# must not inherit it.
+[Unit]
+Description=Mars: nightly full backup
+After=mars.service
+OnFailure=mars-failed@%n.service
+
+[Service]
+Type=oneshot
+Environment=MARS_ROOT=@ROOT@ MARS_PROJECT=@PROJECT@
+@ENVIRONMENT@
+ExecStart=/usr/bin/flock -o -w 900 @ROOT@/state/lock @ROOT@/current/bin/mars-backup --env @ROOT@/mars.env --project @PROJECT@ full --label nightly --release @ROOT@/current
+TimeoutStartSec=7200

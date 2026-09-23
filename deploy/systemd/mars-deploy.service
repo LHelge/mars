@@ -1,0 +1,15 @@
+# Mars: follow the promoted release once (`mars-deploy run`), started by
+# mars-deploy.timer. Exit 75 is a deferral: nothing was touched and the next
+# run tries again, so it is not a unit failure.
+[Unit]
+Description=Mars: follow the promoted release
+After=mars.service
+OnFailure=mars-failed@%n.service
+
+[Service]
+Type=oneshot
+Environment=MARS_ROOT=@ROOT@ MARS_PROJECT=@PROJECT@
+@ENVIRONMENT@
+ExecStart=@ROOT@/current/bin/mars-deploy run
+SuccessExitStatus=75
+TimeoutStartSec=1800

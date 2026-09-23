@@ -1,0 +1,12 @@
+# Mars: nightly full backup at 03:30 local time; a night the host was off is
+# made up at the next boot.
+[Unit]
+Description=Mars: nightly full backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

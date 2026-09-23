@@ -88,7 +88,7 @@ if [ -f "$manifest" ]; then
     test "$(jq .source.sequence "$manifest")" = "$(git -C "$root" rev-list --count "$head")"
   check "compose.release.yml pins the orchestrator digest" \
     grep -q "image: $(fake mars-orchestrator)" "${work}/out/bundle/compose.release.yml"
-  for f in compose.yml compose.podman.yml scripts/verify-deployment.sh bin/check-env bin/session-images bin/mars-backup bin/mars-deploy bin/validate-manifest lib/envfile.sh env.example; do
+  for f in compose.yml compose.podman.yml scripts/verify-deployment.sh bin/check-env bin/session-images bin/mars-backup bin/mars-deploy bin/validate-manifest bin/install-units systemd/mars.service systemd/mars-deploy.timer lib/envfile.sh env.example; do
     check "the bundle carries ${f}" test -f "${work}/out/bundle/${f}"
   done
 fi
@@ -116,6 +116,38 @@ expect "a tag instead of a digest is refused" "" 1 bash -c "cd '$root' &&
   IMAGE_ORCHESTRATOR=ghcr.io/lhelge/mars-orchestrator:latest IMAGE_NGINX=$(fake mars-nginx) \
   IMAGE_SESSION_CLAUDE=$(fake mars-session-claude) IMAGE_SESSION_CLAUDE_DEV=$(fake mars-session-claude-dev) \
   '${here}/make-bundle.sh' '${work}/tagged' >/dev/null"
+
+# --- deploy/systemd -------------------------------------------------------
+# The units install-units renders are valid systemd units: rendered into a
+# scratch config directory over a stand-in root, then `systemd-analyze
+# verify`, which also checks every ExecStart names an executable.
+if command -v systemd-analyze >/dev/null 2>&1; then
+  vroot="${work}/vroot"
+  mkdir -p "${vroot}/current/bin" "${work}/xdg"
+  for b in mars-deploy mars-backup; do printf '#!/bin/sh\n' >"${vroot}/current/bin/$b"; chmod +x "${vroot}/current/bin/$b"; done
+  render_units() {
+    # install-units calls systemctl and loginctl; stand-ins keep the test off
+    # the real user manager.
+    mkdir -p "${work}/fakebin"
+    printf '#!/bin/sh\nexit 0\n' >"${work}/fakebin/systemctl"
+    printf '#!/bin/sh\necho yes\n' >"${work}/fakebin/loginctl"
+    chmod +x "${work}/fakebin/systemctl" "${work}/fakebin/loginctl"
+    PATH="${work}/fakebin:$PATH" XDG_CONFIG_HOME="${work}/xdg" \
+      "${root}/deploy/bin/install-units" --root "$vroot" --project marstest --env MARS_REGISTRY=127.0.0.1:5000 >/dev/null
+  }
+  check "install-units renders every unit" render_units
+  check "the units carry the root and the project" \
+    grep -q "${vroot}/current/bin/mars-deploy start" "${work}/xdg/systemd/user/mars.service"
+  check "--env becomes an Environment line" \
+    grep -q '^Environment=MARS_REGISTRY=127.0.0.1:5000$' "${work}/xdg/systemd/user/mars-deploy.service"
+  no_placeholder() { ! grep -rq '@[A-Z]*@' "$1"; }
+  check "no placeholder is left" no_placeholder "${work}/xdg/systemd/user"
+  verify_units() { (cd "${work}/xdg/systemd/user" && systemd-analyze --user verify ./*.service ./*.timer >"${work}/verify.log" 2>&1); }
+  if verify_units; then pass "systemd-analyze verifies the units"; else fail "systemd-analyze verifies the units: $(head -5 "${work}/verify.log")"; fi
+  check "install-units recorded its values for --refresh" grep -qx "PROJECT=marstest" "${vroot}/state/units.env"
+else
+  echo "skip systemd units (systemd-analyze not installed)"
+fi
 
 # --- deploy/bin/check-env ----------------------------------------------
 checkenv="${root}/deploy/bin/check-env"

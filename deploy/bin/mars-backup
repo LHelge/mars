@@ -101,8 +101,31 @@ if [ -n "$recipients" ]; then
   command -v age >/dev/null || die "MARS_BACKUP_AGE_RECIPIENTS is set but age is not installed"
 fi
 
+# The orchestrator is started again in a transient scope of its own: under
+# mars-backup.service its conmon would otherwise sit in the unit's control
+# group and be killed with it when the one-shot backup finishes.
+#
+# nginx is restarted right after: it resolved the orchestrator's name once,
+# at its own start, and a stopped and started container comes back on
+# another address, so without the restart nginx would proxy into nothing
+# until something else restarted it.
+in_own_scope() {
+  if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    systemd-run --user --scope --quiet --collect -- "$@"
+  else
+    "$@"
+  fi
+}
+start_orchestrator() {
+  in_own_scope podman start "$orch_container" >/dev/null || return 1
+  if [ "$(podman inspect --format '{{.State.Running}}' "$nginx_container" 2>/dev/null)" = true ]; then
+    in_own_scope podman restart --time 10 "$nginx_container" >/dev/null
+  fi
+}
+
 pg_container="${project}_postgres_1"
 orch_container="${project}_orchestrator_1"
+nginx_container="${project}_nginx_1"
 
 # --- list ---------------------------------------------------------------
 if [ "$command" = list ]; then
@@ -139,7 +162,7 @@ orchestrator_stopped=false
 finish() {
   local status=$?
   if [ "$orchestrator_stopped" = true ]; then
-    if podman start "$orch_container" >/dev/null; then
+    if start_orchestrator; then
       echo "started ${orch_container} again"
     else
       echo "mars-backup: could not start ${orch_container} again; start it by hand" >&2
@@ -202,7 +225,7 @@ if [ "$command" = full ]; then
     echo "not encrypted: mars.env and its master keys are not in this set; keep them elsewhere" >&2
   fi
   if [ "$orchestrator_stopped" = true ]; then
-    podman start "$orch_container" >/dev/null
+    start_orchestrator
     orchestrator_stopped=false
     echo "started ${orch_container} again after $(($(date +%s) - stopped_at))s"
   fi

@@ -1,0 +1,10 @@
+# Mars: report a failed unit through the operator's notification hook
+# (MARS_DEPLOY_NOTIFY_HOOK); a no-op when none is configured.
+[Unit]
+Description=Mars: report that %i failed
+
+[Service]
+Type=oneshot
+Environment=MARS_ROOT=@ROOT@ MARS_PROJECT=@PROJECT@
+@ENVIRONMENT@
+ExecStart=@ROOT@/current/bin/mars-deploy notify unit-failed "%i failed; see journalctl --user -u %i"

@@ -23,7 +23,10 @@
 #
 # A third job, `release-scripts`, shellchecks and tests scripts/release/, the
 # pieces of the Release workflow that can run without a registry: the
-# promotion decision, the bundle assembly and the manifest validator.
+# promotion decision, the bundle assembly and the manifest validator. A
+# fourth, `transitions`, applies release after release with deploy/bin/
+# mars-deploy to a real stack (ARCHITECTURE.md, "Server deployment",
+# "Verification"), from images built here and a throwaway local registry.
 name: Deploy
 
 on:
@@ -399,3 +402,103 @@ jobs:
 
       - name: Test the backup command
         run: scripts/release/test-backup.sh
+
+  # scripts/release/test-transitions.sh: releases applied one after another by
+  # the real bin/mars-deploy to a real stack on rootless Podman (README.md,
+  # "Automatic deployments"). The orchestrator and nginx images are built from
+  # this commit with the images job's Actions cache, read only, and loaded
+  # into Podman; the stub stands in for both session images. The script
+  # serves them from a throwaway registry under their ghcr.io names, so
+  # nothing is pulled from or pushed to GHCR and no token is used.
+  transitions:
+    name: Deployment transitions (podman)
+    # Ubuntu 24.04's Podman 4.9, the oldest README.md supports.
+    runs-on: ubuntu-latest
+    # A cold orchestrator build when the cache is empty, plus the transitions:
+    # ten minutes measured on a hosted runner, three waits of the health
+    # timeout among them. Warm, the whole job took eleven.
+    timeout-minutes: 60
+    steps:
+      # The full history: make-bundle.sh counts commits for the sequence.
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Podman and podman-compose
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          podman version
+          python3 -m venv "${RUNNER_TEMP}/podman-compose"
+          "${RUNNER_TEMP}/podman-compose/bin/pip" install --quiet podman-compose
+          "${RUNNER_TEMP}/podman-compose/bin/podman-compose" --version
+          # On the PATH of the user units too, as a system package would be:
+          # they run in the user manager, not in this step's environment.
+          sudo ln -s "${RUNNER_TEMP}/podman-compose/bin/podman-compose" /usr/local/bin/podman-compose
+
+      # As in the images and release-scripts jobs above.
+      - name: Prepare rootless Podman
+        run: |
+          dir="/run/user/$(id -u)"
+          sudo mkdir -p "${dir}"
+          sudo chown "$(id -u):$(id -g)" "${dir}"
+          sudo chmod 0700 "${dir}"
+          echo "XDG_RUNTIME_DIR=${dir}" >> "$GITHUB_ENV"
+          if ! grep -q "^$(id -un):" /etc/subuid || ! grep -q "^$(id -un):" /etc/subgid; then
+            sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+            podman system migrate
+          fi
+
+      # README.md, "Podman setup", as on a server: linger gives the runner
+      # user a user manager (measured: user@1001 starts, `systemd-run --user
+      # --scope` works), the Podman socket is its socket-activated unit, and
+      # the test installs and drives the Mars user units in it.
+      - name: Enable linger and the Podman user socket
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          for _ in $(seq 1 30); do
+            if systemctl --user show-environment >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          systemctl --user enable --now podman.socket
+          socket="${XDG_RUNTIME_DIR}/podman/podman.sock"
+          curl -sf --unix-socket "${socket}" http://d/v1.41/version >/dev/null
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # The images job's cache scopes, read only: that job is the one that
+      # writes them. The result is a docker archive Podman loads.
+      - name: Build the orchestrator image
+        uses: docker/build-push-action@v7
+        with:
+          context: orchestrator
+          tags: mars-orchestrator:transitions
+          outputs: type=docker,dest=${{ runner.temp }}/orchestrator.tar
+          cache-from: type=gha,scope=orchestrator
+
+      - name: Build the nginx image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: nginx/Dockerfile
+          tags: mars-nginx:transitions
+          outputs: type=docker,dest=${{ runner.temp }}/nginx.tar
+          cache-from: type=gha,scope=nginx
+
+      - name: Load the images into Podman and build the stub
+        run: |
+          for image in orchestrator nginx; do
+            podman load -q -i "${RUNNER_TEMP}/${image}.tar"
+            rm "${RUNNER_TEMP}/${image}.tar"
+          done
+          podman build -q -t localhost/mars-session-stub:transitions images/stub
+          podman images
+
+      - name: Test the deployment transitions
+        run: scripts/release/test-transitions.sh
+        env:
+          TRANSITIONS_ORCHESTRATOR: docker.io/library/mars-orchestrator:transitions
+          TRANSITIONS_NGINX: docker.io/library/mars-nginx:transitions
+          TRANSITIONS_SESSION: localhost/mars-session-stub:transitions

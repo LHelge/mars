@@ -4,7 +4,7 @@ title: Re-run the deployment walkthrough on a fresh host with a non-1000 service
 status: open
 priority: P2
 created: "2026-09-19T17:06:22.486307016Z"
-updated: "2026-09-19T17:06:22.486307016Z"
+updated: "2026-09-23T13:49:50.112757115Z"
 tags:
   - infra
   - docs
@@ -25,3 +25,8 @@ The Podman walkthrough of the deployment packaging epic (5czwa, task rmu9n) ran 
 `README.md` "Running it"; `ARCHITECTURE.md` "Uid contract", "Networks"; ADR 0004, ADR 0035.
 
 Follow-up of rmu9n (epic 5czwa); not a child of that epic because it cannot be done on the machines that implement it.
+
+## Cross-reference from 2v86y (2026-09-23)
+- The non-1000 criterion's premise changed: with plain `keep-id` the orchestrator, whose image runs as `USER 1000`, became a sub-uid that could not write `/data` for a uid 1001 service user (measured on the GitHub runner, Podman 4.9.3, startup probe EACCES). `compose.podman.yml` now uses `keep-id:uid=1000,gid=1000`, so `podman exec <orchestrator> id` is uid 1000 and `podman top <orchestrator> huser` is the service user; README "Podman setup" says so. Check it in those terms.
+- Partial evidence, not this task's acceptance: the Deploy workflow's `transitions` job (`scripts/release/test-transitions.sh`) runs the whole deployment as the runner's uid 1001 with linger and the socket unit; sswjj installs production as `mars` (uid 1002) on lhelge-dev. Neither is a fresh host, and nothing has measured SELinux.
+- Podman 4.9 and 5.7 refuse `--userns` inside podman-compose's pod; `compose.podman.yml` sets `x-podman: in_pod: false` (ADR 0048).

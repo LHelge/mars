@@ -1,17 +1,30 @@
 # Rootless Podman override (README.md, "Podman setup"; ADR 0035).
 #
-# `keep-id` maps the host service user onto the same uid inside the container,
-# so files under /data keep the service user's ownership and the mounted socket
-# stays usable. Podman then sets the container user from the host uid, so no
-# `user:` is given here; the image works under any uid.
+# `keep-id:uid=1000,gid=1000` maps the host service user, whatever its uid,
+# onto uid 1000 inside the container, the image's `USER`, so files under /data
+# keep the service user's ownership and the mounted socket stays usable, as
+# for session containers (ARCHITECTURE.md, "Uid contract"). Plain `keep-id`
+# maps the service user onto its own uid instead, and the image's uid 1000 is
+# then a sub-uid that cannot write /data: measured with a uid 1001 service
+# user on Podman 4.9.3, where the startup probe failed with EACCES.
 #
 #   -f compose.yml -f compose.podman.yml
 #
 # (or COMPOSE_FILE=compose.yml:compose.podman.yml, which podman-compose 1.6.0
 # reads only from the process environment, not from `.env`)
 #
-# This one line is the whole Podman side of the difference; the Docker side is
-# two (`user:` and `group_add:`, see compose.docker.yml).
+# `userns_mode` is the Podman side of the difference; the Docker side is two
+# lines (`user:` and `group_add:`, see compose.docker.yml).
+#
+# `in_pod: false` keeps podman-compose from putting the services in a pod.
+# Its pod (`--infra=false --share=`) shares no namespace and only groups the
+# containers, but Podman 4.9 and 5 refuse `--userns` for a container in any
+# pod ("--userns and --pod cannot be set together"; measured on 4.9.3 and
+# 5.7.0, Podman 6 accepts it). The services reach each other over the compose
+# networks either way. docker compose ignores `x-` keys.
+x-podman:
+  in_pod: false
+
 services:
   orchestrator:
-    userns_mode: keep-id
+    userns_mode: keep-id:uid=1000,gid=1000

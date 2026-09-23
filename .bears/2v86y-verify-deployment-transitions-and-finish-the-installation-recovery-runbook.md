@@ -1,10 +1,10 @@
 ---
 id: "2v86y"
 title: Verify deployment transitions and finish the installation/recovery runbook
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-22T07:32:28.449657Z"
-updated: "2026-09-23T12:55:44.728166230Z"
+updated: "2026-09-23T14:57:23.840665268Z"
 tags:
   - deployment
   - implementation

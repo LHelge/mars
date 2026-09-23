@@ -44,10 +44,15 @@ sql() { podman exec "$1" psql -At -U mars -d mars -c "$2"; }
 # with a temporary server, which pg_isready already reports as ready before
 # the database exists, and then restarts. Its log line marks the end of that
 # phase; a real query against the database then proves the final server.
+# A restarted container (`wait_pg <name> restarted`) has no init phase, and
+# Podman 4.9 no longer shows the first run's log, so there the query is all.
 wait_pg() {
+  local init_done=${2:-}
   for _ in $(seq 1 90); do
-    if podman logs "$1" 2>&1 | grep -q 'PostgreSQL init process complete' &&
-      podman exec "$1" psql -At -U mars -d mars -c 'SELECT 1' >/dev/null 2>&1; then
+    if [ -z "$init_done" ] && podman logs "$1" 2>&1 | grep -q 'PostgreSQL init process complete'; then
+      init_done=yes
+    fi
+    if [ -n "$init_done" ] && podman exec "$1" psql -At -U mars -d mars -c 'SELECT 1' >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -121,7 +126,7 @@ check "a stopped database fails the backup" fails mb db
 check "a failed backup leaves nothing behind" \
   test -z "$(find "${work}/backups" -maxdepth 1 -name '.partial-*')"
 podman start "$pg" >/dev/null
-wait_pg "$pg"
+wait_pg "$pg" restarted
 
 # --- retention and the hook ---------------------------------------------
 sleep 1; mb db >/dev/null 2>&1

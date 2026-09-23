@@ -117,9 +117,11 @@ if [ "$command" = list ]; then
 fi
 case "$command" in db | full) ;; *) usage ;; esac
 
-[ -n "$pg_user" ] && [ -n "$pg_db" ] || die "POSTGRES_USER and POSTGRES_DB must be set in ${env_file}"
-if [ "$command" = full ]; then
-  [[ "$data_dir" = /* ]] && [ -d "$data_dir" ] || die "DATA_DIR_HOST must be an existing absolute directory"
+if [ -z "$pg_user" ] || [ -z "$pg_db" ]; then
+  die "POSTGRES_USER and POSTGRES_DB must be set in ${env_file}"
+fi
+if [ "$command" = full ] && { [[ "$data_dir" != /* ]] || [ ! -d "$data_dir" ]; }; then
+  die "DATA_DIR_HOST must be an existing absolute directory"
 fi
 [ "$(podman inspect --format '{{.State.Running}}' "$pg_container" 2>/dev/null)" = true ] ||
   die "${pg_container} is not running"

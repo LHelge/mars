@@ -88,7 +88,7 @@ if [ -f "$manifest" ]; then
     test "$(jq .source.sequence "$manifest")" = "$(git -C "$root" rev-list --count "$head")"
   check "compose.release.yml pins the orchestrator digest" \
     grep -q "image: $(fake mars-orchestrator)" "${work}/out/bundle/compose.release.yml"
-  for f in compose.yml compose.podman.yml scripts/verify-deployment.sh bin/check-env bin/session-images bin/mars-backup lib/envfile.sh env.example; do
+  for f in compose.yml compose.podman.yml scripts/verify-deployment.sh bin/check-env bin/session-images bin/mars-backup bin/mars-deploy bin/validate-manifest lib/envfile.sh env.example; do
     check "the bundle carries ${f}" test -f "${work}/out/bundle/${f}"
   done
 fi

@@ -45,8 +45,11 @@ show deploy/lib/envfile.sh >"${bundle}/lib/envfile.sh"
 show deploy/bin/check-env >"${bundle}/bin/check-env"
 show deploy/bin/session-images >"${bundle}/bin/session-images"
 show deploy/bin/mars-backup >"${bundle}/bin/mars-backup"
+show deploy/bin/mars-deploy >"${bundle}/bin/mars-deploy"
+show scripts/release/validate-manifest.sh >"${bundle}/bin/validate-manifest"
 show .env.example >"${bundle}/env.example"
-chmod 0755 "${bundle}/scripts/verify-deployment.sh" "${bundle}/bin/check-env" "${bundle}/bin/session-images" "${bundle}/bin/mars-backup"
+chmod 0755 "${bundle}/scripts/verify-deployment.sh" "${bundle}/bin/check-env" "${bundle}/bin/session-images" "${bundle}/bin/mars-backup" \
+  "${bundle}/bin/mars-deploy" "${bundle}/bin/validate-manifest"
 
 # The two services the release replaces, pinned to this release's digests.
 # compose.yml's `build:` sections stay: `build: !reset null` would drop them,

@@ -20,6 +20,8 @@
 # Environment:
 #   ENGINE                 podman | docker (default: podman if present, else docker)
 #   HTTP_PORT MCP_PORT API_PORT
+#                          HTTP_PORT may be `address:port`, as in compose;
+#                          nginx is then checked on that address
 #                          read from ./.env when not already set; defaults
 #                          8080 / 7001 / 7000 (README.md, "Configuration")
 #   CURL_IMAGE             image used for the in-network probes (default
@@ -108,6 +110,14 @@ env_default COMPOSE_PROJECT_NAME ""
 # configuration, and Docker accepts the long form just as well.
 CURL_IMAGE=${CURL_IMAGE:-docker.io/curlimages/curl:latest}
 HOSTRUN=${HOSTRUN:-0}
+# HTTP_PORT may carry an address, as compose accepts (`10.10.1.50:8080`,
+# README.md "Configuration"): nginx then listens there and not on loopback.
+if [[ $HTTP_PORT == *:* ]]; then
+    HTTP_HOST=${HTTP_PORT%:*}
+    HTTP_PORT=${HTTP_PORT##*:}
+else
+    HTTP_HOST=127.0.0.1
+fi
 
 printf 'engine=%s http_port=%s api_port=%s mcp_port=%s hostrun=%s\n' \
     "$ENGINE" "$HTTP_PORT" "$API_PORT" "$MCP_PORT" "$HOSTRUN"
@@ -116,8 +126,8 @@ printf 'engine=%s http_port=%s api_port=%s mcp_port=%s hostrun=%s\n' \
 
 check_health() {
     local body
-    if ! body=$(curl -fsS --max-time 10 "http://127.0.0.1:${HTTP_PORT}/api/health" 2>/dev/null); then
-        fail "health: GET http://127.0.0.1:${HTTP_PORT}/api/health did not return 200"
+    if ! body=$(curl -fsS --max-time 10 "http://${HTTP_HOST}:${HTTP_PORT}/api/health" 2>/dev/null); then
+        fail "health: GET http://${HTTP_HOST}:${HTTP_PORT}/api/health did not return 200"
         return
     fi
     if [[ $body == *'"orchestrator":true'* || $body == *'"orchestrator": true'* ]]; then
@@ -309,7 +319,7 @@ nginx_logs() {
 }
 
 check_log_hygiene() {
-    local base="http://127.0.0.1:${HTTP_PORT}"
+    local base="http://${HTTP_HOST}:${HTTP_PORT}"
     # Both requests are rejected (401, or 404 for the unknown id); only the log
     # line matters. The token is a fixed fake string.
     curl -s -o /dev/null --max-time 5 \

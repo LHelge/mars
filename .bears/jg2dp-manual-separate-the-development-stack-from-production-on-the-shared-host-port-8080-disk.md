@@ -1,10 +1,10 @@
 ---
 id: jg2dp
 title: "Manual: separate the development stack from production on the shared host (port 8080, disk)"
-status: open
+status: done
 priority: P1
 created: "2026-09-22T21:36:38.639721171Z"
-updated: "2026-09-22T21:36:38.639721171Z"
+updated: "2026-09-23T06:16:58.649681376Z"
 tags:
   - deployment
   - manual
@@ -28,3 +28,9 @@ Acceptance: port 8080 on 192.0.2.50 belongs to the `mars` user's nginx only (or 
 ## Progress
 
 - 2026-09-22: Linus stopped the development stack with `podman-compose down`. Nothing listens on 8080 now (`ss -ltn`), so the port is free for the `mars` user's nginx. Still open: the access limit (bind address and firewall) and the disk budget.
+- 2026-09-23: access limited. No host firewall was active before (nftables, ufw, firewalld and iptables all inactive; `/etc/nftables.conf` held Arch's unused default, now kept as `/etc/nftables.conf.arch-default`). Linus replaced it with one table, `inet webapps`, that restricts only ports 3000 (another project behind the same Traefik) and 8080:
+  - accept from `lo`;
+  - accept from Traefik, 192.0.2.4;
+  - drop everyone else, IPv4 and IPv6. The host has a ULA IPv6 address, so an `ip saddr`-only rule would have left IPv6 open.
+  `nftables.service` is enabled; on this Arch version it is a oneshot without RemainAfterExit, so it reads `inactive` after loading successfully at 08:13:40. Checked with the 3000 app: curl answers from the Traefik host, other LAN machines get no answer, and this host reaches `192.0.2.50:3000` through `lo` (404 from the app). Mars itself binds `HTTP_PORT=192.0.2.50:8080` (a8gbx).
+- Disk budget: about 60G for Mars (`/srv/mars` plus `/home/mars/.local/share/containers`). Five retained releases of images stay well under 20G because layers are shared; full backups of `/data` are the variable part. Rule: keep `/` below 80 % used, and move `/srv/mars` or the development cargo target directories to separate storage if development builds push past it. On 2026-09-23 `/` is 491G with 228G free (52 %).

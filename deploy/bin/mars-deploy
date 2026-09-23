@@ -13,7 +13,8 @@
 #   mars-deploy retry             let a release that failed be attempted once more
 #   mars-deploy accept-epoch <n>  accept a release that needs operator action
 #   mars-deploy rollback          pin and apply the previous release (same schema only)
-#   mars-deploy start             start the installed release from local images (boot)
+#   mars-deploy start | stop      start the installed release from local images (boot), or stop it
+#   mars-deploy notify <e> <msg>  run the notification hook (for a unit that failed)
 #   mars-deploy apply <dir>       internal: the candidate's own half of `run`
 #
 # Environment (defaults for a server; the overrides exist for tests):
@@ -50,7 +51,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '8,17p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '8,18p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -64,7 +65,20 @@ podman() { command podman "$@" 9>&-; }
 # `depends_on: condition: service_healthy` without any limit, so compose is
 # only ever asked to start one service (`--no-deps`) and the waiting is done
 # here, against HEALTH_TIMEOUT.
-compose() { timeout 600 podman-compose -p "$PROJECT" -f compose.yml -f compose.podman.yml -f compose.release.yml "$@" 9>&-; }
+#
+# And every compose call runs in a transient scope of its own
+# (`systemd-run --user --scope`): the containers it starts leave conmon
+# behind, and under mars-deploy.service or mars-backup.service that conmon
+# would sit in the unit's control group, which systemd kills the moment the
+# one-shot run finishes, taking the containers with it.
+in_own_scope() {
+  if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    systemd-run --user --scope --quiet --collect -- "$@"
+  else
+    "$@"
+  fi
+}
+compose() { in_own_scope timeout 600 podman-compose -p "$PROJECT" -f compose.yml -f compose.podman.yml -f compose.release.yml "$@" 9>&-; }
 release_dir() { printf '%s/%s' "$RELEASES" "${1/:/-}"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -84,9 +98,37 @@ state_set() { # <jq args...>
   sync "$tmp"
   mv "$tmp" "$STATE"
 }
+# Records how a run ended and tells the operator when it matters, through
+# MARS_DEPLOY_NOTIFY_HOOK (README.md, "Automatic deployments"): an applied
+# release, a failure, a hold with a new reason, a deferral that has lasted an
+# hour (12 timer runs), and the end of such a deferral. Never every run.
 checked() { # <outcome> <reason>
-  state_set --arg at "$(now)" --arg outcome "$1" --arg reason "$2" \
-    '.last_check = {at: $at, outcome: $outcome, reason: $reason}'
+  local streak event=""
+  state_set --arg at "$(now)" --arg outcome "$1" --arg reason "$2" '
+    .deferred_streak = (if $outcome == "deferred" then (.deferred_streak // 0) + 1 else 0 end)
+    | .last_check = {at: $at, outcome: $outcome, reason: $reason}'
+  streak=$(state '.deferred_streak')
+  case "$1" in
+  applied | failed) event=$1 ;;
+  held)
+    case "$2" in "known failure"*) ;; *)
+      [ "$(state '.last_notified.reason // ""')" = "$2" ] || event=held ;;
+    esac
+    ;;
+  deferred) [ "$streak" = 12 ] && event=deferred ;;
+  unchanged | paused)
+    [ "$(state '.last_notified.event // ""')" = deferred ] && event=recovered ;;
+  esac
+  [ -n "$event" ] || return 0
+  state_set --arg e "$event" --arg r "$2" --arg at "$(now)" '.last_notified = {event: $e, reason: $r, at: $at}'
+  notify "$event" "$2"
+}
+
+notify() { # <event> <message>
+  local hook=${ENV_VARS[MARS_DEPLOY_NOTIFY_HOOK]:-}
+  [ -n "$hook" ] || return 0
+  timeout 60 "$hook" "$1" "$2" </dev/null >/dev/null 2>&1 9>&- ||
+    log "the notification hook failed for ${1}"
 }
 
 # One run at a time: boot, timer and manual commands share this lock, and the
@@ -221,6 +263,7 @@ recover_failed() { # <reason>
   state_set --arg t "$target" --arg r "$1" \
     '.failed = ((.failed + [$t]) | unique) | .attempted.outcome = "failed" | .attempted.reason = $r'
   log "release ${target} failed: $1"
+  checked failed "$(state '.attempted.commit[0:12]'): $1"
   if [ "$(state '.current')" = null ]; then
     log "nothing was installed before it; fix the cause and run mars-deploy retry"
     return 0
@@ -420,6 +463,11 @@ cmd_apply() {
   ln -sfn "releases/${target/:/-}" "${ROOT}/current.tmp" && mv -T "${ROOT}/current.tmp" "${ROOT}/current"
   checked applied "$commit"
   log "applied ${commit}"
+  # A release may change its own units; the installed ones follow it, and
+  # which of them are enabled stays the operator's.
+  if [ -x "${dir}/bin/install-units" ] && [ -f "${STATE_DIR}/units.env" ]; then
+    "${dir}/bin/install-units" --refresh >/dev/null 9>&- || log "refreshing the user units failed"
+  fi
   retain
 }
 
@@ -461,10 +509,24 @@ resolve_ref() { # <commit or digest> -> digest
   fi
 }
 
+# Boot: the installed release from local images, so a reboot works without
+# the registry. Rootless Podman has no daemon to restart containers, so this
+# is what brings them back.
 cmd_start() {
   [ -L "${ROOT}/current" ] || die "no release is installed"
+  take_lock
   bring_up "$(readlink -f "${ROOT}/current")" || die "the installed release did not come up healthy"
   log "started $(state '.current.commit')"
+}
+
+# Shutdown: the three services, gracefully, nginx first. Session containers
+# are left to the host's shutdown; agent processes do not survive a reboot.
+cmd_stop() {
+  local c
+  for c in "${PROJECT}_nginx_1" "$ORCH" "$PG"; do
+    podman stop --time 30 "$c" >/dev/null 2>&1 || true
+  done
+  log "stopped"
 }
 
 # --- main --------------------------------------------------------------------------
@@ -472,7 +534,7 @@ cmd_start() {
 [ "$#" -ge 1 ] || usage
 command=$1
 shift
-if [ "$command" != apply ] && [ "$command" != status ]; then
+if [ "$command" != apply ] && [ "$command" != status ] && [ "$command" != notify ]; then
   state_init
 fi
 declare -A ENV_VARS=()
@@ -533,5 +595,10 @@ rollback)
   cmd_run
   ;;
 start) cmd_start ;;
+stop) cmd_stop ;;
+notify)
+  [ "$#" -eq 2 ] || usage
+  notify "$1" "$2"
+  ;;
 *) usage ;;
 esac

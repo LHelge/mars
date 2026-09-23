@@ -1,0 +1,13 @@
+# Mars: check for a promoted release every five minutes. Installed but not
+# enabled by bin/install-units: enabling it is the operator's decision
+# (README.md, "Automatic deployments").
+[Unit]
+Description=Mars: check for a promoted release every five minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=20
+
+[Install]
+WantedBy=timers.target

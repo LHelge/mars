@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Install the user units of a deployed Mars (README.md, "Automatic
+# deployments"), from this release's systemd/ directory into
+# ~/.config/systemd/user, as the service user. Idempotent.
+#
+#   install-units [--root <dir>] [--project <name>] [--env KEY=VALUE]...
+#       renders and installs every unit, then enables mars.service (start at
+#       boot) and mars-backup.timer (nightly full backup). mars-deploy.timer is
+#       installed but NOT enabled: following main unattended is switched on by
+#       the operator after the first install and a recovery rehearsal.
+#   install-units --refresh
+#       re-renders the installed units from this release with the values of
+#       the last install and reloads systemd; enables and disables nothing.
+#       The updater runs this after applying a release.
+#
+# --root defaults to $MARS_ROOT, else /srv/mars; --project to mars. --env adds
+# an Environment= line to every unit, for tests (MARS_REGISTRY and the like);
+# never a secret, which belongs in mars.env.
+set -euo pipefail
+
+here=$(dirname "$(readlink -f "$0")")
+units_src="${here}/../systemd"
+dest="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+
+root=${MARS_ROOT:-/srv/mars}
+project=mars
+extra=()
+refresh=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  --root) root=${2:?}; shift 2 ;;
+  --project) project=${2:?}; shift 2 ;;
+  --env)
+    [[ "${2:-}" =~ ^[A-Z][A-Z0-9_]*=[^[:space:]]*$ ]] || { echo "--env takes KEY=VALUE without spaces" >&2; exit 2; }
+    extra+=("$2"); shift 2 ;;
+  --refresh) refresh=true; shift ;;
+  *) sed -n '6,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  esac
+done
+
+conf="${root}/state/units.env"
+if [ "$refresh" = true ]; then
+  [ -f "$conf" ] || { echo "no previous install-units run recorded in ${conf}" >&2; exit 1; }
+  # Written by this script below: three kinds of line, read without sourcing.
+  root=$(sed -n 's/^ROOT=//p' "$conf")
+  project=$(sed -n 's/^PROJECT=//p' "$conf")
+  mapfile -t extra < <(sed -n 's/^ENV=//p' "$conf")
+fi
+[[ "$root" = /* ]] || { echo "the root must be an absolute path" >&2; exit 2; }
+[[ "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo "not a compose project name: ${project}" >&2; exit 2; }
+
+environment=""
+if [ "${#extra[@]}" -gt 0 ]; then
+  environment="Environment=${extra[*]}"
+fi
+
+mkdir -p "$dest" "${root}/state"
+changed=0
+for src in "$units_src"/*.service "$units_src"/*.timer; do
+  name=$(basename "$src")
+  rendered=$(sed -e "s#@ROOT@#${root}#g" -e "s#@PROJECT@#${project}#g" "$src" |
+    awk -v env="$environment" '$0 == "@ENVIRONMENT@" { if (env != "") print env; next } { print }')
+  if [ "$refresh" = true ] && [ ! -f "${dest}/${name}" ]; then
+    continue
+  fi
+  if [ ! -f "${dest}/${name}" ] || [ "$(cat "${dest}/${name}")" != "$rendered" ]; then
+    printf '%s\n' "$rendered" >"${dest}/${name}"
+    echo "installed ${dest}/${name}"
+    changed=1
+  fi
+done
+if [ "$changed" = 1 ]; then
+  systemctl --user daemon-reload
+fi
+
+if [ "$refresh" = true ]; then
+  exit 0
+fi
+{
+  echo "ROOT=${root}"
+  echo "PROJECT=${project}"
+  for e in "${extra[@]}"; do echo "ENV=${e}"; done
+} >"$conf"
+
+systemctl --user enable mars.service mars-backup.timer
+systemctl --user start mars-backup.timer
+
+if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
+  echo "warning: linger is off for $(id -un); the units stop at logout and do not start at boot." >&2
+  echo "         sudo loginctl enable-linger $(id -un)" >&2
+fi
+
+cat <<EOF
+
+Installed. mars.service starts the installed release at boot and
+mars-backup.timer takes a full backup nightly. Updates are NOT followed yet:
+
+  systemctl --user enable --now mars-deploy.timer    # follow main every five minutes
+  systemctl --user disable --now mars-deploy.timer   # stop following it
+  systemctl --user list-timers 'mars*'
+  journalctl --user -u mars-deploy -u mars -u mars-backup
+  ${root}/current/bin/mars-deploy status
+EOF

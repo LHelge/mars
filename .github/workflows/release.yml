@@ -10,6 +10,12 @@
 # all of them exist does `promote` move `mars-deploy:main`, and only forwards
 # along main (scripts/release/promote-decision.sh).
 #
+# A push that touches only Bears tasks or top-level documentation starts no
+# run at all: nothing any suite, image or bundle reads has changed, so the
+# promoted release, built from the last commit that did run, ships the same
+# content. `*.md` matches the root only, so help pages under frontend/ and the
+# orchestrator's embedded templates still start a run.
+#
 # Nothing here runs for a pull request or a fork: the only trigger is a push
 # to main, and GITHUB_TOKEN gets `packages: write` in the two jobs that push
 # and nowhere else.
@@ -18,6 +24,11 @@ name: Release
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - ".bears/**"
+      - ".bears.yml"
+      - "docs/**"
+      - "*.md"
 
 # One release at a time. A push that arrives while one runs waits; a third
 # replaces the second in the queue, so the newest commit is always the one

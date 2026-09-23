@@ -608,7 +608,7 @@ The stack sets every orchestrator variable itself and ignores the repository's `
 
 ### CI
 
-The path filters below apply to pull requests. On `main` the six suites are not triggered by path: the **Release** workflow calls every one of them on every push and publishes only when all six succeed ("Automatic deployments").
+The path filters below apply to pull requests. On `main` the six suites are not triggered by path: the **Release** workflow calls every one of them on every push and publishes only when all six succeed ("Automatic deployments"). A push that changes only `.bears/`, `docs/` or the Markdown files at the repository root starts no Release run at all.
 
 | Workflow | Triggers on | Checks |
 | --- | --- | --- |
@@ -618,7 +618,7 @@ The path filters below apply to pull requests. On `main` the six suites are not 
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright against a real orchestrator, Postgres and the stub session image on rootless Podman, all brought up by `frontend/tests/e2e-stack.sh`; the report, traces and orchestrator log are uploaded on failure |
 | Images | `images/**` | Lint the entrypoint, Dockerfiles and stub; build all three session images — base, dev and stub — on Docker and Podman; run `images/smoke-test.sh` over them |
 | Deploy | Dockerfiles, `nginx/`, compose files | Build orchestrator and nginx images on Docker and Podman; `nginx -t`; the Content-Security-Policy on real responses from the nginx image; compose config for both overrides; `release-scripts` shellchecks `scripts/release/` and runs `scripts/release/test.sh` (promotion decision, bundle assembly with a podman-compose render, manifest validation) and `scripts/release/test-backup.sh`; `transitions`, with linger and the Podman user socket set up as on a server, builds the orchestrator and nginx images from the commit (the `images` job's cache, read only) and runs `scripts/release/test-transitions.sh`, releases applied one after another by the real `mars-deploy` on rootless Podman: first install, no-op, update with PostgreSQL and data kept, older and paused, rollback and pin, two runs at once, a failed pull, backup and health, every held rule, a run killed mid-replacement, stop and start, a failed release that added a migration left in place, and the user units (boot, deploy, backup, failure notification). Its filter also covers `scripts/release/**`, `deploy/**` and `release.yml` |
-| Release | every push to `main` only | Calls the six suites above on the commit; a gate passes only when all six report `success`; then publishes the five images and the bundle to `ghcr.io/lhelge/` (reusing images whose inputs are unchanged) and moves `mars-deploy:main` forwards (`ARCHITECTURE.md`, "Server deployment") |
+| Release | every push to `main` only, except one touching only `.bears/**`, `.bears.yml`, `docs/**` or root `*.md` | Calls the six suites above on the commit; a gate passes only when all six report `success`; then publishes the five images and the bundle to `ghcr.io/lhelge/` (reusing images whose inputs are unchanged) and moves `mars-deploy:main` forwards (`ARCHITECTURE.md`, "Server deployment") |
 
 ## Roadmap after v1
 

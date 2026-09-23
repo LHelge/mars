@@ -183,7 +183,7 @@ Copy `.env.example` to `.env` and set:
 | `GIT_BOT_NAME`, `GIT_BOT_EMAIL` | Identity for commits the orchestrator creates (merges). |
 | `API_PORT` | Port of the API listener nginx proxies to (default 7000). |
 | `MCP_PORT` | Port of the MCP listener on the sessions network (default 7001). |
-| `HTTP_PORT` | **Compose only.** Host port nginx publishes (default 8080). Under rootless Podman a port below 1024 fails to bind unless `net.ipv4.ip_unprivileged_port_start` is lowered; keep 8080 and put any reverse proxy in front of it. A bare port binds every interface; the whole `ip:port` left-hand side of a compose port mapping is accepted here, so `HTTP_PORT=127.0.0.1:8080` publishes on the loopback address only — see "Operating notes". `scripts/verify-deployment.sh` wants the bare port, so pass it one (`HTTP_PORT=8080 scripts/verify-deployment.sh`) when `.env` carries the `ip:port` form. |
+| `HTTP_PORT` | **Compose only.** Host port nginx publishes (default 8080). Under rootless Podman a port below 1024 fails to bind unless `net.ipv4.ip_unprivileged_port_start` is lowered; keep 8080 and put any reverse proxy in front of it. A bare port binds every interface; the whole `ip:port` left-hand side of a compose port mapping is accepted here, so `HTTP_PORT=127.0.0.1:8080` publishes on the loopback address only — see "Operating notes". `scripts/verify-deployment.sh` reads the same value and checks nginx on that address and port. |
 | `STOP_GRACE_SECS` | Seconds between SIGINT and SIGTERM when stopping a session (default 20). |
 | `MIRROR_FETCH_INTERVAL_SECS` | How often project mirrors are fetched (default 600). |
 | `DISPATCHER_INTERVAL_SECS` | How often the dispatcher sweeps for claimable work (default 60). The dispatcher launches an ephemeral session for the best claimable task of each `auto_launch` profile (`ARCHITECTURE.md`, "Dispatcher"); this timer is its fallback, behind the `task_events` wake-up, so the value bounds how long a missed wake-up goes unnoticed rather than how promptly a queue is picked up. Raise it on an instance with many projects and little automation; there is no need to lower it to make automation react faster. To stop automated launches in a project, pause automation on its page. |
@@ -248,7 +248,7 @@ Code hand-offs keep the producing session, branch, exact commit and a comment to
 
 ### Automatic deployments
 
-**Status: publishing exists; applying does not yet.** The rules below are fixed (`ARCHITECTURE.md`, "Server deployment"; ADR 0044) and the Release workflow publishes and promotes by them. The `mars-deploy` updater, its units and the installation steps are being built under Bears epic `2uqww`, and this section gains the exact commands as they land. Until then a server is installed as described above.
+**Status: publishing and the updater exist; the timer does not yet.** The rules below are fixed (`ARCHITECTURE.md`, "Server deployment"; ADR 0044). The Release workflow publishes and promotes by them, and `mars-deploy` applies them when run by hand. The user units that run it at boot and every five minutes arrive with Bears epic `2uqww` (task `2kane`).
 
 A production server follows `main` by pulling: every push to `main` runs the full test suites on that commit in the **Release** workflow, publishes the orchestrator, nginx and both session images for `linux/amd64` to `ghcr.io/lhelge/`, and publishes a release bundle, `ghcr.io/lhelge/mars-deploy`, whose `main` tag is moved only forward and only after everything the release names exists. A user systemd timer of the service user runs `mars-deploy` every five minutes; it compares the promoted bundle with what is installed and, when it is newer and passes its checks, applies it. Nothing connects to the server from outside and nothing is built on it. `deploy/manifest.example.json` shows what a release describes.
 
@@ -261,7 +261,21 @@ What the operator can rely on:
 - **Some releases wait for you.** A release that needs operator action — a new setting, a manual step — carries a higher deploy epoch (`deploy/EPOCH`) and a note; it is held, showing the note, until you run `mars-deploy accept-epoch <n>`. A release that names a required variable missing from your environment file is held with that variable's name. Values are never printed.
 - **PostgreSQL is yours.** Its image is set in your environment file and never changed by an update; a major version upgrade is a separate manual procedure.
 
-Operator controls: `mars-deploy status` (installed, promoted and last attempted release, and why the last run did or did not deploy), `pause` and `resume` (the timer does nothing while paused), `deploy <commit|digest>` (pins that release and applies it; the timer then stays on it), `unpin`, `retry` (lets the timer try a release that failed once more), and `rollback` (starts the previous release).
+Operator controls, all of them `/srv/mars/current/bin/mars-deploy <command>` as the service user:
+
+| Command | What it does |
+| --- | --- |
+| `status` | The installed, previous and promoted release, the last attempt with its outcome and reason, the last check, failed releases, the pin, pause and accepted epoch. |
+| `run` | What the timer runs: follow the promoted release. `run --dry-run` says what it would apply. |
+| `deploy <commit or sha256:digest>` | Pins that release and applies it; the timer then stays on it. A commit is the full 40-character id. |
+| `unpin` | Follow the promoted release again. |
+| `pause`, `resume` | `run` does nothing while paused. |
+| `retry` | Lets a release that failed be attempted again. |
+| `accept-epoch <n>` | Accepts a release that needs operator action, after doing what its note says. |
+| `rollback` | Pins and applies the previous release; refused unless its migrations equal the current ones. |
+| `start` | Starts the installed release from local images, with no registry: what boot runs. |
+
+Exit status: `0` applied, nothing to do, or held (`status` says why); `1` failed; `75` deferred — nothing was touched and the next run tries again. Output goes to the journal under the timer and names variables, never their values.
 
 **GitHub and registry settings.** The Release workflow pushes with the run's own `GITHUB_TOKEN`, so it needs no stored secret; what it needs from the repository settings is that Actions may use `packages: write` where the workflow asks for it (Settings → Actions → General → Workflow permissions: the default read-only is fine, because the workflow requests `packages: write` itself for its two publishing jobs). The first push creates the packages `mars-orchestrator`, `mars-nginx`, `mars-session-claude`, `mars-session-claude-dev` and `mars-deploy` under the `lhelge` account; the `org.opencontainers.image.source` label links each to this repository, and a package created from a private repository is private. If one ends up unlinked, link it under the package's settings ("Manage Actions access": this repository, role *Write*), or the next push is refused. Only a push to `main` publishes, so whoever can push to `main` can release: protect `main` against force pushes (a rewritten `main` also stops promotion, which refuses to move `main` sideways). The server pulls private packages with a classic personal access token carrying only `read:packages` — GHCR does not accept fine-grained tokens — stored in the service user's persistent registry auth file, not in `/run`; the installation steps give the exact command.
 
@@ -274,7 +288,8 @@ The server needs neither `git` nor a build toolchain: the service user with root
 ├── mars.env                  the operator's environment file, mode 0600; never inside a release
 ├── data/                     DATA_DIR_HOST
 ├── releases/sha256-<hex>/    one extracted bundle per release, named by its digest, never edited
-├── state/                    the updater's state
+├── state/                    the updater's state and lock
+├── current -> releases/…     the installed release; current/bin/mars-deploy is the updater
 └── backups/                  MARS_BACKUP_DIR, one directory per backup set
 ```
 
@@ -290,26 +305,22 @@ Podman reads `~/.config/containers/auth.json` when the runtime file does not exi
 
 **The environment file.** Start from the bundle's `env.example` (below), `chmod 600`, and set at least: `PUBLIC_URL` to the `https://` URL users open; `JWT_SECRET`, `POSTGRES_PASSWORD` (URL-safe) and `SECRETS_MASTER_KEYS` to fresh values, keeping the master keys in a second safe place; `DATA_DIR_HOST=/srv/mars/data`; `ENGINE_SOCKET_HOST=/run/user/<uid>/podman/podman.sock` and `DOCKER_HOST=unix://` plus the same path; `POSTGRES_IMAGE` pinned by digest; and `HTTP_PORT`, loopback-only (`127.0.0.1:8080`) when the TLS proxy runs on the same host, or the one LAN address the proxy reaches otherwise. Leave `SESSION_IMAGE_DEFAULT` unset: its default, `mars-session-claude-dev:latest`, is the managed alias the release's dev image is tagged as (`ARCHITECTURE.md`, "Server deployment", "Session images"), so every seeded profile follows the installed release. `bin/check-env` checks the file against a release — required variables, placeholders, file mode, the data directory and the socket — and prints names, never values.
 
-**Installing or switching to a release by hand.** Until `mars-deploy` exists this is the procedure; it is the same for the first install and for moving to another release. The digest is the one the Release run's summary names, or the one `mars-deploy:main` resolves to:
+**The first install.** The updater is inside the bundle, so the first one is extracted by hand; every later release it fetches itself. The digest is the one `mars-deploy:main` resolves to, or the one a Release run's summary names:
 
 ```bash
-digest=sha256:<hex>                                  # the bundle to install
+digest=$(podman pull -q ghcr.io/lhelge/mars-deploy:main >/dev/null && \
+  podman image inspect --format '{{.Digest}}' ghcr.io/lhelge/mars-deploy:main)
 rel=/srv/mars/releases/${digest/:/-}
-podman pull "ghcr.io/lhelge/mars-deploy@${digest}"
 c=$(podman create --entrypoint /none "ghcr.io/lhelge/mars-deploy@${digest}")
 podman cp "${c}:/bundle" "$rel" && podman rm "$c"
 ln -s ../../mars.env "${rel}/.env"
-"${rel}/bin/check-env" /srv/mars/mars.env "${rel}/manifest.json"
-jq -r '.images[]' "${rel}/manifest.json" | xargs -n1 podman pull
-podman pull "$(sed -n 's/^POSTGRES_IMAGE=//p' /srv/mars/mars.env)"
-"${rel}/bin/session-images" set "$(jq -r .images.session_claude "${rel}/manifest.json")" \
-  "$(jq -r .images.session_claude_dev "${rel}/manifest.json")"
-cd "$rel" && podman-compose -f compose.yml -f compose.podman.yml -f compose.release.yml up -d
-HTTP_PORT=8080 COMPOSE_CMD="podman-compose -f compose.yml -f compose.podman.yml -f compose.release.yml" \
-  scripts/verify-deployment.sh
+"${rel}/bin/mars-deploy" deploy "$digest"      # checks, pulls, starts, verifies; pins it
+/srv/mars/current/bin/mars-deploy status
 ```
 
-`session-images set` moves the two managed aliases, `mars-session-claude:latest` and `mars-session-claude-dev:latest`, onto the release's session images: profiles that use the default follow the release on their next launch, resume or retry, running sessions keep the image they started on, and profiles naming any other image are untouched. Switching back to an earlier release runs the same command with that release's manifest. Every image is pulled before `up`: the release override leaves `compose.yml`'s `build:` sections in place and the bundle has nothing to build from, so an image that is not present fails with `Dockerfile not found` rather than being built. Never run `compose down` to switch releases; `up -d` from the new directory is the switch, and `down` would stop PostgreSQL and try to remove `mars-sessions` under running sessions ("Operating notes").
+`deploy` runs every check a timer run would — the manifest, the configuration (`bin/check-env`), the platform — pulls every image by digest, points the session-image aliases at the release's images, starts PostgreSQL, the orchestrator and nginx one after another, each with a bounded wait for health, runs `scripts/verify-deployment.sh`, and records the release, linking `/srv/mars/current` to its directory. It leaves the release pinned, which is what an operator wants on a first install; `mars-deploy unpin` follows `main` from then on. Moving to another release by hand is `mars-deploy deploy <commit or digest>` in the same way, and back is `mars-deploy rollback`.
+
+`session-images set`, which the updater runs, moves the two managed aliases, `mars-session-claude:latest` and `mars-session-claude-dev:latest`, onto the release's session images: profiles that use the default follow the release on their next launch, resume or retry, running sessions keep the image they started on, and profiles naming any other image are untouched. Every image is pulled before `up`: the release override leaves `compose.yml`'s `build:` sections in place and the bundle has nothing to build from, so an image that is not present fails with `Dockerfile not found` rather than being built. Never run `compose down` to switch releases: `down` would stop PostgreSQL and try to remove `mars-sessions` under running sessions ("Operating notes"). To run compose by hand against the installed release, run it from `/srv/mars/current` with `podman-compose -f compose.yml -f compose.podman.yml -f compose.release.yml`.
 
 **Rollback is not restore.** `rollback` and deploying an older pin are allowed only to a release with exactly the current set of database migrations, and lose nothing. Going back past a migration means restoring the backup taken before it, together with its data directory: every write since that backup is lost, it is always done by hand with updates paused, and it is followed by deploying the release recorded in the backup. Updates never run a down-migration and never restore a database on their own.
 

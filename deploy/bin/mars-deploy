@@ -1,0 +1,537 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016 # jq filters name their own --arg variables as $x
+# The updater of a deployed Mars (ARCHITECTURE.md, "Server deployment";
+# README.md, "Automatic deployments"). Ships in every release bundle as
+# bin/mars-deploy and runs as the service user; the installed one is
+# $MARS_ROOT/current/bin/mars-deploy.
+#
+#   mars-deploy run [--dry-run]   follow the promoted release (the timer's command)
+#   mars-deploy status            installed, promoted and last attempted release
+#   mars-deploy deploy <ref>      pin a release (full commit id or bundle digest) and apply it
+#   mars-deploy unpin             follow the promoted release again
+#   mars-deploy pause | resume    stop or restart following; `run` does nothing while paused
+#   mars-deploy retry             let a release that failed be attempted once more
+#   mars-deploy accept-epoch <n>  accept a release that needs operator action
+#   mars-deploy rollback          pin and apply the previous release (same schema only)
+#   mars-deploy start             start the installed release from local images (boot)
+#   mars-deploy apply <dir>       internal: the candidate's own half of `run`
+#
+# Environment (defaults for a server; the overrides exist for tests):
+#   MARS_ROOT          /srv/mars: mars.env, data/, releases/, state/, backups/, current
+#   MARS_PROJECT       mars: the compose project
+#   MARS_REGISTRY      ghcr.io/lhelge
+#   MARS_HEALTH_TIMEOUT  seconds to wait for the new orchestrator (300)
+#
+# Exit status: 0 done, nothing to do, or held (see status); 1 failed;
+# 2 usage; 75 deferred (nothing was touched; the next run tries again).
+# Nothing from mars.env is ever printed.
+set -euo pipefail
+
+here=$(dirname "$(readlink -f "$0")")
+# shellcheck source-path=SCRIPTDIR source=../lib/envfile.sh
+. "${here}/../lib/envfile.sh"
+
+ROOT=${MARS_ROOT:-/srv/mars}
+PROJECT=${MARS_PROJECT:-mars}
+REGISTRY=${MARS_REGISTRY:-ghcr.io/lhelge}
+HEALTH_TIMEOUT=${MARS_HEALTH_TIMEOUT:-300}
+ENV_FILE="${ROOT}/mars.env"
+STATE_DIR="${ROOT}/state"
+STATE="${STATE_DIR}/state.json"
+RELEASES="${ROOT}/releases"
+BUNDLE_REPO="${REGISTRY}/mars-deploy"
+ORCH="${PROJECT}_orchestrator_1"
+PG="${PROJECT}_postgres_1"
+EX_DEFERRED=75
+
+log() { printf 'mars-deploy: %s\n' "$*"; }
+die() {
+  log "$*" >&2
+  exit 1
+}
+usage() {
+  sed -n '8,17p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+}
+
+# The lock is file descriptor 9 (take_lock). Every child closes it: a
+# container started by compose leaves conmon and rootlessport running with
+# the descriptors of whoever started it, and would otherwise hold the lock
+# for as long as the container lives. Only the exec into the candidate's
+# `apply` keeps it, on purpose.
+podman() { command podman "$@" 9>&-; }
+# Every compose call is bounded as well: podman-compose 1.6.0 waits for a
+# `depends_on: condition: service_healthy` without any limit, so compose is
+# only ever asked to start one service (`--no-deps`) and the waiting is done
+# here, against HEALTH_TIMEOUT.
+compose() { timeout 600 podman-compose -p "$PROJECT" -f compose.yml -f compose.podman.yml -f compose.release.yml "$@" 9>&-; }
+release_dir() { printf '%s/%s' "$RELEASES" "${1/:/-}"; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# --- state ----------------------------------------------------------------
+# One JSON file, replaced atomically; every write goes through state_set.
+
+state_init() {
+  mkdir -p "$STATE_DIR"
+  chmod 700 "$STATE_DIR"
+  [ -f "$STATE" ] || printf '%s\n' '{"state_format":1,"current":null,"previous":null,"attempted":null,"failed":[],"paused":false,"pin":null,"accepted_epoch":null,"last_check":null}' >"$STATE"
+}
+state() { jq -r "$1" "$STATE"; }
+state_set() { # <jq args...>
+  local tmp
+  tmp=$(mktemp "${STATE}.XXXXXX")
+  jq "$@" "$STATE" >"$tmp"
+  sync "$tmp"
+  mv "$tmp" "$STATE"
+}
+checked() { # <outcome> <reason>
+  state_set --arg at "$(now)" --arg outcome "$1" --arg reason "$2" \
+    '.last_check = {at: $at, outcome: $outcome, reason: $reason}'
+}
+
+# One run at a time: boot, timer and manual commands share this lock, and the
+# candidate's `apply` inherits it through exec.
+take_lock() {
+  exec 9>"${STATE_DIR}/lock"
+  if ! flock -w 900 9; then
+    die "another mars-deploy run has held the lock for 15 minutes; not waiting longer"
+  fi
+  export MARS_DEPLOY_LOCKED=1
+}
+
+# --- the registry and the bundle -----------------------------------------------
+
+resolve_tag() { # <tag> -> bundle digest
+  podman pull -q "${BUNDLE_REPO}:$1" >/dev/null 2>&1 || return 1
+  podman image inspect --format '{{.Digest}}' "${BUNDLE_REPO}:$1"
+}
+
+# Extracts a bundle once into its own directory, named by its digest, and
+# never touches it again (ARCHITECTURE.md, "Server deployment", "Artifacts").
+fetch_bundle() { # <digest>
+  local digest=$1 dir tmp c
+  dir=$(release_dir "$digest")
+  [ -f "${dir}/manifest.json" ] && return 0
+  podman pull -q "${BUNDLE_REPO}@${digest}" >/dev/null 2>&1 || return 1
+  tmp="${RELEASES}/.partial-${digest/:/-}"
+  rm -rf "$tmp"
+  mkdir -p "$RELEASES"
+  c=$(podman create --entrypoint /none "${BUNDLE_REPO}@${digest}")
+  if ! podman cp "${c}:/bundle" "$tmp"; then
+    podman rm "$c" >/dev/null
+    return 1
+  fi
+  podman rm "$c" >/dev/null
+  # The stable envelope every format keeps: commit and sequence.
+  jq -e '(.source.commit | test("^[0-9a-f]{40}$")) and (.source.sequence | type == "number")' \
+    "${tmp}/manifest.json" >/dev/null 2>&1 || {
+    rm -rf "$tmp"
+    log "bundle ${digest} has no readable manifest"
+    return 1
+  }
+  ln -s ../../mars.env "${tmp}/.env"
+  mv "$tmp" "$dir"
+}
+
+manifest() { jq -r "$2" "$(release_dir "$1")/manifest.json"; }
+
+# --- health ---------------------------------------------------------------------
+
+http_base() {
+  local port=${ENV_VARS[HTTP_PORT]:-8080}
+  if [[ $port == *:* ]]; then printf 'http://%s' "$port"; else printf 'http://127.0.0.1:%s' "$port"; fi
+}
+
+# Healthy is after migrations, the startup probe and session recovery
+# (ARCHITECTURE.md, "Restart procedure"). An orchestrator that refuses to
+# start restart-loops under `restart: unless-stopped` and never gets here;
+# the deadline ends the wait and its log says why.
+wait_orchestrator_healthy() {
+  local deadline=$((SECONDS + HEALTH_TIMEOUT))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ "$(podman inspect --format '{{.State.Health.Status}}' "$ORCH" 2>/dev/null)" = healthy ]; then
+      return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
+
+healthy_through_nginx() {
+  local base deadline=$((SECONDS + 60)) body
+  base=$(http_base)
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if body=$(curl -fsS --max-time 5 "${base}/api/health" 2>/dev/null) &&
+      jq -e '.orchestrator == true and .database == true and .engine == true' <<<"$body" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+wait_postgres_healthy() {
+  local deadline=$((SECONDS + 120))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ "$(podman inspect --format '{{.State.Health.Status}}' "$PG" 2>/dev/null)" = healthy ]; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+# Starts the release in <dir>, one service at a time: PostgreSQL (left as it
+# is when its configuration did not change, which is every release), then the
+# orchestrator, then nginx recreated alone so it resolves the new upstream.
+bring_up() { # <dir>
+  (cd "$1" && compose up -d --no-deps postgres >/dev/null 2>&1) || return 1
+  wait_postgres_healthy || return 1
+  (cd "$1" && compose up -d --no-deps orchestrator >/dev/null 2>&1) || return 1
+  wait_orchestrator_healthy || return 1
+  (cd "$1" && compose up -d --force-recreate --no-deps nginx >/dev/null 2>&1) || return 1
+  healthy_through_nginx
+}
+
+# --- commands -------------------------------------------------------------------
+
+cmd_status() {
+  local promoted
+  promoted=$(resolve_tag main 2>/dev/null || echo "unreachable")
+  jq -r --arg promoted "$promoted" '
+    def rel: if . == null then "none" else "\(.commit[0:12]) \(.bundle[0:19]) applied \(.applied_at)" end;
+    "paused:          \(.paused)",
+    "pin:             \(.pin // "none")",
+    "accepted epoch:  \(.accepted_epoch // "none")",
+    "current:         \(.current | rel)",
+    "previous:        \(.previous | rel)",
+    "promoted main:   \($promoted[0:19])",
+    "last attempt:    \(if .attempted == null then "none" else "\(.attempted.commit[0:12]) \(.attempted.outcome // "unfinished") in \(.attempted.phase) at \(.attempted.started_at)\(if .attempted.reason then ": \(.attempted.reason)" else "" end)" end)",
+    "last check:      \(if .last_check == null then "none" else "\(.last_check.outcome) at \(.last_check.at): \(.last_check.reason)" end)",
+    "failed releases: \(if (.failed | length) == 0 then "none" else (.failed | map(.[0:19]) | join(", ")) end)"
+  ' "$STATE"
+}
+
+# Outcome of a replacement that did not finish: the candidate is recorded as
+# failed and never retried by the timer; the previous release is started again
+# only when it can run on the schema as it now is.
+recover_failed() { # <reason>
+  local target cur_dir cand_migs cur_migs aliases
+  target=$(state '.attempted.target')
+  state_set --arg t "$target" --arg r "$1" \
+    '.failed = ((.failed + [$t]) | unique) | .attempted.outcome = "failed" | .attempted.reason = $r'
+  log "release ${target} failed: $1"
+  if [ "$(state '.current')" = null ]; then
+    log "nothing was installed before it; fix the cause and run mars-deploy retry"
+    return 0
+  fi
+  cur_dir=$(release_dir "$(state '.current.bundle')")
+  cand_migs=$(manifest "$target" '.schema.migrations | join(",")')
+  cur_migs=$(state '.current.migrations | join(",")')
+  if [ "$cand_migs" != "$cur_migs" ]; then
+    state_set '.attempted.recovery = "manual: the release added migrations, so the previous one cannot start on this schema"'
+    log "the release added migrations; the previous release cannot start on the migrated schema."
+    log "updates are held. Fix forward, or restore the pre-deploy backup (README.md, \"Backups and recovery\")."
+    return 0
+  fi
+  log "no migration was added; starting the previous release again"
+  aliases=$(state '.attempted.previous_session_images // empty')
+  if [ -n "$aliases" ]; then
+    # shellcheck disable=SC2046 # two image ids, recorded by this script
+    "${cur_dir}/bin/session-images" set $(jq -r '.base, .dev' <<<"$aliases") >/dev/null 9>&- || true
+  fi
+  podman stop --time 30 "$ORCH" >/dev/null 2>&1 || true
+  if bring_up "$cur_dir"; then
+    state_set '.attempted.recovery = "rolled back to the previous release"'
+    log "the previous release is running again"
+  else
+    state_set '.attempted.recovery = "manual: the previous release did not come back"'
+    log "the previous release did not come back healthy; recover by hand (README.md, \"Automatic deployments\")"
+  fi
+}
+
+# A run that died in the middle of a replacement (power, OOM, kill) left an
+# attempt with no outcome; it is resolved before anything else.
+recover_interrupted() {
+  [ "$(state '.attempted != null and .attempted.outcome == null')" = true ] || return 0
+  if [ "$(state '.attempted.phase')" = replacing ]; then
+    recover_failed "interrupted during replacement"
+  else
+    state_set '.attempted.outcome = "deferred" | .attempted.reason = "interrupted before anything was touched"'
+  fi
+}
+
+cmd_run() {
+  local dry_run=${1:-} target cur cand_seq cur_seq dir
+  [ -f "$ENV_FILE" ] || die "no environment file at ${ENV_FILE}"
+  state_init
+  take_lock
+  recover_interrupted
+  if [ "$(state '.paused')" = true ]; then
+    log "paused; nothing resolved"
+    checked paused "paused by the operator"
+    return 0
+  fi
+  target=$(state '.pin // empty')
+  if [ -z "$target" ]; then
+    if ! target=$(resolve_tag main); then
+      log "could not resolve ${BUNDLE_REPO}:main; the registry is unreachable or the login is missing"
+      checked deferred "registry unreachable"
+      return "$EX_DEFERRED"
+    fi
+  fi
+  cur=$(state '.current.bundle // empty')
+  if [ "$target" = "$cur" ]; then
+    log "up to date (${target})"
+    checked unchanged "up to date"
+    return 0
+  fi
+  if [ "$(jq -r --arg t "$target" '.failed | index($t) != null' "$STATE")" = true ]; then
+    log "${target} failed before; held until mars-deploy retry or a newer release"
+    checked held "known failure ${target}"
+    return 0
+  fi
+  if ! fetch_bundle "$target"; then
+    log "could not fetch the bundle ${target}"
+    checked deferred "bundle fetch failed"
+    return "$EX_DEFERRED"
+  fi
+  dir=$(release_dir "$target")
+  if [ -z "$(state '.pin // empty')" ] && [ -n "$cur" ]; then
+    cand_seq=$(manifest "$target" '.source.sequence')
+    cur_seq=$(state '.current.sequence')
+    if [ "$cand_seq" -le "$cur_seq" ]; then
+      log "promoted ${target} is not newer than the installed release; ignored"
+      checked unchanged "promoted release is older"
+      return 0
+    fi
+  fi
+  if [ -n "$dry_run" ]; then
+    log "would apply $(manifest "$target" '.source.commit') (${target})"
+    return 0
+  fi
+  # The candidate checks and applies itself with its own updater
+  # (ARCHITECTURE.md, "Server deployment", "Updater evolution").
+  exec "${dir}/bin/mars-deploy" apply "$dir"
+}
+
+held() { # <reason>
+  state_set --arg r "$1" '.attempted.outcome = "held" | .attempted.reason = $r'
+  checked held "$1"
+  log "held: $1"
+  exit 0
+}
+deferred() { # <reason>
+  state_set --arg r "$1" '.attempted.outcome = "deferred" | .attempted.reason = $r'
+  checked deferred "$1"
+  log "deferred: $1"
+  exit "$EX_DEFERRED"
+}
+
+cmd_apply() {
+  local dir=$1 m target commit epoch accepted cur_dir cur_migs cand_migs major running_major
+  [ "${MARS_DEPLOY_LOCKED:-}" = 1 ] || die "apply runs only under mars-deploy run"
+  m="${dir}/manifest.json"
+  target=${dir##*/}
+  target=${target/-/:}
+  commit=$(jq -r .source.commit "$m")
+  state_set --arg t "$target" --arg c "$commit" --arg at "$(now)" \
+    '.attempted = {target: $t, commit: $c, started_at: $at, phase: "checking", outcome: null}'
+  log "candidate ${commit} (${target})"
+
+  "${dir}/bin/validate-manifest" "$m" >/dev/null 2>&1 9>&- || held "the manifest does not validate"
+  [ "$(jq -r .platform "$m")" = "linux/$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')" ] ||
+    held "the release is for $(jq -r .platform "$m"), not this host"
+
+  epoch=$(jq -r .epoch "$m")
+  accepted=$(state '.accepted_epoch // empty')
+  if [ -z "$accepted" ]; then
+    # The first install accepts the epoch it installs.
+    state_set --argjson e "$epoch" '.accepted_epoch = $e'
+    accepted=$epoch
+  fi
+  if [ "$epoch" -gt "$accepted" ]; then
+    held "epoch ${epoch} needs operator action: $(jq -r '.epoch_note // ""' "$m" | head -c 500); then mars-deploy accept-epoch ${epoch}"
+  fi
+
+  local check
+  if ! check=$("${dir}/bin/check-env" "$ENV_FILE" "$m" 2>&1 9>&-); then
+    held "configuration: $(grep '^FAIL' <<<"$check" | sed 's/^FAIL *//' | paste -sd ';' -)"
+  fi
+
+  cand_migs=$(jq -r '.schema.migrations | join(",")' "$m")
+  if [ "$(state '.current')" != null ]; then
+    cur_migs=$(state '.current.migrations | join(",")')
+    case "${cand_migs}," in
+    "${cur_migs},"*) ;;
+    *) held "the release's migrations do not extend the installed ones (a removed, reordered or older migration)" ;;
+    esac
+  fi
+
+  major=$(jq -r .postgres.major "$m")
+  if [ "$(podman inspect --format '{{.State.Running}}' "$PG" 2>/dev/null)" = true ]; then
+    running_major=$(podman exec "$PG" sh -c 'psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SHOW server_version_num"' 2>/dev/null || echo 0)
+    running_major=$((running_major / 10000))
+    [ "$running_major" = "$major" ] || held "PostgreSQL ${running_major} is running; the release is tested on ${major}"
+  fi
+
+  # --- prepare: nothing running is touched ---------------------------------
+  state_set '.attempted.phase = "preparing"'
+  local img
+  for img in $(jq -r '.images[]' "$m") "${ENV_VARS[POSTGRES_IMAGE]:-}"; do
+    [ -n "$img" ] || continue
+    podman pull -q "$img" >/dev/null 2>&1 || deferred "pulling an image of the release failed"
+  done
+  (cd "$dir" && compose config >/dev/null 2>&1) || held "compose does not render the release with ${ENV_FILE}"
+  if [ "$(state '.current')" != null ]; then
+    cur_dir=$(release_dir "$(state '.current.bundle')")
+    if [ "$(jq -r .images.orchestrator "$m")" != "$(jq -r .images.orchestrator "${cur_dir}/manifest.json")" ]; then
+      log "taking the pre-deploy database backup"
+      "${dir}/bin/mars-backup" --env "$ENV_FILE" --project "$PROJECT" db --label pre-deploy --release "$cur_dir" >/dev/null 9>&- ||
+        deferred "the pre-deploy backup failed"
+    fi
+  fi
+
+  # --- replace -----------------------------------------------------------------
+  local aliases
+  aliases=$("${dir}/bin/session-images" get 9>&- | awk '{print $2}' | jq -R . | jq -sc '{base: .[0], dev: .[1]}')
+  state_set --argjson a "$aliases" '.attempted.phase = "replacing" | .attempted.previous_session_images = $a'
+  "${dir}/bin/session-images" set "$(jq -r .images.session_claude "$m")" "$(jq -r .images.session_claude_dev "$m")" >/dev/null 9>&- ||
+    { recover_failed "moving the session image aliases failed"; exit 1; }
+  log "replacing the orchestrator"
+  podman stop --time 30 "$ORCH" >/dev/null 2>&1 || true
+  if ! bring_up "$dir"; then
+    recover_failed "the release did not become healthy within ${HEALTH_TIMEOUT}s"
+    exit 1
+  fi
+  local verify
+  if ! verify=$(cd "$dir" && COMPOSE_CMD="podman-compose -p ${PROJECT} -f compose.yml -f compose.podman.yml -f compose.release.yml" \
+    ENV_FILE="$ENV_FILE" scripts/verify-deployment.sh 2>&1 9>&-); then
+    recover_failed "verify-deployment.sh: $(grep '^FAIL' <<<"$verify" | head -3 | paste -sd ';' -)"
+    exit 1
+  fi
+
+  # --- done ------------------------------------------------------------------------
+  state_set --arg t "$target" --arg c "$commit" --argjson seq "$(jq .source.sequence "$m")" \
+    --argjson e "$epoch" --argjson migs "$(jq -c .schema.migrations "$m")" --arg at "$(now)" '
+    .previous = .current
+    | .current = {bundle: $t, commit: $c, sequence: $seq, epoch: $e, migrations: $migs, applied_at: $at}
+    | .attempted.outcome = "applied" | .attempted.phase = "done"'
+  ln -sfn "releases/${target/:/-}" "${ROOT}/current.tmp" && mv -T "${ROOT}/current.tmp" "${ROOT}/current"
+  checked applied "$commit"
+  log "applied ${commit}"
+  retain
+}
+
+# Keeps current, previous and the three releases before them, and never
+# removes an image a container still uses (podman refuses that without -f).
+retain() {
+  local keep=() d kept_images
+  keep+=("$(state '.current.bundle')")
+  [ "$(state '.previous')" != null ] && keep+=("$(state '.previous.bundle')")
+  mapfile -t others < <(find "$RELEASES" -mindepth 1 -maxdepth 1 -type d -name 'sha256-*' -printf '%T@ %f\n' |
+    sort -rn | awk '{print $2}')
+  local count=0 name
+  for name in "${others[@]}"; do
+    d=${name/-/:}
+    if printf '%s\n' "${keep[@]}" | grep -qx "$d"; then continue; fi
+    count=$((count + 1))
+    [ "$count" -le 3 ] && keep+=("$d")
+  done
+  kept_images=$(for d in "${keep[@]}"; do jq -r '.images[]' "$(release_dir "$d")/manifest.json" 2>/dev/null; done | sort -u)
+  for name in "${others[@]}"; do
+    d=${name/-/:}
+    if printf '%s\n' "${keep[@]}" | grep -qx "$d"; then continue; fi
+    for img in $(jq -r '.images[]' "${RELEASES}/${name}/manifest.json" 2>/dev/null); do
+      grep -qx "$img" <<<"$kept_images" || podman rmi "$img" >/dev/null 2>&1 || true
+    done
+    podman rmi "${BUNDLE_REPO}@${d}" >/dev/null 2>&1 || true
+    rm -rf "${RELEASES:?}/${name}"
+    log "removed release ${d}"
+  done
+}
+
+resolve_ref() { # <commit or digest> -> digest
+  if [[ $1 =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    printf '%s' "$1"
+  elif [[ $1 =~ ^[0-9a-f]{40}$ ]]; then
+    resolve_tag "sha-$1" || die "no published release for commit $1"
+  else
+    die "a release is a full 40-character commit id or a sha256: bundle digest"
+  fi
+}
+
+cmd_start() {
+  [ -L "${ROOT}/current" ] || die "no release is installed"
+  bring_up "$(readlink -f "${ROOT}/current")" || die "the installed release did not come up healthy"
+  log "started $(state '.current.commit')"
+}
+
+# --- main --------------------------------------------------------------------------
+
+[ "$#" -ge 1 ] || usage
+command=$1
+shift
+if [ "$command" != apply ] && [ "$command" != status ]; then
+  state_init
+fi
+declare -A ENV_VARS=()
+ENV_BAD_LINES=()
+if [ -f "$ENV_FILE" ]; then
+  read_env_file "$ENV_FILE" || die "${ENV_FILE} has lines that are not KEY=VALUE: ${ENV_BAD_LINES[*]}"
+fi
+
+case "$command" in
+run)
+  case "${1:-}" in '' | --dry-run) cmd_run "${1:-}" ;; *) usage ;; esac
+  ;;
+status)
+  [ -f "$STATE" ] || die "nothing installed yet (no ${STATE})"
+  cmd_status
+  ;;
+apply)
+  [ "$#" -eq 1 ] || usage
+  cmd_apply "$1"
+  ;;
+deploy)
+  [ "$#" -eq 1 ] || usage
+  take_lock
+  digest=$(resolve_ref "$1")
+  state_set --arg d "$digest" '.pin = $d | .failed -= [$d]'
+  log "pinned ${digest}"
+  exec 9>&-
+  cmd_run
+  ;;
+unpin)
+  take_lock
+  state_set '.pin = null'
+  log "following the promoted release"
+  ;;
+pause | resume)
+  take_lock
+  state_set --argjson p "$([ "$command" = pause ] && echo true || echo false)" '.paused = $p'
+  log "${command}d"
+  ;;
+retry)
+  take_lock
+  state_set '.failed = []'
+  log "failed releases will be attempted again"
+  ;;
+accept-epoch)
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] || usage
+  take_lock
+  state_set --argjson e "$1" '.accepted_epoch = $e'
+  log "accepted epoch $1"
+  ;;
+rollback)
+  take_lock
+  prev=$(state '.previous.bundle // empty')
+  [ -n "$prev" ] || die "there is no previous release"
+  state_set --arg d "$prev" '.pin = $d | .failed -= [$d]'
+  log "pinned the previous release ${prev}; mars-deploy unpin follows main again"
+  exec 9>&-
+  cmd_run
+  ;;
+start) cmd_start ;;
+*) usage ;;
+esac

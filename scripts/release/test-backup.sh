@@ -40,9 +40,16 @@ cleanup() {
 trap cleanup EXIT
 
 sql() { podman exec "$1" psql -At -U mars -d mars -c "$2"; }
+# pg_isready alone is not enough on a first start: the image initialises
+# with a temporary server, which pg_isready already reports as ready before
+# the database exists, and then restarts. Its log line marks the end of that
+# phase; a real query against the database then proves the final server.
 wait_pg() {
-  for _ in $(seq 1 60); do
-    if podman exec "$1" pg_isready -U mars -d mars >/dev/null 2>&1; then return 0; fi
+  for _ in $(seq 1 90); do
+    if podman logs "$1" 2>&1 | grep -q 'PostgreSQL init process complete' &&
+      podman exec "$1" psql -At -U mars -d mars -c 'SELECT 1' >/dev/null 2>&1; then
+      return 0
+    fi
     sleep 1
   done
   echo "postgres in $1 never became ready" >&2

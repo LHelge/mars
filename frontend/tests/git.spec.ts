@@ -34,10 +34,10 @@
 //   no-refresh-loop rule means and what `the diff endpoint's own fetch-back
 //   emits no git event` asserts.
 //
-// **The UI can only push a session ref.** `GitActionsPanel` renders `PushForm`
-// for branch rows alone, so `push main upstream` is done the way the form
-// allows: the session ref pushed to the remote branch `main`, which is the same
-// `POST .../git/push` body with the same `{remote_branch, commit}` answer.
+// **Two push forms.** A session row's `Push…` sends its session ref, which the
+// session scenarios also send to the remote branch `main` so a rejection has
+// something to reject; an integration head's row has a `Push…` of its own,
+// which is how merged work on `main` reaches the remote.
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -785,6 +785,93 @@ test("an upstream-tracking ref cannot be a mutation target", async ({
   );
   expect(refused.status).toBe(400);
   expect((refused.body as { error: string }).error).toContain("origin/main");
+});
+
+/** An integration head's row on the Branches tab, by its name. */
+function headRow(page: Page, name: string): Locator {
+  return branches(page)
+    .getByRole("row")
+    .filter({ has: page.getByText(name, { exact: true }) })
+    .filter({ has: page.getByRole("button", { name: "Push…" }) });
+}
+
+test("pushing main from its integration head row", async ({
+  page,
+  context,
+  user,
+  api,
+  repo,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  const { sessionId, mirror } = await stage(sessions, api, project);
+
+  // Merged work waiting on `main`: a session's commit merged in, as a task's
+  // merge or an automatic merge leaves it (`README.md`, "Operating notes").
+  commitInSessionWorkClone(sessionId, { "src/app.txt": "v2\n" }, "feat: work");
+  await syncSession(api, sessionId);
+  await api.post(`/projects/${project.id}/git/merge`, {
+    source: sessionId,
+    target: "main",
+  });
+  const merged = gitRevParse(mirror, "main");
+
+  // The upstream moves too, so the first push is not a fast-forward.
+  const upstream = commitToBareRepo(
+    repo,
+    { "CHANGELOG.md": "# Changelog\n\n- upstream moved\n" },
+    "Move the upstream",
+  );
+
+  await page.goto(`/projects/${project.id}?tab=branches`);
+  const toggle = headRow(page, "main").getByRole("button", { name: "Push…" });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const form = formWith(page, "git-push-head-main-remote-branch");
+  await expect(form).toBeVisible();
+  // A head keeps its own name on the remote.
+  await expect(form.locator("#git-push-head-main-remote-branch")).toHaveValue(
+    "main",
+  );
+
+  await form.getByRole("button", { name: "Push" }).click();
+  await expect(
+    form.getByText(
+      "Push rejected: upstream has advanced. Fetch, merge origin/main and retry.",
+    ),
+  ).toBeVisible({ timeout: 60_000 });
+  expect(gitRevParse(repo.path, "main")).toBe(upstream);
+  expect(gitRevParse(mirror, "main")).toBe(merged);
+
+  // The recovery the rejection names: fetch, merge `origin/main`, push again.
+  await api.post(`/projects/${project.id}/fetch`);
+  await waitFor(
+    async () => {
+      const refs = await listBranches(api, project.id);
+      const tracking = refs.find((one) => one.name === "origin/main");
+      return tracking?.commit === upstream ? refs : null;
+    },
+    { timeoutMs: 30_000, description: "origin/main to reach the new commit" },
+  );
+  await api.post(`/projects/${project.id}/git/merge`, {
+    source: "origin/main",
+    target: "main",
+  });
+  const integrated = gitRevParse(mirror, "main");
+
+  await form.getByRole("button", { name: "Push" }).click();
+  await expect(
+    form.getByText(`Pushed main at ${integrated.slice(0, 7)}`),
+  ).toBeVisible({ timeout: 60_000 });
+  expect(gitRevParse(repo.path, "main")).toBe(integrated);
+  expect(gitIsAncestor(repo.path, merged, "main")).toBe(true);
+  expect(gitIsAncestor(repo.path, upstream, "main")).toBe(true);
+
+  // `main` pushed to `main` has nothing to compare against.
+  await expect(
+    form.getByRole("link", { name: "Open compare on GitHub" }),
+  ).toHaveCount(0);
 });
 
 // The compare link is built entirely in the browser from `remote_url`

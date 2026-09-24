@@ -8,6 +8,11 @@
 // view the session table is filtered to one branch, so an operator finishing a
 // session merges or pushes it without leaving the transcript.
 //
+// A head's own action is `Push…`, on its row of the integration heads: merged
+// work — a session's, a hand-off's, an automatic merge's — waits on the head
+// until it is pushed, and the operating notes tell the operator to merge
+// `origin/main` into `main` and then push it (`README.md`, "Operating notes").
+//
 // The orchestrator serialises git work per project, so while any form here is
 // in flight every other one is disabled rather than queued behind it.
 
@@ -27,6 +32,7 @@ import { Icon } from "../icons";
 import { SubmitButton } from "../SubmitButton";
 import { IntegrationHeadTable } from "./IntegrationHeadTable";
 import { integrationHeads } from "./integrationHeads";
+import type { IntegrationHead } from "./integrationHeads";
 import { MergeForm } from "./MergeForm";
 import { PushForm } from "./PushForm";
 import { RebaseForm } from "./RebaseForm";
@@ -72,6 +78,8 @@ export function GitActionsPanel({
 }: GitActionsPanelProps) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState<OpenRow | null>(null);
+  /** The integration head whose push form is open, by name. */
+  const [openHead, setOpenHead] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   /** The compare link each row kept from its last push, by session id. */
   const [compareLinks, setCompareLinks] = useState<
@@ -148,6 +156,10 @@ export function GitActionsPanel({
     );
   }, []);
 
+  const toggleHead = useCallback((name: string) => {
+    setOpenHead((current) => (current === name ? null : name));
+  }, []);
+
   const disabledFor = (formId: string): boolean =>
     busy !== null && busy !== formId;
 
@@ -206,6 +218,27 @@ export function GitActionsPanel({
           />
         );
     }
+  };
+
+  // A head keeps its own name on the remote, so pushing the default branch
+  // earns no compare link (`formState.ts`, `compareUrlFor`); another head, or
+  // the default one sent to a branch of another name, compares against the
+  // default branch as a session's push does.
+  const renderHeadForm = (head: IntegrationHead) => {
+    const formId = `git-push-head-${head.name}`;
+    return (
+      <PushForm
+        projectId={project.id}
+        gitRef={head.name}
+        isSession={false}
+        remoteUrl={project.remote_url}
+        compareTarget={project.default_branch}
+        formId={formId}
+        disabled={disabledFor(formId)}
+        onBusy={report}
+        onPushed={refresh}
+      />
+    );
   };
 
   const genericId = "git-merge-generic";
@@ -310,7 +343,7 @@ export function GitActionsPanel({
 
       <Block
         title="Integration heads"
-        description="Mars's own branches. Sessions start from the default one, merges land in them, and a fetch never moves them."
+        description="Mars's own branches. Sessions start from the default one, merges land in them and wait there until pushed, and a fetch never moves them."
       >
         {branches.isError && (
           <Alert kind="error">Could not load the branches of the mirror.</Alert>
@@ -325,7 +358,13 @@ export function GitActionsPanel({
             />
           )
         ) : (
-          <IntegrationHeadTable heads={heads} />
+          <IntegrationHeadTable
+            heads={heads}
+            open={openHead}
+            onToggle={toggleHead}
+            renderForm={renderHeadForm}
+            disabled={busy !== null}
+          />
         )}
       </Block>
 

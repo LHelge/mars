@@ -17,6 +17,8 @@ function state(name: string, kind: TaskStateKind, position: number): TaskState {
     name,
     kind,
     position,
+    auto_merge: false,
+    conflict_state: null,
     created_at: "2026-03-01T09:00:00Z",
   };
 }
@@ -37,6 +39,7 @@ function task(stateName: string, number: number): Task {
     lease_holder_session_id: null,
     lease_since: null,
     attempts: 0,
+    rounds: 0,
     needs_human_reason: null,
     handoff: null,
     depends_on: [],
@@ -161,6 +164,21 @@ describe("deletionReason", () => {
     expect(deletionReason(REVIEW, states, new Map([["review", 1]]))).toBe(
       "1 task is in this state",
     );
+  });
+
+  it("refuses a state another state names as its conflict state, naming that state", () => {
+    const merge: TaskState = {
+      ...state("merge", "queue", 5),
+      auto_merge: true,
+      conflict_state: "review",
+    };
+    const withMerge = [...states, merge];
+
+    expect(deletionReason(REVIEW, withMerge, new Map())).toBe(
+      "This is the conflict state of merge",
+    );
+    // The auto-merge state itself is not held back by its own pairing.
+    expect(deletionReason(merge, withMerge, new Map())).toBeNull();
   });
 
   it("allows an empty state that is neither the last queue nor the last terminal", () => {

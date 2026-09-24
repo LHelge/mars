@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Project } from "../../types";
 import {
   maxAttemptsError,
+  maxRoundsError,
   sessionCapError,
   settingsBlocked,
   toProjectUpdate,
@@ -17,6 +18,7 @@ const PROJECT: Project = {
   status_message: null,
   last_fetched_at: "2026-01-01T00:00:00Z",
   max_attempts: 3,
+  max_rounds: 5,
   max_concurrent_sessions: 4,
   automation_paused: true,
   created_at: "2026-01-01T00:00:00Z",
@@ -61,7 +63,25 @@ describe("maxAttemptsError", () => {
   });
 });
 
+describe("maxRoundsError", () => {
+  it("holds the endpoint's 1–50", () => {
+    expect(maxRoundsError("0")).toBe("Between 1 and 50.");
+    expect(maxRoundsError("51")).toBe("Between 1 and 50.");
+    expect(maxRoundsError("2.5")).not.toBeNull();
+    expect(maxRoundsError("")).not.toBeNull();
+    expect(maxRoundsError("1")).toBeNull();
+    expect(maxRoundsError("50")).toBeNull();
+  });
+});
+
 describe("toProjectUpdate", () => {
+  it("shows and sends the round limit as a number", () => {
+    const state = toSettingsState(PROJECT);
+
+    expect(state.max_rounds).toBe("5");
+    expect(toProjectUpdate({ ...state, max_rounds: "12" }).max_rounds).toBe(12);
+  });
+
   it("sends an explicit null to remove the cap", () => {
     const body = toProjectUpdate({
       ...toSettingsState(PROJECT),
@@ -99,6 +119,7 @@ describe("settingsBlocked", () => {
     expect(settingsBlocked(ok)).toBe(false);
     expect(settingsBlocked({ ...ok, name: "  " })).toBe(true);
     expect(settingsBlocked({ ...ok, max_attempts: "0" })).toBe(true);
+    expect(settingsBlocked({ ...ok, max_rounds: "51" })).toBe(true);
     expect(settingsBlocked({ ...ok, max_concurrent_sessions: "0" })).toBe(true);
     expect(settingsBlocked({ ...ok, max_concurrent_sessions: "" })).toBe(false);
   });

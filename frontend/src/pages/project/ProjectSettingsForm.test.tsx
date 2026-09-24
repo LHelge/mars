@@ -40,6 +40,7 @@ const PROJECT: Project = {
   status_message: null,
   last_fetched_at: null,
   max_attempts: 3,
+  max_rounds: 5,
   max_concurrent_sessions: null,
   automation_paused: false,
   created_at: "2026-03-01T09:00:00Z",

@@ -48,6 +48,7 @@ function task(state: string): Task {
     lease_holder_session_id: null,
     lease_since: null,
     attempts: 0,
+    rounds: 0,
     needs_human_reason: null,
     handoff: null,
     depends_on: [],
@@ -65,6 +66,8 @@ const STATES: TaskState[] = ["ready", "review", "done"].map(
     name,
     kind: name === "done" ? "terminal" : "queue",
     position: index + 1,
+    auto_merge: false,
+    conflict_state: null,
     created_at: "2026-03-01T09:00:00Z",
   }),
 );

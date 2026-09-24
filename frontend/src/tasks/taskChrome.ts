@@ -34,3 +34,20 @@ export const PRIORITIES: readonly TaskPriority[] = TASK_PRIORITIES;
 /** One piece of task metadata: a bordered, monospace micro-tag. */
 export const CHIP =
   "border-console-border inline-flex items-center rounded border px-1 py-px font-mono text-[0.6875rem] leading-4";
+
+/**
+ * The card's round marker (`SPEC.md`, "Frontend", "Task board"): nothing until
+ * a second round, then `round 2/5` against the project's `max_rounds`, or
+ * `round 2` while the project has not been read.
+ */
+export function roundLabel(
+  rounds: number,
+  maxRounds: number | undefined,
+): string | null {
+  if (rounds <= 1) {
+    return null;
+  }
+  return maxRounds === undefined
+    ? `round ${String(rounds)}`
+    : `round ${String(rounds)}/${String(maxRounds)}`;
+}

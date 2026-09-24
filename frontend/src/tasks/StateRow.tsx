@@ -1,12 +1,16 @@
 // One column of the board, as a row of the states table: its position, its
 // name, what the orchestrator may do with it, how many tasks are sitting in it
-// and the three edits it offers — rename, move, remove.
+// and the edits it offers — rename, move, remove and, on a queue state, the
+// auto-merge pair of `SPEC.md`, "Task states" (ADR 0045).
 //
 // The row has one line to answer in, so moving and removing share one owner of
 // their pending and refusal state (`CLAUDE.md`, "Frontend conventions",
 // "Submitting a form"): a refusal from the last action cannot outlive a later
 // one that worked. The rename keeps its own, because it is a form with a field
-// of its own, and leaving edit mode takes its answers with it.
+// of its own, and leaving edit mode takes its answers with it. The auto-merge
+// toggle and its conflict state are one more such form: a draft of the pair,
+// saved together in one `PUT` (`autoMergeRules.ts`), whose answer an edit or a
+// cancel drops.
 //
 // Positions are packed to `0..n` after every change, so a row's index is its
 // `position` and moving it is "insert me at the neighbour's index".
@@ -16,12 +20,25 @@ import type { FormEvent } from "react";
 
 import { Alert } from "../components/Alert";
 import { ConfirmPanel } from "../components/ConfirmPanel";
+import { FieldShell } from "../components/FieldShell";
+import { CONTROL } from "../components/fieldStyles";
 import { SubmitButton } from "../components/SubmitButton";
 import { CELL, ROW, SPAN_CELL } from "../components/tableStyles";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { ApiError } from "../services/apiClient";
 import { deleteTaskState, updateTaskState } from "../services/taskStates";
 import type { TaskState } from "../types";
+import {
+  autoMergeChanged,
+  autoMergeMeaning,
+  autoMergeRefusal,
+  conflictCandidates,
+  NO_CONFLICT_TARGET,
+  toAutoMergeDraft,
+  toAutoMergeUpdate,
+  toggleAutoMerge,
+} from "./autoMergeRules";
+import type { AutoMergeDraft } from "./autoMergeRules";
 import {
   COUNTS_UNKNOWN,
   deletionReason,
@@ -64,6 +81,19 @@ export function StateRow({
     await afterMutation();
   });
 
+  // The auto-merge pair as the user is editing it, or null while the row shows
+  // what is stored: a save or a cancel drops it, so the next read of the
+  // states list is what the row shows again.
+  const [mergeDraft, setMergeDraft] = useState<AutoMergeDraft | null>(null);
+  const merge = useFormSubmit(
+    async (draft: AutoMergeDraft) => {
+      await updateTaskState(projectId, state.name, toAutoMergeUpdate(draft));
+      await afterMutation();
+      setMergeDraft(null);
+    },
+    { mapError: autoMergeRefusal },
+  );
+
   const [acting, setActing] = useState<RowAction["kind"] | null>(null);
   const act = useFormSubmit(async (action: RowAction) => {
     if (action.kind === "move") {
@@ -90,7 +120,36 @@ export function StateRow({
     void act.submit(action);
   }
 
-  const busy = rename.loading || act.loading;
+  const busy = rename.loading || act.loading || merge.loading;
+
+  const shownMerge = mergeDraft ?? toAutoMergeDraft(state);
+  const mergeDirty = mergeDraft !== null && autoMergeChanged(mergeDraft, state);
+  const candidates = conflictCandidates(state, states);
+  // Nowhere to send a conflict, and nothing stored to turn off: the toggle
+  // would only produce a request the server refuses.
+  const mergeRefusal =
+    candidates.length === 0 && !shownMerge.autoMerge
+      ? NO_CONFLICT_TARGET
+      : null;
+
+  function editMerge(next: AutoMergeDraft) {
+    // The last save's answer described the pair before this edit.
+    merge.reset();
+    setMergeDraft(next);
+  }
+
+  function cancelMerge() {
+    merge.reset();
+    setMergeDraft(null);
+  }
+
+  function submitMerge(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (mergeDraft === null || !mergeDirty) {
+      return;
+    }
+    void merge.submit(mergeDraft);
+  }
   const count = counts?.get(state.name) ?? 0;
 
   // No counts, no removal: the structural reasons are knowable without them,
@@ -188,6 +247,89 @@ export function StateRow({
           </span>
         </td>
 
+        <td className={CELL}>
+          {state.kind !== "queue" ? (
+            <span
+              className="text-console-muted font-mono text-xs"
+              title="Only a queue state can merge automatically"
+            >
+              —
+            </span>
+          ) : (
+            <form
+              onSubmit={submitMerge}
+              aria-label={`Auto-merge ${state.name}`}
+              className="flex flex-wrap items-end gap-2"
+            >
+              <label
+                className="text-console-text flex items-center gap-1.5 self-center font-mono text-xs"
+                title={mergeRefusal ?? autoMergeMeaning(state.conflict_state)}
+              >
+                <input
+                  type="checkbox"
+                  name={`task-state-auto-merge-${state.id}`}
+                  checked={shownMerge.autoMerge}
+                  onChange={(event) => {
+                    editMerge(
+                      toggleAutoMerge(
+                        shownMerge,
+                        event.target.checked,
+                        state,
+                        states,
+                      ),
+                    );
+                  }}
+                  disabled={busy || mergeRefusal !== null}
+                  className="accent-console-accent size-3.5"
+                />
+                Auto-merge
+              </label>
+
+              {shownMerge.autoMerge && (
+                <FieldShell
+                  label="Conflict state"
+                  name={`task-state-conflict-${state.id}`}
+                >
+                  {(control) => (
+                    <select
+                      {...control}
+                      value={shownMerge.conflictState ?? ""}
+                      onChange={(event) => {
+                        editMerge({
+                          autoMerge: true,
+                          conflictState: event.target.value,
+                        });
+                      }}
+                      disabled={busy}
+                      className={CONTROL}
+                    >
+                      {candidates.map((candidate) => (
+                        <option key={candidate.id} value={candidate.name}>
+                          {candidate.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </FieldShell>
+              )}
+
+              {mergeDirty && (
+                <div className="flex items-center gap-1.5 self-end">
+                  <SubmitButton loading={merge.loading}>Save</SubmitButton>
+                  <SubmitButton
+                    type="button"
+                    variant="ghost"
+                    disabled={merge.loading}
+                    onClick={cancelMerge}
+                  >
+                    Cancel
+                  </SubmitButton>
+                </div>
+              )}
+            </form>
+          )}
+        </td>
+
         <td
           className={`${CELL} text-console-muted text-right font-mono text-xs`}
           title={counts === undefined ? COUNTS_UNKNOWN : undefined}
@@ -277,6 +419,15 @@ export function StateRow({
         <tr className={ROW}>
           <td colSpan={STATE_COLUMNS.length} className={SPAN_CELL}>
             <Alert kind="error">{draftError ?? rename.error}</Alert>
+          </td>
+        </tr>
+      )}
+
+      {/* The auto-merge save's answer, dropped with the draft it answered. */}
+      {merge.error !== null && (
+        <tr className={ROW}>
+          <td colSpan={STATE_COLUMNS.length} className={SPAN_CELL}>
+            <Alert kind="error">{merge.error}</Alert>
           </td>
         </tr>
       )}

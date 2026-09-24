@@ -13,6 +13,11 @@ export interface Project {
   last_fetched_at: string | null;
   max_attempts: number;
   /**
+   * 1–50; how many revision hand-offs a task may go through before a
+   * send-back by a session or the system escalates it instead.
+   */
+  max_rounds: number;
+  /**
    * How many live sessions the project may have before an unattended launch
    * is held back; `null` is no cap. Binds automation only — a launch by a
    * person is never refused by it (`ARCHITECTURE.md`, "Task tracker" →
@@ -42,6 +47,8 @@ export interface ProjectUpdateInput {
   default_branch?: string;
   /** 1–20; how many claims in one state escalate a task. */
   max_attempts?: number;
+  /** 1–50; how many revision rounds escalate a task. */
+  max_rounds?: number;
   /**
    * At least 1 when set. An explicit `null` removes the cap; omitting the key
    * leaves the stored one alone (`SPEC.md`, "Projects").

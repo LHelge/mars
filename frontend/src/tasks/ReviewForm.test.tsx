@@ -70,6 +70,7 @@ function detail(current: Handoff): TaskDetail {
     lease_holder_session_id: null,
     lease_since: null,
     attempts: 0,
+    rounds: 0,
     needs_human_reason: null,
     handoff: current,
     depends_on: [],
@@ -91,6 +92,8 @@ const STATES: TaskState[] = [
     name: "ready",
     kind: "queue",
     position: 1,
+    auto_merge: false,
+    conflict_state: null,
     created_at: "2026-03-01T09:00:00Z",
   },
   {
@@ -99,6 +102,8 @@ const STATES: TaskState[] = [
     name: "review",
     kind: "queue",
     position: 2,
+    auto_merge: false,
+    conflict_state: null,
     created_at: "2026-03-01T09:00:00Z",
   },
 ];

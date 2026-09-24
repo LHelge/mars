@@ -22,6 +22,17 @@ export interface TaskState {
   name: string;
   kind: TaskStateKind;
   position: number;
+  /**
+   * The orchestrator merges every unheld, unblocked task here whose current
+   * hand-off is approved and moves it to the first terminal state
+   * (`ARCHITECTURE.md`, "Task tracker" → "Automatic merges"). Queue states only.
+   */
+  auto_merge: boolean;
+  /**
+   * The name of the queue state a conflicting automatic merge sends the task
+   * to; null exactly when `auto_merge` is false.
+   */
+  conflict_state: string | null;
   created_at: string;
 }
 
@@ -31,10 +42,18 @@ export interface CreateTaskStateInput {
   kind: TaskStateKind;
   /** Omitted appends; an explicit one shifts the states at and after it. */
   position?: number;
+  auto_merge?: boolean;
+  conflict_state?: string | null;
 }
 
-/** `PUT /projects/{pid}/task-states/{name}`; `kind` is immutable. */
+/**
+ * `PUT /projects/{pid}/task-states/{name}`; `kind` is immutable. `auto_merge`
+ * and `conflict_state` travel together: a body that gives either replaces
+ * both, and one with neither leaves them alone.
+ */
 export interface UpdateTaskStateInput {
   name?: string;
   position?: number;
+  auto_merge?: boolean;
+  conflict_state?: string | null;
 }

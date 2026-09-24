@@ -9,6 +9,7 @@ export { ProjectHeader } from "./ProjectHeader";
 export { ProjectSettingsForm } from "./ProjectSettingsForm";
 
 export { BoardTab } from "./BoardTab";
+export { BranchesTab } from "./BranchesTab";
 
 export { ProfilesTab } from "./ProfilesTab";
 export { SharedDirsTab } from "./SharedDirsTab";

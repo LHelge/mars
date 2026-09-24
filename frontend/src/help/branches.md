@@ -14,11 +14,11 @@ Inside a session's clone the names look different. The clone's `origin` is Mars'
 
 ### Taking in upstream changes
 
-A fetch brings your remote's new commits into `origin/main`, but `main` stays where it was. To bring them into Mars's branch, merge `origin/main` into `main`. The **Merge any ref** form at the bottom of the project's **Sessions** tab is set up for exactly that. A session launched afterwards starts from the combined `main`. If the upstream and Mars's changes conflict, nothing is changed and you get the list of conflicting paths.
+A fetch brings your remote's new commits into `origin/main`, but `main` stays where it was. To bring them into Mars's branch, merge `origin/main` into `main`. The **Merge any ref** form on the project's **Branches** tab, under the integration heads, is set up for exactly that. A session launched afterwards starts from the combined `main`. If the upstream and Mars's changes conflict, nothing is changed and you get the list of conflicting paths.
 
 ### Getting work out of a session
 
-A session's agent commits in its own clone. **Sync** copies the session's committed work into the mirror as its session ref. Uncommitted changes stay behind, so an agent that wants its work to travel commits it first. Ending a session syncs it too. From there, each session branch in the **Branches** panel offers:
+A session's agent commits in its own clone. **Sync** copies the session's committed work into the mirror as its session ref. Uncommitted changes stay behind, so an agent that wants its work to travel commits it first. Ending a session syncs it too. From there, each session branch on the project's **Branches** tab, and a session's own row behind the **branch** toggle of its header, offers:
 
 - **Merge into…**: merge the session's work into an integration head, such as `main`.
 - **Rebase onto…**: replay the session's commits onto an integration head or an upstream-tracking branch.

@@ -6,7 +6,7 @@ Only Mars itself uses the token, for every fetch from the remote and every push 
 
 - the first clone;
 - the background fetch and **Fetch now**;
-- a push from the project page or a session's git panel;
+- a push from the project's **Branches** tab or a session's git panel;
 - the `push` tool, for a profile that grants it.
 
 Agents never see the token. It is never put into a session's container, so nothing an agent runs can read it. Mars sends it as HTTP basic auth with the username `x-access-token`, which both GitHub and GitLab accept for a personal access token.

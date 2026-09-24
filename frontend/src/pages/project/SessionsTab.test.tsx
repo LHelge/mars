@@ -127,4 +127,12 @@ describe("SessionsTab", () => {
       expect(call[1]).toBeUndefined();
     }
   });
+
+  it("leaves the git panel to the Branches tab", async () => {
+    renderTab();
+
+    expect(await screen.findByText("still going")).not.toBeNull();
+    expect(screen.queryByRole("heading", { name: "Branches" })).toBeNull();
+    expect(vi.mocked(listSessionBranches)).not.toHaveBeenCalled();
+  });
 });

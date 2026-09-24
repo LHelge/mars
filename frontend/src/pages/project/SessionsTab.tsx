@@ -16,6 +16,9 @@
 // Deleting is only offered for a session that has finished; the API refuses
 // any other (`DELETE /sessions/{id}`: must be `done` or `failed`), and the
 // refusal is shown on the row it belongs to rather than at the top of the page.
+//
+// Git work is not here: a row's `Branch` is a plain value, and merging,
+// rebasing and pushing are the `branches` tab's (`BranchesTab`).
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useMemo, useState } from "react";
@@ -33,7 +36,6 @@ import {
   TABLE,
   type TableColumn,
 } from "../../components/tableStyles";
-import { GitActionsPanel } from "../../components/git/GitActionsPanel";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import { LaunchSourceTag } from "../../session/LaunchSourceTag";
 import { queryKeys } from "../../services/queryKeys";
@@ -102,8 +104,9 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
   // The whole list, always: the filter is a view of it and not a second read.
   // A per-state key would mean a request per filter and, between the click and
   // its answer, the previous filter's rows sitting under the new filter's
-  // heading — `Failed` briefly listing running sessions. The panel below reads
-  // the same unfiltered key, so this is also one polled request and not two.
+  // heading — `Failed` briefly listing running sessions. The Branches tab's git
+  // panel reads the same unfiltered key for its titles, so switching between
+  // the two tabs is one cached list and not two.
   const sessions = useQuery({
     ...projectQueries.sessions(project.id),
     refetchIntervalInBackground: false,
@@ -313,10 +316,6 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
           </table>
         )}
       </section>
-
-      {/* Ahead/behind, merge, rebase and push for the session branches; the
-          sessions above are what it acts on. */}
-      <GitActionsPanel project={project} />
     </div>
   );
 }

@@ -10,6 +10,14 @@
 //
 // The comparison runs from the merge base, so a session keeps showing its own
 // work after the branch it started from has moved on.
+//
+// An ended session may keep no `refs/sessions/<id>`: its end dropped the ref
+// because the session made no commits of its own, or because a hand-off or an
+// integration head already holds every commit it made (`SPEC.md`, "Sessions";
+// ADR 0050). Its diff is still its work — the endpoint reads the tip from the
+// session's work clone, which stays until the session is deleted — so the
+// panel shows it as ever and says in one line why the branch is absent from
+// the Branches tab and cannot be merged or launched from by name.
 
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -55,6 +63,10 @@ export function ChangesPanel({ session }: SessionPanelProps) {
     void queryClient.invalidateQueries({
       queryKey: queryKeys.projects.diff(projectId, session.id, base ?? undefined),
     });
+    // The same event may have written or dropped the session's own ref.
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.projects.branches(projectId),
+    });
   }, [base, gitEventSeq, projectId, queryClient, session.id]);
 
   // Integration heads and upstream refs are both legal bases; session refs are
@@ -63,6 +75,13 @@ export function ChangesPanel({ session }: SessionPanelProps) {
     (branch) => branch.kind === "head" || branch.kind === "upstream",
   );
   const defaultBranch = project.data?.default_branch;
+  const ended = session.state === "done" || session.state === "failed";
+  const keptNoRef =
+    ended &&
+    branches.data !== undefined &&
+    !branches.data.some(
+      (branch) => branch.kind === "session" && branch.session_id === session.id,
+    );
 
   return (
     <div className="space-y-3 p-3">
@@ -124,6 +143,15 @@ export function ChangesPanel({ session }: SessionPanelProps) {
           </p>
         )}
       </header>
+
+      {keptNoRef && (
+        <p className="text-console-muted font-mono text-xs">
+          No branch of its own: this session ended with no commits that a
+          hand-off or an integration head does not already hold. The changes
+          are read from its work tree; any hand-off of them is on its task,
+          under Tasks.
+        </p>
+      )}
 
       {diff.isError && (
         <Alert kind="error">

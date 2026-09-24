@@ -733,13 +733,14 @@ async fn clone_work_tree(
     // Still under the git lock, which comes before the row's (ADR 0021), so an
     // end racing this launch reads the commit the clone was made at together
     // with the clone. A failed write is not a failed launch: without the
-    // commit the end-of-session rule keeps the session's ref, which is what
-    // every session did before the column existed (ADR 0050).
+    // commit the end-of-session rule cannot tell a session with no commits of
+    // its own, and keeps its ref unless an integration head or a hand-off
+    // holds its tip, as for a session launched before the column (ADR 0050).
     if let Err(err) = record_base_commit(state, session_id, &base.commit).await {
         warn!(
             session_id = %session_id,
             error = %err,
-            "the session's base commit could not be recorded; its ref will be kept when it ends",
+            "the session's base commit could not be recorded",
         );
     }
 

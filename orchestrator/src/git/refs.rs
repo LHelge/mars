@@ -26,7 +26,8 @@
 //! and [`delete`] (`update-ref`), and the hand-off retention primitives
 //! [`retain_handoff`], [`remove_handoff`] and [`list_handoffs`] that code
 //! hand-offs and the orphan-cleanup job call (`docs/data-model.md`,
-//! `task_handoffs`). Every one of them runs through [`GitCommand`]; nothing
+//! `task_handoffs`), and [`retained_holder`], the containment question the
+//! end-of-session fetch-back asks (ADR 0050). Every one of them runs through [`GitCommand`]; nothing
 //! here spawns a process of its own (ADR 0011).
 //!
 //! Callers hold the project git lock. Nothing in this module takes it: these
@@ -708,6 +709,60 @@ pub async fn list_sessions(mirror: &Path) -> std::result::Result<Vec<Uuid>, GitE
     Ok(sessions)
 }
 
+/// The namespaces whose refs Mars retains on its own account, and so keep a
+/// commit they contain: the integration heads and the hand-off refs
+/// (`ARCHITECTURE.md`, "Git model", Ref ownership; ADR 0050).
+///
+/// Upstream-tracking refs and tags are not among them: Mars does not own
+/// them, and a fetch can prune them (ADR 0017).
+const RETAINING: [&str; 2] = [HEADS, HANDOFFS];
+
+/// The first integration head or hand-off ref that contains `commit` — points
+/// at it or at a descendant of it — or `None` when none does.
+///
+/// One `git for-each-ref --count=1 --contains=<commit>` over [`RETAINING`],
+/// not a `merge-base` per ref. A commit the project repository does not have
+/// at all — work that exists only in a session's clone — is contained in
+/// nothing, and is answered `None` without asking `for-each-ref`, which would
+/// refuse the unknown object.
+///
+/// # Errors
+///
+/// [`GitError::InvalidRef`] when `commit` is not a full object id.
+pub async fn retained_holder(
+    mirror: &Path,
+    commit: &str,
+) -> std::result::Result<Option<String>, GitError> {
+    if !is_object_id(commit) {
+        return Err(GitError::InvalidRef(commit.to_string()));
+    }
+
+    if peel(mirror, commit, "commit").await?.as_deref() != Some(commit) {
+        return Ok(None);
+    }
+
+    let contains = format!("--contains={commit}");
+    let output = GitCommand::new()
+        .args([
+            "for-each-ref",
+            "--count=1",
+            "--format=%(refname)",
+            &contains,
+            "--end-of-options",
+        ])
+        .args(RETAINING)
+        .cwd(mirror)
+        .run_ok()
+        .await?;
+
+    Ok(output
+        .stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1054,6 +1109,54 @@ mod tests {
             assert_eq!(resolved.commit, head_commit, "{git_ref:?}");
             assert!(is_object_id(&resolved.commit), "{resolved:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn retained_holder_counts_heads_and_hand_offs_only() {
+        let upstream = TestUpstream::create().await;
+        let root = run_git(&upstream.path, &["rev-list", "--max-parents=0", "main"])
+            .await
+            .trim()
+            .to_string();
+        let feature = upstream
+            .commit_file("feature", "f.txt", "feature\n", "feat: a feature")
+            .await;
+        upstream.tag("v-feature", &feature, true).await;
+        let mirror = mirror_of(&upstream).await;
+
+        // An ancestor of an integration head is held by it.
+        assert!(
+            retained_holder(&mirror.path, &root)
+                .await
+                .unwrap()
+                .is_some_and(|name| name.starts_with(HEADS)),
+        );
+
+        // Held only by an upstream-tracking ref and a tag: nothing Mars owns.
+        delete(&mirror.path, "refs/heads/feature").await.unwrap();
+        assert_eq!(retained_holder(&mirror.path, &feature).await.unwrap(), None);
+
+        // A hand-off ref holds it.
+        let handoff = uuid();
+        retain_handoff(&mirror.path, handoff, &feature)
+            .await
+            .unwrap();
+        assert_eq!(
+            retained_holder(&mirror.path, &feature).await.unwrap(),
+            Some(handoff_ref(handoff))
+        );
+
+        // A commit the repository does not have is held by nothing.
+        assert_eq!(
+            retained_holder(&mirror.path, &"f".repeat(40))
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(matches!(
+            retained_holder(&mirror.path, "main").await,
+            Err(GitError::InvalidRef(_))
+        ));
     }
 
     #[tokio::test]

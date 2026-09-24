@@ -9,8 +9,9 @@
 // approving forwards the hand-off and unlocks the task merge, the merge lands
 // the pinned commit and not the branch tip, an unapproved or superseded
 // hand-off is refused, requesting changes sends the task back without losing
-// the commit, the revision diff is read by hand-off id without syncing, and a
-// commit that is not the source session's tip is refused.
+// the commit, the revision diff is read by hand-off id without syncing, a
+// commit that is not the source session's tip is refused, and an implementer
+// whose tip a hand-off holds ends with no session ref and its changes intact.
 //
 // **Where the work comes from.** The stub CLI replays a transcript and executes
 // nothing, so — exactly as `git.spec.ts` does — a scenario stands in for the
@@ -1045,4 +1046,55 @@ test("a review of a superseded revision says the hand-off changed", async ({
   expect(task.handoff?.id).toBe(superseding.id);
   expect(task.handoff?.review_status).toBe("unreviewed");
   expect(task.state).toBe("ready");
+});
+
+test("an implementer that handed off its tip ends with no ref and still shows its changes", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
+  const session = await implementer(fixture);
+  const commit = commitInSessionWorkClone(
+    session,
+    { "greeting.txt": "hello\n" },
+    "feat: greeting",
+  );
+  const handoff = await publishRevision(
+    fixture,
+    session,
+    commit,
+    "Ready for review",
+    "review",
+  );
+  // Publishing synced the live session, which keeps its ref whatever it holds.
+  expect(gitRevParse(fixture.mirror, `refs/sessions/${session}`)).toBe(commit);
+
+  await endSession(fixture.client, session);
+
+  // The hand-off holds every commit the session made, so the end keeps no
+  // session ref (`ARCHITECTURE.md`, "Git model", Ref ownership; ADR 0050).
+  expect(() =>
+    gitRevParse(fixture.mirror, `refs/sessions/${session}`),
+  ).toThrow();
+  expect(gitRevParse(fixture.mirror, `refs/handoffs/${handoff.id}`)).toBe(
+    commit,
+  );
+
+  // The Changes panel still shows the work, read from the work clone, and
+  // says why the branch has gone (`SPEC.md`, "Frontend", Changes panel).
+  await page.goto(`/sessions/${session}`);
+  await page.getByRole("tab", { name: "Changes" }).click();
+  const changes = page.getByRole("tabpanel");
+  await expect(
+    changes.getByRole("button", { name: /^A greeting\.txt \+1 −0$/ }),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(changes.getByText(/No branch of its own/)).toBeVisible();
+  expect(() =>
+    gitRevParse(fixture.mirror, `refs/sessions/${session}`),
+  ).toThrow();
 });

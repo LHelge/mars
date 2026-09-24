@@ -140,6 +140,13 @@ impl Fixture {
                 .await
                 .expect("the session work clone is created");
         }
+        // One commit of the session's own: a branch still at `main` is held by
+        // `main`, and an ended session keeps no ref for it (ADR 0050).
+        let work = paths.session_work(session.id);
+        std::fs::write(work.join("SESSION.md"), "the session's work\n")
+            .expect("the file is written");
+        run_git(&work, &["add", "--", "SESSION.md"]).await;
+        run_git(&work, &["commit", "--quiet", "-m", "the session's work"]).await;
 
         Self {
             _upstream: upstream,

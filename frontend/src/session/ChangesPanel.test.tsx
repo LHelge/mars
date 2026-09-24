@@ -46,14 +46,14 @@ const session = {
   branch: "sessions/fix-login",
 } as Session;
 
-function mount() {
+function mount(shown: Session = session) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   const invalidate = vi.spyOn(client, "invalidateQueries");
   const view = render(
     <QueryClientProvider client={client}>
-      <ChangesPanel session={session} />
+      <ChangesPanel session={shown} />
     </QueryClientProvider>,
   );
   return { client, invalidate, view };
@@ -141,8 +141,55 @@ describe("ChangesPanel", () => {
     gitEvent(8, false);
 
     await waitFor(() => {
-      expect(invalidate).toHaveBeenCalledTimes(1);
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: [
+          "projects",
+          PROJECT_ID,
+          "git",
+          "diff",
+          { head: SESSION_ID, base: null },
+        ],
+      });
     });
+  });
+
+  it("says an ended session with no session ref has no branch of its own", async () => {
+    mount({ ...session, state: "done" });
+
+    // Its work is still the diff (ADR 0050).
+    await waitFor(() => {
+      expect(screen.getAllByText("src/one.ts").length).toBeGreaterThan(0);
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/No branch of its own/)).toBeDefined();
+    });
+  });
+
+  it("says nothing of the kind while the session ref is listed", async () => {
+    vi.mocked(listBranches).mockResolvedValue([
+      { name: "main", kind: "head", commit: "1111111" },
+      {
+        name: `refs/sessions/${SESSION_ID}`,
+        kind: "session",
+        commit: "2222222",
+        session_id: SESSION_ID,
+      },
+    ] as Branch[]);
+    mount({ ...session, state: "done" });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("src/one.ts").length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText(/No branch of its own/)).toBeNull();
+  });
+
+  it("says nothing of the kind for a live session", async () => {
+    mount();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("src/one.ts").length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText(/No branch of its own/)).toBeNull();
   });
 
   it("renders the patch of each file as diff lines", async () => {

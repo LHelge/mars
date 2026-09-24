@@ -264,18 +264,30 @@ pub struct FetchedBack {
 }
 
 /// The fetch-back of a session that has ended or is ending: the same fetch as
-/// [`fetch_back`], unless the session made no commits beyond its base.
+/// [`fetch_back`], unless the ref would hold no work that is not kept
+/// elsewhere.
 ///
-/// When the work clone's `session/<sid>` tip is `base_commit` — a planner, or
-/// a reviewer that forwarded a hand-off without committing — the ref would
-/// hold nothing the session did, so it is not written, and one an earlier
-/// sync left is deleted (`ARCHITECTURE.md`, "Git model", Ref ownership;
-/// ADR 0050). The work clone is not touched: it stays until the session is
+/// Two cases keep no ref (`ARCHITECTURE.md`, "Git model", Ref ownership;
+/// ADR 0050):
+///
+/// - the work clone's `session/<sid>` tip is `base_commit` — a planner, or a
+///   reviewer that forwarded a hand-off without committing — so the ref would
+///   hold nothing the session did;
+/// - the tip is contained in an integration head or a hand-off ref
+///   ([`refs::retained_holder`]) — an implementer whose last commit was
+///   handed off, a session merged into `main` — so that ref already keeps
+///   every commit the session made. Upstream-tracking refs and tags do not
+///   count: Mars does not own them and a fetch can prune them (ADR 0017).
+///
+/// In either case the ref is not written, and one an earlier sync left is
+/// deleted. The work clone is not touched: it stays until the session is
 /// deleted, and a later fetch-back — of a retried session, which is live again
-/// — reads it as before.
+/// — reads it as before. Containment is judged before the fetch, against the
+/// project repository as it stands: a tip the repository does not have yet is
+/// work only the session holds, and is fetched.
 ///
 /// `base_commit` is `sessions.base_commit`; a session launched before that
-/// column existed has none, and for it this is exactly [`fetch_back`].
+/// column existed has none, and for it only the containment rule applies.
 ///
 /// # Errors
 ///
@@ -288,17 +300,29 @@ pub async fn fetch_back_ended(
     base_commit: Option<&str>,
 ) -> std::result::Result<FetchedBack, GitError> {
     let tip = work_tip(paths, session_id).await?;
+    let repo = paths.project_repo(guard.project_id());
 
-    if base_commit == Some(tip.as_str()) {
-        let repo = paths.project_repo(guard.project_id());
-        refs::delete(&repo, &refs::session_ref(session_id)).await?;
-
+    let redundant = if base_commit == Some(tip.as_str()) {
         debug!(
             session_id = %session_id,
             commit = %tip,
             "the ended session made no commits beyond its base; it keeps no session ref"
         );
+        true
+    } else if let Some(holder) = refs::retained_holder(&repo, &tip).await? {
+        debug!(
+            session_id = %session_id,
+            commit = %tip,
+            git.refname = %holder,
+            "another retained ref holds the ended session's tip; it keeps no session ref"
+        );
+        true
+    } else {
+        false
+    };
 
+    if redundant {
+        refs::delete(&repo, &refs::session_ref(session_id)).await?;
         return Ok(FetchedBack {
             commit: tip,
             kept: false,

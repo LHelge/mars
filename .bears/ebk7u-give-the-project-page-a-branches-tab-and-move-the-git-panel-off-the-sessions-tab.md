@@ -1,16 +1,17 @@
 ---
 id: ebk7u
 title: Give the project page a Branches tab and move the git panel off the Sessions tab
-status: open
+status: done
 priority: P2
 created: "2026-09-24T08:19:30.493380Z"
-updated: "2026-09-24T08:19:30.493380Z"
+updated: "2026-09-24T09:07:45.454159744Z"
 tags:
   - frontend
   - git
   - docs
   - tests
 parent: kc8k3
+attempts: 1
 ---
 
 Part of epic kc8k3. The project's `Sessions` tab (`frontend/src/pages/project/SessionsTab.tsx`) is the launch form, the session table and then, at its bottom, the whole project-wide `GitActionsPanel` (`frontend/src/components/git/GitActionsPanel.tsx`): the session-branch table with ahead/behind and merge, rebase and push per row, plus the `Merge any ref` form used to bring `origin/main` into `main`. Two lists of sessions on one tab, one of them long and mostly leftover refs, is the mess the user reported (2026-09-24). Git work is also project work, not session work: integrating upstream and pushing `main` name no session at all.

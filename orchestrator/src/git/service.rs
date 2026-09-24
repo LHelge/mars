@@ -356,9 +356,10 @@ impl GitService {
     /// records one: `POST /sessions/{id}/end`, before the session is closed.
     ///
     /// The session is judged as ended whatever state its row still reads, so
-    /// a session whose `session/<sid>` tip is its recorded base commit keeps
-    /// no `refs/sessions/<sid>` (`ARCHITECTURE.md`, "Git model", Ref
-    /// ownership; ADR 0050). The errors are [`sync_session`]'s.
+    /// a session whose `session/<sid>` tip is its recorded base commit, or is
+    /// contained in an integration head or a hand-off ref, keeps no
+    /// `refs/sessions/<sid>` (`ARCHITECTURE.md`, "Git model", Ref ownership;
+    /// ADR 0050). The errors are [`sync_session`]'s.
     ///
     /// [`sync_session`]: GitService::sync_session
     pub async fn sync_ending_session(
@@ -443,8 +444,9 @@ impl GitService {
     /// the commit `refs/sessions/<sid>` now points at. **A `done` or `failed`
     /// session is fetched back under the end-of-session rule**
     /// ([`session::fetch_back_ended`]): when its tip is still its recorded
-    /// base commit it keeps no ref, one an earlier sync left is deleted, and
-    /// the answer is that tip all the same — so a caller that needs the
+    /// base commit, or an integration head or a hand-off ref already contains
+    /// it, it keeps no ref, one an earlier sync left is deleted, and the
+    /// answer is that tip all the same — so a caller that needs the
     /// commit uses the answer rather than resolving the ref, and one that
     /// resolves the ref afterwards gets [`GitError::UnknownRef`], a 400, as
     /// for any name that does not resolve (ADR 0050).
@@ -559,8 +561,8 @@ impl GitService {
     ///
     /// A [`DiffSelector::Head`] naming a session is synced silently first, so
     /// the panel shows what the agent has committed, and the head is the
-    /// commit that sync answers — which for an ended session with no commits
-    /// beyond its base, and so no ref, is that base commit; a
+    /// commit that sync answers — the work clone's tip, whether or not an
+    /// ended session kept a ref for it; a
     /// [`DiffSelector::Handoff`] is checked against `task_handoffs` for this
     /// project (404 otherwise) and then resolves `refs/handoffs/<id>` in this
     /// project's own repository, never syncing anything
@@ -608,10 +610,11 @@ impl GitService {
         let (base_resolved, head_resolved) = {
             let guard = self.locks.lock(project_id).await;
             let head_resolved = match head_session {
-                // The sync's answer rather than the ref: a session that ended
-                // with nothing beyond its base keeps no ref, and its diff is
-                // then the one its base commit gives — empty against the
-                // branch it started from (ADR 0050).
+                // The sync's answer rather than the ref: an ended session
+                // whose work is its base commit, or is held by an integration
+                // head or a hand-off ref, keeps no ref, and its diff is still
+                // its tip's — empty when that is its base, its work when a
+                // hand-off holds it (ADR 0050).
                 Some(session_id) => ResolvedRef {
                     git_ref: head_ref.clone(),
                     commit: self.sync_session_silent(&guard, session_id).await?,

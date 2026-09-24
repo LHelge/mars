@@ -612,19 +612,128 @@ async fn an_ended_fetch_back_with_commits_publishes_them() {
 }
 
 #[tokio::test]
-async fn an_ended_fetch_back_with_no_recorded_base_keeps_the_ref() {
+async fn an_ended_fetch_back_with_no_recorded_base_is_judged_by_containment() {
     let project = Project::create().await;
     let session_id = Uuid::new_v4();
     let base = project.launch(session_id, None).await;
 
+    // Untouched, and so contained in `main`, the head it was cloned from.
     let outcome = fetch_back_ended(&project.guard, &project.paths, session_id, None)
         .await
         .expect("the ended fetch-back succeeds");
+    assert_eq!(
+        outcome,
+        FetchedBack {
+            commit: base.commit.clone(),
+            kept: false,
+        }
+    );
+    assert!(!has_session_ref(&project.repo(), session_id).await);
 
+    let tip = commit_in_work(
+        &project.work(session_id),
+        "agent.txt",
+        "work\n",
+        "feat: the agent's work",
+    )
+    .await;
+    let outcome = fetch_back_ended(&project.guard, &project.paths, session_id, None)
+        .await
+        .expect("the ended fetch-back succeeds");
     assert!(outcome.kept);
     assert_eq!(
         commit_of(&project.repo(), &format!("refs/sessions/{session_id}")).await,
-        base.commit
+        tip
+    );
+}
+
+#[tokio::test]
+async fn an_ended_fetch_back_whose_tip_a_hand_off_or_a_head_contains_keeps_no_ref() {
+    let project = Project::create().await;
+    let repo = project.repo();
+    let handed = Uuid::new_v4();
+    let merged = Uuid::new_v4();
+    let handed_base = project.launch(handed, None).await;
+    let merged_base = project.launch(merged, None).await;
+
+    let handed_tip = commit_in_work(&project.work(handed), "a.txt", "a\n", "feat: a").await;
+    let merged_tip = commit_in_work(&project.work(merged), "b.txt", "b\n", "feat: b").await;
+    fetch_back(&project.guard, &project.paths, handed)
+        .await
+        .expect("the live sync succeeds");
+    fetch_back(&project.guard, &project.paths, merged)
+        .await
+        .expect("the live sync succeeds");
+
+    // A hand-off of the first tip, and a head that moved past the second.
+    refs::retain_handoff(&repo, Uuid::new_v4(), &handed_tip)
+        .await
+        .expect("the hand-off is pinned");
+    refs::update(&repo, "refs/heads/release", &merged_tip, None)
+        .await
+        .expect("the head is written");
+
+    for (session_id, base, tip) in [
+        (handed, &handed_base, handed_tip),
+        (merged, &merged_base, merged_tip),
+    ] {
+        let outcome = fetch_back_ended(
+            &project.guard,
+            &project.paths,
+            session_id,
+            Some(&base.commit),
+        )
+        .await
+        .expect("the ended fetch-back succeeds");
+
+        assert_eq!(
+            outcome,
+            FetchedBack {
+                commit: tip,
+                kept: false
+            }
+        );
+        assert!(!has_session_ref(&repo, session_id).await);
+    }
+}
+
+#[tokio::test]
+async fn an_ended_fetch_back_whose_tip_only_upstream_refs_contain_keeps_the_ref() {
+    let project = Project::create().await;
+    let repo = project.repo();
+    let session_id = Uuid::new_v4();
+    let base = project.launch(session_id, None).await;
+    let tip = commit_in_work(&project.work(session_id), "a.txt", "a\n", "feat: a").await;
+    fetch_back(&project.guard, &project.paths, session_id)
+        .await
+        .expect("the live sync succeeds");
+
+    refs::update(&repo, "refs/remotes/origin/main", &tip, None)
+        .await
+        .expect("the upstream-tracking ref is written");
+    refs::update(&repo, "refs/tags/v-session", &tip, None)
+        .await
+        .expect("the tag is written");
+
+    let outcome = fetch_back_ended(
+        &project.guard,
+        &project.paths,
+        session_id,
+        Some(&base.commit),
+    )
+    .await
+    .expect("the ended fetch-back succeeds");
+
+    assert_eq!(
+        outcome,
+        FetchedBack {
+            commit: tip.clone(),
+            kept: true
+        }
+    );
+    assert_eq!(
+        commit_of(&repo, &format!("refs/sessions/{session_id}")).await,
+        tip
     );
 }
 

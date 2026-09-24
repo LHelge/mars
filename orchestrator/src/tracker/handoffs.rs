@@ -218,9 +218,10 @@ pub async fn prepare(
             // which is what lets work from an ended session be published.
             //
             // The tip is the sync's answer, not a read of the ref: a session
-            // that ended with no commits beyond its base keeps no ref
-            // (ADR 0050), and publishing that base commit from its work clone
-            // is still a hand-off of what the session holds.
+            // that ended with no commits beyond its base, or whose tip another
+            // hand-off or an integration head already holds, keeps no ref
+            // (ADR 0050), and publishing that commit from its work clone is
+            // still a hand-off of what the session holds.
             let tip = GitService::from_state(state)
                 .sync_session_silent(guard, *source_session_id)
                 .await

@@ -1,16 +1,17 @@
 ---
 id: nq3dc
 title: "Frontend: auto-merge controls in the states editor, max_rounds in project settings, rounds on cards"
-status: open
+status: done
 priority: P2
 created: "2026-09-22T20:20:39.104815081Z"
-updated: "2026-09-22T20:20:39.104815081Z"
+updated: "2026-09-24T15:41:05.205831152Z"
 tags:
   - frontend
 depends_on:
   - ymav9
   - cyuj4
 parent: tykeu
+attempts: 1
 ---
 
 The UI of ADRs 0045 and 0046, as `SPEC.md`, "Frontend" → "Task board" now describes it; the API shapes are `SPEC.md`, "Projects" (`max_rounds`), "Task states" (`auto_merge`, `conflict_state`) and "Tasks" (`rounds`).

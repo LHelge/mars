@@ -38,6 +38,8 @@ function state(name: string, kind: TaskStateKind, position: number): TaskState {
     name,
     kind,
     position,
+    auto_merge: false,
+    conflict_state: null,
     created_at: "2026-03-01T09:00:00Z",
   };
 }
@@ -58,6 +60,7 @@ function task(stateName: string, number: number): Task {
     lease_holder_session_id: null,
     lease_since: null,
     attempts: 0,
+    rounds: 0,
     needs_human_reason: null,
     handoff: null,
     depends_on: [],
@@ -315,5 +318,88 @@ describe("TaskStatesEditor", () => {
       expect(vi.mocked(listTaskStates).mock.calls.length).toBeGreaterThan(1);
       expect(vi.mocked(listTasks).mock.calls.length).toBeGreaterThan(1);
     });
+  });
+
+  it("turns auto-merge on with ready pre-selected and saves the pair in one PUT", async () => {
+    vi.mocked(updateTaskState).mockResolvedValue({
+      ...REVIEW,
+      auto_merge: true,
+      conflict_state: "ready",
+    });
+    renderEditor();
+
+    const review = await row("review");
+    fireEvent.click(
+      within(review).getByRole("checkbox", { name: "Auto-merge" }),
+    );
+
+    const select = within(review).getByRole("combobox", {
+      name: "Conflict state",
+    });
+    expect((select as HTMLSelectElement).value).toBe("ready");
+    // Only the project's other queue states are offered.
+    expect(
+      within(select)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(["ready"]);
+    // Nothing is sent until the pair is saved.
+    expect(updateTaskState).not.toHaveBeenCalled();
+
+    fireEvent.click(within(review).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(updateTaskState).toHaveBeenCalledTimes(1);
+    });
+    expect(updateTaskState).toHaveBeenCalledWith(PROJECT_ID, "review", {
+      auto_merge: true,
+      conflict_state: "ready",
+    });
+  });
+
+  it("shows an auto-merge refusal in the row's words", async () => {
+    vi.mocked(updateTaskState).mockRejectedValueOnce(
+      new ApiError(
+        400,
+        "conflict_state must name a queue state of this project",
+      ),
+    );
+    renderEditor();
+
+    const review = await row("review");
+    fireEvent.click(
+      within(review).getByRole("checkbox", { name: "Auto-merge" }),
+    );
+    fireEvent.click(within(review).getByRole("button", { name: "Save" }));
+
+    await screen.findByText(/must be another queue state of this project/);
+  });
+
+  it("disables removing a conflict state, naming the state that uses it", async () => {
+    vi.mocked(listTaskStates).mockResolvedValue([
+      READY,
+      { ...REVIEW, auto_merge: true, conflict_state: "ready" },
+      state("backlog", "queue", 2),
+      state("needs_human", "human", 3),
+      state("done", "terminal", 4),
+    ]);
+    vi.mocked(listTasks).mockResolvedValue([]);
+    renderEditor();
+
+    // The review row's select also lists `ready`, so the row is found by
+    // its name cell rather than by the first text that matches.
+    const cells = await screen.findAllByText("ready", { selector: "span" });
+    const ready = cells[0]?.closest("tr");
+    if (ready === null || ready === undefined) {
+      throw new Error("no row for ready");
+    }
+    expect(
+      within(ready).getByText("This is the conflict state of review"),
+    ).toBeTruthy();
+    expect(
+      within(ready)
+        .getByRole("button", { name: "Remove" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
   });
 });

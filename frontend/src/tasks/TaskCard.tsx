@@ -1,5 +1,6 @@
 // One card on the task board (`SPEC.md`, "Frontend", "Task board": priority,
-// labels, the holding session with a link, attempts when above one, assignee,
+// labels, the holding session with a link, attempts when above one, the round
+// when above one against the project's `max_rounds`, assignee,
 // blocked and dependency indicators, and a parent badge).
 //
 // The whole card is a link to `/projects/{pid}/tasks/{number}` — the board
@@ -24,7 +25,12 @@ import { Icon, ICON_CLASS } from "../components/icons";
 import type { Task } from "../types";
 import { taskCardTestId } from "../utils/testIds";
 import { taskPath } from "./taskLink";
-import { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
+import {
+  CHIP,
+  PRIORITY_COLOUR,
+  PRIORITY_MEANING,
+  roundLabel,
+} from "./taskChrome";
 import { useTaskStore } from "./taskStore";
 import { selectTaskById } from "./taskStore";
 import { useUsername } from "./useUsername";
@@ -33,9 +39,11 @@ export interface TaskCardProps {
   task: Task;
   /** The task named by `/projects/:id/tasks/:number`: marked where it sits. */
   selected?: boolean;
+  /** The project's `max_rounds`, when the board was given it. */
+  maxRounds?: number;
 }
 
-function TaskCardView({ task, selected }: TaskCardProps) {
+function TaskCardView({ task, selected, maxRounds }: TaskCardProps) {
   // The parent is read from the same snapshot the card came from, so no card
   // makes a request of its own to render its badge.
   const parent = useTaskStore(
@@ -46,6 +54,7 @@ function TaskCardView({ task, selected }: TaskCardProps) {
     (dependency) => dependency.kind === "blocks",
   ).length;
   const blocking = task.blocks.length;
+  const round = roundLabel(task.rounds, maxRounds);
 
   return (
     <article
@@ -118,6 +127,15 @@ function TaskCardView({ task, selected }: TaskCardProps) {
               title="Sessions that have picked this task up"
             >
               {task.attempts} attempts
+            </span>
+          )}
+
+          {round !== null && (
+            <span
+              className={`${CHIP} text-console-muted`}
+              title="Revision rounds since the task last left the human state; at the limit a send-back escalates it instead"
+            >
+              {round}
             </span>
           )}
 

@@ -33,7 +33,11 @@ export function BoardTab({ project, taskParam }: BoardTabProps) {
 
   return (
     <>
-      <TaskBoard projectId={project.id} openTaskNumber={number ?? undefined} />
+      <TaskBoard
+        projectId={project.id}
+        openTaskNumber={number ?? undefined}
+        maxRounds={project.max_rounds}
+      />
       {taskParam !== undefined && (
         <TaskDetail projectId={project.id} number={number} />
       )}

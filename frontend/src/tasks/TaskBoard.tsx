@@ -32,11 +32,17 @@ import type { TaskState } from "../types";
 import { taskColumnTestId } from "../utils/testIds";
 import { useDelayedFlag } from "../utils/useDelayedFlag";
 import { CreateTaskForm } from "./CreateTaskForm";
+import { autoMergeMeaning } from "./autoMergeRules";
 import { normalizeQuery } from "./search";
+import { CHIP } from "./taskChrome";
 import { TaskCard } from "./TaskCard";
 import { TaskSearch } from "./TaskSearch";
 import { KIND_COLOUR, KIND_MEANING } from "./taskStateRules";
-import { selectVisibleColumns, UNKNOWN_COLUMN, useTaskStore } from "./taskStore";
+import {
+  selectVisibleColumns,
+  UNKNOWN_COLUMN,
+  useTaskStore,
+} from "./taskStore";
 import type { TaskColumn } from "./taskStore";
 
 /** `SPEC.md`, "User-facing features", "Task board", in one line. */
@@ -54,9 +60,19 @@ export interface TaskBoardProps {
    * be found behind the drawer that later opens over it.
    */
   openTaskNumber?: number;
+  /**
+   * The project's `max_rounds`, which a card's round is shown against. The
+   * panel mounting the board has the project in hand, so the board still reads
+   * nothing but the store.
+   */
+  maxRounds?: number;
 }
 
-export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
+export function TaskBoard({
+  projectId,
+  openTaskNumber,
+  maxRounds,
+}: TaskBoardProps) {
   const states = useTaskStore((state) => state.states);
   const tasks = useTaskStore((state) => state.tasks);
   const loaded = useTaskStore((state) => state.loaded);
@@ -222,6 +238,7 @@ export function TaskBoard({ projectId, openTaskNumber }: TaskBoardProps) {
                     key={column.key}
                     column={column}
                     openTaskNumber={openTaskNumber}
+                    maxRounds={maxRounds}
                   />
                 ))}
               </div>
@@ -264,9 +281,10 @@ const KIND_MARK: Record<TaskState["kind"], string> = {
 interface BoardColumnProps {
   column: TaskColumn;
   openTaskNumber: number | undefined;
+  maxRounds: number | undefined;
 }
 
-function BoardColumn({ column, openTaskNumber }: BoardColumnProps) {
+function BoardColumn({ column, openTaskNumber, maxRounds }: BoardColumnProps) {
   const kind = column.state?.kind;
 
   return (
@@ -290,6 +308,14 @@ function BoardColumn({ column, openTaskNumber }: BoardColumnProps) {
         >
           {column.name}
         </h3>
+        {column.state?.auto_merge === true && (
+          <span
+            className={`${CHIP} text-console-muted`}
+            title={autoMergeMeaning(column.state.conflict_state)}
+          >
+            auto-merge
+          </span>
+        )}
         <span className="text-console-muted font-mono text-xs">
           {column.tasks.length}
         </span>
@@ -301,6 +327,7 @@ function BoardColumn({ column, openTaskNumber }: BoardColumnProps) {
             key={task.id}
             task={task}
             selected={task.number === openTaskNumber}
+            maxRounds={maxRounds}
           />
         ))}
       </div>

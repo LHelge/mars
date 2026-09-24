@@ -39,6 +39,8 @@ function state(name: string, position: number): TaskState {
     name,
     kind: "queue",
     position,
+    auto_merge: false,
+    conflict_state: null,
     created_at: "2026-03-01T09:00:00Z",
   };
 }
@@ -59,6 +61,7 @@ function task(number: number, title: string, stateName: string): Task {
     lease_holder_session_id: null,
     lease_since: null,
     attempts: 0,
+    rounds: 0,
     needs_human_reason: null,
     handoff: null,
     depends_on: [],

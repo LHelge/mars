@@ -1,7 +1,8 @@
 // `PUT /projects/{id}` (`SPEC.md`, "Projects"): the fields a project keeps
 // settable after it exists — its name, the default branch sessions start from
 // and merges target, how many claims in one state escalate a task
-// (`max_attempts`, 1–20), and the two that bind automation: how many live
+// (`max_attempts`, 1–20), how many revision rounds do (`max_rounds`, 1–50;
+// ADR 0046), and the two that bind automation: how many live
 // sessions the project may have before an unattended launch is held back, and
 // whether unattended launches are paused altogether.
 //
@@ -33,7 +34,10 @@ import type { Project } from "../../types";
 import {
   MAX_ATTEMPTS,
   maxAttemptsError,
+  MAX_ROUNDS,
+  maxRoundsError,
   MIN_ATTEMPTS,
+  MIN_ROUNDS,
   MIN_SESSION_CAP,
   sessionCapError,
   settingsBlocked,
@@ -75,6 +79,7 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
   });
 
   const attemptsError = maxAttemptsError(form.max_attempts);
+  const roundsError = maxRoundsError(form.max_rounds);
   const capError = sessionCapError(form.max_concurrent_sessions);
   const blocked = settingsBlocked(form);
 
@@ -99,7 +104,7 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
     >
       <SectionHeader
         title="Settings"
-        description="Name, the branch sessions start from, the attempt limit that escalates a task, and what the dispatcher may launch."
+        description="Name, the branch sessions start from, the attempt and round limits that escalate a task, and what the dispatcher may launch."
       />
 
       {save.error !== null && <Alert kind="error">{save.error}</Alert>}
@@ -109,7 +114,7 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
         </Alert>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <FormField
           label="Name"
           name="project-name"
@@ -175,6 +180,30 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
             />
           )}
         </FieldShell>
+
+        <FieldShell
+          label="Max rounds"
+          name="project-max-rounds"
+          hint={`How many revision rounds a task may go through before a send-back by an agent or a conflicting automatic merge escalates it to the human state instead (${String(MIN_ROUNDS)}–${String(MAX_ROUNDS)}).`}
+          help="task-flow"
+          error={roundsError ?? undefined}
+        >
+          {(control) => (
+            <input
+              {...control}
+              type="number"
+              min={MIN_ROUNDS}
+              max={MAX_ROUNDS}
+              step={1}
+              value={form.max_rounds}
+              onChange={(event) => {
+                patch({ max_rounds: event.target.value });
+              }}
+              disabled={save.loading}
+              className={FIELD}
+            />
+          )}
+        </FieldShell>
       </div>
 
       <fieldset className="border-console-border rounded border p-3">
@@ -224,8 +253,8 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
             <span>
               Pause automation
               <span className="text-console-muted block text-xs">
-                Stops every unattended launch here until it is turned off.
-                Sessions already running keep going.
+                Stops every unattended launch and automatic merge here until it
+                is turned off. Sessions already running keep going.
               </span>
             </span>
           </label>

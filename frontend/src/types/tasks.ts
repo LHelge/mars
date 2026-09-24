@@ -86,6 +86,11 @@ export interface Task {
   lease_holder_session_id: string | null;
   lease_since: string | null;
   attempts: number;
+  /**
+   * Revision hand-offs since the task last left the `human` state; the card
+   * shows it against the project's `max_rounds` once above one.
+   */
+  rounds: number;
   needs_human_reason: string | null;
   handoff: Handoff | null;
   depends_on: TaskDependency[];

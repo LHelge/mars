@@ -124,6 +124,8 @@ function state(name: string, position: number): TaskState {
     project_id: PROJECT,
     name,
     position,
+    auto_merge: false,
+    conflict_state: null,
     kind: "queue",
     created_at: "2026-01-01T00:00:00Z",
   };
@@ -217,7 +219,9 @@ describe("useTaskStream", () => {
 
     expect(board().lastSeq).toBe(4);
     expect(listTasks).toHaveBeenCalledTimes(2);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: taskKeys.all(PROJECT) });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: taskKeys.all(PROJECT),
+    });
 
     // A replayed sequence changes nothing and owes no refresh.
     await act(async () => {
@@ -251,7 +255,9 @@ describe("useTaskStream", () => {
       await tick();
     });
 
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: taskKeys.all(PROJECT) });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: taskKeys.all(PROJECT),
+    });
     expect(listTasks).toHaveBeenCalledTimes(2);
 
     view.unmount();

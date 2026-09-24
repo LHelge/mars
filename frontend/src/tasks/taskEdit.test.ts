@@ -33,6 +33,7 @@ function task(number: number, overrides: Partial<Task> = {}): Task {
     lease_holder_session_id: null,
     lease_since: null,
     attempts: 0,
+    rounds: 0,
     needs_human_reason: null,
     handoff: null,
     depends_on: [],

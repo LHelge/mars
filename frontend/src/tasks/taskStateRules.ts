@@ -1,9 +1,10 @@
 // The pure part of the task-states editor: the name rule of `SPEC.md`, "Task
-// states", and the four deletion refusals the API answers with 409.
+// states", and the five deletion refusals the API answers with 409.
 //
 // The refusals are duplicated here on purpose. `SPEC.md` phrases them as
 // conflicts — while any task is in the state, for the `human` state, for the
-// last `queue` state and for the last `terminal` state — and every one of them
+// last `queue` state, for the last `terminal` state and for a state another
+// state names as its `conflict_state` — and every one of them
 // is knowable from the list already on screen, so the editor disables the
 // button and says why instead of letting the user find out by being refused.
 // The server stays the authority: a refusal that still arrives (another user
@@ -21,6 +22,7 @@ export const STATE_COLUMNS: readonly TableColumn[] = [
   { label: "#", className: "w-8" },
   { label: "Name" },
   { label: "Kind" },
+  { label: "Auto-merge" },
   { label: "Tasks", className: "text-right" },
   { label: "Actions", className: "pr-0 text-right" },
 ];
@@ -72,7 +74,7 @@ export function countTasksByState(tasks: Task[]): Map<string, number> {
  */
 export function deletionReason(
   state: TaskState,
-  states: TaskState[],
+  states: readonly TaskState[],
   taskCounts: ReadonlyMap<string, number>,
 ): string | null {
   if (state.kind === "human") {
@@ -84,6 +86,14 @@ export function deletionReason(
   if (state.kind === "terminal" && countKind(states, "terminal") === 1) {
     return "The last terminal state cannot be deleted";
   }
+  // `SPEC.md`: 409 `state is the conflict state of <name>`, named here so the
+  // user knows which row to change first.
+  const dependant = states.find(
+    (other) => other.id !== state.id && other.conflict_state === state.name,
+  );
+  if (dependant !== undefined) {
+    return `This is the conflict state of ${dependant.name}`;
+  }
 
   const inState = taskCounts.get(state.name) ?? 0;
   if (inState > 0) {
@@ -94,7 +104,7 @@ export function deletionReason(
   return null;
 }
 
-function countKind(states: TaskState[], kind: TaskStateKind): number {
+function countKind(states: readonly TaskState[], kind: TaskStateKind): number {
   return states.filter((state) => state.kind === kind).length;
 }
 

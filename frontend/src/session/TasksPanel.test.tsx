@@ -43,6 +43,7 @@ function task(id: string, number: number, title: string): Task {
     lease_holder_session_id: id === LAUNCHED_ID ? SESSION_ID : null,
     lease_since: null,
     attempts: 1,
+    rounds: 0,
     needs_human_reason: null,
     handoff: null,
     depends_on: [],

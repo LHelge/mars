@@ -54,7 +54,6 @@ import type {
 } from "@playwright/test";
 
 import type {
-  Handoff,
   Project,
   Session,
   SyncResult,
@@ -67,6 +66,7 @@ import {
   commitInSessionWorkClone,
   createTask,
   endSession,
+  forwardHandoff,
   createTestUser,
   getTask,
   gitIsAncestor,
@@ -74,6 +74,7 @@ import {
   loginViaToken,
   mirrorPath,
   newLoggedInPage,
+  publishRevision,
   reveal,
   seedAgentCredential,
   transcript,
@@ -140,47 +141,6 @@ function syncSession(client: Api, sessionId: string): Promise<SyncResult> {
   return client.post<SyncResult>(`/sessions/${sessionId}/sync`);
 }
 
-/** The REST revision publication the UI scenarios arrange with. */
-async function publishRevision(
-  stage: Stage,
-  source: string,
-  commit: string,
-  comment: string,
-  state: string,
-): Promise<Handoff> {
-  await stage.client.put(`/projects/${stage.project.id}/tasks/1`, {
-    state,
-    handoff: {
-      kind: "revision",
-      source_session_id: source,
-      commit,
-      comment,
-    },
-  });
-  return currentHandoff(stage);
-}
-
-/** The REST forward, for the scenarios whose subject is something else. */
-async function forwardHandoff(
-  stage: Stage,
-  client: Api,
-  handoffId: string,
-  comment: string,
-  state: string,
-  review?: "approved" | "changes_requested",
-): Promise<Handoff> {
-  await client.put(`/projects/${stage.project.id}/tasks/1`, {
-    state,
-    handoff: {
-      kind: "forward",
-      handoff_id: handoffId,
-      comment,
-      ...(review === undefined ? {} : { review }),
-    },
-  });
-  return currentHandoff(stage);
-}
-
 /**
  * Waits until the task is in `state` and returns it. A hand-off the browser
  * published settles in its own time; the panel's own text is not a reliable
@@ -195,15 +155,6 @@ function waitForTaskState(stage: Stage, state: string): Promise<TaskDetail> {
     },
     { timeoutMs: LIVE_TIMEOUT, description: `task #1 to reach ${state}` },
   );
-}
-
-/** The task's current hand-off, which every scenario asserts something about. */
-async function currentHandoff(stage: Stage): Promise<Handoff> {
-  const task = await getTask(stage.client, stage.project.id, 1);
-  if (task.handoff === null) {
-    throw new Error(`task #1 of ${stage.project.id} has no current hand-off`);
-  }
-  return task.handoff;
 }
 
 // --- the drawer -------------------------------------------------------------
@@ -451,13 +402,12 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
     { "greeting.txt": "hello\n" },
     "feat: greeting",
   );
-  const handoff = await publishRevision(
-    fixture,
-    session,
+  const handoff = await publishRevision(fixture.client, fixture.project.id, 1, {
+    source: session,
     commit,
-    "Ready for review",
-    "review",
-  );
+    comment: "Ready for review",
+    state: "review",
+  });
 
   const second = await reviewer(browser, request);
   const panel = await openTask(second.page, project);
@@ -561,13 +511,12 @@ test("approving forwards the hand-off to merge and unlocks the task merge", asyn
 
   // The board's live refresh reaches the open drawer: the hand-off U1 publishes
   // appears without a reload (ADR 0022; `SPEC.md`, "Board refresh ordering").
-  const handoff = await publishRevision(
-    fixture,
-    session,
+  const handoff = await publishRevision(fixture.client, fixture.project.id, 1, {
+    source: session,
     commit,
-    "Ready for review",
-    "review",
-  );
+    comment: "Ready for review",
+    state: "review",
+  });
   await expect(
     handoffSection(panel).getByText(`session/${session}`),
   ).toBeVisible({ timeout: LIVE_TIMEOUT });
@@ -627,21 +576,18 @@ test("the task merge lands the pinned commit even after the branch advanced", as
     { "greeting.txt": "hello\n" },
     "feat: greeting",
   );
-  const handoff = await publishRevision(
-    fixture,
-    session,
-    approved,
-    "Ready for review",
-    "review",
-  );
-  const forwarded = await forwardHandoff(
-    fixture,
-    fixture.client,
-    handoff.id,
-    "LGTM",
-    "merge",
-    "approved",
-  );
+  const handoff = await publishRevision(fixture.client, fixture.project.id, 1, {
+    source: session,
+    commit: approved,
+    comment: "Ready for review",
+    state: "review",
+  });
+  const forwarded = await forwardHandoff(fixture.client, fixture.project.id, 1, {
+    handoffId: handoff.id,
+    comment: "LGTM",
+    state: "merge",
+    review: "approved",
+  });
 
   // The branch moves on after the approval, which is the normal case and
   // exactly what must not be merged (`SPEC.md`, "Code hand-offs and review").
@@ -710,13 +656,12 @@ test("the merge control is shut without an approval and a superseded review is r
     { "greeting.txt": "hello\n" },
     "feat: greeting",
   );
-  const original = await publishRevision(
-    fixture,
-    session,
-    first,
-    "Ready for review",
-    "review",
-  );
+  const original = await publishRevision(fixture.client, fixture.project.id, 1, {
+    source: session,
+    commit: first,
+    comment: "Ready for review",
+    state: "review",
+  });
 
   const panel = await openTask(page, project);
   // `tasks/mergeRules.ts`: an unreviewed hand-off is not mergeable, and the
@@ -801,7 +746,12 @@ test("requesting changes sends the task back and a new revision resets the revie
     { "greeting.txt": "hello\n" },
     "feat: greeting",
   );
-  await publishRevision(fixture, session, commit, "Ready for review", "review");
+  await publishRevision(fixture.client, fixture.project.id, 1, {
+    source: session,
+    commit,
+    comment: "Ready for review",
+    state: "review",
+  });
 
   const second = await reviewer(browser, request);
   const reviewPanel = await openTask(second.page, project);
@@ -876,13 +826,12 @@ test("the revision diff is read by hand-off id without syncing anything", async 
     { "greeting.txt": "hello\n" },
     "feat: greeting",
   );
-  const handoff = await publishRevision(
-    fixture,
-    session,
+  const handoff = await publishRevision(fixture.client, fixture.project.id, 1, {
+    source: session,
     commit,
-    "Ready for review",
-    "review",
-  );
+    comment: "Ready for review",
+    state: "review",
+  });
 
   const panel = await openTask(page, project);
   await handoffSection(panel)
@@ -983,13 +932,12 @@ test("a review of a superseded revision says the hand-off changed", async ({
     { "greeting.txt": "hello\n" },
     "feat: greeting",
   );
-  const original = await publishRevision(
-    fixture,
-    session,
-    first,
-    "Ready for review",
-    "review",
-  );
+  const original = await publishRevision(fixture.client, fixture.project.id, 1, {
+    source: session,
+    commit: first,
+    comment: "Ready for review",
+    state: "review",
+  });
 
   // The drawer refetches the task on every task event, so a second revision
   // published while the review form is open would normally reach that form
@@ -1027,13 +975,12 @@ test("a review of a superseded revision says the hand-off changed", async ({
   // Back to `ready`: a hand-off has to move the task somewhere it is not
   // (`SPEC.md`, "Code hand-offs and review": 400 `handoff requires a different
   // target state`).
-  const superseding = await publishRevision(
-    fixture,
-    session,
-    second,
-    "Second attempt",
-    "ready",
-  );
+  const superseding = await publishRevision(fixture.client, fixture.project.id, 1, {
+    source: session,
+    commit: second,
+    comment: "Second attempt",
+    state: "ready",
+  });
   expect(superseding.id).not.toBe(original.id);
 
   await submitReview(form, "Approve", "merge", "Looks right");
@@ -1070,13 +1017,12 @@ test("an implementer that handed off its tip ends with no ref and still shows it
     { "greeting.txt": "hello\n" },
     "feat: greeting",
   );
-  const handoff = await publishRevision(
-    fixture,
-    session,
+  const handoff = await publishRevision(fixture.client, fixture.project.id, 1, {
+    source: session,
     commit,
-    "Ready for review",
-    "review",
-  );
+    comment: "Ready for review",
+    state: "review",
+  });
   // Publishing synced the live session, which keeps its ref whatever it holds.
   expect(gitRevParse(fixture.mirror, `refs/sessions/${session}`)).toBe(commit);
 

@@ -1,10 +1,10 @@
 ---
 id: w7y2t
 title: "E2E: automatic merge and the round limit in a browser, with coverage rows"
-status: open
+status: done
 priority: P2
 created: "2026-09-22T20:20:47.557644753Z"
-updated: "2026-09-22T20:20:47.557644753Z"
+updated: "2026-09-24T16:23:50.721390160Z"
 tags:
   - frontend
   - e2e
@@ -13,6 +13,7 @@ depends_on:
   - vssu2
   - nq3dc
 parent: tykeu
+attempts: 1
 ---
 
 Playwright scenarios for the two new `SPEC.md`, "User-facing features" paragraphs, "Automatic merge" and "Round limit", arranged through `tests/utils/fixtures.ts` and `test-helpers.ts` (`frontend/tests/README.md`).

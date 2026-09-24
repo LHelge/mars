@@ -1,10 +1,10 @@
 ---
 id: p6fwn
 title: Update the in-app help and hints for automatic merges and the round limit
-status: open
+status: done
 priority: P2
 created: "2026-09-22T21:18:35.910369047Z"
-updated: "2026-09-22T21:18:35.910369047Z"
+updated: "2026-09-24T16:23:50.756469739Z"
 tags:
   - frontend
   - docs
@@ -15,6 +15,7 @@ depends_on:
   - "4qa8f"
   - "23pue"
 parent: tykeu
+attempts: 1
 ---
 
 The in-app help (epic gtbp5; `SPEC.md` "Frontend" → Help, topics in `frontend/src/help/*.md`, titles in `help/topics.ts`) describes Mars as it was before this epic. Once auto-merge, the new seeding and `max_rounds` are implemented, bring it in line — nothing here documents behaviour ahead of the code. Check each claim against `SPEC.md`/`ARCHITECTURE.md` as this epic left them (ADR 0045, 0046).

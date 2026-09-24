@@ -2,10 +2,10 @@
 id: tykeu
 title: Automatic task merges in the orchestrator, and a per-task limit on implementation rounds
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-22T20:16:49.503009094Z"
-updated: "2026-09-22T20:16:49.503009094Z"
+updated: "2026-09-24T16:23:50.791314946Z"
 tags:
   - orchestrator
   - frontend

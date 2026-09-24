@@ -30,9 +30,9 @@ A rebase rewrites the session branch in the mirror. A running session's checkout
 
 A push sends exactly one branch to one branch on the remote, using the project's [git credential](help:git-credential). Nothing else is pushed along with it. If your remote has moved on since the last fetch, the push is rejected and everything in Mars stays as it was. Fetch, bring the remote's changes in by merging `origin/<branch>` into the integration head or rebasing the session branch onto it, and push again. **Force push** overwrites the remote branch instead, and commits that only the remote had are lost.
 
-After a push to GitHub, Mars shows an **Open compare on GitHub** link for opening a pull request.
+After a push to GitHub, Mars shows an **Open compare on GitHub** link for opening a pull request against the default branch. Pushing the default branch to its own name has nothing to compare, so it shows none.
 
-The console pushes session branches. Pushing an integration head such as `main` is done by an agent whose profile grants the `push` tool, or through the API. The starter profiles don't grant it ([Agent profiles](help:profiles)).
+Merged work waits on its integration head until someone pushes it. To publish it, open the project's **Branches** tab and use **Push…** on the head's row under **Integration heads**. The remote branch defaults to the head's own name, so `main` goes to the remote's `main`. After you merge `origin/main` into `main`, this is the push that follows. An agent can push too if its profile grants the `push` tool, but the starter profiles don't ([Agent profiles](help:profiles)).
 
 ### Branch merges and task merges
 

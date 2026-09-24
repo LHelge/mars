@@ -676,7 +676,7 @@ async fn clear_lease(m: &mut TrackerMutation<'_>, task: &Task, reason: &str) -> 
 /// (`ARCHITECTURE.md`, "Task tracker"). A project without one cannot exist —
 /// the deletion refusals keep exactly one — so its absence is
 /// [`Error::Internal`] with the fact logged, not a caller error.
-async fn human_state(m: &mut TrackerMutation<'_>) -> Result<TaskState> {
+pub(crate) async fn human_state(m: &mut TrackerMutation<'_>) -> Result<TaskState> {
     let project_id = m.project_id();
 
     TaskRepository::new(m.pool())

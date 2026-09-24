@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT p.id, p.name, p.remote_url, p.default_branch,\n                   p.status as \"status: ProjectStatus\", p.status_message, p.created_by,\n                   p.last_fetched_at, p.max_attempts, p.next_task_number,\n                   p.max_concurrent_sessions, p.automation_paused, p.created_at,\n                   p.updated_at,\n                   EXISTS (\n                       SELECT 1 FROM secrets s\n                       WHERE s.scope = 'project' AND s.scope_id = p.id AND s.name = $2\n                   ) AS \"has_credential!\"\n            FROM projects p\n            WHERE p.id = $1\n            ",
+  "query": "\n            SELECT p.id, p.name, p.remote_url, p.default_branch,\n                   p.status as \"status: ProjectStatus\", p.status_message, p.created_by,\n                   p.last_fetched_at, p.max_attempts, p.max_rounds, p.next_task_number,\n                   p.max_concurrent_sessions, p.automation_paused, p.created_at,\n                   p.updated_at,\n                   EXISTS (\n                       SELECT 1 FROM secrets s\n                       WHERE s.scope = 'project' AND s.scope_id = p.id AND s.name = $2\n                   ) AS \"has_credential!\"\n            FROM projects p\n            WHERE p.id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -115,6 +115,17 @@
       },
       {
         "ordinal": 9,
+        "name": "max_rounds",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "max_rounds"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
         "name": "next_task_number",
         "type_info": "Int4",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "max_concurrent_sessions",
         "type_info": "Int4",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "automation_paused",
         "type_info": "Bool",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "has_credential!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -192,6 +203,7 @@
       true,
       false,
       false,
+      false,
       true,
       false,
       false,
@@ -199,5 +211,5 @@
       null
     ]
   },
-  "hash": "faeb7ad747885fb7b6a23b766dece7d54e3241009ed5418e8bb7bf435500f9f8"
+  "hash": "094c529d0b69608b6f9c111d55b59f709f87a6fbf15eb1491c7ef98057af747b"
 }

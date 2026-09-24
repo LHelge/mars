@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, project_id, number, title, description, state_id, priority, blocked,\n                   labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,\n                   attempts, needs_human_reason, current_handoff_id, created_by_user_id,\n                   created_by_session_id, created_at, updated_at, closed_at\n            FROM tasks\n            WHERE project_id = $1\n              AND ($2::uuid IS NULL OR state_id = $2)\n              AND ($3::text IS NULL OR $3 = ANY (labels))\n              AND ($4::smallint IS NULL OR priority = $4)\n              AND ($5::uuid IS NULL OR parent_id = $5)\n              AND ($6::boolean IS NULL OR (lease_holder_session_id IS NOT NULL) = $6)\n            ORDER BY priority, number\n            ",
+  "query": "\n            UPDATE tasks\n            SET state_id = COALESCE($3, state_id),\n                lease_holder_session_id = CASE WHEN $4 THEN $5 ELSE lease_holder_session_id END,\n                lease_since = CASE WHEN $4 THEN $6 ELSE lease_since END,\n                attempts = COALESCE($7, attempts),\n                closed_at = CASE WHEN $8 THEN $9 ELSE closed_at END,\n                needs_human_reason = CASE WHEN $10 THEN $11 ELSE needs_human_reason END,\n                current_handoff_id = CASE WHEN $12 THEN $13 ELSE current_handoff_id END,\n                blocked = COALESCE($14, blocked),\n                rounds = COALESCE($15, rounds),\n                updated_at = NOW()\n            WHERE id = $1 AND project_id = $2\n            RETURNING id, project_id, number, title, description, state_id, priority, blocked,\n                      labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,\n                      attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,\n                      created_by_session_id, created_at, updated_at, closed_at\n            ",
   "describe": {
     "columns": [
       {
@@ -159,6 +159,17 @@
       },
       {
         "ordinal": 14,
+        "name": "rounds",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "rounds"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
         "name": "needs_human_reason",
         "type_info": "Text",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "current_handoff_id",
         "type_info": "Uuid",
         "origin": {
@@ -180,7 +191,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "created_by_user_id",
         "type_info": "Uuid",
         "origin": {
@@ -191,7 +202,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "created_by_session_id",
         "type_info": "Uuid",
         "origin": {
@@ -202,7 +213,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -213,7 +224,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -224,7 +235,7 @@
         }
       },
       {
-        "ordinal": 20,
+        "ordinal": 21,
         "name": "closed_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -239,10 +250,19 @@
       "Left": [
         "Uuid",
         "Uuid",
-        "Text",
-        "Int2",
         "Uuid",
-        "Bool"
+        "Bool",
+        "Uuid",
+        "Timestamptz",
+        "Int2",
+        "Bool",
+        "Timestamptz",
+        "Bool",
+        "Text",
+        "Bool",
+        "Uuid",
+        "Bool",
+        "Int2"
       ]
     },
     "nullable": [
@@ -260,6 +280,7 @@
       true,
       true,
       false,
+      false,
       true,
       true,
       true,
@@ -269,5 +290,5 @@
       true
     ]
   },
-  "hash": "da8a999949891ed082c43cc42af346abebdfb18c180adeb55bcab406caa5de6f"
+  "hash": "6b9f3c845057a96e9d4fc5edc5f2e484354eec95eb84441fc23819c88a273b66"
 }

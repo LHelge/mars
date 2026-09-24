@@ -71,7 +71,7 @@ impl<'a> ProjectRepository<'a> {
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, max_concurrent_sessions, automation_paused,
+                      max_rounds, next_task_number, max_concurrent_sessions, automation_paused,
                       created_at, updated_at,
                       EXISTS (
                           SELECT 1 FROM secrets s
@@ -119,7 +119,7 @@ impl<'a> ProjectRepository<'a> {
             r#"
             SELECT p.id, p.name, p.remote_url, p.default_branch,
                    p.status as "status: ProjectStatus", p.status_message, p.created_by,
-                   p.last_fetched_at, p.max_attempts, p.next_task_number,
+                   p.last_fetched_at, p.max_attempts, p.max_rounds, p.next_task_number,
                    p.max_concurrent_sessions, p.automation_paused, p.created_at,
                    p.updated_at,
                    EXISTS (
@@ -150,7 +150,7 @@ impl<'a> ProjectRepository<'a> {
             r#"
             SELECT p.id, p.name, p.remote_url, p.default_branch,
                    p.status as "status: ProjectStatus", p.status_message, p.created_by,
-                   p.last_fetched_at, p.max_attempts, p.next_task_number,
+                   p.last_fetched_at, p.max_attempts, p.max_rounds, p.next_task_number,
                    p.max_concurrent_sessions, p.automation_paused, p.created_at,
                    p.updated_at,
                    EXISTS (
@@ -235,11 +235,12 @@ impl<'a> ProjectRepository<'a> {
                     ELSE max_concurrent_sessions
                 END,
                 automation_paused = COALESCE($7, automation_paused),
+                max_rounds = COALESCE($9, max_rounds),
                 updated_at = NOW()
             WHERE id = $1
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, max_concurrent_sessions, automation_paused,
+                      max_rounds, next_task_number, max_concurrent_sessions, automation_paused,
                       created_at, updated_at,
                       EXISTS (
                           SELECT 1 FROM secrets s
@@ -257,6 +258,7 @@ impl<'a> ProjectRepository<'a> {
                 .map(|cap| cap.get()),
             update.automation_paused,
             GIT_CREDENTIAL_NAME,
+            update.max_rounds.map(|rounds| rounds.get()),
         )
         .fetch_optional(&mut *tx)
         .await
@@ -295,7 +297,7 @@ impl<'a> ProjectRepository<'a> {
             WHERE id = $1
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, max_concurrent_sessions, automation_paused,
+                      max_rounds, next_task_number, max_concurrent_sessions, automation_paused,
                       created_at, updated_at,
                       EXISTS (
                           SELECT 1 FROM secrets s
@@ -407,7 +409,7 @@ impl<'a> ProjectRepository<'a> {
             WHERE id = $1 AND status = 'error'::project_status
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, max_concurrent_sessions, automation_paused,
+                      max_rounds, next_task_number, max_concurrent_sessions, automation_paused,
                       created_at, updated_at,
                       EXISTS (
                           SELECT 1 FROM secrets s
@@ -444,7 +446,7 @@ impl<'a> ProjectRepository<'a> {
             WHERE id = $1
             RETURNING id, name, remote_url, default_branch, status as "status: ProjectStatus",
                       status_message, created_by, last_fetched_at, max_attempts,
-                      next_task_number, max_concurrent_sessions, automation_paused,
+                      max_rounds, next_task_number, max_concurrent_sessions, automation_paused,
                       created_at, updated_at,
                       EXISTS (
                           SELECT 1 FROM secrets s

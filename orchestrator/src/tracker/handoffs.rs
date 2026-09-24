@@ -73,8 +73,9 @@ use crate::models::{
 use crate::prelude::*;
 use crate::repositories::tasks::StateFields;
 use crate::repositories::{ProjectRepository, SessionRepository, TaskRepository, unique_violation};
-use crate::tracker::state::{resolve_state, resolve_state_in_pool};
-use crate::tracker::tasks::{UpdateTaskInput, update_task};
+use crate::tracker::rounds::{log_redirect, record_round_limit_escalation, send_back_redirect};
+use crate::tracker::state::{RoundsWrite, StateEventKind, resolve_state, resolve_state_in_pool};
+use crate::tracker::tasks::{UpdateTaskInput, update_task_with};
 use crate::tracker::{CommentDto, TaskDto, TrackerMutation, commit_and_notify};
 
 /// The review status a prepared hand-off will be written with.
@@ -401,7 +402,11 @@ pub const HANDOFF_RECHECK_FAILED: &str =
 ///    `closed_at`, the dependants' `blocked` recompute and the parent closure
 ///    are the same rules every other caller gets. `update.state` names the
 ///    target, which must differ from the state the task is in
-///    ([`TaskError::HandoffRequiresStateChange`](crate::models::TaskError));
+///    ([`TaskError::HandoffRequiresStateChange`](crate::models::TaskError)).
+///    A revision raises `rounds` in the same statement as the move — one
+///    more than the move alone leaves, so a revision out of the human state
+///    counts as the first of a fresh allowance — and a forward leaves it to
+///    the move's own rule (`ARCHITECTURE.md`, "Task tracker" → "Rounds");
 /// 5. the **`commented`** event, after the state events, which is the order
 ///    `SPEC.md`, "Code hand-offs and review" gives: the state event carries the
 ///    task including its new hand-off, and the accompanying `commented` event
@@ -420,6 +425,15 @@ pub const HANDOFF_RECHECK_FAILED: &str =
 /// the escalation paths — which also owe an email — say `escalated`
 /// (`tracker::state`). Publishing code into `needs_human` is a hand-off to a
 /// person, not an agent running out of attempts.
+///
+/// **The one escalation here is the round limit.** A forward recording
+/// `changes_requested` is a send-back, and when a session makes it on a task
+/// whose `rounds` has reached the project's `max_rounds`, the move goes to the
+/// human state instead of `update.state`, with `escalated`, the reason
+/// `round limit reached (<rounds>/<max_rounds>): <comment>` and the email
+/// ([`send_back_redirect`](crate::tracker::send_back_redirect)). The hand-off
+/// row still records the decision and the comment is still written: only the
+/// target changes. A user's forward is never redirected (ADR 0046).
 pub async fn publish_in_transaction(
     m: &mut TrackerMutation<'_>,
     task: &Task,
@@ -466,6 +480,15 @@ pub async fn publish_in_transaction(
     if target.id == task.state_id {
         return Err(TaskError::HandoffRequiresStateChange.into());
     }
+
+    // The round limit, decided on the row under the lock: only a forward that
+    // records `changes_requested` is a send-back (ADR 0046).
+    let redirect = match &prepared.review {
+        ReviewCarry::Decision(ReviewDecision::ChangesRequested) => {
+            send_back_redirect(m, task, &target, &prepared.comment).await?
+        }
+        _ => None,
+    };
 
     let repository = TaskRepository::new(m.pool());
 
@@ -536,8 +559,29 @@ pub async fn publish_in_transaction(
         )
         .await?;
 
-    // (4) The move, with whatever ordinary field changes came with it.
-    let outcome = update_task(m, task, update).await?;
+    // (4) The move, with whatever ordinary field changes came with it — into
+    // the human state instead when the round limit redirected it — and a new
+    // round for a revision.
+    let rounds = match prepared.review {
+        ReviewCarry::Fresh => RoundsWrite::Revision,
+        ReviewCarry::Decision(_) | ReviewCarry::CarriedFrom(_) => RoundsWrite::Rule,
+    };
+    let (update, event) = match &redirect {
+        Some(redirect) => (
+            UpdateTaskInput {
+                state: Some(redirect.human.name.clone()),
+                needs_human_reason: Some(redirect.reason.clone()),
+                ..update
+            },
+            redirect.options().event,
+        ),
+        None => (update, StateEventKind::StateChanged),
+    };
+    let outcome = update_task_with(m, task, update, event, rounds).await?;
+    if let Some(redirect) = &redirect {
+        record_round_limit_escalation(m, task, redirect);
+        log_redirect(m, &outcome.task);
+    }
 
     // (5) The comment event, after the state events it accompanies.
     m.emit_comment(&outcome.task, &comment)?;
@@ -555,7 +599,7 @@ pub async fn publish_in_transaction(
         task_id = %task.id,
         handoff_id = %handoff.id,
         review_status = %handoff.review_status,
-        state = %target.name,
+        state = %outcome.task.state,
         "hand-off published",
     );
 

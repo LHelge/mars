@@ -63,7 +63,9 @@ use crate::tracker::dependencies::{
 };
 use crate::tracker::graph::{capture_before_delete, check_no_cycle, recompute_blocked};
 use crate::tracker::provenance::resolve_origin;
-use crate::tracker::state::{StateChangeOptions, StateEventKind, change_state, resolve_state};
+use crate::tracker::state::{
+    RoundsWrite, StateChangeOptions, StateEventKind, change_state_with, resolve_state,
+};
 use crate::tracker::{TaskDto, TrackerMutation};
 
 /// Who is creating the task (`docs/data-model.md`, `tasks`).
@@ -330,8 +332,8 @@ pub struct UpdateTaskInput {
     pub state: Option<String>,
     /// Written alongside a state change, for the callers that move a task into
     /// the human state with a reason. Without `state` it does nothing: the
-    /// column is [`change_state`]'s to write, and there is no state change to
-    /// attach it to.
+    /// column is [`change_state`](crate::tracker::state::change_state)'s to
+    /// write, and there is no state change to attach it to.
     pub needs_human_reason: Option<String>,
     /// `blocks` prerequisites to add, in the caller's order.
     ///
@@ -406,7 +408,8 @@ const UNKNOWN_ASSIGNEE: &str = "unknown assignee";
 ///
 /// **A state no-op is not a refusal**: assigning the state the task is already
 /// in preserves the lease, `attempts` and `closed_at` and emits no state
-/// event, while the other supplied fields still apply ([`change_state`]).
+/// event, while the other supplied fields still apply
+/// ([`change_state`](crate::tracker::state::change_state)).
 ///
 /// The returned [`TaskDto`] is read after everything, so its `state`,
 /// `blocked` and `closed_at` are what the caller's 200 body should show.
@@ -414,6 +417,30 @@ pub async fn update_task(
     m: &mut TrackerMutation<'_>,
     task: &Task,
     input: UpdateTaskInput,
+) -> Result<UpdateOutcome> {
+    update_task_with(
+        m,
+        task,
+        input,
+        StateEventKind::StateChanged,
+        RoundsWrite::Rule,
+    )
+    .await
+}
+
+/// [`update_task`], with the hand-off path's two choices about the move.
+///
+/// `event` is what the state change announces itself with — `escalated` when
+/// the round limit redirected a send-back to the human state — and `rounds`
+/// is [`RoundsWrite::Revision`] for a revision publication (`ARCHITECTURE.md`,
+/// "Task tracker" → "Rounds"). Everything else is [`update_task`]'s, in its
+/// order, which is why this is the same function and not a copy.
+pub(crate) async fn update_task_with(
+    m: &mut TrackerMutation<'_>,
+    task: &Task,
+    input: UpdateTaskInput,
+    event: StateEventKind,
+    rounds: RoundsWrite,
 ) -> Result<UpdateOutcome> {
     let project_id = m.project_id();
 
@@ -473,14 +500,15 @@ pub async fn update_task(
             // behind, so a re-parenting in the same request is already stored
             // when the parent-closure logic reads it.
             let current = updated.as_ref().unwrap_or(task);
-            change_state(
+            change_state_with(
                 m,
                 current,
                 &target,
                 StateChangeOptions {
-                    event: StateEventKind::StateChanged,
+                    event,
                     needs_human_reason: input.needs_human_reason,
                 },
+                rounds,
             )
             .await?
             .changed

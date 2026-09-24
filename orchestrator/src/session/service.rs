@@ -544,8 +544,10 @@ impl SessionService {
 
     /// Fetch the session branch into the mirror and record the outcome.
     ///
-    /// The whole of it is [`GitService::sync_session`]: the project git lock,
-    /// the fetch and the `git { op: "sync" }` event, success or failure. A
+    /// The whole of it is [`GitService::sync_ending_session`]: the project git
+    /// lock, the fetch — or, for a session that made no commits beyond its
+    /// base, no ref at all (ADR 0050) — and the `git { op: "sync" }` event,
+    /// success or failure. A
     /// failure is logged and swallowed — the event is the user-visible half and
     /// `end` must still end the session (`ARCHITECTURE.md`, "Git model",
     /// Fetch-back).
@@ -557,7 +559,7 @@ impl SessionService {
     /// the log line is where an operator reads them.
     async fn fetch_back(&self, session: &Session) {
         let outcome = GitService::from_state(&self.state)
-            .sync_session(session.project_id, session.id, &GitActor::System)
+            .sync_ending_session(session.project_id, session.id, &GitActor::System)
             .await;
 
         match outcome {

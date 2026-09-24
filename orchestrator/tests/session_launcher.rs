@@ -320,6 +320,16 @@ async fn a_fresh_launch_prepares_the_session_and_runs_it() {
     let head = head_of(&dirs.work()).await;
     assert_eq!(head, fixture.branch(), "the work tree is on another branch");
 
+    // The commit the clone was made at is on the row, for the end-of-session
+    // rule (ADR 0050).
+    let cloned_at = run_git(&dirs.work(), &["rev-parse", "HEAD"]).await;
+    let basis = SessionRepository::new(&app.pool)
+        .fetch_back_basis(fixture.session.id)
+        .await
+        .expect("the row reads")
+        .expect("the session is there");
+    assert_eq!(basis.base_commit.as_deref(), Some(cloned_at.trim()));
+
     // The project's CLI state directory, which every session of it shares.
     assert!(
         app.state

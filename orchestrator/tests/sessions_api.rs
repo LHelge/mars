@@ -1940,6 +1940,17 @@ async fn an_end_closes_a_running_session_and_publishes_its_branch() {
     let (id, container_id) = launched_session(&app, &fixture).await;
     let stopped = exit_on_sigint(&app, &container_id);
 
+    // A commit of the session's own: one that ends at its base commit keeps
+    // no ref (ADR 0050; `tests/session_ref_lifetime.rs`).
+    let work = DataPaths::from_config(&app.state.config).session_work(id);
+    std::fs::write(work.join("WORK.md"), "the agent's work\n").expect("the file is written");
+    run_git(&work, &["add", "--", "WORK.md"]).await;
+    run_git(&work, &["commit", "--quiet", "-m", "feat: the agent's work"]).await;
+    let tip = run_git(&work, &["rev-parse", "HEAD"])
+        .await
+        .trim()
+        .to_string();
+
     let response = app.post_as(&fixture.user, &action_path(id, "end")).await;
     response.assert_status_ok();
     assert!(
@@ -1966,6 +1977,7 @@ async fn an_end_closes_a_running_session_and_publishes_its_branch() {
     let published = mirror_session_ref(&app, &fixture, id)
         .await
         .expect("the mirror has the session ref");
+    assert_eq!(published, tip);
     let sync = wait_for_event(&app, id, "git").await;
     assert_eq!(sync["op"], json!("sync"));
     assert_eq!(sync["ok"], json!(true), "{sync}");

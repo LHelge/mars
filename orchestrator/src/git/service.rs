@@ -77,7 +77,7 @@ use super::{
 };
 use crate::models::{
     Diff, GitMergeDetail, GitPushDetail, GitRebaseDetail, GitSyncDetail, NewEvent, Project,
-    ProjectStatus, SessionBranch, SyncOutcome,
+    ProjectStatus, SessionBranch, SessionState, SyncOutcome,
 };
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, SessionRepository, TaskRepository};
@@ -112,6 +112,17 @@ const CREDENTIAL_TTL: Duration = Duration::from_secs(300);
 /// What a git primitive answers with; widened into [`Error`] only when the
 /// outcome has been recorded.
 type GitResult<T> = std::result::Result<T, GitError>;
+
+/// Which fetch-back rule a sync applies (`ARCHITECTURE.md`, "Git model", Ref
+/// ownership; ADR 0050).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Decided by the session's state: a `done` or `failed` session under the
+    /// end-of-session rule, any other one as live.
+    FromState,
+    /// The fetch-back that ends the session, before its state says so.
+    Ending,
+}
 
 /// Which side of a diff the caller selected (`SPEC.md`, "Git": exactly one of
 /// `head` or `handoff_id`).
@@ -314,12 +325,13 @@ impl GitService {
 
     /// Fetch one session's branch into the project repository and record it.
     ///
-    /// `POST /sessions/{id}/sync` and `POST /sessions/{id}/end`
-    /// (`SPEC.md`, "Sessions"). The `git` event with `op: "sync"` is what
-    /// distinguishes this from the silent fetch-back every other operation
-    /// does first: an explicit sync is a thing the user asked for and the
-    /// "Changes" panel refreshes on it (`ARCHITECTURE.md`, "Git model",
-    /// Diff).
+    /// `POST /sessions/{id}/sync` (`SPEC.md`, "Sessions"). The `git` event
+    /// with `op: "sync"` is what distinguishes this from the silent
+    /// fetch-back every other operation does first: an explicit sync is a
+    /// thing the user asked for and the "Changes" panel refreshes on it
+    /// (`ARCHITECTURE.md`, "Git model", Diff). A session that has already
+    /// ended is fetched back under the end-of-session rule, as by
+    /// [`GitService::sync_session_silent`].
     ///
     /// # Errors
     ///
@@ -336,12 +348,46 @@ impl GitService {
         session_id: Uuid,
         actor: &GitActor,
     ) -> Result<SyncOutcome> {
+        self.sync_recorded(project_id, session_id, actor, Phase::FromState)
+            .await
+    }
+
+    /// The fetch-back that ends a session, recorded as [`sync_session`]
+    /// records one: `POST /sessions/{id}/end`, before the session is closed.
+    ///
+    /// The session is judged as ended whatever state its row still reads, so
+    /// a session whose `session/<sid>` tip is its recorded base commit keeps
+    /// no `refs/sessions/<sid>` (`ARCHITECTURE.md`, "Git model", Ref
+    /// ownership; ADR 0050). The errors are [`sync_session`]'s.
+    ///
+    /// [`sync_session`]: GitService::sync_session
+    pub async fn sync_ending_session(
+        &self,
+        project_id: Uuid,
+        session_id: Uuid,
+        actor: &GitActor,
+    ) -> Result<SyncOutcome> {
+        self.sync_recorded(project_id, session_id, actor, Phase::Ending)
+            .await
+    }
+
+    /// The body of [`GitService::sync_session`] and
+    /// [`GitService::sync_ending_session`].
+    async fn sync_recorded(
+        &self,
+        project_id: Uuid,
+        session_id: Uuid,
+        actor: &GitActor,
+        phase: Phase,
+    ) -> Result<SyncOutcome> {
         self.ready_project(project_id).await?;
         self.require_session(project_id, session_id).await?;
 
         let outcome = {
             let guard = self.locks.lock(project_id).await;
-            self.sync_session_silent(&guard, session_id).await
+            self.sync_tip(&guard, session_id, phase)
+                .await
+                .map(|tip| tip.commit)
         };
 
         let git_ref = refs::session_ref(session_id);
@@ -385,14 +431,23 @@ impl GitService {
     }
 
     /// Fetch one session's branch into the project repository without
-    /// recording anything, and answer the commit `refs/sessions/<sid>` now
-    /// points at.
+    /// recording anything, and answer the tip of the session's branch.
     ///
     /// What every operation involving a session does first, and what the diff
     /// endpoint and hand-off publication use directly: a silent sync cannot
     /// re-trigger the panel's refresh-on-`git`-event rule
     /// (`ARCHITECTURE.md`, "Git model", Fetch-back and Diff). The caller holds
     /// the lock and passes the guard.
+    ///
+    /// **A live session keeps its ref whatever it holds**, and the answer is
+    /// the commit `refs/sessions/<sid>` now points at. **A `done` or `failed`
+    /// session is fetched back under the end-of-session rule**
+    /// ([`session::fetch_back_ended`]): when its tip is still its recorded
+    /// base commit it keeps no ref, one an earlier sync left is deleted, and
+    /// the answer is that tip all the same — so a caller that needs the
+    /// commit uses the answer rather than resolving the ref, and one that
+    /// resolves the ref afterwards gets [`GitError::UnknownRef`], a 400, as
+    /// for any name that does not resolve (ADR 0050).
     ///
     /// **A missing work directory is not a failure.** A `done` or `failed`
     /// session whose directory has been deleted still owns
@@ -406,8 +461,59 @@ impl GitService {
         guard: &ProjectGitGuard,
         session_id: Uuid,
     ) -> Result<String> {
+        Ok(self
+            .sync_tip(guard, session_id, Phase::FromState)
+            .await?
+            .commit)
+    }
+
+    /// The silent fetch-back that ends a session: the ephemeral end-of-run,
+    /// before the session moves to `done`. As
+    /// [`GitService::sync_session_silent`] for a session that has already
+    /// ended, whatever its row still reads.
+    pub async fn sync_ending_session_silent(
+        &self,
+        guard: &ProjectGitGuard,
+        session_id: Uuid,
+    ) -> Result<String> {
+        Ok(self
+            .sync_tip(guard, session_id, Phase::Ending)
+            .await?
+            .commit)
+    }
+
+    /// The one fetch-back every sync above goes through.
+    async fn sync_tip(
+        &self,
+        guard: &ProjectGitGuard,
+        session_id: Uuid,
+        phase: Phase,
+    ) -> Result<session::FetchedBack> {
         if self.paths.session_work(session_id).exists() {
-            return Ok(session::fetch_back(guard, &self.paths, session_id).await?);
+            // A plain read under the git lock, which is the documented order
+            // (ADR 0021). No row is a session deleted under this sync; its
+            // ref is the orphan sweep's, and the live fetch is what every
+            // sync did before the rule.
+            let basis = SessionRepository::new(&self.pool)
+                .fetch_back_basis(session_id)
+                .await?;
+            let ended = match (phase, &basis) {
+                (Phase::Ending, _) => true,
+                (Phase::FromState, Some(basis)) => {
+                    matches!(basis.state, SessionState::Done | SessionState::Failed)
+                }
+                (Phase::FromState, None) => false,
+            };
+
+            if ended {
+                let base_commit = basis.as_ref().and_then(|b| b.base_commit.as_deref());
+                return Ok(
+                    session::fetch_back_ended(guard, &self.paths, session_id, base_commit).await?,
+                );
+            }
+
+            let commit = session::fetch_back(guard, &self.paths, session_id).await?;
+            return Ok(session::FetchedBack { commit, kept: true });
         }
 
         let repo = self.paths.project_repo(guard.project_id());
@@ -418,7 +524,10 @@ impl GitService {
                     commit = %resolved.commit,
                     "the session work clone is gone; using the ref already in the project repository"
                 );
-                Ok(resolved.commit)
+                Ok(session::FetchedBack {
+                    commit: resolved.commit,
+                    kept: true,
+                })
             }
             Err(GitError::UnknownRef(_) | GitError::NotACommit(_)) => Err(Error::Git(
                 GitError::UnknownRef(session::session_branch(session_id)),
@@ -449,7 +558,9 @@ impl GitService {
     /// (`GET /projects/{pid}/git/diff`).
     ///
     /// A [`DiffSelector::Head`] naming a session is synced silently first, so
-    /// the panel shows what the agent has committed; a
+    /// the panel shows what the agent has committed, and the head is the
+    /// commit that sync answers — which for an ended session with no commits
+    /// beyond its base, and so no ref, is that base commit; a
     /// [`DiffSelector::Handoff`] is checked against `task_handoffs` for this
     /// project (404 otherwise) and then resolves `refs/handoffs/<id>` in this
     /// project's own repository, never syncing anything
@@ -496,14 +607,19 @@ impl GitService {
 
         let (base_resolved, head_resolved) = {
             let guard = self.locks.lock(project_id).await;
-            if let Some(session_id) = head_session {
-                self.sync_session_silent(&guard, session_id).await?;
-            }
+            let head_resolved = match head_session {
+                // The sync's answer rather than the ref: a session that ended
+                // with nothing beyond its base keeps no ref, and its diff is
+                // then the one its base commit gives — empty against the
+                // branch it started from (ADR 0050).
+                Some(session_id) => ResolvedRef {
+                    git_ref: head_ref.clone(),
+                    commit: self.sync_session_silent(&guard, session_id).await?,
+                },
+                None => refs::resolve(&repo, &head_ref).await?,
+            };
 
-            (
-                refs::resolve(&repo, &base_ref).await?,
-                refs::resolve(&repo, &head_ref).await?,
-            )
+            (refs::resolve(&repo, &base_ref).await?, head_resolved)
         };
 
         Ok(diff::diff(

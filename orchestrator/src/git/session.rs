@@ -8,7 +8,9 @@
 //! ([`create_work_clone`]). Everything that later needs the session's work in
 //! the project repository — `POST /sessions/{id}/end`, `POST
 //! /sessions/{id}/sync`, hand-off publication, merge, rebase, push and the
-//! diff endpoint — calls [`fetch_back`] first, and session deletion calls
+//! diff endpoint — calls [`fetch_back`] first, or [`fetch_back_ended`] for a
+//! session that has ended or is ending, which keeps the ref only when the
+//! session made commits beyond its base (ADR 0050). Session deletion calls
 //! [`remove_work_clone`] (`ARCHITECTURE.md`, "Storage").
 //!
 //! **What the clone borrows.** The work clone holds no objects of its own:
@@ -228,6 +230,9 @@ pub async fn create_work_clone(
 /// Hand-off publication is what checks a fetched tip against a requested
 /// commit (ADR 0018); this function only moves the ref.
 ///
+/// The fetch-back of a live session. One that has ended, or is ending, goes
+/// through [`fetch_back_ended`] instead, which may decline to keep the ref.
+///
 /// Silent by design. The `git` event with `op: "sync"` belongs to the service
 /// task that asked for an explicit sync, so the diff endpoint can reuse this
 /// without emitting one and re-triggering the panel's refresh-on-event rule
@@ -243,16 +248,98 @@ pub async fn fetch_back(
     paths: &DataPaths,
     session_id: Uuid,
 ) -> std::result::Result<String, GitError> {
-    let repo = paths.project_repo(guard.project_id());
+    work_tip(paths, session_id).await?;
+    fetch_into_session_ref(guard, paths, session_id).await
+}
+
+/// What a fetch-back did: [`fetch_back_ended`]'s answer, and the answer of
+/// the service's sync, which a live fetch-back always gives with `kept`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedBack {
+    /// The tip of `session/<sid>` in the work clone, which is also where
+    /// `refs/sessions/<sid>` points when [`kept`](Self::kept) is true.
+    pub commit: String,
+    /// Whether `refs/sessions/<sid>` exists afterwards.
+    pub kept: bool,
+}
+
+/// The fetch-back of a session that has ended or is ending: the same fetch as
+/// [`fetch_back`], unless the session made no commits beyond its base.
+///
+/// When the work clone's `session/<sid>` tip is `base_commit` — a planner, or
+/// a reviewer that forwarded a hand-off without committing — the ref would
+/// hold nothing the session did, so it is not written, and one an earlier
+/// sync left is deleted (`ARCHITECTURE.md`, "Git model", Ref ownership;
+/// ADR 0050). The work clone is not touched: it stays until the session is
+/// deleted, and a later fetch-back — of a retried session, which is live again
+/// — reads it as before.
+///
+/// `base_commit` is `sessions.base_commit`; a session launched before that
+/// column existed has none, and for it this is exactly [`fetch_back`].
+///
+/// # Errors
+///
+/// As [`fetch_back`]. The ref is deleted only after the tip was read, so a
+/// work clone with nothing to read leaves the project repository as it was.
+pub async fn fetch_back_ended(
+    guard: &ProjectGitGuard,
+    paths: &DataPaths,
+    session_id: Uuid,
+    base_commit: Option<&str>,
+) -> std::result::Result<FetchedBack, GitError> {
+    let tip = work_tip(paths, session_id).await?;
+
+    if base_commit == Some(tip.as_str()) {
+        let repo = paths.project_repo(guard.project_id());
+        refs::delete(&repo, &refs::session_ref(session_id)).await?;
+
+        debug!(
+            session_id = %session_id,
+            commit = %tip,
+            "the ended session made no commits beyond its base; it keeps no session ref"
+        );
+
+        return Ok(FetchedBack {
+            commit: tip,
+            kept: false,
+        });
+    }
+
+    let commit = fetch_into_session_ref(guard, paths, session_id).await?;
+    Ok(FetchedBack { commit, kept: true })
+}
+
+/// The tip of `session/<sid>` in the session's work clone.
+///
+/// [`GitError::UnknownRef`] `session/<sid>` when there is none: the work
+/// directory is gone, or the agent deleted the branch inside it.
+async fn work_tip(paths: &DataPaths, session_id: Uuid) -> std::result::Result<String, GitError> {
     let work = paths.session_work(session_id);
     let branch = session_branch(session_id);
 
     // Checked before git runs: a command whose working directory does not
     // exist fails to spawn at all, which is an I/O fault rather than the
     // answer "this session has nothing to sync".
-    if !work.exists() || !work_branch_exists(&work, &branch).await? {
+    if !work.exists() {
         return Err(GitError::UnknownRef(branch));
     }
+
+    work_branch_tip(&work, &branch)
+        .await?
+        .ok_or(GitError::UnknownRef(branch))
+}
+
+/// The forced fetch of `session/<sid>` into `refs/sessions/<sid>`, answering
+/// the commit the ref then points at. The caller has checked that the branch
+/// is there.
+async fn fetch_into_session_ref(
+    guard: &ProjectGitGuard,
+    paths: &DataPaths,
+    session_id: Uuid,
+) -> std::result::Result<String, GitError> {
+    let repo = paths.project_repo(guard.project_id());
+    let work = paths.session_work(session_id);
+    let branch = session_branch(session_id);
 
     let refspec = format!("+{branch}:{}", refs::session_ref(session_id));
     GitCommand::new()
@@ -310,15 +397,21 @@ fn needs_explicit_fetch(git_ref: &GitRef) -> bool {
     }
 }
 
-/// Is `refs/heads/<branch>` present in the work clone?
+/// The commit `refs/heads/<branch>` points at in the work clone, or `None`
+/// when the branch is not there.
 ///
 /// A missing branch is the answer, not a failure, so this goes through
 /// [`GitCommand::run`]. A work directory that is not a repository at all is
 /// something else entirely, and the second command is what tells the two
 /// apart: without it a corrupted clone would answer 400 "no such ref" instead
 /// of the internal fault it is. Same shape as [`refs::resolve`]'s final check.
-async fn work_branch_exists(work: &Path, branch: &str) -> std::result::Result<bool, GitError> {
-    let full_name = format!("{HEADS}{branch}");
+async fn work_branch_tip(
+    work: &Path,
+    branch: &str,
+) -> std::result::Result<Option<String>, GitError> {
+    // Peeled, so the answer is always a commit id and compares with
+    // `sessions.base_commit` as a string.
+    let full_name = format!("{HEADS}{branch}^{{commit}}");
     let output = GitCommand::new()
         .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
         .arg(&full_name)
@@ -327,7 +420,7 @@ async fn work_branch_exists(work: &Path, branch: &str) -> std::result::Result<bo
         .await?;
 
     if output.status == 0 {
-        return Ok(true);
+        return Ok(Some(output.stdout.trim().to_string()));
     }
 
     GitCommand::new()
@@ -336,7 +429,7 @@ async fn work_branch_exists(work: &Path, branch: &str) -> std::result::Result<bo
         .run_ok()
         .await?;
 
-    Ok(false)
+    Ok(None)
 }
 
 /// One `git config --replace-all <key> <value>` in the work clone.

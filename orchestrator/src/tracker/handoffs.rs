@@ -64,8 +64,7 @@ use uuid::Uuid;
 use crate::events::TaskActor;
 use crate::git::service::NOT_READY;
 use crate::git::{
-    ApprovedHandoff, DataPaths, GitError, GitRef, GitService, HandoffVerifier, ProjectGitGuard,
-    refs,
+    ApprovedHandoff, DataPaths, GitError, GitService, HandoffVerifier, ProjectGitGuard, refs,
 };
 use crate::models::{
     HandoffCaller, HandoffInput, NewTaskComment, NewTaskHandoff, ProjectStatus, ReviewDecision,
@@ -160,7 +159,7 @@ pub struct PreparedHandoff {
 /// - **revision**: the source session must be one of this project's
 ///   ([`Error::BadRequest`] otherwise, which is also the answer when it has
 ///   been deleted, because project membership can no longer be verified); its
-///   branch is synced silently; the resulting `refs/sessions/<id>` tip must
+///   branch is synced silently; the tip that sync answers must
 ///   equal the requested commit, or [`Error::Conflict`] naming the tip, with
 ///   no ref created. A session that has neither a work tree nor a session ref
 ///   — one still `creating` — is [`Error::BadRequest`];
@@ -217,7 +216,12 @@ pub async fn prepare(
             // design", Side effects). A session whose work directory is gone
             // but whose `refs/sessions/<id>` is still there skips the fetch,
             // which is what lets work from an ended session be published.
-            GitService::from_state(state)
+            //
+            // The tip is the sync's answer, not a read of the ref: a session
+            // that ended with no commits beyond its base keeps no ref
+            // (ADR 0050), and publishing that base commit from its work clone
+            // is still a hand-off of what the session holds.
+            let tip = GitService::from_state(state)
                 .sync_session_silent(guard, *source_session_id)
                 .await
                 .map_err(|err| match err {
@@ -227,9 +231,6 @@ pub async fn prepare(
                     other => other,
                 })?;
 
-            let tip = refs::resolve(&mirror, &GitRef::Session(*source_session_id))
-                .await?
-                .commit;
             if tip != *commit {
                 return Err(Error::Conflict(format!(
                     "session branch tip {tip} does not match commit {commit}"

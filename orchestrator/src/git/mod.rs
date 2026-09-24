@@ -95,7 +95,10 @@ pub use refs::{GitRef, RefEntry, ResolvedRef};
 pub use service::{
     ApprovedHandoff, DiffSelector, GitService, HandoffVerifier, NoHandoffs, PinnedSource,
 };
-pub use session::{create_work_clone, fetch_back, remove_work_clone, resolve_base, session_branch};
+pub use session::{
+    FetchedBack, create_work_clone, fetch_back, fetch_back_ended, remove_work_clone, resolve_base,
+    session_branch,
+};
 pub use tempclone::TempClone;
 
 /// Real repositories for tests: `CLAUDE.md`, "Testing expectations" — git is

@@ -1092,7 +1092,9 @@ impl SessionOwner {
 
     /// Fetch `session/<sid>` into `refs/sessions/<sid>` and record the outcome.
     ///
-    /// The project git lock is taken first and released before the event's
+    /// The fetch-back that ends the session, so a run that made no commits
+    /// beyond its base keeps no ref ([`GitService::sync_ending_session_silent`];
+    /// ADR 0050). The project git lock is taken first and released before the event's
     /// transaction opens: any git lock comes before any database lock, never the
     /// reverse (`ARCHITECTURE.md`, "Git model", Serialization; ADR 0021).
     ///
@@ -1120,7 +1122,9 @@ impl SessionOwner {
         let service = GitService::from_state(&self.state);
         let outcome = {
             let guard = self.state.git_locks.lock(project_id).await;
-            service.sync_session_silent(&guard, self.session_id).await
+            service
+                .sync_ending_session_silent(&guard, self.session_id)
+                .await
         };
 
         let git_ref = refs::session_ref(self.session_id);

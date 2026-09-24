@@ -543,11 +543,17 @@ test("end moves to done and disables the composer", async ({
   );
   expect(rejected.status).toBe(409);
 
-  // Ending fetches the session branch into the mirror, where it is kept under
-  // its own ref (`ARCHITECTURE.md`, "Stop semantics"; "Git model").
-  expect(
+  // Ending fetches the session branch back, but the stub commits nothing, and
+  // a session that ends at its base commit keeps no ref (`ARCHITECTURE.md`,
+  // "Git model", Ref ownership; ADR 0050). Its Changes panel reads as no
+  // changes rather than as a failed read.
+  expect(() =>
     gitRevParse(mirrorPath(project.id), `refs/sessions/${sessionId}`),
-  ).toMatch(/^[0-9a-f]{40}$/);
+  ).toThrow();
+  await page.getByRole("tab", { name: "Changes" }).click();
+  await expect(
+    page.getByRole("tabpanel").getByText("No changes against main"),
+  ).toBeVisible({ timeout: 30_000 });
 });
 
 test("ending a session right after launch leaves no container", async ({

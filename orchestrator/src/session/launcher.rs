@@ -730,6 +730,30 @@ async fn clone_work_tree(
         .await
         .map_err(|err| Failure::new(format!("the session clone failed: {err}")))?;
 
+    // Still under the git lock, which comes before the row's (ADR 0021), so an
+    // end racing this launch reads the commit the clone was made at together
+    // with the clone. A failed write is not a failed launch: without the
+    // commit the end-of-session rule keeps the session's ref, which is what
+    // every session did before the column existed (ADR 0050).
+    if let Err(err) = record_base_commit(state, session_id, &base.commit).await {
+        warn!(
+            session_id = %session_id,
+            error = %err,
+            "the session's base commit could not be recorded; its ref will be kept when it ends",
+        );
+    }
+
+    Ok(())
+}
+
+/// Write `sessions.base_commit`, in a transaction of its own.
+async fn record_base_commit(state: &AppState, session_id: Uuid, commit: &str) -> Result<()> {
+    let mut tx = state.pool.begin().await?;
+    SessionRepository::new(&state.pool)
+        .set_base_commit(&mut tx, session_id, commit)
+        .await?;
+    tx.commit().await?;
+
     Ok(())
 }
 

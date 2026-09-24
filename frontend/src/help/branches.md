@@ -18,7 +18,7 @@ A fetch brings your remote's new commits into `origin/main`, but `main` stays wh
 
 ### Getting work out of a session
 
-A session's agent commits in its own clone. **Sync** copies the session's committed work into the mirror as its session ref. Uncommitted changes stay behind, so an agent that wants its work to travel commits it first. Ending a session syncs it too. From there, each session branch on the project's **Branches** tab, and a session's own row behind the **branch** toggle of its header, offers:
+A session's agent commits in its own clone. **Sync** copies the session's committed work into the mirror as its session ref. Uncommitted changes stay behind, so an agent that wants its work to travel commits it first. Ending a session syncs it too, except that a session which made no commits of its own, such as a planner or a reviewer that only passed a hand-off on, ends with no session ref at all: it holds nothing its starting point doesn't, so it leaves the **Branches** tab and its **Changes** show no changes. From there, each session branch on the project's **Branches** tab, and a session's own row behind the **branch** toggle of its header, offers:
 
 - **Merge into…**: merge the session's work into an integration head, such as `main`.
 - **Rebase onto…**: replay the session's commits onto an integration head or an upstream-tracking branch.
@@ -28,7 +28,7 @@ A rebase rewrites the session branch in the mirror. A running session's checkout
 
 ### Deleting a session
 
-A session ref lives as long as its session. Deleting an ended session deletes its ref from the mirror too, and its branch leaves the **Branches** tab. Before you confirm, the delete says how many commits the branch has that the default branch doesn't, because those are lost with it unless they were merged, pushed or handed off first. A branch you pushed to your remote stays there; Mars never deletes a remote branch.
+A session ref lives no longer than its session. Deleting an ended session deletes its ref from the mirror too, and its branch leaves the **Branches** tab. Before you confirm, the delete says how many commits the branch has that the default branch doesn't, because those are lost with it unless they were merged, pushed or handed off first. A branch you pushed to your remote stays there; Mars never deletes a remote branch.
 
 ### Pushing
 

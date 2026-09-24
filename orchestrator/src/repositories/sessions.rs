@@ -193,6 +193,17 @@ pub struct McpSessionRow {
     pub state: SessionState,
 }
 
+/// The two columns a fetch-back decides by
+/// ([`SessionRepository::fetch_back_basis`]; `ARCHITECTURE.md`, "Git model",
+/// Ref ownership).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchBackBasis {
+    pub state: SessionState,
+    /// `sessions.base_commit`: null for a session launched before the column
+    /// existed, or one whose launch never got as far as its clone.
+    pub base_commit: Option<String>,
+}
+
 /// All SQL against `sessions` and `events` (`ARCHITECTURE.md`, "Orchestrator
 /// internals").
 ///
@@ -648,6 +659,55 @@ impl<'a> SessionRepository<'a> {
         .await?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Record the commit the session's work clone was created at
+    /// (`docs/data-model.md`, `sessions.base_commit`).
+    ///
+    /// Written by the launch each time it creates the clone, so a relaunch
+    /// after a failed `creating` that cloned again from a branch that has moved
+    /// records where the clone really is. `Ok(false)` when no session has this
+    /// id.
+    pub async fn set_base_commit(
+        &self,
+        tx: &mut PgConnection,
+        id: Uuid,
+        base_commit: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query!(
+            "UPDATE sessions SET base_commit = $2 WHERE id = $1",
+            id,
+            base_commit,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// What a fetch-back needs to know about the session it is fetching:
+    /// its state and the commit its work clone was created at, or `None` when
+    /// no session has this id.
+    ///
+    /// A plain read with no row lock, because the caller holds the project
+    /// git lock and a database lock may only come after it inside a
+    /// transaction of its own (ADR 0021).
+    pub async fn fetch_back_basis(&self, id: Uuid) -> Result<Option<FetchBackBasis>> {
+        let row = sqlx::query!(
+            r#"
+            SELECT state AS "state: SessionState", base_commit
+            FROM sessions
+            WHERE id = $1
+            "#,
+            id,
+        )
+        .fetch_optional(self.pool)
+        .await?;
+
+        Ok(row.map(|row| FetchBackBasis {
+            state: row.state,
+            base_commit: row.base_commit,
+        }))
     }
 
     /// Record the CLI's own session id, taken from its `init` event and needed

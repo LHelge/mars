@@ -1090,6 +1090,18 @@ async fn a_conversational_session_runs_replays_parks_resumes_and_ends() {
         );
 
         // ---- the end, which fetches the branch back ----
+        // The stub replays a transcript and commits nothing, and a session
+        // that ends at its base commit keeps no ref (ADR 0050), so the
+        // session's work is committed here, where the agent would have.
+        let work = DataPaths::from_config(&app.state.config).session_work(id);
+        std::fs::write(work.join("WORK.md"), "the agent's work\n").expect("the file is written");
+        run_git(&work, &["add", "--", "WORK.md"]).await;
+        run_git(&work, &["commit", "--quiet", "-m", "feat: the agent's work"]).await;
+        let tip = run_git(&work, &["rev-parse", "HEAD"])
+            .await
+            .trim()
+            .to_string();
+
         let response = app
             .post_as(&project.user, &format!("/api/sessions/{id}/end"))
             .await;
@@ -1105,6 +1117,7 @@ async fn a_conversational_session_runs_replays_parks_resumes_and_ends() {
         let published = mirror_session_ref(&app, &project, id)
             .await
             .expect("the mirror has the session ref");
+        assert_eq!(published, tip);
         let ended = transcript(&app, &project, id).await;
         let sync = of_kind(&ended, "git")
             .into_iter()

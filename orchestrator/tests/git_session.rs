@@ -23,9 +23,9 @@ use mars_orchestrator::git::testutil::{
     TEST_AUTHOR_EMAIL, TEST_AUTHOR_NAME, TestUpstream, run_git,
 };
 use mars_orchestrator::git::{
-    CommitIdentity, DataPaths, GitCommand, GitError, GitRef, ProjectGitGuard, ProjectGitLocks,
-    ResolvedRef, create_work_clone, fetch_back, init_project_repo, refs, remove_work_clone,
-    resolve_base, session_branch,
+    CommitIdentity, DataPaths, FetchedBack, GitCommand, GitError, GitRef, ProjectGitGuard,
+    ProjectGitLocks, ResolvedRef, create_work_clone, fetch_back, fetch_back_ended,
+    init_project_repo, refs, remove_work_clone, resolve_base, session_branch,
 };
 use mars_orchestrator::models::RemoteUrl;
 use tempfile::TempDir;
@@ -514,6 +514,151 @@ async fn fetch_back_leaves_the_project_ref_alone_when_the_branch_is_gone() {
         commit_of(&repo, &format!("refs/sessions/{session_id}")).await,
         tip,
         "the published ref was disturbed by a failed fetch-back"
+    );
+}
+
+/// Whether `refs/sessions/<session_id>` exists in `repo`.
+async fn has_session_ref(repo: &Path, session_id: Uuid) -> bool {
+    refs::list_sessions(repo)
+        .await
+        .expect("the session refs list")
+        .contains(&session_id)
+}
+
+#[tokio::test]
+async fn an_ended_fetch_back_at_the_base_writes_no_ref() {
+    let project = Project::create().await;
+    let session_id = Uuid::new_v4();
+    let base = project.launch(session_id, None).await;
+
+    let outcome = fetch_back_ended(
+        &project.guard,
+        &project.paths,
+        session_id,
+        Some(&base.commit),
+    )
+    .await
+    .expect("the ended fetch-back succeeds");
+
+    assert_eq!(
+        outcome,
+        FetchedBack {
+            commit: base.commit.clone(),
+            kept: false,
+        }
+    );
+    assert!(!has_session_ref(&project.repo(), session_id).await);
+    assert!(
+        project.work(session_id).is_dir(),
+        "the work clone is left alone"
+    );
+}
+
+#[tokio::test]
+async fn an_ended_fetch_back_deletes_a_ref_an_earlier_sync_left_at_the_base() {
+    let project = Project::create().await;
+    let session_id = Uuid::new_v4();
+    let base = project.launch(session_id, None).await;
+    fetch_back(&project.guard, &project.paths, session_id)
+        .await
+        .expect("a live fetch-back keeps a ref at the base");
+    assert!(has_session_ref(&project.repo(), session_id).await);
+
+    fetch_back_ended(
+        &project.guard,
+        &project.paths,
+        session_id,
+        Some(&base.commit),
+    )
+    .await
+    .expect("the ended fetch-back succeeds");
+
+    assert!(!has_session_ref(&project.repo(), session_id).await);
+}
+
+#[tokio::test]
+async fn an_ended_fetch_back_with_commits_publishes_them() {
+    let project = Project::create().await;
+    let session_id = Uuid::new_v4();
+    let base = project.launch(session_id, None).await;
+    let tip = commit_in_work(
+        &project.work(session_id),
+        "agent.txt",
+        "work\n",
+        "feat: the agent's work",
+    )
+    .await;
+
+    let outcome = fetch_back_ended(
+        &project.guard,
+        &project.paths,
+        session_id,
+        Some(&base.commit),
+    )
+    .await
+    .expect("the ended fetch-back succeeds");
+
+    assert_eq!(
+        outcome,
+        FetchedBack {
+            commit: tip.clone(),
+            kept: true,
+        }
+    );
+    assert_eq!(
+        commit_of(&project.repo(), &format!("refs/sessions/{session_id}")).await,
+        tip
+    );
+}
+
+#[tokio::test]
+async fn an_ended_fetch_back_with_no_recorded_base_keeps_the_ref() {
+    let project = Project::create().await;
+    let session_id = Uuid::new_v4();
+    let base = project.launch(session_id, None).await;
+
+    let outcome = fetch_back_ended(&project.guard, &project.paths, session_id, None)
+        .await
+        .expect("the ended fetch-back succeeds");
+
+    assert!(outcome.kept);
+    assert_eq!(
+        commit_of(&project.repo(), &format!("refs/sessions/{session_id}")).await,
+        base.commit
+    );
+}
+
+#[tokio::test]
+async fn an_ended_fetch_back_with_nothing_to_read_leaves_the_ref_alone() {
+    let project = Project::create().await;
+    let session_id = Uuid::new_v4();
+    let repo = project.repo();
+    let work = project.work(session_id);
+    let base = project.launch(session_id, None).await;
+    fetch_back(&project.guard, &project.paths, session_id)
+        .await
+        .expect("the first sync succeeds");
+
+    run_git(&work, &["checkout", "--quiet", "--detach"]).await;
+    run_git(
+        &work,
+        &["branch", "--quiet", "-D", &session_branch(session_id)],
+    )
+    .await;
+
+    let error = fetch_back_ended(
+        &project.guard,
+        &project.paths,
+        session_id,
+        Some(&base.commit),
+    )
+    .await
+    .expect_err("a deleted session branch has nothing to fetch back");
+
+    assert!(matches!(error, GitError::UnknownRef(_)), "{error:?}");
+    assert!(
+        has_session_ref(&repo, session_id).await,
+        "a failed fetch-back deletes nothing"
     );
 }
 

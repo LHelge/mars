@@ -28,7 +28,9 @@ use mars_orchestrator::models::{
     StateChange, session_branch,
 };
 use mars_orchestrator::prelude::*;
-use mars_orchestrator::repositories::{AppendedRange, CostDelta, SessionRepository, Transition};
+use mars_orchestrator::repositories::{
+    AppendedRange, CostDelta, FetchBackBasis, SessionRepository, Transition,
+};
 use serde_json::json;
 use sqlx::postgres::PgListener;
 use uuid::Uuid;
@@ -396,6 +398,55 @@ async fn a_session_survives_an_insert_find_list_update_delete_round_trip() {
             .unwrap()
             .len(),
         1,
+    );
+}
+
+#[tokio::test]
+async fn the_fetch_back_basis_is_the_state_and_the_recorded_base_commit() {
+    let (_postgres, pool) = common::db::test_pool().await;
+    let fixture = seed(&pool).await;
+    let repository = SessionRepository::new(&pool);
+    let id = insert(&pool, &new_session(&fixture)).await;
+
+    let basis = repository
+        .fetch_back_basis(id)
+        .await
+        .unwrap()
+        .expect("the session is there");
+    assert_eq!(
+        basis,
+        FetchBackBasis {
+            state: SessionState::Creating,
+            base_commit: None,
+        },
+        "a session has no base commit until its clone exists"
+    );
+
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        repository
+            .set_base_commit(&mut tx, id, commit)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !repository
+            .set_base_commit(&mut tx, Uuid::new_v4(), commit)
+            .await
+            .unwrap(),
+        "no session, no row"
+    );
+    tx.commit().await.unwrap();
+
+    let basis = repository.fetch_back_basis(id).await.unwrap().unwrap();
+    assert_eq!(basis.base_commit.as_deref(), Some(commit));
+    assert!(
+        repository
+            .fetch_back_basis(Uuid::new_v4())
+            .await
+            .unwrap()
+            .is_none()
     );
 }
 

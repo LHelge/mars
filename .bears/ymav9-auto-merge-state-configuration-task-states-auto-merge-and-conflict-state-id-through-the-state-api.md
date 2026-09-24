@@ -1,14 +1,15 @@
 ---
 id: ymav9
 title: "Auto-merge state configuration: task_states.auto_merge and conflict_state_id through the state API"
-status: open
+status: done
 priority: P1
 created: "2026-09-22T20:20:12.101563199Z"
-updated: "2026-09-22T20:20:12.101563199Z"
+updated: "2026-09-24T14:13:07.079074574Z"
 tags:
   - orchestrator
   - tracker
 parent: tykeu
+attempts: 1
 ---
 
 Implements the configuration half of ADR 0045: `docs/data-model.md`, `task_states` (the two columns, both `CHECK`s, the `ON DELETE RESTRICT` and the deletion rule; migration 12 `auto_merge_states`) and `SPEC.md`, "Task states" (fields, the `PUT` pairing rule, the exact 400/409 messages). Documents already written.

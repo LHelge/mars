@@ -4,12 +4,15 @@ title: Delete a session's branch ref when the session is deleted, and sweep orph
 status: open
 priority: P2
 created: "2026-09-23T21:16:35.726548249Z"
-updated: "2026-09-23T21:16:35.726548249Z"
+updated: "2026-09-24T08:19:36.512340Z"
 tags:
   - orchestrator
   - frontend
   - git
   - docs
+depends_on:
+  - ebk7u
+parent: kc8k3
 ---
 
 Today `DELETE /sessions/{id}` removes the session directory and transcript (ARCHITECTURE.md, "Session directories"; SPEC.md, "Sessions" endpoint table) but leaves `refs/sessions/<sid>` in the project mirror (ARCHITECTURE.md, "Git", Ref ownership). No endpoint removes it, so a session that was started, ended and deleted leaves a branch in `GET /projects/{pid}/git/session-branches` whose `session_id` names nothing, and the UI offers no way to get rid of it.

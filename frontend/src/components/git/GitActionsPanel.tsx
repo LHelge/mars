@@ -1,10 +1,11 @@
 // Git operations for a project's session branches (`SPEC.md`, "User-facing
 // features", Git operations, and "Git").
 //
-// One component in two places. On the project page it is the whole picture:
-// every session ref, plus the generic merge that integrates upstream —
-// `origin/main` into `main` (`README.md`, "Operating notes"). In the session
-// view the same table is filtered to one branch, so an operator finishing a
+// One component in two places. On the project page's Branches tab it is the
+// whole picture, in the order the operator works: the integration heads, the
+// generic merge that integrates upstream — `origin/main` into `main`
+// (`README.md`, "Operating notes") — and every session ref. In the session
+// view the session table is filtered to one branch, so an operator finishing a
 // session merges or pushes it without leaving the transcript.
 //
 // The orchestrator serialises git work per project, so while any form here is
@@ -12,6 +13,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 
 import { listSessionBranches } from "../../services/git";
 import { queryKeys } from "../../services/queryKeys";
@@ -23,6 +25,8 @@ import { LoadingState } from "../LoadingState";
 import { SectionHeader } from "../SectionHeader";
 import { Icon } from "../icons";
 import { SubmitButton } from "../SubmitButton";
+import { IntegrationHeadTable } from "./IntegrationHeadTable";
+import { integrationHeads } from "./integrationHeads";
 import { MergeForm } from "./MergeForm";
 import { PushForm } from "./PushForm";
 import { RebaseForm } from "./RebaseForm";
@@ -82,8 +86,9 @@ export function GitActionsPanel({
 
   const branches = useQuery(projectQueries.branches(project.id));
 
-  // Only for the session column's titles, and only where the project page has
-  // the list anyway; the session view knows which session it is showing.
+  // Only for the session column's titles, and only on the project page, where
+  // the list is the same cached read the Sessions tab polls; the session view
+  // knows which session it is showing.
   const sessions = useQuery({
     ...projectQueries.sessions(project.id),
     enabled: sessionId === undefined,
@@ -205,31 +210,30 @@ export function GitActionsPanel({
 
   const genericId = "git-merge-generic";
 
-  return (
-    <section className="space-y-3">
-      <SectionHeader
-        title="Branches"
-        help="branches"
-        description={
-          sessionId === undefined
-            ? `Session refs in the mirror, measured against ${project.default_branch ?? "the default branch"}.`
-            : "This session's ref in the mirror, and what can be done with it."
+  const refreshButton = (
+    <SubmitButton
+      type="button"
+      variant="ghost"
+      loading={
+        sessionBranches.isFetching ||
+        (sessionId === undefined && branches.isFetching)
+      }
+      icon={Icon.refresh}
+      onClick={() => {
+        void sessionBranches.refetch();
+        if (sessionId === undefined) {
+          void branches.refetch();
         }
-        actions={
-          <SubmitButton
-            type="button"
-            variant="ghost"
-            loading={sessionBranches.isFetching}
-            icon={Icon.refresh}
-            onClick={() => {
-              void sessionBranches.refetch();
-            }}
-          >
-            Refresh
-          </SubmitButton>
-        }
-      />
+      }}
+    >
+      Refresh
+    </SubmitButton>
+  );
 
+  // The session refs: every one on the project page, this session's alone in
+  // the session view.
+  const sessionTable = (
+    <>
       {sessionBranches.isError && (
         <Alert kind="error">Could not load the session branches.</Alert>
       )}
@@ -272,23 +276,72 @@ export function GitActionsPanel({
           disabled={busy !== null}
         />
       )}
+    </>
+  );
 
-      {sessionId === undefined && (
-        <div className="border-console-border bg-console-surface space-y-3 rounded border px-3 py-3">
-          <h3 className="text-console-text text-sm font-semibold tracking-tight">
-            Merge any ref
-          </h3>
-          <p className="text-console-muted text-xs">
+  if (sessionId !== undefined) {
+    return (
+      <section className="space-y-3">
+        <SectionHeader
+          title="Branches"
+          help="branches"
+          description="This session's ref in the mirror, and what can be done with it."
+          actions={refreshButton}
+        />
+        {sessionTable}
+      </section>
+    );
+  }
+
+  // The project page, in the order the operator works: what the integration
+  // heads are, bringing upstream into them, then the session refs waiting to
+  // be merged.
+  const heads = integrationHeads(branches.data ?? [], project.default_branch);
+  const defaultBranch = project.default_branch ?? "main";
+
+  return (
+    <section className="space-y-6">
+      <SectionHeader
+        title="Branches"
+        help="branches"
+        description="The mirror's integration heads, the merge that brings upstream into them, and every session's ref."
+        actions={refreshButton}
+      />
+
+      <Block
+        title="Integration heads"
+        description="Mars's own branches. Sessions start from the default one, merges land in them, and a fetch never moves them."
+      >
+        {branches.isError && (
+          <Alert kind="error">Could not load the branches of the mirror.</Alert>
+        )}
+        {branches.isPending ? (
+          <LoadingState label="Loading integration heads" />
+        ) : heads.length === 0 ? (
+          branches.isSuccess && (
+            <EmptyState
+              title="No integration heads"
+              description="The mirror has no branch of its own yet."
+            />
+          )
+        ) : (
+          <IntegrationHeadTable heads={heads} />
+        )}
+      </Block>
+
+      <Block
+        title="Merge any ref"
+        description={
+          <>
             Integrating upstream is a merge like any other:{" "}
-            <span className="font-mono">
-              origin/{project.default_branch ?? "main"}
-            </span>{" "}
-            into{" "}
-            <span className="font-mono">
-              {project.default_branch ?? "main"}
-            </span>
-            .
-          </p>
+            <span className="font-mono">origin/{defaultBranch}</span> into{" "}
+            <span className="font-mono">{defaultBranch}</span>. Fetch first,
+            so <span className="font-mono">origin/{defaultBranch}</span> is
+            what the remote has now.
+          </>
+        }
+      >
+        <div className="border-console-border bg-console-surface rounded border px-3 py-3">
           <MergeForm
             projectId={project.id}
             branches={branches.data ?? []}
@@ -304,7 +357,37 @@ export function GitActionsPanel({
             onMerged={refresh}
           />
         </div>
-      )}
+      </Block>
+
+      <Block
+        title="Session branches"
+        description={`Session refs in the mirror, measured against ${project.default_branch ?? "the default branch"}.`}
+      >
+        {sessionTable}
+      </Block>
     </section>
+  );
+}
+
+/** One part of the project page's panel: a small heading over its content. */
+function Block({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <div>
+        <h3 className="text-console-text text-sm font-semibold tracking-tight">
+          {title}
+        </h3>
+        <p className="text-console-muted max-w-prose text-xs">{description}</p>
+      </div>
+      {children}
+    </div>
   );
 }

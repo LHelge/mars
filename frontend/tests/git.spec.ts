@@ -19,12 +19,13 @@
 // transcript. That is what makes `Git <op> succeeded` countable: every row in
 // these transcripts is a git outcome event.
 //
-// **Three places the task text and the application disagree**, each asserted as
+// **Where the panel is.** `GitActionsPanel` is the project's *Branches* tab
+// (`?tab=branches`) and, filtered to one row, behind the session header's
+// `branch` toggle; the *Sessions* tab carries no git actions.
+//
+// **Two places the task text and the application disagree**, each asserted as
 // the application is built:
 //
-// - There is no branches tab. `GitActionsPanel` sits at the bottom of the
-//   project's *Sessions* tab (`?tab=sessions`) and, filtered to one row, behind
-//   the session header's `branch` toggle.
 // - The Changes panel has no Sync of its own. The explicit sync is the session
 //   header's `Sync` action; the panel's own control is `Refresh`.
 // - Opening the panel is not a read-only act: `GET .../git/diff?head=<sid>`
@@ -318,7 +319,7 @@ test("the session branch list shows ahead and behind", async ({
   commitInSessionWorkClone(sessionId, { "src/app.txt": "v2\n" }, "feat: ahead");
   await syncSession(api, sessionId);
 
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await page.goto(`/projects/${project.id}?tab=branches`);
   const row = branchRow(page, sessionId);
   // `SPEC.md`, "Git": ahead/behind is measured against the integration head
   // named by `default_branch`, which the cell's own title spells out.
@@ -360,6 +361,65 @@ test("the session branch list shows ahead and behind", async ({
   });
 });
 
+test("the branches tab holds the git panel and the sessions tab does not", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  const { sessionId, mirror } = await stage(sessions, api, project);
+  commitInSessionWorkClone(sessionId, { "src/app.txt": "v2\n" }, "feat: work");
+  await syncSession(api, sessionId);
+
+  // The Sessions tab lists the session and nothing of git.
+  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await expect(
+    page.getByRole("heading", { name: "Sessions", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "untitled" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Branches" })).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Merge any ref" }),
+  ).toHaveCount(0);
+
+  // The tab strip's `Branches` is a real link to `?tab=branches`.
+  const sections = page.getByRole("navigation", { name: "Project sections" });
+  await sections.getByRole("link", { name: "Branches", exact: true }).click();
+  await expect(page).toHaveURL(/[?&]tab=branches(&|$)/);
+  await expect(
+    sections.getByRole("link", { name: "Branches", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+
+  // In the order the operator works: the heads, upstream in, the session refs.
+  const panel = branches(page);
+  await expect(panel.getByRole("heading", { level: 3 })).toHaveText([
+    "Integration heads",
+    "Merge any ref",
+    "Session branches",
+  ]);
+
+  const head = panel.getByRole("row").filter({
+    has: page.getByText("default", { exact: true }),
+  });
+  await expect(head).toHaveCount(1);
+  await expect(head.getByText("main", { exact: true })).toBeVisible();
+  await expect(
+    head.getByText(gitRevParse(mirror, "refs/heads/main").slice(0, 7), {
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  await expect(
+    formWith(page, "git-merge-generic-target").locator(
+      "#git-merge-generic-source",
+    ),
+  ).toHaveValue("origin/main");
+  await expect(branchRow(page, sessionId)).toBeVisible({ timeout: 30_000 });
+});
+
 test("merging a session branch into main", async ({
   page,
   context,
@@ -390,7 +450,7 @@ test("merging a session branch into main", async ({
   );
   await syncSession(api, sessionId);
 
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await page.goto(`/projects/${project.id}?tab=branches`);
   const form = await openRowForm(page, sessionId, "merge");
   await expect(form.locator(`#git-merge-${sessionId}-target`)).toHaveValue(
     "main",
@@ -441,7 +501,7 @@ test("rebasing the session branch onto main", async ({
     "Move the upstream",
   );
 
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await page.goto(`/projects/${project.id}?tab=branches`);
   const form = await openRowForm(page, sessionId, "rebase");
   await expect(form.locator(`#git-rebase-${sessionId}-onto`)).toHaveValue(
     "main",
@@ -550,7 +610,7 @@ test("pushing to the bare upstream, without a compare link for a file:// remote"
   );
   await syncSession(api, sessionId);
 
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await page.goto(`/projects/${project.id}?tab=branches`);
   const form = await openRowForm(page, sessionId, "push");
 
   // A session ref is pushed as `session/<id>` by default (`ARCHITECTURE.md`,
@@ -609,7 +669,7 @@ test("a non-fast-forward push is refused until it is forced", async ({
   );
   await syncSession(api, sessionId);
 
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await page.goto(`/projects/${project.id}?tab=branches`);
   const form = await openRowForm(page, sessionId, "push");
   await form.locator(`#git-push-${sessionId}-remote-branch`).fill("main");
   await form.getByRole("button", { name: "Push" }).click();
@@ -677,7 +737,7 @@ test("a merge conflict lists the conflicting paths and leaves main alone", async
 
   const before = gitRevParse(mirror, "main");
 
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await page.goto(`/projects/${project.id}?tab=branches`);
   const form = await openRowForm(page, sessionId, "merge");
   await form.getByRole("button", { name: "Merge" }).click();
 
@@ -703,7 +763,7 @@ test("an upstream-tracking ref cannot be a mutation target", async ({
   commitInSessionWorkClone(sessionId, { "src/app.txt": "v2\n" }, "feat: work");
   await syncSession(api, sessionId);
 
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await page.goto(`/projects/${project.id}?tab=branches`);
   // The UI cannot express the request at all: the target select offers
   // integration heads only, so `origin/main` is not among its options.
   const generic = formWith(page, "git-merge-generic-target");

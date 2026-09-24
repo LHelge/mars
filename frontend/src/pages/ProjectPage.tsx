@@ -21,6 +21,7 @@ import { isUuid } from "../utils/uuid";
 import { NotFoundPage } from "./NotFoundPage";
 import {
   BoardTab,
+  BranchesTab,
   ProfilesTab,
   ProjectHeader,
   ProjectSettingsForm,
@@ -164,6 +165,10 @@ function ProjectPanel({
 
   if (tab === "sessions") {
     return <SessionsTab project={project} />;
+  }
+
+  if (tab === "branches") {
+    return <BranchesTab project={project} />;
   }
 
   if (tab === "profiles") {

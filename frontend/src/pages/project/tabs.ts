@@ -1,5 +1,6 @@
 // The tab registry of `/projects/:id` (`SPEC.md`, "Frontend", Routes:
-// sessions, board, profiles, shared directories, states and secrets).
+// sessions, board, branches, profiles, shared directories, states and
+// secrets).
 //
 // The selection is the `?tab=` search parameter, so a tab is a real link: it
 // survives a reload, can be shared and can be opened in a new tab. A panel
@@ -16,6 +17,7 @@ import type { Project } from "../../types";
 export type ProjectTab =
   | "sessions"
   | "board"
+  | "branches"
   | "profiles"
   | "shared-dirs"
   | "states"
@@ -26,6 +28,7 @@ export const DEFAULT_PROJECT_TAB: ProjectTab = "sessions";
 export const PROJECT_TABS: { value: ProjectTab; label: string }[] = [
   { value: "sessions", label: "Sessions" },
   { value: "board", label: "Board" },
+  { value: "branches", label: "Branches" },
   { value: "profiles", label: "Profiles" },
   { value: "shared-dirs", label: "Shared directories" },
   { value: "states", label: "States" },

@@ -186,6 +186,7 @@ fn new_state(name: &str, kind: TaskStateKind, position: Option<i32>) -> NewState
         name: name.to_string(),
         kind,
         position,
+        auto_merge: Default::default(),
     }
 }
 
@@ -557,6 +558,7 @@ async fn renaming_and_moving_repack_the_board_and_refuse_a_taken_name() {
         StateUpdate {
             name: Some("merge".into()),
             position: Some(999),
+            ..StateUpdate::default()
         },
     )
     .await
@@ -587,6 +589,7 @@ async fn renaming_and_moving_repack_the_board_and_refuse_a_taken_name() {
         StateUpdate {
             name: Some("triage".into()),
             position: Some(-1),
+            ..StateUpdate::default()
         },
     )
     .await

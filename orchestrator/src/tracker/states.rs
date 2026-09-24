@@ -16,13 +16,15 @@
 //! ```
 //!
 //! Everything a caller could get wrong belongs elsewhere: the name pattern to
-//! [`TaskStateName::parse`], the placement and re-packing rules and all five
-//! conflicts — a taken name, a second `human` state, and the four deletion
-//! refusals — to [`TaskRepository`]'s state helpers, which already answer the
-//! documented [`Error`]. This module adds the one rule that is neither: **a
-//! change that changes nothing emits nothing**, so a rename to the current
-//! name and a move to the current position leave the stream alone (`SPEC.md`,
-//! "Tasks" states the same no-op rule for task updates).
+//! [`TaskStateName::parse`], the auto-merge pairing rules to
+//! [`AutoMergeInput::validate`], the placement and re-packing rules, the
+//! conflict state's resolution and all the conflicts — a taken name, a second
+//! `human` state, and the five deletion refusals — to [`TaskRepository`]'s
+//! state helpers, which already answer the documented [`Error`]. This module
+//! adds the one rule that is neither: **a change that changes nothing emits
+//! nothing**, so a rename to the current name, a move to the current position
+//! and an auto-merge pair equal to the current one leave the stream alone
+//! (`SPEC.md`, "Tasks" states the same no-op rule for task updates).
 //!
 //! The list is read back through [`TaskRepository::list_states_in`] rather
 //! than from the pool, because the change is still uncommitted; the event is
@@ -36,7 +38,7 @@
 
 use uuid::Uuid;
 
-use crate::models::{NewTaskState, TaskState, TaskStateKind, TaskStateName};
+use crate::models::{AutoMergeInput, NewTaskState, TaskState, TaskStateKind, TaskStateName};
 use crate::prelude::*;
 use crate::repositories::TaskRepository;
 use crate::tracker::TrackerMutation;
@@ -55,6 +57,8 @@ pub struct NewStateInput {
     pub kind: TaskStateKind,
     /// Where it lands, or `None` to append.
     pub position: Option<i32>,
+    /// `auto_merge` and its conflict state; the default is off.
+    pub auto_merge: AutoMergeInput,
 }
 
 /// What a caller may change about an existing column.
@@ -68,12 +72,16 @@ pub struct StateUpdate {
     pub name: Option<String>,
     /// The new position, or `None` to keep the current one.
     pub position: Option<i32>,
+    /// The new auto-merge pair, or `None` to keep the current one. The two
+    /// fields travel together: a body that gives either replaces both
+    /// (`SPEC.md`, "Task states").
+    pub auto_merge: Option<AutoMergeInput>,
 }
 
 impl StateUpdate {
     /// Does this ask for anything at all?
     fn is_empty(&self) -> bool {
-        self.name.is_none() && self.position.is_none()
+        self.name.is_none() && self.position.is_none() && self.auto_merge.is_none()
     }
 }
 
@@ -89,12 +97,15 @@ impl StateUpdate {
 pub async fn create_state(m: &mut TrackerMutation<'_>, input: NewStateInput) -> Result<TaskState> {
     let project_id = m.project_id();
 
+    let name = TaskStateName::parse(&input.name)?;
+    let conflict_state = input.auto_merge.validate(input.kind, name.as_str())?;
     let new_state = NewTaskState {
         id: Uuid::new_v4(),
         project_id,
-        name: TaskStateName::parse(&input.name)?,
+        name,
         kind: input.kind,
         position: input.position,
+        conflict_state,
     };
 
     let repository = TaskRepository::new(m.pool());
@@ -107,7 +118,13 @@ pub async fn create_state(m: &mut TrackerMutation<'_>, input: NewStateInput) -> 
     Ok(inserted)
 }
 
-/// Rename and/or move the column called `name`, inside an open mutation.
+/// Rename, move and/or reconfigure the auto-merge of the column called
+/// `name`, inside an open mutation.
+///
+/// The auto-merge pair is validated against the state's kind and the name it
+/// will have, and written before the rename, so a conflict state named by the
+/// state's old name is refused as the state itself. A refusal after a write
+/// rolls the whole request back with the mutation.
 ///
 /// The state is resolved under the lock ([`Error::NotFound`] when the project
 /// has no column by that name), and then only what actually differs is
@@ -156,6 +173,22 @@ pub async fn update_state(
 
     let mut changed = false;
 
+    // Before the rename, so a conflict state named by the state's old name
+    // still resolves to this state and is refused as itself, and the model
+    // compares against the name the state will have.
+    if let Some(auto_merge) = &update.auto_merge {
+        let own_name = update.name.as_deref().unwrap_or(&current.name);
+        let conflict_state = auto_merge.validate(current.kind, own_name)?;
+        let unchanged = current.auto_merge == conflict_state.is_some()
+            && current.conflict_state.as_deref() == conflict_state.as_ref().map(|n| n.as_str());
+        if !unchanged {
+            current = repository
+                .set_auto_merge(m.conn(), project_id, current.id, conflict_state.as_ref())
+                .await?;
+            changed = true;
+        }
+    }
+
     if let Some(new_name) = update.name.as_deref()
         && new_name != current.name
     {
@@ -188,8 +221,9 @@ pub async fn update_state(
 /// Remove the column called `name`, inside an open mutation.
 ///
 /// [`Error::NotFound`] when the project has no such column, and otherwise the
-/// repository's four documented 409s: the `human` state, the last `queue`
-/// state, the last `terminal` state and a state a task is still in. Each is
+/// repository's five documented 409s: the `human` state, the last `queue`
+/// state, the last `terminal` state, a state a task is still in and a state
+/// another state names as its conflict state. Each is
 /// read under this mutation's lock, so a task moved into the column while the
 /// request was in flight either waits for the lock or is counted.
 ///

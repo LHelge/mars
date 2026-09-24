@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE task_states\n            SET auto_merge = $3, conflict_state_id = $4\n            WHERE id = $1 AND project_id = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8d9ae382f576c53f5bb266df00030f641e46e933540296c1c9ad49c0f36d2571"
+}

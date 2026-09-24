@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, project_id, name, kind as \"kind: TaskStateKind\", position, created_at\n        FROM task_states\n        WHERE project_id = $1 AND name = $2\n        ",
+  "query": "\n        SELECT s.id, s.project_id, s.name, s.kind as \"kind: TaskStateKind\", s.position,\n               s.auto_merge, c.name AS \"conflict_state?\", s.created_at\n        FROM task_states AS s\n        LEFT JOIN task_states AS c ON c.id = s.conflict_state_id\n        WHERE s.project_id = $1\n        ORDER BY s.position, s.name\n        ",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,28 @@
       },
       {
         "ordinal": 5,
+        "name": "auto_merge",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "task_states",
+            "name": "auto_merge"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "conflict_state?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_states",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -83,8 +105,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -93,8 +114,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "2846df05b21b93b8b1099d82dc6a1680bb39aca48ecf9af4083eb919d04c6b69"
+  "hash": "6f4a23770cad990c2ecd309cdd1c8e05bb6ade2b4607a871039d59e31263258d"
 }

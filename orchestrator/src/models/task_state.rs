@@ -88,7 +88,9 @@ impl std::fmt::Display for TaskStateName {
     }
 }
 
-/// A `task_states` row, column for column (`docs/data-model.md`).
+/// A task state as the API shows it (`SPEC.md`, "Task states"): the
+/// `task_states` row (`docs/data-model.md`), with `conflict_state_id` resolved
+/// to the *name* of the state it references.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
 pub struct TaskState {
     pub id: Uuid,
@@ -96,13 +98,64 @@ pub struct TaskState {
     pub name: String,
     pub kind: TaskStateKind,
     pub position: i32,
+    /// The orchestrator merges approved hand-offs of tasks in this state
+    /// (ADR 0045). `queue` states only.
+    pub auto_merge: bool,
+    /// Where a task goes when its automatic merge conflicts; `Some` exactly
+    /// when `auto_merge` is set.
+    pub conflict_state: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// A state's auto-merge configuration as a caller supplies it: the flag and
+/// the raw name of its conflict state.
+///
+/// On `POST` it is the whole configuration; on `PUT` a body that gives either
+/// field replaces both, so a missing `auto_merge` there reads as `false`
+/// (`SPEC.md`, "Task states").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutoMergeInput {
+    /// Whether the state merges approved hand-offs.
+    pub auto_merge: bool,
+    /// The name of the state a conflicting merge sends a task to.
+    pub conflict_state: Option<String>,
+}
+
+impl AutoMergeInput {
+    /// Validate the pair for a state of `kind` called `own_name`, returning
+    /// the conflict state's name when `auto_merge` is on.
+    ///
+    /// The rules a single body can break, in the order a caller fixes them:
+    /// queue-only, the pair set together, and not the state itself. Whether
+    /// the name is a `queue` state of the project is a fact about the project
+    /// and is the repository's to decide; a name that cannot be a state name
+    /// at all is refused here with that same message.
+    pub fn validate(
+        &self,
+        kind: TaskStateKind,
+        own_name: &str,
+    ) -> TaskResult<Option<TaskStateName>> {
+        if self.auto_merge && kind != TaskStateKind::Queue {
+            return Err(TaskError::AutoMergeNotQueue);
+        }
+        match (self.auto_merge, self.conflict_state.as_deref()) {
+            (false, None) => Ok(None),
+            (false, Some(_)) => Err(TaskError::ConflictStateRequiresAutoMerge),
+            (true, None) => Err(TaskError::AutoMergeRequiresConflictState),
+            (true, Some(name)) if name == own_name => Err(TaskError::ConflictStateIsSelf),
+            (true, Some(name)) => TaskStateName::parse(name)
+                .map(Some)
+                .map_err(|_| TaskError::ConflictStateNotQueue),
+        }
+    }
 }
 
 /// The caller-supplied half of a new task state.
 ///
 /// A `None` position appends; the repository shifts the states at and after an
-/// explicit one (`SPEC.md`, "Task states").
+/// explicit one (`SPEC.md`, "Task states"). `conflict_state` is `Some` exactly
+/// when the state is created with `auto_merge` on — [`AutoMergeInput::validate`]
+/// has already paired them — and the repository resolves it to an id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTaskState {
     pub id: Uuid,
@@ -110,10 +163,11 @@ pub struct NewTaskState {
     pub name: TaskStateName,
     pub kind: TaskStateKind,
     pub position: Option<i32>,
+    pub conflict_state: Option<TaskStateName>,
 }
 
 impl NewTaskState {
-    /// A state with a fresh id, validating the name.
+    /// A state with a fresh id and `auto_merge` off, validating the name.
     pub fn new(project_id: Uuid, name: &str, kind: TaskStateKind) -> TaskResult<Self> {
         Ok(Self {
             id: Uuid::new_v4(),
@@ -121,6 +175,7 @@ impl NewTaskState {
             name: TaskStateName::parse(name)?,
             kind,
             position: None,
+            conflict_state: None,
         })
     }
 }
@@ -228,6 +283,82 @@ mod tests {
             NewTaskState::new(project_id, "Review", TaskStateKind::Queue).unwrap_err(),
             TaskError::InvalidStateName
         );
+    }
+
+    fn pair(auto_merge: bool, conflict_state: Option<&str>) -> AutoMergeInput {
+        AutoMergeInput {
+            auto_merge,
+            conflict_state: conflict_state.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn auto_merge_accepts_a_queue_state_with_another_conflict_state() {
+        assert_eq!(
+            pair(true, Some("ready"))
+                .validate(TaskStateKind::Queue, "merge")
+                .unwrap()
+                .map(String::from),
+            Some("ready".to_string())
+        );
+        assert_eq!(
+            pair(false, None).validate(TaskStateKind::Terminal, "done"),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn auto_merge_refuses_each_broken_rule_with_its_own_error() {
+        for kind in [TaskStateKind::Human, TaskStateKind::Terminal] {
+            assert_eq!(
+                pair(true, Some("ready")).validate(kind, "x"),
+                Err(TaskError::AutoMergeNotQueue)
+            );
+        }
+        assert_eq!(
+            pair(true, None).validate(TaskStateKind::Queue, "merge"),
+            Err(TaskError::AutoMergeRequiresConflictState)
+        );
+        assert_eq!(
+            pair(false, Some("ready")).validate(TaskStateKind::Queue, "merge"),
+            Err(TaskError::ConflictStateRequiresAutoMerge)
+        );
+        assert_eq!(
+            pair(true, Some("merge")).validate(TaskStateKind::Queue, "merge"),
+            Err(TaskError::ConflictStateIsSelf)
+        );
+        assert_eq!(
+            pair(true, Some("Not A State")).validate(TaskStateKind::Queue, "merge"),
+            Err(TaskError::ConflictStateNotQueue)
+        );
+    }
+
+    #[test]
+    fn auto_merge_messages_are_the_documented_ones() {
+        for (error, message) in [
+            (
+                TaskError::AutoMergeNotQueue,
+                "auto_merge applies to queue states only",
+            ),
+            (
+                TaskError::AutoMergeRequiresConflictState,
+                "auto_merge requires conflict_state",
+            ),
+            (
+                TaskError::ConflictStateRequiresAutoMerge,
+                "conflict_state requires auto_merge",
+            ),
+            (
+                TaskError::ConflictStateNotQueue,
+                "conflict_state must name a queue state of this project",
+            ),
+            (
+                TaskError::ConflictStateIsSelf,
+                "conflict_state must be a different state",
+            ),
+        ] {
+            assert_eq!(error.to_string(), message);
+        }
     }
 
     #[test]

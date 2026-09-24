@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE task_states\n            SET name = $3\n            WHERE id = $1 AND project_id = $2\n            RETURNING id, project_id, name, kind as \"kind: TaskStateKind\", position, created_at\n            ",
+  "query": "\n            SELECT s.id, s.project_id, s.name, s.kind as \"kind: TaskStateKind\", s.position,\n                   s.auto_merge, c.name AS \"conflict_state?\", s.created_at\n            FROM task_states AS s\n            LEFT JOIN task_states AS c ON c.id = s.conflict_state_id\n            WHERE s.project_id = $1 AND s.kind = 'queue'\n            ORDER BY s.position, s.name\n            LIMIT 1\n            ",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,28 @@
       },
       {
         "ordinal": 5,
+        "name": "auto_merge",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "task_states",
+            "name": "auto_merge"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "conflict_state?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_states",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -83,9 +105,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -94,8 +114,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "64a29c9a508e772c7df3ee6aedbadddc1cb8bc285d47024924c6a7ce69cda277"
+  "hash": "9add0cbff38d79248509dbaff84467937282abe4fbb168c1b6e9597f5f1691f4"
 }

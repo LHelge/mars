@@ -446,6 +446,8 @@ mod tests {
             name: "backlog".to_string(),
             kind: TaskStateKind::Queue,
             position: 0,
+            auto_merge: false,
+            conflict_state: None,
             created_at: at(1_700_000_000),
         };
         let mut payload = TaskEventPayload::new(actor());

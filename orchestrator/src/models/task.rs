@@ -85,6 +85,21 @@ pub enum TaskError {
     /// A task reference was neither a UUID nor a per-project number.
     #[error("a task is addressed by its UUID or its per-project number")]
     InvalidTaskRef,
+    /// `auto_merge` was set on a `human` or `terminal` state.
+    #[error("auto_merge applies to queue states only")]
+    AutoMergeNotQueue,
+    /// `auto_merge` was set without a conflict state.
+    #[error("auto_merge requires conflict_state")]
+    AutoMergeRequiresConflictState,
+    /// A conflict state was given without `auto_merge`.
+    #[error("conflict_state requires auto_merge")]
+    ConflictStateRequiresAutoMerge,
+    /// The conflict state named no `queue` state of the project.
+    #[error("conflict_state must name a queue state of this project")]
+    ConflictStateNotQueue,
+    /// The conflict state named the state being configured.
+    #[error("conflict_state must be a different state")]
+    ConflictStateIsSelf,
 }
 
 impl TaskError {

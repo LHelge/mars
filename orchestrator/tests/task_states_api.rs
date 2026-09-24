@@ -852,3 +852,444 @@ async fn any_authenticated_user_may_edit_the_board() {
         json!({ "kind": "user", "user_id": other.user.id })
     );
 }
+
+// ---- auto-merge ----
+//
+// `auto_merge` and `conflict_state` (`SPEC.md`, "Task states"; ADR 0045): a
+// queue state's flag and the name of the queue state a conflicting merge
+// sends a task to, set and cleared together.
+
+/// The state called `name`, as the list answers it.
+async fn state(app: &TestApp, user: &AuthenticatedUser, pid: Uuid, name: &str) -> Value {
+    list(app, user, pid)
+        .await
+        .into_iter()
+        .find(|state| state["name"] == json!(name))
+        .unwrap_or_else(|| panic!("the project has a state named {name}"))
+}
+
+/// Turn `merge` into an auto-merge state that sends conflicts to `ready`.
+async fn auto_merge_merge(app: &TestApp, user: &AuthenticatedUser, pid: Uuid) {
+    app.put_as(user, &state_path(pid, "merge"))
+        .json(&json!({ "auto_merge": true, "conflict_state": "ready" }))
+        .await
+        .assert_status(StatusCode::OK);
+}
+
+#[tokio::test]
+async fn every_state_shows_its_auto_merge_pair() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+
+    // Project seeding is not this change's: every state starts off.
+    for state in list(&app, &user, pid).await {
+        assert_eq!(state["auto_merge"], json!(false));
+        assert_eq!(state["conflict_state"], json!(null));
+    }
+}
+
+#[tokio::test]
+async fn a_state_created_with_auto_merge_names_its_conflict_state() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+
+    let response = app
+        .post_as(&user, &states_path(pid))
+        .json(&json!({
+            "name": "ship",
+            "kind": "queue",
+            "auto_merge": true,
+            "conflict_state": "ready",
+        }))
+        .await;
+
+    response.assert_status(StatusCode::CREATED);
+    let created = response.json::<Value>();
+    assert_eq!(created["auto_merge"], json!(true));
+    assert_eq!(created["conflict_state"], json!("ready"));
+    assert_eq!(state(&app, &user, pid, "ship").await, created);
+
+    let announced = state_events(&app, pid).await;
+    assert_eq!(announced.len(), 1);
+    let ship = announced[0].1["states"]
+        .as_array()
+        .expect("a state list")
+        .iter()
+        .find(|state| state["name"] == json!("ship"))
+        .cloned()
+        .expect("the new state is announced");
+    assert_eq!(ship, created);
+}
+
+#[tokio::test]
+async fn a_create_with_an_invalid_pair_is_400_with_the_documented_message() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+
+    let queue = |auto_merge: Value, conflict_state: Value| {
+        json!({
+            "name": "ship",
+            "kind": "queue",
+            "auto_merge": auto_merge,
+            "conflict_state": conflict_state,
+        })
+    };
+
+    for (body, message) in [
+        (
+            json!({
+                "name": "late",
+                "kind": "terminal",
+                "auto_merge": true,
+                "conflict_state": "ready",
+            }),
+            "auto_merge applies to queue states only",
+        ),
+        (
+            json!({ "name": "ship", "kind": "queue", "auto_merge": true }),
+            "auto_merge requires conflict_state",
+        ),
+        (
+            json!({ "name": "ship", "kind": "queue", "conflict_state": "ready" }),
+            "conflict_state requires auto_merge",
+        ),
+        (
+            queue(json!(false), json!("ready")),
+            "conflict_state requires auto_merge",
+        ),
+        (
+            queue(json!(true), json!("nowhere")),
+            "conflict_state must name a queue state of this project",
+        ),
+        (
+            queue(json!(true), json!("needs_human")),
+            "conflict_state must name a queue state of this project",
+        ),
+        (
+            queue(json!(true), json!("done")),
+            "conflict_state must name a queue state of this project",
+        ),
+        (
+            queue(json!(true), json!("ship")),
+            "conflict_state must be a different state",
+        ),
+    ] {
+        let response = app.post_as(&user, &states_path(pid)).json(&body).await;
+
+        assert_error(&response, StatusCode::BAD_REQUEST, message);
+    }
+
+    assert_eq!(names(&app, &user, pid).await, DEFAULTS.to_vec());
+    assert!(state_events(&app, pid).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_conflict_state_of_another_project_is_400() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+    let elsewhere = create_project(
+        &app.state,
+        NewProjectRequest {
+            name: "venus".to_string(),
+            remote_url: TEST_REMOTE.to_string(),
+            default_branch: None,
+            credential: None,
+        },
+        user.user.id,
+    )
+    .await
+    .expect("the second project is created")
+    .id;
+    app.post_as(&user, &states_path(elsewhere))
+        .json(&json!({ "name": "only-there", "kind": "queue" }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    let response = app
+        .put_as(&user, &state_path(pid, "merge"))
+        .json(&json!({ "auto_merge": true, "conflict_state": "only-there" }))
+        .await;
+
+    assert_error(
+        &response,
+        StatusCode::BAD_REQUEST,
+        "conflict_state must name a queue state of this project",
+    );
+    assert!(state_events(&app, pid).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_put_sets_the_pair_and_announces_once() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+
+    let response = app
+        .put_as(&user, &state_path(pid, "merge"))
+        .json(&json!({ "auto_merge": true, "conflict_state": "ready" }))
+        .await;
+
+    response.assert_status(StatusCode::OK);
+    let updated = response.json::<Value>();
+    assert_eq!(updated["name"], json!("merge"));
+    assert_eq!(updated["auto_merge"], json!(true));
+    assert_eq!(updated["conflict_state"], json!("ready"));
+    assert_eq!(state(&app, &user, pid, "merge").await, updated);
+
+    let announced = state_events(&app, pid).await;
+    assert_eq!(announced.len(), 1);
+    assert_eq!(announced[0].0, None);
+    assert_eq!(announced[0].1["states"][3], updated);
+}
+
+#[tokio::test]
+async fn a_put_with_either_field_replaces_both_and_neither_leaves_them_alone() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+    auto_merge_merge(&app, &user, pid).await;
+
+    // Neither field: a rename keeps the pair.
+    let renamed = app
+        .put_as(&user, &state_path(pid, "merge"))
+        .json(&json!({ "name": "land" }))
+        .await;
+    renamed.assert_status(StatusCode::OK);
+    let renamed = renamed.json::<Value>();
+    assert_eq!(renamed["auto_merge"], json!(true));
+    assert_eq!(renamed["conflict_state"], json!("ready"));
+
+    // Another conflict state replaces the old one.
+    let moved = app
+        .put_as(&user, &state_path(pid, "land"))
+        .json(&json!({ "auto_merge": true, "conflict_state": "backlog" }))
+        .await;
+    moved.assert_status(StatusCode::OK);
+    assert_eq!(moved.json::<Value>()["conflict_state"], json!("backlog"));
+
+    // `auto_merge: false` alone clears the conflict state.
+    let cleared = app
+        .put_as(&user, &state_path(pid, "land"))
+        .json(&json!({ "auto_merge": false }))
+        .await;
+    cleared.assert_status(StatusCode::OK);
+    let cleared = cleared.json::<Value>();
+    assert_eq!(cleared["auto_merge"], json!(false));
+    assert_eq!(cleared["conflict_state"], json!(null));
+
+    // Set-up, rename, replace and clear: one event each.
+    assert_eq!(state_events(&app, pid).await.len(), 4);
+}
+
+#[tokio::test]
+async fn a_put_repeating_the_current_pair_is_200_without_an_event() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+
+    let unchanged = app
+        .put_as(&user, &state_path(pid, "merge"))
+        .json(&json!({ "auto_merge": false }))
+        .await;
+    unchanged.assert_status(StatusCode::OK);
+    assert!(state_events(&app, pid).await.is_empty());
+
+    auto_merge_merge(&app, &user, pid).await;
+    auto_merge_merge(&app, &user, pid).await;
+    assert_eq!(state_events(&app, pid).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_put_with_an_invalid_pair_is_400_with_the_documented_message() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+    auto_merge_merge(&app, &user, pid).await;
+    let before = list(&app, &user, pid).await;
+
+    for (name, body, message) in [
+        (
+            "done",
+            json!({ "auto_merge": true, "conflict_state": "ready" }),
+            "auto_merge applies to queue states only",
+        ),
+        (
+            "needs_human",
+            json!({ "auto_merge": true, "conflict_state": "ready" }),
+            "auto_merge applies to queue states only",
+        ),
+        (
+            "review",
+            json!({ "auto_merge": true }),
+            "auto_merge requires conflict_state",
+        ),
+        (
+            "review",
+            json!({ "auto_merge": true, "conflict_state": null }),
+            "auto_merge requires conflict_state",
+        ),
+        // Either field replaces both, so a conflict state alone turns the
+        // flag off and is refused, rather than keeping `merge`'s flag.
+        (
+            "merge",
+            json!({ "conflict_state": "backlog" }),
+            "conflict_state requires auto_merge",
+        ),
+        (
+            "review",
+            json!({ "auto_merge": false, "conflict_state": "ready" }),
+            "conflict_state requires auto_merge",
+        ),
+        (
+            "review",
+            json!({ "auto_merge": true, "conflict_state": "nowhere" }),
+            "conflict_state must name a queue state of this project",
+        ),
+        (
+            "review",
+            json!({ "auto_merge": true, "conflict_state": "cancelled" }),
+            "conflict_state must name a queue state of this project",
+        ),
+        (
+            "review",
+            json!({ "auto_merge": true, "conflict_state": "review" }),
+            "conflict_state must be a different state",
+        ),
+        // The name it is being renamed to, and the name it is renamed from,
+        // are both the state itself; the rename is not half applied.
+        (
+            "review",
+            json!({ "name": "qa", "auto_merge": true, "conflict_state": "qa" }),
+            "conflict_state must be a different state",
+        ),
+        (
+            "review",
+            json!({ "name": "qa", "auto_merge": true, "conflict_state": "review" }),
+            "conflict_state must be a different state",
+        ),
+    ] {
+        let response = app.put_as(&user, &state_path(pid, name)).json(&body).await;
+
+        assert_error(&response, StatusCode::BAD_REQUEST, message);
+    }
+
+    assert_eq!(list(&app, &user, pid).await, before);
+    // The set-up only.
+    assert_eq!(state_events(&app, pid).await.len(), 1);
+}
+
+#[tokio::test]
+async fn renaming_the_conflict_state_renames_it_where_it_is_named() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+    auto_merge_merge(&app, &user, pid).await;
+
+    app.put_as(&user, &state_path(pid, "ready"))
+        .json(&json!({ "name": "rework" }))
+        .await
+        .assert_status(StatusCode::OK);
+
+    assert_eq!(
+        state(&app, &user, pid, "merge").await["conflict_state"],
+        json!("rework")
+    );
+    let announced = state_events(&app, pid).await;
+    assert_eq!(announced.len(), 2);
+    assert_eq!(
+        announced[1].1["states"][3]["conflict_state"],
+        json!("rework")
+    );
+}
+
+#[tokio::test]
+async fn a_conflict_state_cannot_be_deleted_while_it_is_named() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+    auto_merge_merge(&app, &user, pid).await;
+
+    let response = app.delete_as(&user, &state_path(pid, "ready")).await;
+
+    assert_error(
+        &response,
+        StatusCode::CONFLICT,
+        "state is the conflict state of merge",
+    );
+    assert_eq!(names(&app, &user, pid).await, DEFAULTS.to_vec());
+    assert_eq!(state_events(&app, pid).await.len(), 1);
+
+    // Once `merge` stops naming it, it goes like any other state, and so
+    // does an auto-merge state itself.
+    app.put_as(&user, &state_path(pid, "merge"))
+        .json(&json!({ "auto_merge": true, "conflict_state": "backlog" }))
+        .await
+        .assert_status(StatusCode::OK);
+    app.delete_as(&user, &state_path(pid, "ready"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    app.delete_as(&user, &state_path(pid, "merge"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    app.delete_as(&user, &state_path(pid, "backlog"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_project_with_an_auto_merge_state_can_be_deleted() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+    auto_merge_merge(&app, &user, pid).await;
+
+    // The cascade removes the referencing and the referenced state in one
+    // statement, which `ON DELETE RESTRICT` allows.
+    app.delete_as(&user, &format!("/api/projects/{pid}"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn the_auto_merge_fields_require_a_token() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user).await;
+
+    let created = app
+        .server
+        .post(&states_path(pid))
+        .json(&json!({
+            "name": "ship",
+            "kind": "queue",
+            "auto_merge": true,
+            "conflict_state": "ready",
+        }))
+        .await;
+    assert_error(
+        &created,
+        StatusCode::UNAUTHORIZED,
+        "authentication required",
+    );
+
+    let updated = app
+        .server
+        .put(&state_path(pid, "merge"))
+        .json(&json!({ "auto_merge": true, "conflict_state": "ready" }))
+        .await;
+    assert_error(
+        &updated,
+        StatusCode::UNAUTHORIZED,
+        "authentication required",
+    );
+
+    assert_eq!(
+        state(&app, &user, pid, "merge").await["auto_merge"],
+        json!(false)
+    );
+    assert!(state_events(&app, pid).await.is_empty());
+}

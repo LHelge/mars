@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO task_states (id, project_id, name, kind, position, auto_merge, conflict_state_id)\n        VALUES ($1, $2, $3, $4, $5, $6, $7)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "task_state_kind",
+            "kind": {
+              "Enum": [
+                "queue",
+                "human",
+                "terminal"
+              ]
+            }
+          }
+        },
+        "Int4",
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0f23af3bf733073220c047f0644eba4bebaa11d8df678728c1aac297692d08a3"
+}

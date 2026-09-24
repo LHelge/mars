@@ -12,7 +12,8 @@
 //! documented refusals are conflicts and name the state, that an end leaves
 //! nothing behind (no container, no `container_id`, no registry entry) and
 //! publishes the branch with a `git { op: "sync" }` event, and that a delete
-//! removes the session's directory and its CLI transcript before its row.
+//! removes the session's directory, its CLI transcript and its branch ref
+//! `refs/sessions/<sid>` before its row, under the project git lock (ADR 0049).
 //!
 //! Needs a container engine (`DOCKER_HOST`); see `tests/common/db.rs`.
 
@@ -1011,6 +1012,76 @@ async fn deleting_a_done_session_removes_the_container_it_still_records() {
         None,
         "the recorded container was left behind",
     );
+}
+
+#[tokio::test]
+async fn deleting_a_synced_session_removes_its_branch_ref_from_the_mirror() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    fixture.move_to(&app, SessionState::Done).await;
+    SessionService::new(&app.state)
+        .sync(fixture.id())
+        .await
+        .expect("a done session with a work tree syncs");
+    assert!(
+        mirror_session_ref(&app, &fixture).await.is_some(),
+        "the fixture's sync published no ref",
+    );
+
+    SessionService::new(&app.state)
+        .delete(fixture.id())
+        .await
+        .expect("a done session is deleted");
+
+    assert_eq!(
+        mirror_session_ref(&app, &fixture).await,
+        None,
+        "refs/sessions/<sid> outlived its session (ADR 0049)",
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_session_that_never_synced_succeeds_with_no_ref_to_remove() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    fixture.move_to(&app, SessionState::Failed).await;
+    assert_eq!(mirror_session_ref(&app, &fixture).await, None);
+
+    SessionService::new(&app.state)
+        .delete(fixture.id())
+        .await
+        .expect("a missing session ref is not a failure");
+
+    assert!(
+        SessionRepository::new(&app.pool)
+            .find(fixture.id())
+            .await
+            .expect("the lookup runs")
+            .is_none(),
+        "the session row is left",
+    );
+}
+
+#[tokio::test]
+async fn a_session_delete_waits_for_the_project_git_lock() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    fixture.move_to(&app, SessionState::Done).await;
+
+    let guard = app.state.git_locks.lock(fixture.project.id).await;
+    let service = SessionService::new(&app.state);
+    let blocked =
+        tokio::time::timeout(Duration::from_millis(200), service.delete(fixture.id())).await;
+    assert!(
+        blocked.is_err(),
+        "the delete reached the session ref while the project git lock was held",
+    );
+    drop(guard);
+
+    tokio::time::timeout(WITHIN, service.delete(fixture.id()))
+        .await
+        .expect("the delete completes once the git lock is released")
+        .expect("a done session is deleted");
 }
 
 #[tokio::test]

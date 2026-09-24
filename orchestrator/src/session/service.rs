@@ -51,7 +51,7 @@ use super::owner::StopReason;
 use super::registry::{QueuedInput, StopOutcome, SubmitResult};
 use crate::engine::{ContainerId, EngineError, Signal};
 use crate::events::SessionInput;
-use crate::git::{GitActor, GitService};
+use crate::git::{DataPaths, GitActor, GitService, refs};
 use crate::models::{Session, SessionState, SyncOutcome};
 use crate::prelude::*;
 use crate::projects::layout::{remove_dir_all, remove_file, session_dir};
@@ -333,10 +333,20 @@ impl SessionService {
     /// `ARCHITECTURE.md`, "Storage").
     ///
     /// Only a `done` or `failed` session: a live one has to end first. The
-    /// directory and the CLI transcript go before the row, so a failure leaves
-    /// the row behind and the next delete retries rather than orphaning files
-    /// nothing points at any more. `events` and `secret_uses` cascade with the
-    /// row.
+    /// directory, the CLI transcript and the session's branch ref
+    /// `refs/sessions/<sid>` go before the row, so a failure leaves the row
+    /// behind and the next delete retries rather than orphaning files or a
+    /// ref nothing points at any more. `events` and `secret_uses` cascade with
+    /// the row.
+    ///
+    /// The ref goes with the session (ADR 0049): it is named by the session,
+    /// and work worth keeping has an integration head, an upstream branch or a
+    /// hand-off's own `refs/handoffs/<id>` by now. The project git lock is
+    /// taken before the row's transaction opens and held until it commits —
+    /// any git lock before any database lock (`ARCHITECTURE.md`, "Git model",
+    /// Serialization) — so a sync cannot write the ref back between the two.
+    /// A sync that read the row before this and writes afterwards leaves a ref
+    /// with no row, which the orphan cleanup job removes.
     ///
     /// The row itself goes through [`SessionRepository::delete`], which takes
     /// the project row lock first because the deletion's referential actions
@@ -359,11 +369,17 @@ impl SessionService {
         self.remove_cli_transcript(&session).await?;
 
         self.state.session_registry.remove(session_id);
+
+        let guard = self.state.git_locks.lock(session.project_id).await;
+        self.remove_session_ref(session.project_id, session_id)
+            .await?;
+
         let mut tx = self.state.pool.begin().await?;
         let deleted = repository
             .delete(&mut tx, session.project_id, session_id)
             .await?;
         tx.commit().await?;
+        drop(guard);
 
         if !deleted {
             // Somebody else deleted it while its files were being removed; the
@@ -372,6 +388,31 @@ impl SessionService {
         }
 
         info!(session_id = %session_id, "the session was deleted");
+        Ok(())
+    }
+
+    /// Remove `refs/sessions/<sid>` from the project repository. The caller
+    /// holds the project git lock.
+    ///
+    /// Nothing to remove is a success: a session that never synced has no
+    /// ref, `git update-ref -d` of an absent ref succeeds, and a project with
+    /// no repository on disk — one whose clone never finished — has no refs at
+    /// all. Any other git failure is the delete's, so the row stays and the
+    /// next delete retries.
+    async fn remove_session_ref(&self, project_id: Uuid, session_id: Uuid) -> Result<()> {
+        let mirror = DataPaths::from_config(&self.state.config).project_repo(project_id);
+        if !mirror.is_dir() {
+            debug!(
+                session_id = %session_id,
+                project_id = %project_id,
+                "the project has no repository on disk; no session ref to remove",
+            );
+            return Ok(());
+        }
+
+        refs::delete(&mirror, &refs::session_ref(session_id)).await?;
+        debug!(session_id = %session_id, "the session ref was removed");
+
         Ok(())
     }
 

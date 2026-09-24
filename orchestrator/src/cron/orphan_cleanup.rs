@@ -1,5 +1,5 @@
-//! The orphan cleanup job: leftover containers, `/data/tmp` entries and
-//! hand-off refs (`ARCHITECTURE.md`, "Background jobs").
+//! The orphan cleanup job: leftover containers, `/data/tmp` entries, and
+//! hand-off and session refs (`ARCHITECTURE.md`, "Background jobs").
 //!
 //! Three independent sweeps over three different things, which is why they are
 //! three functions and not one loop. Nothing here is a consistency mechanism:
@@ -65,8 +65,8 @@ const TMP_MAX_AGE: TimeDelta = TimeDelta::hours(1);
 const ORPHAN_REF_GRACE: TimeDelta = TimeDelta::hours(1);
 
 impl CronService {
-    /// Remove what other paths left behind: containers, `/data/tmp` entries
-    /// and hand-off refs (`ARCHITECTURE.md`, "Background jobs").
+    /// Remove what other paths left behind: containers, `/data/tmp` entries,
+    /// and hand-off and session refs (`ARCHITECTURE.md`, "Background jobs").
     ///
     /// The three sweeps are independent and all three run: a sweep that fails
     /// as a whole is logged with its name and costs one failure, and the job
@@ -78,7 +78,7 @@ impl CronService {
         for (sweep, outcome) in [
             ("containers", self.cleanup_containers(now).await),
             ("tmp", self.cleanup_tmp(now).await),
-            ("handoff_refs", self.cleanup_handoff_refs(now).await),
+            ("refs", self.cleanup_refs(now).await),
         ] {
             match outcome {
                 Ok(swept) => {
@@ -304,9 +304,15 @@ impl CronService {
         Ok(report)
     }
 
-    /// Remove `refs/handoffs/*` with no matching hand-off row, under each
-    /// project's git lock (`ARCHITECTURE.md`, "Background jobs"; "Task
-    /// tracker" → "Code hand-offs").
+    /// Remove `refs/handoffs/*` with no matching hand-off row and
+    /// `refs/sessions/*` with no matching session row, under each project's
+    /// git lock (`ARCHITECTURE.md`, "Background jobs"; "Task tracker" → "Code
+    /// hand-offs"; ADR 0049).
+    ///
+    /// Both namespaces of a project are swept under one acquisition of its
+    /// lock, so a project whose repository cannot be read costs one failure,
+    /// not one per namespace. The session half is
+    /// [`Self::sweep_project_sessions`]; what follows is the hand-off half.
     ///
     /// Two guards, and it takes both to be safe. The first is the project git
     /// lock: publication pins its ref and commits its tracker transaction
@@ -329,7 +335,7 @@ impl CronService {
     /// Only the project listing. Everything after it is per project: a
     /// repository that vanished under the sweep, or a git command that failed,
     /// costs one `failures` and the loop continues.
-    async fn cleanup_handoff_refs(&self, now: DateTime<Utc>) -> Result<JobReport> {
+    async fn cleanup_refs(&self, now: DateTime<Utc>) -> Result<JobReport> {
         let project_ids = ProjectRepository::new(&self.state.pool).list_ids().await?;
         let paths = DataPaths::from_config(&self.state.config);
 
@@ -349,7 +355,7 @@ impl CronService {
             }
 
             match self
-                .sweep_project_handoffs(project_id, &mirror, now, &previous, &mut sighted)
+                .sweep_project_refs(project_id, &mirror, now, &previous, &mut sighted)
                 .await
             {
                 Ok(swept) => {
@@ -358,7 +364,7 @@ impl CronService {
                     report.failures += swept.failures;
                 }
                 Err(e) => {
-                    warn!(project_id = %project_id, error = %e, "could not sweep a project's hand-off refs");
+                    warn!(project_id = %project_id, error = %e, "could not sweep a project's refs");
                     report.failures += 1;
                 }
             }
@@ -369,11 +375,36 @@ impl CronService {
         Ok(report)
     }
 
-    /// One project's hand-off refs, under its git lock.
+    /// One project's hand-off and session refs, under its git lock.
     ///
-    /// The lock is taken here and released when this returns, so it covers the
-    /// listing, the `existing_handoff_ids` read and the removals together and
-    /// is never held across another project. The read is an autocommit query
+    /// The lock is taken here and released when this returns, so it covers
+    /// both namespaces' listings, row reads and removals together and is never
+    /// held across another project. The hand-off half runs first; either
+    /// half's listing or read failing is the project's one failure.
+    async fn sweep_project_refs(
+        &self,
+        project_id: Uuid,
+        mirror: &Path,
+        now: DateTime<Utc>,
+        previous: &HashMap<(Uuid, Uuid), DateTime<Utc>>,
+        sighted: &mut HashMap<(Uuid, Uuid), DateTime<Utc>>,
+    ) -> Result<JobReport> {
+        let _guard = self.state.git_locks.lock(project_id).await;
+
+        let mut report = self
+            .sweep_project_handoffs(project_id, mirror, now, previous, sighted)
+            .await?;
+        let sessions = self.sweep_project_sessions(project_id, mirror).await?;
+        report.items += sessions.items;
+        report.failures += sessions.failures;
+
+        Ok(report)
+    }
+
+    /// One project's hand-off refs; the caller holds its git lock.
+    ///
+    /// The lock covers the listing, the `existing_handoff_ids` read and the
+    /// removals together. The read is an autocommit query
     /// on the pool: a transaction opened here would be a database lock taken
     /// under the git lock, which is the allowed order but buys nothing
     /// (`ARCHITECTURE.md`, "Git model" → Serialization).
@@ -395,7 +426,6 @@ impl CronService {
         previous: &HashMap<(Uuid, Uuid), DateTime<Utc>>,
         sighted: &mut HashMap<(Uuid, Uuid), DateTime<Utc>>,
     ) -> Result<JobReport> {
-        let _guard = self.state.git_locks.lock(project_id).await;
         let mut report = JobReport::default();
 
         let listed = refs::list_handoffs(mirror).await?;
@@ -442,6 +472,61 @@ impl CronService {
                 None => {
                     sighted.insert(key, now);
                     report.skipped += 1;
+                }
+            }
+        }
+
+        Ok(report)
+    }
+}
+
+impl CronService {
+    /// One project's `refs/sessions/*` with no session row of the project;
+    /// the caller holds its git lock.
+    ///
+    /// No grace and no sightings, unlike the hand-off half, because the order
+    /// of writes is the other way round: a session's row is committed before
+    /// its launch starts and a ref is only ever written by a sync of a session
+    /// that exists, so a ref with no row is always one whose session was
+    /// deleted — before session deletion removed the ref (ADR 0049), after a
+    /// ref removal whose row delete then failed, or by a sync that read the
+    /// row before a deletion and wrote after it. The read is the project's
+    /// session ids on a pool connection, not a transaction, for the reason
+    /// the hand-off half gives.
+    ///
+    /// # Errors
+    ///
+    /// Listing the refs and the database read. A removal that fails is
+    /// counted in [`JobReport::failures`] and the rest are still removed.
+    async fn sweep_project_sessions(&self, project_id: Uuid, mirror: &Path) -> Result<JobReport> {
+        let mut report = JobReport::default();
+
+        let listed = refs::list_sessions(mirror).await?;
+        if listed.is_empty() {
+            return Ok(report);
+        }
+
+        let mut conn = self.state.pool.acquire().await?;
+        let existing: HashSet<Uuid> = SessionRepository::new(&self.state.pool)
+            .ids_for_project(&mut conn, project_id)
+            .await?
+            .into_iter()
+            .collect();
+        drop(conn);
+
+        for id in listed {
+            if existing.contains(&id) {
+                continue;
+            }
+
+            match refs::delete(mirror, &refs::session_ref(id)).await {
+                Ok(()) => {
+                    info!(project_id = %project_id, session_id = %id, "removed orphan session ref");
+                    report.items += 1;
+                }
+                Err(e) => {
+                    warn!(project_id = %project_id, session_id = %id, error = %e, "could not remove an orphan session ref");
+                    report.failures += 1;
                 }
             }
         }

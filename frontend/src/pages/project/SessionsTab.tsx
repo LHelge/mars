@@ -16,6 +16,8 @@
 // Deleting is only offered for a session that has finished; the API refuses
 // any other (`DELETE /sessions/{id}`: must be `done` or `failed`), and the
 // refusal is shown on the row it belongs to rather than at the top of the page.
+// The confirmation is `SessionDeleteConfirm`, which names the commits the
+// session's branch ref would take with it (ADR 0049).
 //
 // Git work is not here: a row's `Branch` is a plain value, and merging,
 // rebasing and pushing are the `branches` tab's (`BranchesTab`).
@@ -26,7 +28,6 @@ import { Link } from "react-router";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingState } from "../../components/LoadingState";
 import { QueryErrorAlert } from "../../components/QueryErrorAlert";
-import { ConfirmPanel } from "../../components/ConfirmPanel";
 import { SessionStatePill } from "../../components/SessionStatePill";
 import { TableHead } from "../../components/TableHead";
 import {
@@ -38,6 +39,7 @@ import {
 } from "../../components/tableStyles";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
 import { LaunchSourceTag } from "../../session/LaunchSourceTag";
+import { SessionDeleteConfirm } from "../../session/SessionDeleteConfirm";
 import { queryKeys } from "../../services/queryKeys";
 import { projectQueries } from "../../services/queryOptions";
 import { deleteSession } from "../../services/sessions";
@@ -142,6 +144,10 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.projects.sessions(project.id),
       });
+      // The session's branch ref went with it.
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.sessionBranches(project.id),
+      });
     },
     onError: (caught: unknown, id: string) => {
       setConfirming(null);
@@ -238,7 +244,9 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
                             className="text-console-text hover:text-console-accent"
                           >
                             {session.title ?? (
-                              <span className="text-console-muted">untitled</span>
+                              <span className="text-console-muted">
+                                untitled
+                              </span>
                             )}
                           </Link>
                           <LaunchSourceTag source={session.launch_source} />
@@ -295,8 +303,9 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
                     {confirming === session.id && (
                       <tr className={ROW}>
                         <td colSpan={COLUMNS.length} className={SPAN_CELL}>
-                          <ConfirmPanel
-                            message={`Delete ${sessionLabel(session)}? Its transcript and events go with it; the branch it left in the git mirror stays.`}
+                          <SessionDeleteConfirm
+                            session={session}
+                            label={sessionLabel(session)}
                             confirmLabel={`Delete ${sessionLabel(session)}`}
                             pending={remove.isPending}
                             onConfirm={() => {

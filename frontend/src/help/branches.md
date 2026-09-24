@@ -26,6 +26,10 @@ A session's agent commits in its own clone. **Sync** copies the session's commit
 
 A rebase rewrites the session branch in the mirror. A running session's checkout follows it only if it has no uncommitted changes. Otherwise the checkout is left alone, and the session's git event reports that it needs reconciling, which is the agent's job. Merges and rebases stop at a conflict and leave the branch they would have written untouched. Mars never resolves a conflict for you.
 
+### Deleting a session
+
+A session ref lives as long as its session. Deleting an ended session deletes its ref from the mirror too, and its branch leaves the **Branches** tab. Before you confirm, the delete says how many commits the branch has that the default branch doesn't, because those are lost with it unless they were merged, pushed or handed off first. A branch you pushed to your remote stays there; Mars never deletes a remote branch.
+
 ### Pushing
 
 A push sends exactly one branch to one branch on the remote, using the project's [git credential](help:git-credential). Nothing else is pushed along with it. If your remote has moved on since the last fetch, the push is rejected and everything in Mars stays as it was. Fetch, bring the remote's changes in by merging `origin/<branch>` into the integration head or rebasing the session branch onto it, and push again. **Force push** overwrites the remote branch instead, and commits that only the remote had are lost.

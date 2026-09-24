@@ -31,7 +31,9 @@ import type { Project, Session } from "../src/types";
 import { expect, test } from "./utils/fixtures";
 import type { SessionTracker } from "./utils/fixtures";
 import {
+  commitInSessionWorkClone,
   defaultProfile,
+  endSession,
   gitRevParse,
   loginViaToken,
   mirrorPath,
@@ -685,4 +687,63 @@ test("an idle session is parked without user action", async ({
   await waitForContainerRemoved(api, session.id);
   await sendInput(api, session.id, "back to work");
   await waitForSessionState(api, session.id, "running", 90_000);
+});
+
+test("deleting an ended session warns of its unmerged commits and takes its branch", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  const session = await sessions.launch(api, project.id, { base_ref: "main" });
+  await waitForSessionState(api, session.id, "running", 120_000);
+
+  // What an agent leaves behind: a commit the default branch does not have.
+  commitInSessionWorkClone(
+    session.id,
+    { "NOTES.md": "work\n" },
+    "feat: unmerged",
+  );
+  // Ending fetches the branch back into the mirror (`ARCHITECTURE.md`, "Stop
+  // semantics"), which is what gives it an `ahead` to warn about.
+  await endSession(api, session.id);
+  await waitForSessionState(api, session.id, "done", 60_000);
+  const mirror = mirrorPath(project.id);
+  expect(gitRevParse(mirror, `refs/sessions/${session.id}`)).toMatch(
+    /^[0-9a-f]{40}$/,
+  );
+
+  await page.goto(`/projects/${project.id}?tab=sessions`);
+  const label = session.title ?? `session ${session.id.slice(0, 8)}`;
+  await page.getByRole("button", { name: `Delete ${label}` }).click();
+
+  // `SPEC.md`, "Frontend", Confirmations: a warning, not a refusal.
+  await expect(
+    page.getByText(
+      `${session.branch ?? `refs/sessions/${session.id}`} has 1 commit not on main; they will be lost.`,
+    ),
+  ).toBeVisible({ timeout: 30_000 });
+  // The row's button, and below it the panel's, which confirms.
+  await page
+    .getByRole("button", { name: `Delete ${label}` })
+    .last()
+    .click();
+  await expect(
+    page.getByRole("button", { name: `Delete ${label}` }),
+  ).toHaveCount(0, { timeout: 30_000 });
+
+  // The ref went with the session (ADR 0049): gone from the mirror, from the
+  // API's list and from the Branches tab.
+  expect(() => gitRevParse(mirror, `refs/sessions/${session.id}`)).toThrow();
+  const listed = await api.get<{ session_id: string }[]>(
+    `/projects/${project.id}/git/session-branches`,
+  );
+  expect(listed.map((branch) => branch.session_id)).not.toContain(session.id);
+  await page.goto(`/projects/${project.id}?tab=branches`);
+  await expect(page.getByText("No session branches yet")).toBeVisible({
+    timeout: 30_000,
+  });
 });

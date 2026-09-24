@@ -1096,7 +1096,11 @@ async fn a_conversational_session_runs_replays_parks_resumes_and_ends() {
         let work = DataPaths::from_config(&app.state.config).session_work(id);
         std::fs::write(work.join("WORK.md"), "the agent's work\n").expect("the file is written");
         run_git(&work, &["add", "--", "WORK.md"]).await;
-        run_git(&work, &["commit", "--quiet", "-m", "feat: the agent's work"]).await;
+        run_git(
+            &work,
+            &["commit", "--quiet", "-m", "feat: the agent's work"],
+        )
+        .await;
         let tip = run_git(&work, &["rev-parse", "HEAD"])
             .await
             .trim()

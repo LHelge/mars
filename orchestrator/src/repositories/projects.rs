@@ -717,7 +717,7 @@ impl<'a> ProjectRepository<'a> {
     ///
     /// The timestamps take the column default `now()` unless
     /// [`NewAgentProfile::created_at`] is set, which is project creation
-    /// asking for a listing order its four seeded profiles cannot get from a
+    /// asking for a listing order its seeded profiles cannot get from a
     /// transaction-wide `now()` (`docs/data-model.md`, `agent_profiles`).
     pub async fn insert_profile(
         &self,

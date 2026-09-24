@@ -3,19 +3,24 @@
 //!
 //! A role in Mars is not code: it is a profile's served states plus its system
 //! prompt (`ARCHITECTURE.md`, "Task tracker" → "State is a queue"). A project
-//! that started with one blank agent left every user to write those four
+//! that started with one blank agent left every user to write those
 //! prompts before anything could flow through the board, so creation seeds
-//! them: a planner over `backlog`, an implementer over `ready`, a reviewer
-//! over `review` and a merger over `merge` (ADR 0038).
+//! them: a planner over `backlog`, an implementer over `ready` and a reviewer
+//! over `review` (ADR 0038). The fourth queue state, `merge`, is the
+//! orchestrator's: a new project seeds it as an auto-merge state, so approved
+//! work is merged without an agent (ADR 0045).
 //!
 //! **Seeded is not the same as offered.** [`profile_templates`] is what
 //! `GET /profile-templates` serves, and [`seeded_profile_templates`] — the
-//! four queue roles, the ones carrying [`ProfileTemplate::seeded`] — is what
-//! project creation writes. The `tech-debt-scanner` is offered and not
-//! seeded: it is the first scheduled template (`ARCHITECTURE.md`, "Scheduled
-//! agents"), and a schedule spends money on a cadence nobody asked for, so
-//! turning one on is a person's decision and not a side effect of creating a
-//! project (ADR 0038 seeds the queue roles alone).
+//! three conversational roles, the ones carrying [`ProfileTemplate::seeded`] —
+//! is what project creation writes. Two templates are offered and not seeded,
+//! for two different reasons. The `merger` would serve a state no task waits
+//! in for an agent: the seeded `merge` state merges by itself, and a project
+//! that turns `auto_merge` off and wants an agent there creates one from the
+//! template (ADR 0045). The `tech-debt-scanner` is the first scheduled
+//! template (`ARCHITECTURE.md`, "Scheduled agents"), and a schedule spends
+//! money on a cadence nobody asked for, so turning one on is a person's
+//! decision and not a side effect of creating a project (ADR 0038).
 //!
 //! **Copied, not referenced.** [`create_project`](super::create::create_project)
 //! writes each prompt into the project's own `agent_profiles` row. From that
@@ -74,8 +79,9 @@ pub struct ProfileTemplate {
     /// Whether this is the profile a project launches from unless told
     /// otherwise. Exactly one template has it.
     pub is_default: bool,
-    /// Whether project creation writes this role into a new project. The four
-    /// queue roles do; a scheduled role is offered only (ADR 0038).
+    /// Whether project creation writes this role into a new project. The three
+    /// conversational roles do; the merger, whose state the orchestrator
+    /// serves, and a scheduled role are offered only (ADR 0038, 0045).
     pub seeded: bool,
     /// The system prompt, appended to every launch of the profile.
     pub system_prompt: &'static str,
@@ -121,8 +127,8 @@ impl ProfileTemplate {
 
 /// Every template, in the order of the table of `SPEC.md`, "Role profile
 /// templates": the four queue roles first, in the order a task travels through
-/// them, which is the order they are seeded in, and the offered-only roles
-/// after them.
+/// them, which is also the order the seeded ones among them are written in,
+/// and the scheduled role after them.
 ///
 /// `push` is given to nobody: nothing in a session may reach the upstream
 /// remote by itself (ADR 0007). `rebase` is given to nobody either. The
@@ -172,7 +178,9 @@ pub fn profile_templates() -> &'static [ProfileTemplate] {
             serves_states: &["merge"],
             mcp_tools: &["list_session_branches", "merge"],
             is_default: false,
-            seeded: true,
+            // The seeded `merge` state is an auto-merge state (ADR 0045):
+            // offered for a project that turns that off, never seeded.
+            seeded: false,
             system_prompt: include_str!("templates/merger.md"),
             schedule_cron: None,
             schedule_prompt: None,
@@ -199,9 +207,10 @@ pub fn profile_templates() -> &'static [ProfileTemplate] {
     TEMPLATES
 }
 
-/// The templates project creation seeds, in the order it writes them: the four
-/// queue roles of ADR 0038, and nothing that would start spending money by
-/// itself (`SPEC.md`, "Role profile templates").
+/// The templates project creation seeds, in the order it writes them: the
+/// planner, the implementer and the reviewer — not the merger, whose `merge`
+/// state the orchestrator serves (ADR 0045) — and nothing that would start
+/// spending money by itself (`SPEC.md`, "Role profile templates").
 pub fn seeded_profile_templates() -> impl Iterator<Item = &'static ProfileTemplate> {
     profile_templates()
         .iter()
@@ -250,10 +259,10 @@ mod tests {
     }
 
     #[test]
-    fn exactly_the_four_queue_roles_are_seeded() {
+    fn exactly_the_three_conversational_roles_are_seeded() {
         let seeded: Vec<&str> = seeded_profile_templates().map(|t| t.name).collect();
 
-        assert_eq!(seeded, ["planner", "implementer", "reviewer", "merger"]);
+        assert_eq!(seeded, ["planner", "implementer", "reviewer"]);
     }
 
     #[test]

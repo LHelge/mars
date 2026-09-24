@@ -94,7 +94,7 @@ fn password_change_required() -> Value {
 }
 
 /// A project to hang profiles on, created through its own endpoint so it is
-/// seeded exactly as a real one is: the seven default states and the four role
+/// seeded exactly as a real one is: the seven default states and the three role
 /// profiles of `SPEC.md`, "Role profile templates".
 async fn project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> Uuid {
     let response = app
@@ -174,16 +174,16 @@ fn names(profiles: &[Value]) -> Vec<&str> {
         .collect()
 }
 
-/// The four role profiles `POST /api/projects` seeds, in listing order
+/// The three role profiles `POST /api/projects` seeds, in listing order
 /// (`SPEC.md`, "Role profile templates"). This suite's own profiles are named
 /// so that they never collide with these.
-const SEEDED: [&str; 4] = ["planner", "implementer", "reviewer", "merger"];
+const SEEDED: [&str; 3] = ["planner", "implementer", "reviewer"];
 
 /// The seeded profile that carries `is_default`.
 const SEEDED_DEFAULT: &str = "implementer";
 
 /// `SEEDED` followed by `extra`: the listing is oldest first, and anything
-/// this suite creates is newer than the four the project was seeded with.
+/// this suite creates is newer than the ones the project was seeded with.
 fn seeded_and(extra: &[&'static str]) -> Vec<&'static str> {
     SEEDED
         .iter()
@@ -298,14 +298,14 @@ async fn every_endpoint_is_refused_while_a_password_change_is_pending() {
 // ---- list ----
 
 #[tokio::test]
-async fn listing_shows_the_four_seeded_profiles_in_the_documented_shape() {
+async fn listing_shows_the_three_seeded_profiles_in_the_documented_shape() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
 
     let profiles = list(&app, &user, pid).await;
 
-    // The four role templates, oldest first, in the order a task travels
+    // The seeded role templates, oldest first, in the order a task travels
     // through them (`SPEC.md`, "Role profile templates").
     assert_eq!(names(&profiles), SEEDED);
 

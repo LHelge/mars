@@ -25,7 +25,8 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::models::{
-    DEFAULT_TASK_STATES, NewTaskState, TaskError, TaskState, TaskStateKind, TaskStateName,
+    DEFAULT_AUTO_MERGE_STATE, DEFAULT_TASK_STATES, NewTaskState, TaskError, TaskState,
+    TaskStateKind, TaskStateName,
 };
 use crate::prelude::*;
 use crate::repositories::tasks::TaskRepository;
@@ -46,14 +47,30 @@ impl TaskRepository<'_> {
     /// that already exists — a test fixture, say — opens the usual mutation.
     ///
     /// The set itself is [`DEFAULT_TASK_STATES`], which is the model's, not
-    /// this file's, so the list exists once.
+    /// this file's, so the list exists once; so is its one auto-merge state,
+    /// [`DEFAULT_AUTO_MERGE_STATE`], whose conflict state comes earlier in the
+    /// set and is therefore inserted by the time `merge` names it.
     pub async fn insert_default_states(
         &self,
         mut tx: Locked<'_>,
         project_id: Uuid,
     ) -> Result<Vec<TaskState>> {
-        let mut inserted = Vec::with_capacity(DEFAULT_TASK_STATES.len());
+        let (auto_merge_state, conflict_state) = DEFAULT_AUTO_MERGE_STATE;
+        let mut inserted: Vec<TaskState> = Vec::with_capacity(DEFAULT_TASK_STATES.len());
         for (name, kind, position) in DEFAULT_TASK_STATES {
+            let conflict_state_id = if name == auto_merge_state {
+                let conflict = inserted
+                    .iter()
+                    .find(|state| state.name.as_str() == conflict_state)
+                    .ok_or_else(|| {
+                        Error::Internal(format!(
+                            "default conflict state {conflict_state} is not inserted before {name}"
+                        ))
+                    })?;
+                Some(conflict.id)
+            } else {
+                None
+            };
             inserted.push(
                 insert_state_row(
                     &mut tx,
@@ -62,7 +79,7 @@ impl TaskRepository<'_> {
                     name,
                     kind,
                     position,
-                    None,
+                    conflict_state_id,
                 )
                 .await?,
             );

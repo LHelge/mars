@@ -3,9 +3,10 @@
 //! `POST /api/projects` takes `{name, remote_url, default_branch?,
 //! credential?}` and answers a `cloning` project (`SPEC.md`, "Projects"), but
 //! a project is never only its row. It starts with the default task states,
-//! with the four seeded role profiles of [`seeded_profile_templates`] —
-//! `planner`, `implementer`, `reviewer`, `merger` — on the built-in Claude
-//! image, and —
+//! `merge` among them an auto-merge state sending conflicts back to `ready`
+//! (ADR 0045), with the three seeded role profiles of
+//! [`seeded_profile_templates`] — `planner`, `implementer`, `reviewer` — on
+//! the built-in Claude image, and —
 //! when the caller supplied one — with its remote credential stored as the
 //! project-scoped, orchestrator-only secret `GIT_CREDENTIAL`
 //! (`docs/data-model.md`, `task_states`, `profile_states`, `agent_profiles`,
@@ -126,8 +127,8 @@ pub async fn create_project(
     // validating fails the creation instead of reaching the column.
     //
     // The timestamps are spaced one microsecond apart in template order, which
-    // is the order the four are listed in: `now()` is the transaction's start
-    // and would give all four the same value, leaving `ORDER BY created_at,
+    // is the order they are listed in: `now()` is the transaction's start
+    // and would give all of them the same value, leaving `ORDER BY created_at,
     // name` to sort them alphabetically (`NewAgentProfile::created_at`).
     let seeded_at = Utc::now();
     let profiles: Vec<_> = seeded_profile_templates()

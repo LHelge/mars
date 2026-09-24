@@ -622,7 +622,7 @@ async fn renaming_and_moving_repack_the_board_and_refuse_a_taken_name() {
 }
 
 #[tokio::test]
-async fn deleting_a_state_repacks_and_refuses_the_four_documented_cases() {
+async fn deleting_a_state_repacks_and_refuses_the_five_documented_cases() {
     let (_postgres, pool) = common::db::test_pool().await;
     let fixture = seed(&pool).await;
     let project_id = fixture.project_id;
@@ -655,6 +655,15 @@ async fn deleting_a_state_repacks_and_refuses_the_four_documented_cases() {
     assert_eq!(error.status(), StatusCode::CONFLICT);
     assert_eq!(error.to_string(), "cannot delete the human state");
 
+    // Nor does a state another one names as its conflict state: the seeded
+    // `merge` sends conflicts back to `ready` (ADR 0045).
+    let error = delete(&pool, project_id, "ready")
+        .await
+        .expect_err("merge names the state");
+    assert_eq!(error.status(), StatusCode::CONFLICT);
+    assert_eq!(error.to_string(), "state is the conflict state of merge");
+    delete(&pool, project_id, "merge").await.unwrap();
+
     // A state a task is in never goes either.
     let ready = state_id(&repository, project_id, "ready").await;
     seed_task(&pool, project_id, ready, 1).await;
@@ -672,7 +681,7 @@ async fn deleting_a_state_repacks_and_refuses_the_four_documented_cases() {
 
     // Down to the last queue state and the last terminal state, both of which
     // the project keeps.
-    for name in ["backlog", "merge", "done"] {
+    for name in ["backlog", "done"] {
         delete(&pool, project_id, name).await.unwrap();
     }
     assert_eq!(

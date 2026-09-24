@@ -542,19 +542,19 @@ Error codes used across tools: `unauthorized` (bad token), `forbidden` (tool not
 
 ## Role profile templates
 
-Creating a project seeds four conversational profiles instead of one blank agent, so a board has someone for each of its queues from the first minute (ADR 0038). They are ordinary profiles: everything under "Agent profiles" applies to them, they can be edited, renamed and — apart from the default — deleted, and nothing reads the templates again after creation. They are also offered when a profile is created, through `GET /profile-templates` ("Agent profiles"), which is how a project that predates the seeding gets the four roles and how a deleted one comes back.
+Creating a project seeds three conversational profiles instead of one blank agent — `planner`, `implementer` and `reviewer` — so a board has someone for each of its queues from the first minute (ADR 0038). The fourth queue, `merge`, is the orchestrator's: a new project's `merge` state is seeded with `auto_merge` on and `ready` as its conflict state, so approved work is merged without an agent ("Automatic merge"; ADR 0045). The seeded profiles are ordinary profiles: everything under "Agent profiles" applies to them, they can be edited, renamed and — apart from the default — deleted, and nothing reads the templates again after creation. They are also offered when a profile is created, through `GET /profile-templates` ("Agent profiles"), which is how a project that predates the seeding gets the roles and how a deleted one comes back.
 
-The endpoint offers one further template that creation does **not** seed. A **seeded** column says which is which: everything a project starts with is a queue role a person launches, because a schedule spends money on a cadence nobody asked for and turning one on is a decision a person makes (ADR 0038 seeds the queue roles alone).
+The endpoint offers two further templates that creation does **not** seed, for two different reasons, and a **seeded** column says which is which. `merger` is a queue role a person launches, but the state it serves is merged by the orchestrator in a new project, so seeding it would put an agent on a queue nothing waits in; a project that turns `auto_merge` off on `merge` and wants an agent there creates one from this template (ADR 0045). `tech-debt-scanner` carries a schedule, and a schedule spends money on a cadence nobody asked for, so turning one on is a decision a person makes (ADR 0038).
 
 | Profile | `kind` | `serves_states` | `mcp_tools` | `schedule_cron` | `is_default` | seeded |
 | --- | --- | --- | --- | --- | --- | --- |
 | `planner` | `conversational` | `backlog` | — | — | no | yes |
 | `implementer` | `conversational` | `ready` | — | — | yes | yes |
 | `reviewer` | `conversational` | `review` | `list_session_branches` | — | no | yes |
-| `merger` | `conversational` | `merge` | `list_session_branches`, `merge` | — | no | yes |
+| `merger` | `conversational` | `merge` | `list_session_branches`, `merge` | — | no | no |
 | `tech-debt-scanner` | `ephemeral` | `ready` | — | `0 4 * * *` | no | no |
 
-Every other field is the documented default of "Agent profiles": `claude`, `bypass`, `SESSION_IMAGE_DEFAULT`, no model, no runtime, no secrets, 1800 seconds, and partial messages at the kind's own default. `GET /projects/{pid}/profiles` of a new project returns exactly the four seeded ones, oldest first, in the order of the table, which is the order a task travels through them.
+Every other field is the documented default of "Agent profiles": `claude`, `bypass`, `SESSION_IMAGE_DEFAULT`, no model, no runtime, no secrets, 1800 seconds, and partial messages at the kind's own default. `GET /projects/{pid}/profiles` of a new project returns exactly the three seeded ones, oldest first, in the order of the table, which is the order a task travels through them.
 
 `push` is granted to nobody: only the orchestrator reaches the upstream remote (ADR 0007). `rebase` is granted to nobody either. The merger must not have it, because an approval is bound to the commit that was reviewed (ADR 0018) and a rebase would produce a commit nobody reviewed — a merge that conflicts goes back to `ready` instead. The implementer does not need it, because its work clone's `origin` is the project repository and it can fetch and rebase there itself (`ARCHITECTURE.md`, "Git model").
 
@@ -591,7 +591,7 @@ Your session runs in a container of its own, disposable and yours alone, so inst
 
 Your clone's `origin` is the project repository, so bringing your branch up to date is yours to do: fetch from `origin` and rebase there. Commit everything you want reviewed — uncommitted work is never handed off — and do not rewrite a commit that has already been reviewed.
 
-When the work is done, hand off with `update`: move the task to `review` with a revision hand-off naming the exact commit you want reviewed and a comment saying what changed, what you checked and what the reviewer should look at. If the task came back from review, the reviewer's comment says why: address it and hand off a new commit. If you cannot make progress, give the task back with `release` and the reason; if you need a decision or a credential, call `needs_human` and say exactly what you need.
+When the work is done, hand off with `update`: move the task to `review` with a revision hand-off naming the exact commit you want reviewed and a comment saying what changed, what you checked and what the reviewer should look at. If the task came back from review, the reviewer's comment says why: address it and hand off a new commit. If it came back because its merge conflicted, the orchestrator's comment lists the conflicting paths: bring your branch up to date with the default branch, resolve them, and hand off a new commit for review. If you cannot make progress, give the task back with `release` and the reason; if you need a decision or a credential, call `needs_human` and say exactly what you need.
 ```
 
 ### `reviewer`

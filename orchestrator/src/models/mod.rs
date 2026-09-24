@@ -64,8 +64,8 @@ pub use task_handoff::{
     ValidatedHandoff, is_commit_id,
 };
 pub use task_state::{
-    AutoMergeInput, DEFAULT_TASK_STATES, MAX_STATE_NAME_CHARS, NewTaskState, TaskState,
-    TaskStateKind, TaskStateName, is_state_name,
+    AutoMergeInput, DEFAULT_AUTO_MERGE_STATE, DEFAULT_TASK_STATES, MAX_STATE_NAME_CHARS,
+    NewTaskState, TaskState, TaskStateKind, TaskStateName, is_state_name,
 };
 pub use token::{OpaqueToken, TOKEN_HASH_CHARS};
 pub use user::{

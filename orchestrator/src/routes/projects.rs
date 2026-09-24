@@ -7,7 +7,7 @@
 //!
 //! Almost nothing is decided here. Creating a project is one transaction in
 //! [`create_project`], which validates every field, seeds the task states and
-//! the four role profiles and stores the credential; the background clone is
+//! the three role profiles and stores the credential; the background clone is
 //! [`clone_job::spawn`], started **after** that transaction committed, because
 //! the job re-reads the row it is about to work on. `PUT` hands its fields to
 //! the models, which are what turn a bad name, branch or attempt budget into

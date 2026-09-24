@@ -149,9 +149,9 @@ test("a project created from a bare repository reaches ready without a reload", 
   await expect(page.getByText("No sessions yet")).toBeVisible();
 
   await projectTab(page, "Profiles").click();
-  // The four role profiles a project is seeded with (`SPEC.md`, "Role profile
+  // The three role profiles a project is seeded with (`SPEC.md`, "Role profile
   // templates"), the implementer carrying the `default` badge.
-  for (const role of ["planner", "implementer", "reviewer", "merger"]) {
+  for (const role of ["planner", "implementer", "reviewer"]) {
     await expect(
       page
         .getByRole("row")

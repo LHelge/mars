@@ -118,7 +118,7 @@ async fn project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> Uuid {
 /// The seeded profile that carries `is_default`, which is the `implementer`
 /// over `ready` (`SPEC.md`, "Role profile templates").
 ///
-/// By the flag and not by position: a project is seeded with four role
+/// By the flag and not by position: a project is seeded with three role
 /// profiles and only one of them serves `ready`.
 async fn default_profile(app: &TestApp, project_id: Uuid) -> Uuid {
     ProjectRepository::new(&app.pool)

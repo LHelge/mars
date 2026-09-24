@@ -43,8 +43,8 @@ const TEMPLATE_FIELDS: [&str; 9] = [
 ];
 
 /// Every role in the order of the table of `SPEC.md`, "Role profile
-/// templates", which is the order they are served in: the four seeded ones
-/// first, then the offered-only scanner.
+/// templates", which is the order they are served in: the four queue roles
+/// first — the first three of them seeded — then the offered-only scanner.
 const ROLES: [&str; 5] = [
     "planner",
     "implementer",
@@ -55,6 +55,10 @@ const ROLES: [&str; 5] = [
 
 /// The scheduled template, which project creation does not seed.
 const SCANNER: &str = "tech-debt-scanner";
+
+/// The roles project creation seeds: every queue role but the merger, whose
+/// `merge` state the orchestrator serves (ADR 0045).
+const SEEDED: [&str; 3] = ["planner", "implementer", "reviewer"];
 
 /// The Claude adapter's preferred credential name, which a schedule needs at
 /// `global` or `project` scope (`SPEC.md`, "Agent profiles" → "Scheduled
@@ -202,8 +206,8 @@ async fn a_template_is_a_body_the_profiles_endpoint_accepts() {
     let template = templates(&app, &user).await[0].clone();
 
     // What the frontend sends on: the template without `is_default`, under a
-    // name that is free in this project — the four seeded ones already hold
-    // the template names.
+    // name that is free in this project — the seeded ones already hold their
+    // template names.
     let mut body = template.clone();
     let object = body.as_object_mut().expect("a template is an object");
     object.remove("is_default");
@@ -287,7 +291,7 @@ async fn the_scheduled_template_is_a_body_the_profiles_endpoint_accepts() {
 }
 
 #[tokio::test]
-async fn the_scheduled_template_is_not_seeded_into_a_new_project() {
+async fn the_merger_and_the_scheduled_template_are_not_seeded_into_a_new_project() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "katherine").await;
 
@@ -318,9 +322,10 @@ async fn the_scheduled_template_is_not_seeded_into_a_new_project() {
         })
         .collect();
 
-    // A schedule spends money on a cadence nobody asked for, so creation
-    // seeds the four queue roles and nothing else (ADR 0038).
-    assert_eq!(names, ROLES[..4]);
+    // A schedule spends money on a cadence nobody asked for (ADR 0038), and
+    // the seeded `merge` state is merged by the orchestrator (ADR 0045), so
+    // creation seeds the three conversational roles and nothing else.
+    assert_eq!(names, SEEDED);
 }
 
 #[tokio::test]

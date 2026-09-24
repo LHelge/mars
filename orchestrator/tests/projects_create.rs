@@ -1,5 +1,5 @@
 //! Creating a project against a real Postgres: the row, the seven default
-//! task states, the four seeded role profiles, the `GIT_CREDENTIAL` secret,
+//! task states with `merge` merging by itself, the three seeded role profiles, the `GIT_CREDENTIAL` secret,
 //! and the rollback that leaves none of them behind (`SPEC.md`, "Projects"
 //! and "Role profile templates"; `docs/data-model.md`, `task_states`,
 //! `profile_states`, `agent_profiles`, `secrets`).
@@ -141,10 +141,25 @@ async fn the_default_task_states_are_seeded_in_board_order() {
         ]
     );
     assert!(states.iter().all(|state| state.project_id == project.id));
+
+    // `merge` is the one auto-merge state, sending a conflicting merge back
+    // to `ready` (`docs/data-model.md`, `task_states`; ADR 0045).
+    let auto_merge: Vec<(&str, Option<&str>)> = states
+        .iter()
+        .filter(|state| state.auto_merge)
+        .map(|state| (state.name.as_str(), state.conflict_state.as_deref()))
+        .collect();
+    assert_eq!(auto_merge, [("merge", Some("ready"))]);
+    assert!(
+        states
+            .iter()
+            .filter(|state| !state.auto_merge)
+            .all(|state| state.conflict_state.is_none())
+    );
 }
 
 #[tokio::test]
-async fn the_seeded_profiles_are_the_four_role_templates() {
+async fn the_seeded_profiles_are_the_three_conversational_role_templates() {
     let app = TestApp::spawn().await;
     let user = app
         .insert_user("creator", "creator@example.com", false, false)
@@ -160,15 +175,16 @@ async fn the_seeded_profiles_are_the_four_role_templates() {
         .await
         .expect("the profiles are read");
 
-    // Oldest first, which for the seeded four is the order a task travels
+    // Oldest first, which for the seeded three is the order a task travels
     // through them (`SPEC.md`, "Role profile templates").
     let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["planner", "implementer", "reviewer", "merger"]);
+    assert_eq!(names, ["planner", "implementer", "reviewer"]);
 
-    // Exactly four, whatever else `GET /profile-templates` offers: a template
-    // that would spend money on a schedule is offered and never seeded
-    // (`SPEC.md`, "Role profile templates").
-    assert_eq!(profiles.len(), 4);
+    // Exactly three, whatever else `GET /profile-templates` offers: the
+    // merger, whose `merge` state the orchestrator serves (ADR 0045), and a
+    // template that would spend money on a schedule are offered and never
+    // seeded (`SPEC.md`, "Role profile templates").
+    assert_eq!(profiles.len(), 3);
     assert!(
         profile_templates().len() > seeded_profile_templates().count(),
         "this assertion is only worth making while something is offered but \
@@ -397,7 +413,7 @@ async fn a_duplicate_name_rolls_back_the_states_the_profile_and_the_secret() {
     // — no orphan secret.
     assert_eq!(count(&app.pool, COUNT_PROJECTS).await, 1);
     assert_eq!(count(&app.pool, COUNT_TASK_STATES).await, 7);
-    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 4);
+    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 3);
     assert_eq!(count(&app.pool, COUNT_SECRETS).await, 0);
 }
 
@@ -427,7 +443,7 @@ async fn two_projects_are_created_independently() {
     assert!(second.has_credential);
 
     assert_eq!(count(&app.pool, COUNT_TASK_STATES).await, 14);
-    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 8);
+    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 6);
     assert_eq!(count(&app.pool, COUNT_SECRETS).await, 1);
 
     // Each project's default profile serves its own `ready` state.

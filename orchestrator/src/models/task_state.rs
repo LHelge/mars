@@ -195,6 +195,15 @@ pub const DEFAULT_TASK_STATES: [(&str, TaskStateKind, i32); 7] = [
     ("cancelled", TaskStateKind::Terminal, 6),
 ];
 
+/// The one auto-merge state of the default set and the state a conflicting
+/// merge sends its task back to: `merge`, back to `ready` (`docs/data-model.md`,
+/// `task_states`; ADR 0045). A new project's approved work is merged by the
+/// orchestrator, not by a seeded agent.
+///
+/// The conflict state comes earlier in [`DEFAULT_TASK_STATES`] than the state
+/// naming it, so it exists by the time the reference is written.
+pub const DEFAULT_AUTO_MERGE_STATE: (&str, &str) = ("merge", "ready");
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -375,6 +384,24 @@ mod tests {
                 ("cancelled", TaskStateKind::Terminal, 6),
             ]
         );
+    }
+
+    #[test]
+    fn the_default_auto_merge_state_names_an_earlier_queue_state() {
+        let (merge, conflict) = DEFAULT_AUTO_MERGE_STATE;
+        assert_eq!((merge, conflict), ("merge", "ready"));
+        let find = |wanted: &str| {
+            DEFAULT_TASK_STATES
+                .iter()
+                .find(|(name, _, _)| *name == wanted)
+                .copied()
+                .expect("the state is in the default set")
+        };
+        let (_, merge_kind, merge_position) = find(merge);
+        let (_, conflict_kind, conflict_position) = find(conflict);
+        assert_eq!(merge_kind, TaskStateKind::Queue);
+        assert_eq!(conflict_kind, TaskStateKind::Queue);
+        assert!(conflict_position < merge_position);
     }
 
     #[test]

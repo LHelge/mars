@@ -519,7 +519,7 @@ pub async fn list(
 /// Tags and hand-off refs are the `None` cases: a tag is not a branch, and
 /// hand-off refs are internal and exposed by hand-off id instead. A name the
 /// ref grammar does not accept at all — a `refs/sessions/<x>` whose suffix is
-/// not a UUID, which orphan cleanup has not reached yet — is skipped with a
+/// not a UUID, which nothing Mars writes has — is skipped with a
 /// `warn!` rather than failing the listing it is part of.
 ///
 /// A session ref is named in full, `refs/sessions/<id>`, where a head is
@@ -682,6 +682,30 @@ pub async fn list_handoffs(mirror: &Path) -> std::result::Result<Vec<(Uuid, Stri
     }
 
     Ok(handoffs)
+}
+
+/// Every session ref's session id, in ref order.
+///
+/// What the orphan-cleanup job compares against `sessions` to find the refs
+/// of deleted sessions (ADR 0049). A `refs/sessions/<x>` whose suffix is not
+/// a session id is skipped with a `warn!`, as [`list_handoffs`] does: nothing
+/// Mars writes has that shape, and removing a ref this module cannot name is
+/// not this listing's decision.
+pub async fn list_sessions(mirror: &Path) -> std::result::Result<Vec<Uuid>, GitError> {
+    let entries = list(mirror, &["refs/sessions/*"]).await?;
+
+    let mut sessions = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match GitRef::parse(&entry.full_name) {
+            Ok(GitRef::Session(id)) => sessions.push(id),
+            _ => warn!(
+                git.refname = %entry.full_name,
+                "skipping a session ref whose name is not a session id"
+            ),
+        }
+    }
+
+    Ok(sessions)
 }
 
 #[cfg(test)]
@@ -1382,6 +1406,32 @@ mod tests {
             list_handoffs(&mirror.path).await.unwrap(),
             vec![(second, older)]
         );
+    }
+
+    #[tokio::test]
+    async fn session_refs_list_by_session_id_and_skip_names_that_are_not_one() {
+        let upstream = TestUpstream::create().await;
+        let mirror = mirror_of(&upstream).await;
+        let tip = run_git(&mirror.path, &["rev-parse", "refs/heads/main"])
+            .await
+            .trim()
+            .to_string();
+
+        let session = uuid();
+        update(&mirror.path, &session_ref(session), &tip, None)
+            .await
+            .unwrap();
+        // Written behind the module's back: nothing Mars writes has this shape.
+        run_git(
+            &mirror.path,
+            &["update-ref", "refs/sessions/not-a-session", &tip],
+        )
+        .await;
+
+        assert_eq!(list_sessions(&mirror.path).await.unwrap(), vec![session]);
+
+        delete(&mirror.path, &session_ref(session)).await.unwrap();
+        assert!(list_sessions(&mirror.path).await.unwrap().is_empty());
     }
 
     #[tokio::test]

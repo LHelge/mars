@@ -135,4 +135,33 @@ describe("SessionsTab", () => {
     expect(screen.queryByRole("heading", { name: "Branches" })).toBeNull();
     expect(vi.mocked(listSessionBranches)).not.toHaveBeenCalled();
   });
+
+  it("names the commits a delete would lose, once asked to confirm", async () => {
+    vi.mocked(listSessionBranches).mockResolvedValue([
+      {
+        session_id: "00000000-0000-4000-8000-0000000000d5",
+        ref: "refs/sessions/00000000-0000-4000-8000-0000000000d5",
+        commit: "a".repeat(40),
+        ahead: 3,
+        behind: 0,
+        base: "main",
+        updated_at: "2026-03-01T11:00:00Z",
+      },
+    ]);
+    renderTab();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete gave up" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "mars/session-1 has 3 commits not on main; they will be lost.",
+      ),
+    ).not.toBeNull();
+    // The row's button and the panel's, which confirms.
+    expect(
+      screen.getAllByRole("button", { name: "Delete gave up" }),
+    ).toHaveLength(2);
+  });
 });

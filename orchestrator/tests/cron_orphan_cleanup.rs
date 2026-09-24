@@ -1,4 +1,4 @@
-//! The orphan cleanup job's container, `/data/tmp` and hand-off ref sweeps
+//! The orphan cleanup job's container, `/data/tmp`, hand-off ref and session ref sweeps
 //! (`ARCHITECTURE.md`, "Background jobs"; `CLAUDE.md`, "Testing
 //! expectations").
 //!
@@ -714,5 +714,64 @@ async fn an_unreadable_repository_costs_one_failure_and_the_other_projects_are_s
         pinned(&fixture, fixture.project.id).await,
         vec![id],
         "a first-sighted orphan was removed",
+    );
+}
+
+// --- the session ref sweep ------------------------------------------------
+
+/// The session ids a project's repository has a `refs/sessions/<sid>` for,
+/// sorted.
+async fn session_refs(fixture: &HandoffFixture, project_id: Uuid) -> Vec<Uuid> {
+    let mut ids = refs::list_sessions(&fixture.paths().project_repo(project_id))
+        .await
+        .expect("the session refs list");
+    ids.sort();
+    ids
+}
+
+#[tokio::test]
+async fn a_session_ref_with_no_session_row_is_removed_and_a_live_sessions_ref_is_kept() {
+    let fixture = HandoffFixture::create("orphan-sessions").await;
+    let mirror = fixture.paths().project_repo(fixture.project.id);
+
+    // A live session whose branch has been fetched back.
+    let (live, _commit) = fixture.session_with_commit("feat: live work").await;
+    fixture.sync(live).await;
+
+    // A ref named by a session that no longer exists: what a session deleted
+    // before deletion removed its ref leaves behind (ADR 0049).
+    let orphan = Uuid::new_v4();
+    let commit = main_commit(&mirror).await;
+    {
+        let _guard = fixture.guard().await;
+        refs::update(&mirror, &refs::session_ref(orphan), &commit, None)
+            .await
+            .expect("the orphan session ref is written");
+    }
+
+    let mut both = vec![live, orphan];
+    both.sort();
+    assert_eq!(session_refs(&fixture, fixture.project.id).await, both);
+
+    let report = fixture
+        .app
+        .cron()
+        .orphan_cleanup(Utc::now())
+        .await
+        .expect("orphan cleanup runs");
+
+    assert_eq!(
+        report,
+        JobReport {
+            items: 1,
+            skipped: 0,
+            failures: 0
+        },
+        "an orphan session ref is removed on its first sighting, and only it",
+    );
+    assert_eq!(
+        session_refs(&fixture, fixture.project.id).await,
+        vec![live],
+        "the live session's ref was removed, or the orphan was kept",
     );
 }

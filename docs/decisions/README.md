@@ -54,3 +54,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0046](0046-bound-implementation-rounds-per-task.md) | Implementation rounds are counted per task and bound send-backs; `attempts` keeps resetting | accepted |
 | [0047](0047-lucide-icons-behind-one-map.md) | Icons are Lucide, behind one concept-named map; not Heroicons, and not two sets mixed | accepted |
 | [0048](0048-podman-services-outside-a-pod.md) | The Podman deployment runs outside podman-compose's pod; not a Podman 6 requirement | accepted |
+| [0049](0049-session-ref-goes-with-the-session.md) | A session's branch ref is deleted with the session; no separate branch-delete action | accepted |

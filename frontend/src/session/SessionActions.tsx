@@ -32,6 +32,7 @@ import { queryKeys } from "../services/queryKeys";
 import { deleteSession, endSession, retrySession } from "../services/sessions";
 import type { Session } from "../types";
 import { shortSha } from "../utils/format";
+import { SessionDeleteConfirm } from "./SessionDeleteConfirm";
 import { sessionActions } from "./sessionActionRules";
 import { disposeSessionStore, getSessionStore } from "./sessionStore";
 import { useStopSession } from "./useStopSession";
@@ -124,6 +125,10 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.projects.sessions(session.project_id),
+      });
+      // The session's branch ref went with it (ADR 0049).
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.sessionBranches(session.project_id),
       });
       // Nothing will ever resume this transcript, so it is not kept for a
       // return visit the way a closed session's is (`sessionStore`, the
@@ -219,24 +224,31 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
         )}
       </div>
 
-      {confirming !== null && (
+      {confirming === "end" && (
         <div className="w-full max-w-md">
           <ConfirmPanel
-            message={
-              confirming === "end"
-                ? "End this session? The container stops and the agent cannot be given anything more to do."
-                : "Delete this session? Its transcript and events go with it; the branch it left in the git mirror stays."
-            }
-            confirmLabel={
-              confirming === "end" ? "End the session" : "Delete the session"
-            }
-            pending={confirming === "end" ? end.isPending : remove.isPending}
+            message="End this session? The container stops and the agent cannot be given anything more to do."
+            confirmLabel="End the session"
+            pending={end.isPending}
             onConfirm={() => {
-              if (confirming === "end") {
-                end.mutate();
-              } else {
-                remove.mutate();
-              }
+              end.mutate();
+            }}
+            onCancel={() => {
+              setConfirming(null);
+            }}
+          />
+        </div>
+      )}
+
+      {confirming === "delete" && (
+        <div className="w-full max-w-md">
+          <SessionDeleteConfirm
+            session={session}
+            label="this session"
+            confirmLabel="Delete the session"
+            pending={remove.isPending}
+            onConfirm={() => {
+              remove.mutate();
             }}
             onCancel={() => {
               setConfirming(null);

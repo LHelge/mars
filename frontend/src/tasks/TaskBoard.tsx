@@ -47,7 +47,7 @@ import type { TaskColumn } from "./taskStore";
 
 /** `SPEC.md`, "User-facing features", "Task board", in one line. */
 const BOARD_HELP =
-  "This project's work, in its own states. Agents claim from a queue state and escalate into the human one; changes they make appear here as they happen.";
+  "This project's work, in its own states. Agents claim from a queue state and escalate into the human one, and Mars merges the approved tasks of an auto-merge column by itself; changes they make appear here as they happen.";
 
 /** Why a task can be in a column the project does not have. */
 const UNKNOWN_HELP =

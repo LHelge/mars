@@ -41,7 +41,7 @@ import { useTaskStore } from "./taskStore";
 
 /** `SPEC.md`, "Task states", in the one line the tab has room for. */
 const STATES_HELP =
-  "The columns of this project's board, in order. Agents claim work from a queue state, escalations land in the one human state, and a terminal state closes the task. A state's kind is fixed once it exists; rename or reorder it freely.";
+  "The columns of this project's board, in order. Agents claim work from a queue state, escalations land in the one human state, and a terminal state closes the task. A queue state with auto-merge on merges each approved task into the default branch and closes it by itself. A state's kind is fixed once it exists; rename or reorder it freely.";
 
 export interface TaskStatesEditorProps {
   projectId: string;

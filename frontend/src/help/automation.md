@@ -1,4 +1,6 @@
-Mars can start sessions with nobody launching them, in two ways: the **dispatcher** picks up tasks as they arrive, and a **schedule** runs a profile on the clock. Both are settings of an ephemeral profile. Only an ephemeral profile can run unattended, because nobody is there to answer a conversational one. A session nobody launched carries a `dispatcher` or `schedule` tag wherever it is listed.
+Mars does three things in a project with nobody asking it to. The **dispatcher** launches sessions for tasks as they arrive, a **schedule** runs a profile on the clock, and **auto-merge** merges approved work into the default branch.
+
+The first two start sessions, and both are settings of an ephemeral profile. Only an ephemeral profile can run unattended, because nobody is there to answer a conversational one. A session nobody launched carries a `dispatcher` or `schedule` tag wherever it is listed. Auto-merge starts no session at all. It is a setting of a task state, not of a profile.
 
 ### Launching for tasks as they arrive
 
@@ -26,6 +28,12 @@ The profile editor shows the next and the last run once you have saved, and the 
 
 **A tick is never caught up.** A run that came due while Mars was down is skipped, not replayed when it comes back. A tick refused by a cap, by the pause or by a missing credential is spent too. The next occurrence is the retry. A schedule means "run at these times", not "run this many times". The `tech-debt-scanner` template, offered under **Start from** when you add a profile, is a ready-made example that runs once a day.
 
+### Merging approved work
+
+A queue state with **Auto-merge** on, such as a new project's `merge` state, is merged by Mars itself. When a reviewer approves a task and moves it there, Mars merges the approved commit into the default branch and closes the task, normally within a second. A merge that conflicts sends the task to the state's conflict state with the conflicting paths. You turn it on or off per state on the **States** tab, and [Task flow](help:task-flow) has the details.
+
+Auto-merge launches nothing, so the caps below don't apply to it and it needs no agent credential. Only the project's pause stops it.
+
 ### The three caps
 
 Three limits hold unattended launches back. A launch happens only while every one of them has room:
@@ -40,7 +48,7 @@ A live session is one that is creating or running, whoever launched it, so your 
 
 ### Pausing a project
 
-**Pause automation**, in the project's **Settings**, stops every unattended launch in the project until you turn it off. There's no restart, and the project header says it is paused. Sessions that are already running carry on, and you can still launch sessions by hand. To stop a single profile instead, untick its dispatcher or schedule setting.
+**Pause automation**, in the project's **Settings**, stops everything above in the project until you turn it off: the dispatcher, the schedules and auto-merge. The project header says it is paused. Nothing is caught up afterwards: the dispatcher simply picks up the tasks that are waiting, approved tasks in an auto-merge state are merged then, and scheduled ticks that came due meanwhile are skipped. Sessions that are already running carry on, and you can still launch sessions and merge approved hand-offs by hand. To stop a single profile instead, untick its dispatcher or schedule setting. To stop merging in one state, turn its auto-merge off.
 
 ### The credential unattended runs use
 

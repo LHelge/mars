@@ -32,6 +32,7 @@ import {
   autoMergeChanged,
   autoMergeMeaning,
   autoMergeRefusal,
+  CONFLICT_STATE_HINT,
   conflictCandidates,
   NO_CONFLICT_TARGET,
   toAutoMergeDraft,
@@ -289,6 +290,8 @@ export function StateRow({
                 <FieldShell
                   label="Conflict state"
                   name={`task-state-conflict-${state.id}`}
+                  hint={CONFLICT_STATE_HINT}
+                  help="task-flow"
                 >
                   {(control) => (
                     <select

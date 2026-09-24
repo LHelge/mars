@@ -22,6 +22,10 @@ export const PREFERRED_CONFLICT_STATE = "ready";
 export const NO_CONFLICT_TARGET =
   "Auto-merge needs another queue state to send conflicts to";
 
+/** The `Conflict state` field's hint: what lands there, and with what. */
+export const CONFLICT_STATE_HINT =
+  "Where a conflicting merge sends the task, with the conflicting paths in a comment.";
+
 /** What an auto-merge state does, in one line, as the chip's tooltip. */
 export function autoMergeMeaning(conflictState: string | null): string {
   const target =

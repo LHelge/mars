@@ -59,7 +59,7 @@ import { ViewDiffButton } from "./ViewDiffButton";
  * "Code hand-offs and review").
  */
 const HANDOFF_HELP =
-  "A hand-off pins one commit of a session's branch for the next agent to start from, with a comment and a review decision. Moving the task without one keeps the current hand-off.";
+  "A hand-off pins one commit of a session's branch for the next agent to start from, with a comment and a review decision. Moving the task without one keeps the current hand-off. An approved one is merged by Mars once the task reaches an auto-merge state, and with Merge approved hand-off anywhere else.";
 
 export interface HandoffPanelProps {
   projectId: string;

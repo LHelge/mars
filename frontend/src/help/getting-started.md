@@ -31,14 +31,15 @@ A conversational session keeps running when nobody is watching. When it goes qui
 
 ### The starter profiles
 
-A new project comes with a starter profile for each of its roles, and the project's **Profiles** tab lists them:
+A new project comes with three starter profiles, and the project's **Profiles** tab lists them:
 
 - **planner** works on the `backlog`: it turns a request into tasks an implementer can pick up, and never writes code.
 - **implementer** works on `ready`: it claims a task, does the work and hands a commit over for review. This is the default profile.
-- **reviewer** works on `review`: it checks the handed-over commit, then approves it or sends it back with concrete comments.
-- **merger** works on `merge`: it merges the approved commit into the default branch and closes the task. It never pushes; merged work waits on the default branch until someone pushes it.
+- **reviewer** works on `review`: it checks the handed-over commit, then approves it on to `merge` or sends it back to `ready` with concrete comments.
 
-Each one is an ordinary profile with a system prompt written for its role. That copy belongs to your project, so you can change it freely. [Agent profiles](help:profiles) covers what a profile decides, and [Task flow](help:task-flow) shows how a task moves between these roles.
+The fourth queue, `merge`, needs no agent. It is an **auto-merge** state: Mars itself merges each approved task that arrives there into the default branch and closes the task. A merge that conflicts sends the task back to `ready` with the conflicting paths. So a new project's reviewed work lands on the default branch by itself, and it waits there until someone pushes it ([Branches and merging](help:branches)).
+
+Each profile is an ordinary profile with a system prompt written for its role. That copy belongs to your project, so you can change it freely. A **merger** profile is still offered under **Start from** when you add a profile, for a project that turns auto-merge off and wants an agent in that seat. [Agent profiles](help:profiles) covers what a profile decides, and [Task flow](help:task-flow) shows how a task moves between these roles.
 
 ### Working with others
 

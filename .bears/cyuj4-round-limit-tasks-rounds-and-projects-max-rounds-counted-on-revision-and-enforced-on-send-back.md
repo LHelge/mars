@@ -1,14 +1,15 @@
 ---
 id: cyuj4
 title: "Round limit: tasks.rounds and projects.max_rounds, counted on revision and enforced on send-back"
-status: open
+status: done
 priority: P1
 created: "2026-09-22T20:20:12.083051813Z"
-updated: "2026-09-22T20:20:12.083051813Z"
+updated: "2026-09-24T14:13:07.051733954Z"
 tags:
   - orchestrator
   - tracker
 parent: tykeu
+attempts: 1
 ---
 
 Implements ADR 0046; the rules are `ARCHITECTURE.md`, "Task tracker" → "Rounds", `docs/data-model.md` (`projects.max_rounds`, `tasks.rounds`, the hand-off and send-back paragraphs under `tasks`, migration 11 `round_limit`) and `SPEC.md`, "Projects", "Tasks", "Code hand-offs and review", "TaskEvent". The documents are already written; change them only if implementing finds them wrong.

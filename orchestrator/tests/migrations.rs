@@ -444,6 +444,49 @@ async fn the_dispatcher_columns_carry_their_defaults_and_bounds() {
     );
 }
 
+/// The load-bearing details of the `round_limit` migration
+/// (`docs/data-model.md`, `projects.max_rounds` and `tasks.rounds`; ADR 0046):
+/// the defaults every existing row takes, and the 1–50 `CHECK` that keeps a
+/// limit written any other way from reaching the tracker.
+#[tokio::test]
+async fn the_round_limit_columns_carry_their_defaults_and_bounds() {
+    let (_postgres, pool) = common::db::test_pool().await;
+
+    for (table, column, default) in [("projects", "max_rounds", "5"), ("tasks", "rounds", "0")] {
+        let (column_default, is_nullable, data_type): (Option<String>, String, String) =
+            sqlx::query_as(
+                "SELECT column_default, is_nullable::text, udt_name::text \
+                 FROM information_schema.columns \
+                 WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2",
+            )
+            .bind(table)
+            .bind(column)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|_| panic!("{table}.{column} exists"));
+        assert_eq!(is_nullable, "NO", "{table}.{column}");
+        assert_eq!(data_type, "int2", "{table}.{column}");
+        assert_eq!(column_default.as_deref(), Some(default), "{table}.{column}");
+    }
+
+    let checks: Vec<String> = sqlx::query_scalar(
+        "SELECT pg_get_constraintdef(c.oid) \
+         FROM pg_constraint c \
+         JOIN pg_class t ON t.oid = c.conrelid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
+         WHERE n.nspname = 'public' AND t.relname = 'projects' AND c.contype = 'c'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("the constraint catalog is readable");
+    assert!(
+        checks
+            .iter()
+            .any(|def| def.contains("max_rounds") && def.contains("50")),
+        "projects is missing the 1-50 CHECK on max_rounds: {checks:?}"
+    );
+}
+
 /// The load-bearing details of the `schedule_columns` migration
 /// (`docs/data-model.md`, `agent_profiles`; ADR 0043).
 ///

@@ -13,7 +13,11 @@
 //!   it, because a user is not bound by one — resets `attempts` to zero, sets
 //!   `closed_at` when the target is terminal and clears it when it is not, and
 //!   leaves `current_handoff_id` alone: a plain move neither publishes code
-//!   nor withdraws it (`docs/data-model.md`, `tasks`).
+//!   nor withdraws it (`docs/data-model.md`, `tasks`). A move *out of* the
+//!   project's human state also resets `rounds` to zero, which is the fresh
+//!   allowance a person handing an escalated task back gives it; a revision
+//!   publication then adds its own round on top ([`RoundsWrite`];
+//!   `ARCHITECTURE.md`, "Task tracker" → "Rounds"; ADR 0046).
 //! - **the current state is a no-op.** Nothing is written and nothing is
 //!   emitted; the lease, `attempts` and `closed_at` survive. The caller's
 //!   *other* field changes still apply — that is its own `update`, not this
@@ -104,6 +108,37 @@ pub struct StateChangeOptions {
     pub needs_human_reason: Option<String>,
 }
 
+/// How a move writes `tasks.rounds` (`ARCHITECTURE.md`, "Task tracker" →
+/// "Rounds"; ADR 0046).
+///
+/// Crate-private and beside [`StateChangeOptions`] rather than in it, because
+/// only the hand-off path publishes a revision and nothing outside the crate
+/// may claim to: a round is counted by publishing code, never by asking for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum RoundsWrite {
+    /// Every ordinary move: reset to 0 when the task leaves the human state,
+    /// untouched otherwise.
+    #[default]
+    Rule,
+    /// A revision publication: one round more than the rule leaves, so a
+    /// revision out of the human state is the first round of a fresh allowance.
+    Revision,
+}
+
+impl RoundsWrite {
+    /// The value to write, or `None` to leave the column alone.
+    fn value(self, task: &Task, from: &TaskState) -> Option<i16> {
+        let leaving_human = from.kind == TaskStateKind::Human;
+        match self {
+            Self::Rule => leaving_human.then_some(0),
+            Self::Revision => {
+                let base = if leaving_human { 0 } else { task.rounds };
+                Some(base.saturating_add(1))
+            }
+        }
+    }
+}
+
 /// What a state change did.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StateChangeResult {
@@ -129,6 +164,22 @@ pub async fn change_state(
     target: &TaskState,
     opts: StateChangeOptions,
 ) -> Result<StateChangeResult> {
+    change_state_with(m, task, target, opts, RoundsWrite::Rule).await
+}
+
+/// [`change_state`], with the hand-off path's say over `rounds`.
+///
+/// The one addition is [`RoundsWrite`]: [`RoundsWrite::Revision`] is what a
+/// revision publication passes, and it is written in the same statement as the
+/// move so that the `state_changed` (or `escalated`) payload already carries
+/// the new count.
+pub(crate) async fn change_state_with(
+    m: &mut TrackerMutation<'_>,
+    task: &Task,
+    target: &TaskState,
+    opts: StateChangeOptions,
+    rounds: RoundsWrite,
+) -> Result<StateChangeResult> {
     let repository = TaskRepository::new(m.pool());
     let project_id = m.project_id();
 
@@ -148,7 +199,7 @@ pub async fn change_state(
     }
 
     let from = state_of(m, task.state_id).await?;
-    let result = apply(m, task, &from, target, &opts).await?;
+    let result = apply(m, task, &from, target, &opts, rounds).await?;
 
     // Only a move *into* terminal can close a parent. Terminal → terminal
     // leaves the parent where it already is: closed with its last child, or
@@ -197,6 +248,7 @@ async fn apply(
     from: &TaskState,
     target: &TaskState,
     opts: &StateChangeOptions,
+    rounds: RoundsWrite,
 ) -> Result<StateChangeResult> {
     let repository = TaskRepository::new(m.pool());
     let project_id = m.project_id();
@@ -208,6 +260,8 @@ async fn apply(
         lease: Some(None),
         // The attempt counter counts claims *in one state*.
         attempts: Some(0),
+        // The round counter counts revisions since the human state.
+        rounds: rounds.value(task, from),
         // Entering a terminal state always stamps it anew, including from
         // another terminal state: `done` → `cancelled` is a closure of its
         // own. Leaving one clears it, which is what reopening means.
@@ -302,6 +356,7 @@ async fn close_parent_if_last_child(m: &mut TrackerMutation<'_>, task: &Task) ->
         &parent_state,
         &target,
         &StateChangeOptions::default(),
+        RoundsWrite::Rule,
     )
     .await;
     m.set_actor(caller);

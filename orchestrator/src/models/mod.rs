@@ -30,10 +30,11 @@ pub use git::{
     GitSyncDetail, SessionBranch, SyncOutcome,
 };
 pub use project::{
-    BranchName, DEFAULT_MAX_ATTEMPTS, MAX_BRANCH_NAME_CHARS, MAX_MAX_ATTEMPTS,
-    MAX_PROJECT_NAME_CHARS, MIN_MAX_ATTEMPTS, MIN_MAX_CONCURRENT_SESSIONS, MaxAttempts,
-    MaxConcurrentSessions, NewProject, Project, ProjectError, ProjectName, ProjectResult,
-    ProjectStatus, ProjectUpdate, RemoteUrl, is_branch_name,
+    BranchName, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_ROUNDS, MAX_BRANCH_NAME_CHARS, MAX_MAX_ATTEMPTS,
+    MAX_MAX_ROUNDS, MAX_PROJECT_NAME_CHARS, MIN_MAX_ATTEMPTS, MIN_MAX_CONCURRENT_SESSIONS,
+    MIN_MAX_ROUNDS, MaxAttempts, MaxConcurrentSessions, MaxRounds, NewProject, Project,
+    ProjectError, ProjectName, ProjectResult, ProjectStatus, ProjectUpdate, RemoteUrl,
+    is_branch_name,
 };
 pub use schedule::{CRON_FIELDS, CronSchedule, ScheduleError};
 pub use secret::{

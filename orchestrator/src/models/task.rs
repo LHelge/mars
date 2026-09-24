@@ -324,6 +324,9 @@ pub struct Task {
     pub lease_holder_session_id: Option<Uuid>,
     pub lease_since: Option<DateTime<Utc>>,
     pub attempts: i16,
+    /// Revision hand-offs published since the task last left the human state
+    /// (`docs/data-model.md`, `tasks`; ADR 0046).
+    pub rounds: i16,
     pub needs_human_reason: Option<String>,
     pub current_handoff_id: Option<Uuid>,
     pub created_by_user_id: Option<Uuid>,

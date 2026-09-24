@@ -300,13 +300,14 @@ async fn creating_a_project_answers_the_documented_shape_in_cloning() {
     assert_eq!(project["default_branch"], Value::Null);
     assert_eq!(project["last_fetched_at"], Value::Null);
     assert_eq!(project["max_attempts"], json!(3));
+    assert_eq!(project["max_rounds"], json!(5));
     // Automation is off and uncapped until somebody says otherwise (ADR 0042).
     assert_eq!(project["max_concurrent_sessions"], Value::Null);
     assert_eq!(project["automation_paused"], json!(false));
     assert_eq!(project["has_credential"], json!(false));
     assert!(project["created_at"].is_string());
 
-    // Exactly the twelve documented fields, and none of the three the row
+    // Exactly the thirteen documented fields, and none of the three the row
     // adds.
     let mut keys: Vec<&str> = project
         .as_object()
@@ -326,6 +327,7 @@ async fn creating_a_project_answers_the_documented_shape_in_cloning() {
             "last_fetched_at",
             "max_attempts",
             "max_concurrent_sessions",
+            "max_rounds",
             "name",
             "remote_url",
             "status",
@@ -585,6 +587,57 @@ async fn an_attempt_budget_outside_the_documented_range_is_a_bad_request() {
             "error": "max attempts must be between 1 and 20",
         }));
     }
+}
+
+#[tokio::test]
+async fn updating_the_round_limit_answers_and_stores_it() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let id = id_of(&created(&app, &user, &new_project("mars", UNREACHABLE_REMOTE)).await);
+
+    for rounds in [1, 50, 12] {
+        let response = app
+            .put_as(&user, &project_path(id))
+            .json(&json!({ "max_rounds": rounds }))
+            .await;
+
+        response.assert_status_ok();
+        assert_eq!(response.json::<Value>()["max_rounds"], json!(rounds));
+    }
+
+    // Committed, not just answered; and an update that does not name it
+    // leaves it alone.
+    app.put_as(&user, &project_path(id))
+        .json(&json!({ "name": "mars-2" }))
+        .await
+        .assert_status_ok();
+    let read = app.get_as(&user, &project_path(id)).await;
+    read.assert_status_ok();
+    assert_eq!(read.json::<Value>()["max_rounds"], json!(12));
+}
+
+#[tokio::test]
+async fn a_round_limit_outside_the_documented_range_is_a_bad_request() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let id = id_of(&created(&app, &user, &new_project("mars", UNREACHABLE_REMOTE)).await);
+
+    for rounds in [0, -1, 51] {
+        let response = app
+            .put_as(&user, &project_path(id))
+            .json(&json!({ "max_rounds": rounds }))
+            .await;
+
+        response.assert_status(StatusCode::BAD_REQUEST);
+        response.assert_json(&json!({
+            "status": 400,
+            "error": "max_rounds must be between 1 and 50",
+        }));
+    }
+
+    // Nothing was written by the refusals.
+    let read = app.get_as(&user, &project_path(id)).await;
+    assert_eq!(read.json::<Value>()["max_rounds"], json!(5));
 }
 
 #[tokio::test]

@@ -62,7 +62,7 @@ impl TaskRepository<'_> {
             r#"
             SELECT id, project_id, number, title, description, state_id, priority, blocked,
                    labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
-                   attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                   attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,
                    created_by_session_id, created_at, updated_at, closed_at
             FROM tasks
             WHERE id = $1 AND project_id = $2

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE projects\n            SET status = 'cloning'::project_status,\n                status_message = NULL,\n                updated_at = NOW()\n            WHERE id = $1 AND status = 'error'::project_status\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, max_concurrent_sessions, automation_paused,\n                      created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $2\n                      ) AS \"has_credential!\"\n            ",
+  "query": "\n            UPDATE projects\n            SET status = 'cloning'::project_status,\n                status_message = NULL,\n                updated_at = NOW()\n            WHERE id = $1 AND status = 'error'::project_status\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      max_rounds, next_task_number, max_concurrent_sessions, automation_paused,\n                      created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $2\n                      ) AS \"has_credential!\"\n            ",
   "describe": {
     "columns": [
       {
@@ -115,6 +115,17 @@
       },
       {
         "ordinal": 9,
+        "name": "max_rounds",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "max_rounds"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
         "name": "next_task_number",
         "type_info": "Int4",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "max_concurrent_sessions",
         "type_info": "Int4",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "automation_paused",
         "type_info": "Bool",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "has_credential!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -192,6 +203,7 @@
       true,
       false,
       false,
+      false,
       true,
       false,
       false,
@@ -199,5 +211,5 @@
       null
     ]
   },
-  "hash": "bc18601cadd371747a60cb7d02d77062708a69c56f68e6dc2a581bf3a120e7b9"
+  "hash": "0e5cf864ee2b083fe1f7471cfa56155c837e81911dbd650cec665c88a3a0d4a8"
 }

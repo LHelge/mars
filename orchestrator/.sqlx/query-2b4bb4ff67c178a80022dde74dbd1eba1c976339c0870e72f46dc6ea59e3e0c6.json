@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO tasks (\n                id, project_id, number, title, description, state_id, priority, labels,\n                parent_id, assignee_user_id, created_by_user_id, created_by_session_id\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n            RETURNING id, project_id, number, title, description, state_id, priority, blocked,\n                      labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,\n                      attempts, needs_human_reason, current_handoff_id, created_by_user_id,\n                      created_by_session_id, created_at, updated_at, closed_at\n            ",
+  "query": "\n            SELECT id, project_id, number, title, description, state_id, priority, blocked,\n                   labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,\n                   attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,\n                   created_by_session_id, created_at, updated_at, closed_at\n            FROM tasks\n            WHERE lease_holder_session_id = $1 AND project_id = $2\n            ORDER BY priority, number\n            ",
   "describe": {
     "columns": [
       {
@@ -159,6 +159,17 @@
       },
       {
         "ordinal": 14,
+        "name": "rounds",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "rounds"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
         "name": "needs_human_reason",
         "type_info": "Text",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "current_handoff_id",
         "type_info": "Uuid",
         "origin": {
@@ -180,7 +191,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "created_by_user_id",
         "type_info": "Uuid",
         "origin": {
@@ -191,7 +202,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "created_by_session_id",
         "type_info": "Uuid",
         "origin": {
@@ -202,7 +213,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -213,7 +224,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -224,7 +235,7 @@
         }
       },
       {
-        "ordinal": 20,
+        "ordinal": 21,
         "name": "closed_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -237,16 +248,6 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
-        "Int4",
-        "Text",
-        "Text",
-        "Uuid",
-        "Int2",
-        "TextArray",
-        "Uuid",
-        "Uuid",
         "Uuid",
         "Uuid"
       ]
@@ -266,6 +267,7 @@
       true,
       true,
       false,
+      false,
       true,
       true,
       true,
@@ -275,5 +277,5 @@
       true
     ]
   },
-  "hash": "575de0dea5e9be26878a796060d4b4ad3277ff09c23d4b0507c7da8959d2b1be"
+  "hash": "2b4bb4ff67c178a80022dde74dbd1eba1c976339c0870e72f46dc6ea59e3e0c6"
 }

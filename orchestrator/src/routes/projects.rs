@@ -56,8 +56,8 @@ use crate::git::{
     verify_default_branch,
 };
 use crate::models::{
-    Branch, BranchName, MaxAttempts, MaxConcurrentSessions, Project, ProjectName, ProjectStatus,
-    ProjectUpdate,
+    Branch, BranchName, MaxAttempts, MaxConcurrentSessions, MaxRounds, Project, ProjectName,
+    ProjectStatus, ProjectUpdate,
 };
 use crate::prelude::*;
 use crate::projects::{NewProjectRequest, clone_job, create_project, delete_project};
@@ -90,8 +90,8 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// `Project = { id, name, remote_url, default_branch, status, status_message,
-/// last_fetched_at, max_attempts, max_concurrent_sessions, automation_paused,
-/// created_at, has_credential }` (`SPEC.md`, "Projects").
+/// last_fetched_at, max_attempts, max_rounds, max_concurrent_sessions,
+/// automation_paused, created_at, has_credential }` (`SPEC.md`, "Projects").
 ///
 /// A projection rather than the row, which also carries `created_by`,
 /// `next_task_number` and `updated_at`: the first two are internal bookkeeping
@@ -108,6 +108,7 @@ struct ProjectDto {
     status_message: Option<String>,
     last_fetched_at: Option<DateTime<Utc>>,
     max_attempts: i16,
+    max_rounds: i16,
     max_concurrent_sessions: Option<i32>,
     automation_paused: bool,
     created_at: DateTime<Utc>,
@@ -125,6 +126,7 @@ impl From<Project> for ProjectDto {
             status_message: project.status_message,
             last_fetched_at: project.last_fetched_at,
             max_attempts: project.max_attempts,
+            max_rounds: project.max_rounds,
             max_concurrent_sessions: project.max_concurrent_sessions,
             automation_paused: project.automation_paused,
             created_at: project.created_at,
@@ -220,7 +222,7 @@ async fn fetch(
 // ---- update ----
 
 /// `PUT /projects/{id}` (`{ name?, default_branch?, max_attempts?,
-/// max_concurrent_sessions?, automation_paused? }`).
+/// max_rounds?, max_concurrent_sessions?, automation_paused? }`).
 ///
 /// Every field optional and `None` meaning "leave it alone", so `{}` is legal
 /// and answers the current row. `remote_url` is not among them — the mirror on
@@ -235,6 +237,7 @@ struct UpdateProjectBody {
     name: Option<String>,
     default_branch: Option<String>,
     max_attempts: Option<i16>,
+    max_rounds: Option<i16>,
     /// Two layers, because this is the one nullable field a `PUT` can clear:
     /// an absent key is the outer `None` ("leave it alone") and an explicit
     /// `null` is `Some(None)` ("no project cap"). Plain `Option<i32>` would
@@ -261,8 +264,8 @@ impl UpdateProjectBody {
     /// The validated update, or the model's own 400.
     ///
     /// The models are where the rules live, so a name of 101 characters, a
-    /// branch git would not store, an attempt budget outside 1–20 and a
-    /// session cap below 1 are rejected here with the same message they would
+    /// branch git would not store, an attempt budget outside 1–20, a round
+    /// limit outside 1–50 and a session cap below 1 are rejected here with the same message they would
     /// get anywhere else (`CLAUDE.md`, "Backend conventions"). An explicit
     /// `max_concurrent_sessions: null` is not a rejection: it is the
     /// documented way to remove the cap.
@@ -275,6 +278,7 @@ impl UpdateProjectBody {
                 .map(BranchName::parse)
                 .transpose()?,
             max_attempts: self.max_attempts.map(MaxAttempts::parse).transpose()?,
+            max_rounds: self.max_rounds.map(MaxRounds::parse).transpose()?,
             max_concurrent_sessions: self
                 .max_concurrent_sessions
                 .map(|cap| cap.map(MaxConcurrentSessions::parse).transpose())
@@ -529,6 +533,7 @@ mod tests {
             created_by: None,
             last_fetched_at: None,
             max_attempts: 3,
+            max_rounds: 5,
             next_task_number: 1,
             max_concurrent_sessions: None,
             automation_paused: false,
@@ -538,7 +543,7 @@ mod tests {
         }
     }
 
-    /// The documented twelve fields, and none of the three the row adds.
+    /// The documented thirteen fields, and none of the three the row adds.
     #[test]
     fn the_response_carries_exactly_the_documented_fields() {
         let row = project(ProjectStatus::Cloning, None);
@@ -556,6 +561,7 @@ mod tests {
                 "status_message": null,
                 "last_fetched_at": null,
                 "max_attempts": 3,
+                "max_rounds": 5,
                 "max_concurrent_sessions": null,
                 "automation_paused": false,
                 "created_at": row.created_at,
@@ -613,6 +619,8 @@ mod tests {
             json!({ "default_branch": "refs/heads/main" }),
             json!({ "max_attempts": 0 }),
             json!({ "max_attempts": 21 }),
+            json!({ "max_rounds": 0 }),
+            json!({ "max_rounds": 51 }),
             json!({ "max_concurrent_sessions": 0 }),
             json!({ "max_concurrent_sessions": -1 }),
         ] {
@@ -632,6 +640,7 @@ mod tests {
             name: None,
             default_branch: Some("release/2.0".to_string()),
             max_attempts: None,
+            max_rounds: None,
             max_concurrent_sessions: None,
             automation_paused: None,
         }
@@ -662,6 +671,7 @@ mod tests {
             name: Some("phobos".to_string()),
             default_branch: None,
             max_attempts: None,
+            max_rounds: None,
             max_concurrent_sessions: None,
             automation_paused: None,
         }

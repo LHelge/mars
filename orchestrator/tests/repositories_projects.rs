@@ -23,9 +23,9 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use mars_orchestrator::models::{
-    AgentBackend, BranchName, MaxAttempts, NewAgentProfile, NewProject, NewSecret, NewSharedDir,
-    ProfileKind, ProfileUpdate, Project, ProjectName, ProjectStatus, ProjectUpdate, RemoteUrl,
-    ScopeRef, SecretName,
+    AgentBackend, BranchName, MaxAttempts, MaxRounds, NewAgentProfile, NewProject, NewSecret,
+    NewSharedDir, ProfileKind, ProfileUpdate, Project, ProjectName, ProjectStatus, ProjectUpdate,
+    RemoteUrl, ScopeRef, SecretName,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{ProjectRepository, SecretRepository, SessionRepository};
@@ -178,6 +178,7 @@ async fn a_project_survives_an_insert_find_list_update_delete_round_trip() {
     assert_eq!(inserted.remote_url, TEST_REMOTE);
     assert_eq!(inserted.created_by, Some(SEEDED_ADMIN));
     assert_eq!(inserted.max_attempts, 3);
+    assert_eq!(inserted.max_rounds, 5);
     // Column defaults the repository deliberately does not set.
     assert_eq!(inserted.status, ProjectStatus::Cloning);
     assert_eq!(inserted.status_message, None);
@@ -204,6 +205,7 @@ async fn a_project_survives_an_insert_find_list_update_delete_round_trip() {
         name: Some(ProjectName::parse("mars-2").unwrap()),
         default_branch: Some(BranchName::parse("main").unwrap()),
         max_attempts: Some(MaxAttempts::parse(7).unwrap()),
+        max_rounds: Some(MaxRounds::parse(9).unwrap()),
         max_concurrent_sessions: None,
         automation_paused: None,
     };
@@ -218,6 +220,7 @@ async fn a_project_survives_an_insert_find_list_update_delete_round_trip() {
     assert_eq!(updated.name, "mars-2");
     assert_eq!(updated.default_branch.as_deref(), Some("main"));
     assert_eq!(updated.max_attempts, 7);
+    assert_eq!(updated.max_rounds, 9);
     // Untouched fields keep their values, and `updated_at` moved.
     assert_eq!(updated.remote_url, TEST_REMOTE);
     assert_eq!(updated.created_at, inserted.created_at);
@@ -236,6 +239,7 @@ async fn a_project_survives_an_insert_find_list_update_delete_round_trip() {
     assert_eq!(untouched.name, "mars-2");
     assert_eq!(untouched.default_branch.as_deref(), Some("main"));
     assert_eq!(untouched.max_attempts, 7);
+    assert_eq!(untouched.max_rounds, 9);
 
     // An update of a project that does not exist is `None`, not an error.
     let mut tx = pool.begin().await.unwrap();

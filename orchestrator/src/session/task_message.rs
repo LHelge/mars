@@ -119,6 +119,7 @@ mod tests {
             lease_holder_session_id: None,
             lease_since: None,
             attempts: 0,
+            rounds: 0,
             needs_human_reason: None,
             current_handoff_id: None,
             created_by_user_id: None,

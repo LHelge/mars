@@ -56,6 +56,17 @@ pub const MAX_MAX_ATTEMPTS: i16 = 20;
 /// without an explicit value use the documented number.
 pub const DEFAULT_MAX_ATTEMPTS: i16 = 3;
 
+/// Fewest revision hand-offs a task may go through before a send-back by a
+/// session or the system escalates it (`docs/data-model.md`, `projects`;
+/// ADR 0046).
+pub const MIN_MAX_ROUNDS: i16 = 1;
+
+/// Most revision hand-offs a project may allow.
+pub const MAX_MAX_ROUNDS: i16 = 50;
+
+/// The column default for `max_rounds`.
+pub const DEFAULT_MAX_ROUNDS: i16 = 5;
+
 /// Fewest live sessions a project may cap itself at (`SPEC.md`, "Projects").
 ///
 /// See [`MaxConcurrentSessions`] for why zero is not it.
@@ -106,6 +117,9 @@ pub enum ProjectError {
     /// `max_attempts` was outside 1–20.
     #[error("max attempts must be between 1 and 20")]
     InvalidMaxAttempts,
+    /// `max_rounds` was outside 1–50.
+    #[error("max_rounds must be between 1 and 50")]
+    InvalidMaxRounds,
     /// `max_concurrent_sessions` was below [`MIN_MAX_CONCURRENT_SESSIONS`].
     ///
     /// `null` is not this: it is the documented way to say "no project cap".
@@ -398,6 +412,39 @@ impl std::fmt::Display for MaxAttempts {
     }
 }
 
+/// A validated round limit: 1–50 (`SPEC.md`, "Projects"; ADR 0046).
+///
+/// How many revision hand-offs a task may go through before a send-back by a
+/// session or the system moves it to the project's human state instead
+/// (`ARCHITECTURE.md`, "Task tracker" → "Rounds"). The same bounds are a table
+/// `CHECK`; this type turns a bad value into a 400 before it gets there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct MaxRounds(i16);
+
+impl MaxRounds {
+    /// Accept `raw` when it is between 1 and 50.
+    pub fn parse(raw: i16) -> ProjectResult<Self> {
+        if (MIN_MAX_ROUNDS..=MAX_MAX_ROUNDS).contains(&raw) {
+            Ok(Self(raw))
+        } else {
+            Err(ProjectError::InvalidMaxRounds)
+        }
+    }
+
+    /// The number, ready to bind to the `SMALLINT` column.
+    pub fn get(self) -> i16 {
+        self.0
+    }
+}
+
+impl Default for MaxRounds {
+    /// The documented default of 5.
+    fn default() -> Self {
+        Self(DEFAULT_MAX_ROUNDS)
+    }
+}
+
 /// A validated project session cap: at least 1 (`SPEC.md`, "Projects").
 ///
 /// How many live sessions the project may have before an unattended launch is
@@ -456,6 +503,9 @@ pub struct Project {
     pub created_by: Option<Uuid>,
     pub last_fetched_at: Option<DateTime<Utc>>,
     pub max_attempts: i16,
+    /// Revision hand-offs a task may go through before an automated
+    /// send-back escalates it (ADR 0046).
+    pub max_rounds: i16,
     pub next_task_number: i32,
     /// How many live sessions the project may have before an unattended launch
     /// is held back, or `None` for no project cap (`ARCHITECTURE.md`, "Task
@@ -525,6 +575,7 @@ pub struct ProjectUpdate {
     pub name: Option<ProjectName>,
     pub default_branch: Option<BranchName>,
     pub max_attempts: Option<MaxAttempts>,
+    pub max_rounds: Option<MaxRounds>,
     /// The project's unattended-launch cap, in two layers: the outer `None` is
     /// this update's "leave it alone" and the inner `None` is the column's
     /// "no project cap".
@@ -543,6 +594,7 @@ impl ProjectUpdate {
         self.name.is_none()
             && self.default_branch.is_none()
             && self.max_attempts.is_none()
+            && self.max_rounds.is_none()
             && self.max_concurrent_sessions.is_none()
             && self.automation_paused.is_none()
     }
@@ -560,6 +612,7 @@ mod tests {
             ProjectError::RemoteUrlHasCredentials,
             ProjectError::InvalidDefaultBranch,
             ProjectError::InvalidMaxAttempts,
+            ProjectError::InvalidMaxRounds,
             ProjectError::InvalidMaxConcurrentSessions,
         ] {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
@@ -845,6 +898,25 @@ mod tests {
                 "accepted {raw}"
             );
         }
+    }
+
+    #[test]
+    fn max_rounds_accepts_one_through_fifty_and_nothing_else() {
+        for raw in MIN_MAX_ROUNDS..=MAX_MAX_ROUNDS {
+            assert_eq!(MaxRounds::parse(raw).unwrap().get(), raw);
+        }
+        assert_eq!(MaxRounds::default().get(), DEFAULT_MAX_ROUNDS);
+        for raw in [i16::MIN, -1, 0, MAX_MAX_ROUNDS + 1, i16::MAX] {
+            assert_eq!(
+                MaxRounds::parse(raw),
+                Err(ProjectError::InvalidMaxRounds),
+                "accepted {raw}"
+            );
+        }
+        assert_eq!(
+            ProjectError::InvalidMaxRounds.to_string(),
+            "max_rounds must be between 1 and 50"
+        );
     }
 
     #[test]

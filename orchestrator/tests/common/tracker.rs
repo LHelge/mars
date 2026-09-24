@@ -329,3 +329,66 @@ pub async fn handoff_in_place(
 
     (move_to(pool, project_id, task_id, &home).await, handoff_id)
 }
+
+/// An obviously fake but well-formed object id for [`with_rounds`]'s
+/// revisions (rule 3). Nothing reads the ref behind it.
+const ROUND_COMMIT: &str = "fedcba9876543210fedcba9876543210fedcba98";
+
+/// `rounds` at `rounds`, the way production reaches it: that many revisions
+/// published by `session_id` into `review_state`.
+///
+/// A revision is the only thing that raises the counter (`ARCHITECTURE.md`,
+/// "Task tracker" → "Rounds"; ADR 0046), so the arrangement is that many
+/// publications: each round the session claims the task, publishes a revision
+/// into `review_state`, and — between rounds — the task goes back to the
+/// state it started in by a plain move, which leaves the counter alone as long
+/// as that state is not the human one. The task ends in `review_state`,
+/// unheld, with the last revision current; the answer is the task and that
+/// revision's id.
+pub async fn with_rounds(
+    pool: &PgPool,
+    project_id: Uuid,
+    task_id: Uuid,
+    session_id: Uuid,
+    rounds: i16,
+    review_state: &str,
+) -> (TaskDto, Uuid) {
+    assert!(rounds >= 1, "a round is a published revision");
+
+    let home = TaskRepository::new(pool)
+        .load_task_dto(project_id, task_id)
+        .await
+        .expect("the task reads")
+        .expect("the task is there")
+        .state;
+    let branch = format!("session/{session_id}");
+
+    let mut last = None;
+    for round in 1..=rounds {
+        if round > 1 {
+            move_to(pool, project_id, task_id, &home).await;
+        }
+        hold(pool, project_id, task_id, session_id).await;
+        last = Some(
+            publish_handoff(
+                pool,
+                project_id,
+                task_id,
+                Handoff {
+                    source_session_id: Some(session_id),
+                    source_branch: &branch,
+                    commit: ROUND_COMMIT,
+                    comment: &format!("revision {round}"),
+                    target_state: review_state,
+                    caller: HandoffCaller::Session { session_id },
+                    review: ReviewCarry::Fresh,
+                },
+            )
+            .await,
+        );
+    }
+
+    let (task, handoff_id) = last.expect("at least one round was published");
+    assert_eq!(task.rounds, rounds, "each revision is one round");
+    (task, handoff_id)
+}

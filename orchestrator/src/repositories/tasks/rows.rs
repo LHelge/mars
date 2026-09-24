@@ -109,6 +109,9 @@ pub(crate) struct StateFields {
     pub(crate) lease: Option<Option<(Uuid, DateTime<Utc>)>>,
     /// Claims since the task last changed state; a state change resets it.
     pub(crate) attempts: Option<i16>,
+    /// Revision hand-offs since the task last left the human state: a
+    /// revision raises it, a move out of the human state resets it (ADR 0046).
+    pub(crate) rounds: Option<i16>,
     /// Set on entering a terminal state, cleared on leaving one.
     pub(crate) closed_at: Option<Option<DateTime<Utc>>>,
     /// Why the task was escalated; cleared when it leaves the human state.
@@ -254,7 +257,7 @@ impl TaskRepository<'_> {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING id, project_id, number, title, description, state_id, priority, blocked,
                       labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
-                      attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                      attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,
                       created_by_session_id, created_at, updated_at, closed_at
             "#,
             task.id,
@@ -296,7 +299,7 @@ impl TaskRepository<'_> {
                     r#"
                     SELECT id, project_id, number, title, description, state_id, priority, blocked,
                            labels, parent_id, assignee_user_id, lease_holder_session_id,
-                           lease_since, attempts, needs_human_reason, current_handoff_id,
+                           lease_since, attempts, rounds, needs_human_reason, current_handoff_id,
                            created_by_user_id, created_by_session_id, created_at, updated_at,
                            closed_at
                     FROM tasks
@@ -314,7 +317,7 @@ impl TaskRepository<'_> {
                     r#"
                     SELECT id, project_id, number, title, description, state_id, priority, blocked,
                            labels, parent_id, assignee_user_id, lease_holder_session_id,
-                           lease_since, attempts, needs_human_reason, current_handoff_id,
+                           lease_since, attempts, rounds, needs_human_reason, current_handoff_id,
                            created_by_user_id, created_by_session_id, created_at, updated_at,
                            closed_at
                     FROM tasks
@@ -361,7 +364,7 @@ impl TaskRepository<'_> {
                     r#"
                     SELECT id, project_id, number, title, description, state_id, priority, blocked,
                            labels, parent_id, assignee_user_id, lease_holder_session_id,
-                           lease_since, attempts, needs_human_reason, current_handoff_id,
+                           lease_since, attempts, rounds, needs_human_reason, current_handoff_id,
                            created_by_user_id, created_by_session_id, created_at, updated_at,
                            closed_at
                     FROM tasks
@@ -380,7 +383,7 @@ impl TaskRepository<'_> {
                     r#"
                     SELECT id, project_id, number, title, description, state_id, priority, blocked,
                            labels, parent_id, assignee_user_id, lease_holder_session_id,
-                           lease_since, attempts, needs_human_reason, current_handoff_id,
+                           lease_since, attempts, rounds, needs_human_reason, current_handoff_id,
                            created_by_user_id, created_by_session_id, created_at, updated_at,
                            closed_at
                     FROM tasks
@@ -423,7 +426,7 @@ impl TaskRepository<'_> {
             r#"
             SELECT id, project_id, number, title, description, state_id, priority, blocked,
                    labels, parent_id, assignee_user_id, lease_holder_session_id,
-                   lease_since, attempts, needs_human_reason, current_handoff_id,
+                   lease_since, attempts, rounds, needs_human_reason, current_handoff_id,
                    created_by_user_id, created_by_session_id, created_at, updated_at,
                    closed_at
             FROM tasks
@@ -534,7 +537,7 @@ impl TaskRepository<'_> {
             WHERE id = $1 AND project_id = $2
             RETURNING id, project_id, number, title, description, state_id, priority, blocked,
                       labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
-                      attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                      attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,
                       created_by_session_id, created_at, updated_at, closed_at
             "#,
             id,
@@ -619,11 +622,12 @@ impl TaskRepository<'_> {
                 needs_human_reason = CASE WHEN $10 THEN $11 ELSE needs_human_reason END,
                 current_handoff_id = CASE WHEN $12 THEN $13 ELSE current_handoff_id END,
                 blocked = COALESCE($14, blocked),
+                rounds = COALESCE($15, rounds),
                 updated_at = NOW()
             WHERE id = $1 AND project_id = $2
             RETURNING id, project_id, number, title, description, state_id, priority, blocked,
                       labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
-                      attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                      attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,
                       created_by_session_id, created_at, updated_at, closed_at
             "#,
             id,
@@ -640,6 +644,7 @@ impl TaskRepository<'_> {
             fields.current_handoff_id.is_some(),
             fields.current_handoff_id.flatten(),
             fields.blocked,
+            fields.rounds,
         )
         .fetch_optional(&mut *tx)
         .await?
@@ -695,7 +700,7 @@ impl TaskRepository<'_> {
               AND lease_holder_session_id IS NULL
             RETURNING id, project_id, number, title, description, state_id, priority, blocked,
                       labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
-                      attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                      attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,
                       created_by_session_id, created_at, updated_at, closed_at
             "#,
             task_id,
@@ -793,7 +798,7 @@ impl TaskRepository<'_> {
             r#"
             SELECT id, project_id, number, title, description, state_id, priority, blocked,
                    labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
-                   attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                   attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,
                    created_by_session_id, created_at, updated_at, closed_at
             FROM tasks
             WHERE project_id = $1
@@ -830,7 +835,7 @@ impl TaskRepository<'_> {
             r#"
             SELECT t.id, t.project_id, t.number, t.title, t.description, t.state_id, t.priority,
                    t.blocked, t.labels, t.parent_id, t.assignee_user_id,
-                   t.lease_holder_session_id, t.lease_since, t.attempts, t.needs_human_reason,
+                   t.lease_holder_session_id, t.lease_since, t.attempts, t.rounds, t.needs_human_reason,
                    t.current_handoff_id, t.created_by_user_id, t.created_by_session_id,
                    t.created_at, t.updated_at, t.closed_at
             FROM tasks AS t
@@ -856,7 +861,7 @@ impl TaskRepository<'_> {
             r#"
             SELECT id, project_id, number, title, description, state_id, priority, blocked,
                    labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
-                   attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                   attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,
                    created_by_session_id, created_at, updated_at, closed_at
             FROM tasks
             WHERE project_id = $1 AND parent_id = $2
@@ -884,7 +889,7 @@ impl TaskRepository<'_> {
             r#"
             SELECT id, project_id, number, title, description, state_id, priority, blocked,
                    labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
-                   attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                   attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,
                    created_by_session_id, created_at, updated_at, closed_at
             FROM tasks
             WHERE lease_holder_session_id = $1
@@ -957,7 +962,7 @@ impl TaskRepository<'_> {
             r#"
             SELECT id, project_id, number, title, description, state_id, priority, blocked,
                    labels, parent_id, assignee_user_id, lease_holder_session_id, lease_since,
-                   attempts, needs_human_reason, current_handoff_id, created_by_user_id,
+                   attempts, rounds, needs_human_reason, current_handoff_id, created_by_user_id,
                    created_by_session_id, created_at, updated_at, closed_at
             FROM tasks
             WHERE lease_holder_session_id = $1 AND project_id = $2
@@ -1192,7 +1197,7 @@ impl TaskRepository<'_> {
             r#"
             SELECT t.id, t.project_id, t.number, t.title, t.description, t.state_id, t.priority,
                    t.blocked, t.labels, t.parent_id, t.assignee_user_id,
-                   t.lease_holder_session_id, t.lease_since, t.attempts, t.needs_human_reason,
+                   t.lease_holder_session_id, t.lease_since, t.attempts, t.rounds, t.needs_human_reason,
                    t.current_handoff_id, t.created_by_user_id, t.created_by_session_id,
                    t.created_at, t.updated_at, t.closed_at
             FROM task_sessions AS l

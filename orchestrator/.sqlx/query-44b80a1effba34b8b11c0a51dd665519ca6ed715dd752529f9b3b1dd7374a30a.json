@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE projects\n            SET status = $2,\n                status_message = $3,\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      next_task_number, max_concurrent_sessions, automation_paused,\n                      created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $4\n                      ) AS \"has_credential!\"\n            ",
+  "query": "\n            INSERT INTO projects (id, name, remote_url, default_branch, created_by, max_attempts)\n            VALUES ($1, $2, $3, $4, $5, $6)\n            RETURNING id, name, remote_url, default_branch, status as \"status: ProjectStatus\",\n                      status_message, created_by, last_fetched_at, max_attempts,\n                      max_rounds, next_task_number, max_concurrent_sessions, automation_paused,\n                      created_at, updated_at,\n                      EXISTS (\n                          SELECT 1 FROM secrets s\n                          WHERE s.scope = 'project' AND s.scope_id = projects.id AND s.name = $7\n                      ) AS \"has_credential!\"\n            ",
   "describe": {
     "columns": [
       {
@@ -115,6 +115,17 @@
       },
       {
         "ordinal": 9,
+        "name": "max_rounds",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "max_rounds"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
         "name": "next_task_number",
         "type_info": "Int4",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "max_concurrent_sessions",
         "type_info": "Int4",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "automation_paused",
         "type_info": "Bool",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "has_credential!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -178,19 +189,11 @@
     "parameters": {
       "Left": [
         "Uuid",
-        {
-          "Custom": {
-            "name": "project_status",
-            "kind": {
-              "Enum": [
-                "cloning",
-                "ready",
-                "error"
-              ]
-            }
-          }
-        },
         "Text",
+        "Text",
+        "Text",
+        "Uuid",
+        "Int2",
         "Text"
       ]
     },
@@ -205,6 +208,7 @@
       true,
       false,
       false,
+      false,
       true,
       false,
       false,
@@ -212,5 +216,5 @@
       null
     ]
   },
-  "hash": "503c1d1dbb900e5e805e6b58a5f65e16257042bc8a7d4e304902515beee3b8a5"
+  "hash": "44b80a1effba34b8b11c0a51dd665519ca6ed715dd752529f9b3b1dd7374a30a"
 }

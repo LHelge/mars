@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    SELECT id, project_id, number, title, description, state_id, priority, blocked,\n                           labels, parent_id, assignee_user_id, lease_holder_session_id,\n                           lease_since, attempts, needs_human_reason, current_handoff_id,\n                           created_by_user_id, created_by_session_id, created_at, updated_at,\n                           closed_at\n                    FROM tasks\n                    WHERE project_id = $1 AND number = $2\n                    FOR NO KEY UPDATE\n                    ",
+  "query": "\n                    SELECT id, project_id, number, title, description, state_id, priority, blocked,\n                           labels, parent_id, assignee_user_id, lease_holder_session_id,\n                           lease_since, attempts, rounds, needs_human_reason, current_handoff_id,\n                           created_by_user_id, created_by_session_id, created_at, updated_at,\n                           closed_at\n                    FROM tasks\n                    WHERE project_id = $1 AND number = $2\n                    ",
   "describe": {
     "columns": [
       {
@@ -159,6 +159,17 @@
       },
       {
         "ordinal": 14,
+        "name": "rounds",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "rounds"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
         "name": "needs_human_reason",
         "type_info": "Text",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "current_handoff_id",
         "type_info": "Uuid",
         "origin": {
@@ -180,7 +191,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "created_by_user_id",
         "type_info": "Uuid",
         "origin": {
@@ -191,7 +202,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "created_by_session_id",
         "type_info": "Uuid",
         "origin": {
@@ -202,7 +213,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -213,7 +224,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -224,7 +235,7 @@
         }
       },
       {
-        "ordinal": 20,
+        "ordinal": 21,
         "name": "closed_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -256,6 +267,7 @@
       true,
       true,
       false,
+      false,
       true,
       true,
       true,
@@ -265,5 +277,5 @@
       true
     ]
   },
-  "hash": "cc7c9c590733486193f5a8e3ff281fa1d11e1c7061b6fe9734f04d63230b9502"
+  "hash": "0814ee68ab61285aa7978c43e66f69ab70c0495bf242d4fa6b2c2fcd5ce0dd73"
 }

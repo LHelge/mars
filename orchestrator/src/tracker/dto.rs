@@ -161,6 +161,8 @@ pub struct TaskDto {
     pub lease_holder_session_id: Option<Uuid>,
     pub lease_since: Option<DateTime<Utc>>,
     pub attempts: i16,
+    /// Revision hand-offs since the task last left the human state (ADR 0046).
+    pub rounds: i16,
     pub needs_human_reason: Option<String>,
     /// The record `current_handoff_id` names, or `null` — including when the
     /// column points nowhere because the record was deleted.
@@ -203,6 +205,7 @@ impl TaskDto {
             lease_holder_session_id: task.lease_holder_session_id,
             lease_since: task.lease_since,
             attempts: task.attempts,
+            rounds: task.rounds,
             needs_human_reason: task.needs_human_reason.clone(),
             handoff,
             depends_on,
@@ -337,6 +340,7 @@ mod tests {
             lease_holder_session_id: None,
             lease_since: None,
             attempts: 0,
+            rounds: 0,
             needs_human_reason: None,
             current_handoff_id: None,
             created_by_user_id: None,

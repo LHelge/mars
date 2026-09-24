@@ -79,6 +79,8 @@ async fn every_job_has_the_documented_name_and_interval() {
         // Not configurable: one minute is the resolution of the cron
         // expressions this job fires, not a knob (ADR 0043).
         (JobName::Scheduler, "scheduler", Duration::from_secs(60)),
+        // Not configurable: the timer is the fallback behind its wake-up.
+        (JobName::AutoMerge, "auto_merge", Duration::from_secs(60)),
         (
             JobName::TokenCleanup,
             "token_cleanup",

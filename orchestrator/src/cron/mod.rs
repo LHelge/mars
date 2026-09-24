@@ -18,9 +18,11 @@
 //! - `cron/stuck_tasks.rs` — release tasks held by ended sessions;
 //! - `cron/dispatcher.rs` — launch an ephemeral session for the best
 //!   claimable task of each `auto_launch` profile, on its timer and woken by
-//!   the event fan-out in between (the one job that is more than a loop);
+//!   the event fan-out in between;
 //! - `cron/schedules.rs` — launch an ephemeral, task-less session of every
 //!   scheduled profile whose cron expression came due since the last tick;
+//! - `cron/auto_merge.rs` — merge the approved hand-offs of tasks in
+//!   `auto_merge` states and move the tasks on, woken like the dispatcher;
 //! - `cron/token_cleanup.rs` — expired credentials and orphaned secret rows;
 //! - `cron/secret_rotation.rs` — re-wrap rows behind the newest master key;
 //! - `cron/orphan_cleanup.rs` — leftover containers, `/data/tmp` and refs.
@@ -41,6 +43,7 @@ use uuid::Uuid;
 
 use crate::prelude::*;
 
+mod auto_merge;
 mod dispatcher;
 pub mod idle_reaper;
 mod mirror_fetch;
@@ -64,6 +67,10 @@ const REAPER_PERIOD: Duration = Duration::from_secs(60);
 /// agents").
 const SCHEDULER_PERIOD: Duration = Duration::from_secs(60);
 
+/// How often the auto-merge job runs on its timer (`ARCHITECTURE.md`,
+/// "Background jobs"). The fallback behind its wake-up, like the dispatcher's.
+const AUTO_MERGE_PERIOD: Duration = Duration::from_secs(60);
+
 /// How often the hourly jobs run: token cleanup, secret rotation and orphan
 /// cleanup (`ARCHITECTURE.md`, "Background jobs").
 const HOURLY_PERIOD: Duration = Duration::from_secs(3600);
@@ -81,6 +88,7 @@ pub enum JobName {
     StuckTaskReaper,
     Dispatcher,
     Scheduler,
+    AutoMerge,
     TokenCleanup,
     SecretRotation,
     OrphanCleanup,
@@ -89,12 +97,13 @@ pub enum JobName {
 impl JobName {
     /// Every job, in the table's order. [`CronService::start`] spawns one loop
     /// per entry, so a variant added here is a variant that runs.
-    pub const ALL: [JobName; 8] = [
+    pub const ALL: [JobName; 9] = [
         JobName::MirrorFetch,
         JobName::IdleReaper,
         JobName::StuckTaskReaper,
         JobName::Dispatcher,
         JobName::Scheduler,
+        JobName::AutoMerge,
         JobName::TokenCleanup,
         JobName::SecretRotation,
         JobName::OrphanCleanup,
@@ -109,6 +118,7 @@ impl JobName {
             JobName::StuckTaskReaper => "stuck_task_reaper",
             JobName::Dispatcher => "dispatcher",
             JobName::Scheduler => "scheduler",
+            JobName::AutoMerge => "auto_merge",
             JobName::TokenCleanup => "token_cleanup",
             JobName::SecretRotation => "secret_rotation",
             JobName::OrphanCleanup => "orphan_cleanup",
@@ -132,6 +142,7 @@ impl JobName {
             JobName::MirrorFetch => Duration::from_secs(config.mirror_fetch_interval_secs),
             JobName::Dispatcher => Duration::from_secs(config.dispatcher_interval_secs),
             JobName::Scheduler => SCHEDULER_PERIOD,
+            JobName::AutoMerge => AUTO_MERGE_PERIOD,
             JobName::IdleReaper | JobName::StuckTaskReaper => REAPER_PERIOD,
             JobName::TokenCleanup | JobName::SecretRotation | JobName::OrphanCleanup => {
                 HOURLY_PERIOD
@@ -231,6 +242,7 @@ impl CronService {
             JobName::StuckTaskReaper => self.stuck_task_reaper(now).await,
             JobName::Dispatcher => self.dispatcher(now).await,
             JobName::Scheduler => self.scheduler(now).await,
+            JobName::AutoMerge => self.auto_merge(now).await,
             JobName::TokenCleanup => self.token_cleanup(now).await,
             JobName::SecretRotation => self.secret_rotation(now).await,
             JobName::OrphanCleanup => self.orphan_cleanup(now).await,
@@ -254,7 +266,7 @@ impl CronService {
     ///
     /// What [`CronService::start`] does per entry of [`JobName::ALL`], exposed
     /// on its own because one job is more than its loop — the dispatcher's
-    /// wake-up is a second task — and because a test that wants a job running
+    /// and the auto-merge job's wake-ups are a second task each — and because a test that wants a job running
     /// on its timer wants that job and not the other six.
     ///
     /// The handles are the caller's to await within the drain grace, exactly
@@ -274,17 +286,19 @@ impl CronService {
             async move { service.run_once(job, Utc::now()).await }
         };
 
-        // The dispatcher is the one job that is also woken between ticks
-        // (`ARCHITECTURE.md`, "Dispatcher"). The waker only signals this very
-        // loop, so the timer and the wake-up share its single-flight guard.
-        let JobName::Dispatcher = job else {
+        // The dispatcher and the auto-merge job are the two jobs also woken
+        // between ticks (`ARCHITECTURE.md`, "Dispatcher" and "Automatic
+        // merges"), by the same signals. Each has a waker of its own that
+        // only signals its own loop, so the timer and the wake-up share that
+        // loop's single-flight guard.
+        let (JobName::Dispatcher | JobName::AutoMerge) = job else {
             return vec![spawn_job(job.as_str(), period, shutdown, run)];
         };
 
         let (waker, wake) = scheduler::job_wake(dispatcher::WAKE_DEBOUNCE);
         vec![
             scheduler::spawn_woken_job(job.as_str(), period, Some(wake), shutdown.clone(), run),
-            dispatcher::spawn_waker(self.state.fanout.clone(), waker, shutdown),
+            dispatcher::spawn_waker(job.as_str(), self.state.fanout.clone(), waker, shutdown),
         ]
     }
 }

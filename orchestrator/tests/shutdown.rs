@@ -140,13 +140,14 @@ async fn the_cron_jobs_stop_on_the_same_signal_as_the_listeners() {
     let state = test_state();
     let (cron_shutdown, cron_shutdown_rx) = watch::channel(false);
     let jobs = Arc::new(CronService::new(state.clone())).start(cron_shutdown_rx);
-    // One loop per job, and the dispatcher's waker beside its loop
-    // (`ARCHITECTURE.md`, "Dispatcher"): every handle `start` returns is
-    // waited for below, so the waker stops on this signal too.
+    // One loop per job, and the wakers beside the dispatcher's and the
+    // auto-merge job's loops (`ARCHITECTURE.md`, "Dispatcher" and "Automatic
+    // merges"): every handle `start` returns is waited for below, so the
+    // wakers stop on this signal too.
     assert_eq!(
         jobs.len(),
-        JobName::ALL.len() + 1,
-        "one loop per job, plus the dispatcher's waker"
+        JobName::ALL.len() + 2,
+        "one loop per job, plus the two wakers"
     );
 
     let api_addr = api.local_addr().expect("the api listener has an address");

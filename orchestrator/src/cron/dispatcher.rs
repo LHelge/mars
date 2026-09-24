@@ -376,7 +376,14 @@ fn wakes_the_dispatcher(notice: &Notice) -> bool {
     }
 }
 
-/// Wake the dispatcher job from the shared listener's fan-out.
+/// Wake a job from the shared listener's fan-out on the signals that wake the
+/// dispatcher.
+///
+/// `job` is the job's logged name. The auto-merge job is the other caller:
+/// the same notices may have made its work ready — an approved task arriving
+/// in an auto-merge state is a `task_events` notice — so it is woken by the
+/// same predicate rather than a second one (`ARCHITECTURE.md`, "Task tracker"
+/// → "Automatic merges").
 ///
 /// One more subscriber of the fan-out `ARCHITECTURE.md`, "Event delivery"
 /// describes, never a second `LISTEN` connection: it takes
@@ -391,6 +398,7 @@ fn wakes_the_dispatcher(notice: &Notice) -> bool {
 /// Stops with the rest of [`CronService::start`](super::CronService::start):
 /// the same `shutdown` watch, and a dropped sender is shutdown too.
 pub fn spawn_waker(
+    job: &'static str,
     fanout: EventFanout,
     waker: JobWaker,
     mut shutdown: watch::Receiver<bool>,
@@ -423,7 +431,7 @@ pub fn spawn_waker(
                 // that has to happen and not information that is gone: wake
                 // once for however many were missed.
                 Err(RecvError::Lagged(missed)) => {
-                    debug!(missed, "the dispatcher waker lagged behind the fan-out");
+                    debug!(job, missed, "a job waker lagged behind the fan-out");
                     waker.wake();
                 }
                 // The fan-out was dropped, which only the process going away
@@ -432,7 +440,7 @@ pub fn spawn_waker(
             }
         }
 
-        debug!(job = "dispatcher", "waker stopped");
+        debug!(job, "waker stopped");
     })
 }
 

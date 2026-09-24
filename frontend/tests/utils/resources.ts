@@ -6,6 +6,7 @@
 
 import type {
   Branch,
+  Handoff,
   TaskComment,
   CreateTaskInput,
   Profile,
@@ -20,6 +21,7 @@ import type {
 } from "../../src/types";
 import type { Api } from "./api";
 import { uniqueName, waitFor } from "./env";
+import { commitToBareRepo, type BareRepo } from "./git";
 
 // --- projects ---------------------------------------------------------------
 
@@ -107,6 +109,40 @@ export function listBranches(
   projectId: string,
 ): Promise<Branch[]> {
   return client.get<Branch[]>(`/projects/${projectId}/branches`);
+}
+
+/**
+ * Moves the upstream and waits until the project's `origin/main` has caught
+ * up, then integrates it into `main` — the documented way fetched upstream
+ * changes become Mars's own (`SPEC.md`, "Git": merging `origin/main` into
+ * `main`). Returns the upstream commit.
+ *
+ * The scenarios that assert *how* this looks in the UI do it through the forms
+ * (`git.spec.ts`); this is the arrangement a merge, a rebase or a conflict
+ * needs before its own assertion begins, so it goes the short way.
+ */
+export async function moveUpstreamInto(
+  client: Api,
+  project: Project,
+  repo: BareRepo,
+  files: Record<string, string>,
+  message: string,
+): Promise<string> {
+  const moved = commitToBareRepo(repo, files, message);
+  await client.post(`/projects/${project.id}/fetch`);
+  await waitFor(
+    async () => {
+      const branches = await listBranches(client, project.id);
+      const upstream = branches.find((one) => one.name === "origin/main");
+      return upstream?.commit === moved ? branches : null;
+    },
+    { timeoutMs: 30_000, description: "origin/main to reach the new commit" },
+  );
+  await client.post(`/projects/${project.id}/git/merge`, {
+    source: "origin/main",
+    target: "main",
+  });
+  return moved;
 }
 
 // --- profiles and secrets ---------------------------------------------------
@@ -390,6 +426,85 @@ export function moveTask(
   return client.put<Task>(`/projects/${projectId}/tasks/${idOrNumber}`, {
     state,
   });
+}
+
+// --- hand-offs --------------------------------------------------------------
+
+/** The task's current hand-off; a task without one is a failed arrangement. */
+export async function currentHandoff(
+  client: Api,
+  projectId: string,
+  idOrNumber: string | number,
+): Promise<Handoff> {
+  const task = await getTask(client, projectId, idOrNumber);
+  if (task.handoff === null) {
+    throw new Error(
+      `task ${String(idOrNumber)} of ${projectId} has no current hand-off`,
+    );
+  }
+  return task.handoff;
+}
+
+/** A revision: whose commit, the comment it carries and where the task goes. */
+export interface RevisionInput {
+  source: string;
+  commit: string;
+  comment: string;
+  state: string;
+}
+
+/**
+ * Publishes a revision hand-off over REST (`SPEC.md`, "Code hand-offs and
+ * review") and returns the task's new current hand-off. Publishing through the
+ * drawer is `handoffs.spec.ts`; everywhere else it is arrangement.
+ */
+export async function publishRevision(
+  client: Api,
+  projectId: string,
+  idOrNumber: string | number,
+  revision: RevisionInput,
+): Promise<Handoff> {
+  await client.put(`/projects/${projectId}/tasks/${idOrNumber}`, {
+    state: revision.state,
+    handoff: {
+      kind: "revision",
+      source_session_id: revision.source,
+      commit: revision.commit,
+      comment: revision.comment,
+    },
+  });
+  return currentHandoff(client, projectId, idOrNumber);
+}
+
+/** A forward of the current hand-off, with or without a review decision. */
+export interface ForwardInput {
+  handoffId: string;
+  comment: string;
+  state: string;
+  review?: "approved" | "changes_requested";
+}
+
+/**
+ * Forwards the current hand-off over REST as the person `client` is, and
+ * returns the task's new current hand-off. The drawer's review forms are
+ * `handoffs.spec.ts`.
+ */
+export async function forwardHandoff(
+  client: Api,
+  projectId: string,
+  idOrNumber: string | number,
+  forward: ForwardInput,
+): Promise<Handoff> {
+  await client.put(`/projects/${projectId}/tasks/${idOrNumber}`, {
+    state: forward.state,
+    handoff: {
+      kind: "forward",
+      handoff_id: forward.handoffId,
+      comment: forward.comment,
+      ...(forward.review === undefined ? {} : { review: forward.review }),
+    },
+  });
+  return currentHandoff(client, projectId, idOrNumber);
 }
 
 // --- the scheduled-agent job ------------------------------------------------

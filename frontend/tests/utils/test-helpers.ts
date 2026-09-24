@@ -76,7 +76,11 @@ export {
   launchSession,
   listBranches,
   listProjectSessions,
+  currentHandoff,
+  forwardHandoff,
   moveTask,
+  moveUpstreamInto,
+  publishRevision,
   runSchedulerTick,
   seedAgentCredential,
   setAutomationPaused,
@@ -85,7 +89,9 @@ export {
   setProjectSecret,
   waitForSessionState,
   type CreateProjectOptions,
+  type ForwardInput,
   type LaunchSessionOptions,
+  type RevisionInput,
   type SchedulerTickReport,
 } from "./resources";
 

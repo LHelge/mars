@@ -45,7 +45,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import type { Project, SyncResult } from "../src/types";
-import type { Api, BareRepo } from "./utils/test-helpers";
+import type { Api } from "./utils/test-helpers";
 import { expect, test } from "./utils/fixtures";
 import type { SessionTracker } from "./utils/fixtures";
 import {
@@ -57,6 +57,7 @@ import {
   listBranches,
   loginViaToken,
   mirrorPath,
+  moveUpstreamInto,
   sessionWorkPath,
   transcript,
   waitFor,
@@ -97,40 +98,6 @@ async function stage(
 /** `POST /sessions/{id}/sync` (`SPEC.md`, "Sessions"): the explicit fetch-back. */
 function syncSession(client: Api, sessionId: string): Promise<SyncResult> {
   return client.post<SyncResult>(`/sessions/${sessionId}/sync`);
-}
-
-/**
- * Moves the upstream and waits until the project's `origin/<branch>` has caught
- * up, then integrates it into the matching head — the documented way fetched
- * upstream changes become Mars's own (`SPEC.md`, "Git": merging `origin/main`
- * into `main`).
- *
- * The scenarios that assert *how* this looks in the UI do it through the forms;
- * this is the arrangement the merge, rebase and conflict scenarios need before
- * their own assertion begins, so it goes the short way.
- */
-async function moveUpstreamInto(
-  client: Api,
-  project: Project,
-  repo: BareRepo,
-  files: Record<string, string>,
-  message: string,
-): Promise<string> {
-  const moved = commitToBareRepo(repo, files, message);
-  await client.post(`/projects/${project.id}/fetch`);
-  await waitFor(
-    async () => {
-      const branches = await listBranches(client, project.id);
-      const upstream = branches.find((one) => one.name === "origin/main");
-      return upstream?.commit === moved ? branches : null;
-    },
-    { timeoutMs: 30_000, description: "origin/main to reach the new commit" },
-  );
-  await client.post(`/projects/${project.id}/git/merge`, {
-    source: "origin/main",
-    target: "main",
-  });
-  return moved;
 }
 
 // --- locators ---------------------------------------------------------------

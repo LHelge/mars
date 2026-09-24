@@ -1,15 +1,16 @@
 ---
 id: vbrmg
 title: Push an integration head (e.g. main) from the console
-status: open
+status: done
 priority: P2
 created: "2026-09-22T21:38:05.001937561Z"
-updated: "2026-09-24T08:19:35.145745Z"
+updated: "2026-09-24T10:12:23.042850904Z"
 tags:
   - frontend
 depends_on:
   - ebk7u
 parent: kc8k3
+attempts: 1
 ---
 
 Found while writing the `branches` help topic (gtbp5 / 4qa8f): the console's `PushForm` appears only on session-branch rows of the git panel, so a user cannot push an integration head such as `main` from the UI — yet README "Operating notes" (git fetch bullet) and the help tell users to merge `origin/main` into `main` and then push, and merged work (the `merger` profile, the task's **Merge approved hand-off**, and later tykeu's auto-merge) waits on the integration head until pushed. Today that push needs the API (`POST /projects/{pid}/git/push`, which already accepts integration heads — `SPEC.md` "Git") or an agent granted the `push` tool, which no starter profile has.

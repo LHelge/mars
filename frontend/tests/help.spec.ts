@@ -64,3 +64,33 @@ test("the help page's contents and topic links move between anchored sections", 
   await expect(secrets).toBeInViewport();
   await expect(secrets).toBeFocused();
 });
+
+test("an auto-merge state's conflict state links the task-flow topic", async ({
+  page,
+  context,
+  user,
+  project,
+}) => {
+  await loginViaToken(context, user);
+
+  // A new project's `merge` state merges by itself, so its row already shows
+  // the `Conflict state` field with its hint and link.
+  await page.goto(`/projects/${project.id}?tab=states`);
+  const merge = page.getByRole("form", { name: "Auto-merge merge" });
+  await expect(merge.getByLabel("Conflict state")).toHaveAccessibleDescription(
+    "Where a conflicting merge sends the task, with the conflicting paths in a comment.",
+  );
+  await merge.getByRole("link", { name: "Learn more about Task flow" }).click();
+
+  await expect(page).toHaveURL(/\/help#task-flow$/);
+  const heading = page.getByRole("heading", {
+    name: "Task flow",
+    exact: true,
+    level: 2,
+  });
+  await expect(heading).toBeInViewport();
+  await expect(heading).toBeFocused();
+  await expect(
+    page.getByRole("heading", { name: "Auto-merge states" }),
+  ).toBeVisible();
+});

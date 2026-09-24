@@ -10,9 +10,22 @@ The board's columns are the project's own states, and you can edit them on the *
 | Human | Where tasks land that need a person. There is exactly one. | `needs_human` |
 | Terminal | Closes the task and satisfies what depends on it. | `done`, `cancelled` |
 
-A project keeps at least one queue state and one terminal state. Renaming a state renames it everywhere at once, including in the profiles that serve it. A state that still holds tasks can't be deleted.
+A project keeps at least one queue state and one terminal state. Renaming a state renames it everywhere at once, including in the profiles that serve it. A state that still holds tasks can't be deleted, and neither can a state that is another state's conflict state.
 
-With the starter profiles, a task goes like this. The planner turns a `backlog` item into tasks in `ready`. The implementer claims one, does the work and hands it to `review`. The reviewer approves it on to `merge`, or sends it back to `ready` with what has to change. The `merger` profile merges the approved work into the default branch and moves the task to `done`. Any of these steps can be yours instead.
+With the starter profiles, a task goes like this. The planner turns a `backlog` item into tasks in `ready`. The implementer claims one, does the work and hands it to `review`. The reviewer approves it on to `merge`, or sends it back to `ready` with what has to change. In `merge`, Mars merges the approved work into the default branch and moves the task to `done` by itself. Any of these steps can be yours instead.
+
+### Auto-merge states
+
+A queue state can be an **auto-merge** state. The **States** tab turns it on per state with the **Auto-merge** box, and asks for a **Conflict state**: another queue state, `ready` by default. The board marks such a column with an `auto-merge` chip. A new project's `merge` state is one.
+
+When an approved task arrives in an auto-merge state, Mars merges the commit the reviewer approved into the project's default branch, usually within a second. No agent and no session is involved. A fast-forward is used when the default branch hasn't moved since the work started, and a merge commit otherwise. The task then moves to the project's first terminal state, `done` in a new project, with a comment naming the commit it merged. That closes it and unblocks whatever depended on it.
+
+- **A conflict** leaves the default branch untouched. The task goes to the conflict state with a comment listing the conflicting paths, one per line. Its hand-off stays the approved one, so the next implementer starts from it, brings it up to date and publishes a new revision, which is reviewed again.
+- **A task without an approved hand-off** can only have been moved in by hand. Mars doesn't merge it and sends it to the human state instead, with the reason.
+- **A held task** is left alone. A profile that serves an auto-merge state keeps the tasks it claims there.
+- **Pausing automation**, in the project's **Settings**, pauses auto-merge too. Tasks wait in the state until you turn it off ([Automation](help:automation)).
+
+To keep one task from being merged, move it out of the state before you approve it, or turn auto-merge off. Merged work stays on Mars's default branch until someone pushes it ([Branches and merging](help:branches)).
 
 ### Held tasks
 
@@ -22,7 +35,9 @@ You can move, release and edit any task, held or not. **Release** gives a held t
 
 ### Attempts and escalation
 
-**Attempts** counts the claims since the task last changed state. When a task is released with its attempts at the project's **Max attempts** (3 by default, set in the project's **Settings**), it goes to the human state instead of back into its queue, with the reason recorded. Three agents failing on one task give you one task in `needs_human` with their three comments, not a fourth try. Moving a task to another state resets its attempts. A review loop therefore isn't capped by attempts, because each send-back is a move.
+**Attempts** counts the claims since the task last changed state. When a task is released with its attempts at the project's **Max attempts** (3 by default, set in the project's **Settings**), it goes to the human state instead of back into its queue, with the reason recorded. Three agents failing on one task give you one task in `needs_human` with their three comments, not a fourth try. Moving a task to another state resets its attempts. A review loop therefore isn't capped by attempts, because each send-back is a move. Rounds cap it instead.
+
+**Rounds** count the revisions published since the task last left the human state: one for each trip through an implementer, whatever your states are called. A card shows its round once it passes one, as `round 2/5`. A **send-back** is a review that requests changes, or an auto-merge that conflicts. When an agent or Mars sends a task back and its rounds have reached the project's **Max rounds** (5 by default, set in the project's **Settings**), the task goes to the human state instead, with `round limit reached` and the send-back's comment as the reason. A send-back you make yourself on the board is never redirected, because you have already decided. Moving a task out of the human state starts its rounds from zero again.
 
 An agent can also send a task to a person directly with its `needs_human` tool. Each escalation emails the task's assignee, or every administrator when nobody is assigned. You can turn these emails off on your own settings page. Moving a task into the human state by hand sends no email.
 
@@ -45,8 +60,8 @@ A session launched for a task with a hand-off starts from the hand-off's commit,
 
 ### Merging reviewed work
 
-**Merge approved hand-off**, in the task's hand-off section, merges the commit that was approved, not the tip of the branch it came from. The button is only enabled while the current hand-off is approved. The merge leaves the task where it is, so you move it to `done` afterwards. A `merger` agent does both itself.
+In an auto-merge state, approved work merges itself, as described above. **Merge approved hand-off**, in the task's hand-off section, is for the cases auto-merge doesn't cover: a state without auto-merge, a project whose automation is paused, or a merge into another integration head than the default branch. It merges the commit that was approved, not the tip of the branch it came from. The button is only enabled while the current hand-off is approved. The merge leaves the task where it is, so you move it to `done` afterwards. A `merger` agent, if you add one, does both itself.
 
-Here is an example. An implementer hands a task to `review` at commit A. The reviewer approves A and forwards it to `merge`. Meanwhile the implementer's branch moves on to B. The task merge still merges A. To include B, publish a new revision at B and have it reviewed. A rejection forwards A to `ready` with **Request changes**, and the next implementer starts from A and publishes a new revision when it's fixed.
+Here is an example. An implementer hands a task to `review` at commit A. The reviewer approves A and forwards it to `merge`. Meanwhile the implementer's branch moves on to B. The merge, automatic or yours, still merges A. To include B, publish a new revision at B and have it reviewed. A rejection forwards A to `ready` with **Request changes**, and the next implementer starts from A and publishes a new revision when it's fixed.
 
 A merge on the project's **Branches** panel is a plain git merge and approves nothing. [Branches and merging](help:branches) covers those.

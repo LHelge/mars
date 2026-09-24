@@ -5,8 +5,9 @@
 // from `TaskDetail`. It is a dense grid in the console's monospace, the way
 // the rest of the application writes ids and numbers, and a row that has
 // nothing to say — no lease, no parent, no labels — is not rendered at all.
-// Its one read is the project, for the `max_attempts` the attempt count is
-// shown against; the project page has it cached already.
+// Its one read is the project, for the `max_attempts` and `max_rounds` the
+// attempt and round counts are shown against; the project page has it cached
+// already.
 
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -35,6 +36,7 @@ export function TaskMeta({ projectId, task }: TaskMetaProps) {
   // answer, not a request of the drawer's own.
   const project = useQuery(projectQueries.detail(projectId));
   const maxAttempts = project.data?.max_attempts;
+  const maxRounds = project.data?.max_rounds;
 
   return (
     <div className="space-y-2">
@@ -94,6 +96,19 @@ export function TaskMeta({ projectId, task }: TaskMetaProps) {
             </span>
             <span className="text-console-muted ml-2 text-xs">
               {attemptsNote(maxAttempts)}
+            </span>
+          </Row>
+        )}
+
+        {task.rounds > 1 && (
+          <Row label="Rounds">
+            <span className="text-console-text font-mono text-xs">
+              {maxRounds === undefined
+                ? task.rounds
+                : `${String(task.rounds)}/${String(maxRounds)}`}
+            </span>
+            <span className="text-console-muted ml-2 text-xs">
+              {roundsNote(maxRounds)}
             </span>
           </Row>
         )}
@@ -191,6 +206,18 @@ function attemptsNote(maxAttempts: number | undefined): string {
   return maxAttempts === undefined
     ? "claims in this state"
     : `claims in this state; a release at ${String(maxAttempts)} escalates`;
+}
+
+/**
+ * What the round count means (`ARCHITECTURE.md`, "Task tracker", "Rounds"):
+ * revisions published since the task last left the human state, and the count
+ * at which a send-back by an agent or a conflicting automatic merge sends it
+ * to the human state instead.
+ */
+function roundsNote(maxRounds: number | undefined): string {
+  return maxRounds === undefined
+    ? "revisions since the human state"
+    : `revisions since the human state; a send-back at ${String(maxRounds)} escalates`;
 }
 
 /** No parent, no lookup: a selector that subscribes to nothing that changes. */

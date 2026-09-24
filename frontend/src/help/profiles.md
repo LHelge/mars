@@ -1,6 +1,6 @@
 A profile is the recipe for a project's sessions. It sets how a session runs, which work it picks up, what it runs in and what it may touch. Every session is launched from one. Profiles belong to one project and are edited on its **Profiles** tab. A change applies to the next launch and leaves running sessions alone.
 
-Two fields decide an agent's role: its **served states** and its **system prompt**. A planner serves `backlog` and hands tasks on to `ready`. A reviewer serves `review` and sends each task either on to be merged or back to `ready`.
+Two fields decide an agent's role: its **served states** and its **system prompt**. A planner serves `backlog` and hands tasks on to `ready`. A reviewer serves `review` and sends each task either on to be merged or back to `ready`. A state doesn't need a profile at all when Mars does its work: in a new project nobody serves `merge`, because it is an auto-merge state ([Task flow](help:task-flow)).
 
 ### Kind: conversational or ephemeral
 
@@ -45,7 +45,7 @@ The task tools are always available. Four further tools act on the project's git
 | Tool | What it lets the agent do |
 | --- | --- |
 | `list_session_branches` | List session branches and how far each is ahead of or behind the default branch. |
-| `merge` | Merge into an integration branch. A task's work merges only as its approved hand-off, and conflicts are never resolved for it. |
+| `merge` | Merge into an integration branch. A task's work merges only as its approved hand-off, and conflicts are never resolved for it. No starter profile has it; the `merger` template does, for a project where an agent merges instead of auto-merge. |
 | `rebase` | Rebase one branch onto another in the mirror, such as a session branch onto the default branch. |
 | `push` | Publish an integration or session branch to the remote, using the project's [git credential](help:git-credential). |
 

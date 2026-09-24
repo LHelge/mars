@@ -211,8 +211,9 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
           Unattended launches
         </legend>
         <p className="text-console-muted pb-3 text-xs">
-          Both hold the dispatcher back and nothing else: you can still launch a
-          session by hand while the project is paused or at its cap.{" "}
+          The cap holds unattended launches back; the pause stops them and
+          automatic merges too. You can still launch a session or merge by hand
+          while the project is paused or at its cap.{" "}
           <HelpLink topic="automation" />
         </p>
 

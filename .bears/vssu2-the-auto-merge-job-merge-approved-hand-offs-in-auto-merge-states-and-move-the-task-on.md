@@ -1,10 +1,10 @@
 ---
 id: vssu2
 title: "The auto-merge job: merge approved hand-offs in auto_merge states and move the task on"
-status: open
+status: done
 priority: P1
 created: "2026-09-22T20:20:39.083803641Z"
-updated: "2026-09-22T20:20:39.083803641Z"
+updated: "2026-09-24T15:41:05.179478644Z"
 tags:
   - orchestrator
   - git
@@ -14,6 +14,7 @@ depends_on:
   - ymav9
   - cyuj4
 parent: tykeu
+attempts: 1
 ---
 
 Implements ADR 0045's job. The behaviour, step by step, is `ARCHITECTURE.md`, "Task tracker" → "Automatic merges" (read it whole; it defines the ancestor check, the comments' exact wording, the race with a person's move and the failure rules), plus the `auto-merge` row of "Background jobs", the `Requested-By: system` trailer in "Git model" → "Commit identity", and `SPEC.md`, "TaskEvent" (`state_changed` with actor `system`; `escalated` for a missing approval).

@@ -1,10 +1,10 @@
 ---
 id: "6w2qf"
 title: Seed new projects with an auto-merge `merge` state and three role profiles; stop seeding `merger`
-status: open
+status: done
 priority: P1
 created: "2026-09-22T20:20:39.062025677Z"
-updated: "2026-09-22T20:20:39.062025677Z"
+updated: "2026-09-24T15:41:05.151521667Z"
 tags:
   - orchestrator
   - profiles
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - ymav9
 parent: tykeu
+attempts: 1
 ---
 
 Implements the seeding half of ADR 0045 (which supersedes ADR 0038 in this one respect). Documents already describe the result: `docs/data-model.md`, `task_states` default set (`merge` with `auto_merge` and conflict state `ready`) and `agent_profiles` (three seeded profiles); `SPEC.md`, "User-facing features" → "Agent profiles" and "Agent profiles" (three seeded); `ARCHITECTURE.md`, "Task tracker" → "State is a queue"; `README.md`, "Operation".

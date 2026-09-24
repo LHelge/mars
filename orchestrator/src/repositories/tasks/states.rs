@@ -24,7 +24,9 @@ use std::collections::HashMap;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::models::{DEFAULT_TASK_STATES, NewTaskState, TaskState, TaskStateKind, TaskStateName};
+use crate::models::{
+    DEFAULT_TASK_STATES, NewTaskState, TaskError, TaskState, TaskStateKind, TaskStateName,
+};
 use crate::prelude::*;
 use crate::repositories::tasks::TaskRepository;
 use crate::repositories::{foreign_key_violation, unique_violation};
@@ -53,7 +55,16 @@ impl TaskRepository<'_> {
         let mut inserted = Vec::with_capacity(DEFAULT_TASK_STATES.len());
         for (name, kind, position) in DEFAULT_TASK_STATES {
             inserted.push(
-                insert_state_row(&mut tx, project_id, Uuid::new_v4(), name, kind, position).await?,
+                insert_state_row(
+                    &mut tx,
+                    project_id,
+                    Uuid::new_v4(),
+                    name,
+                    kind,
+                    position,
+                    None,
+                )
+                .await?,
             );
         }
 
@@ -76,12 +87,21 @@ impl TaskRepository<'_> {
     ///
     /// The two documented 409s (`SPEC.md`, "Task states"): a name already used
     /// in this project, and a second `human` state.
+    ///
+    /// A state created with `auto_merge` names its conflict state, resolved
+    /// here to an existing `queue` state of the project (400 otherwise, as
+    /// [`TaskRepository::set_auto_merge`] answers) before anything is written.
     pub async fn insert_state(
         &self,
         mut tx: Locked<'_>,
         project_id: Uuid,
         state: &NewTaskState,
     ) -> Result<TaskState> {
+        let conflict_state_id = match &state.conflict_state {
+            Some(name) => Some(resolve_conflict_state(&mut tx, project_id, name, None).await?),
+            None => None,
+        };
+
         let end = end_position(&mut tx, project_id).await?;
 
         let position = match state.position {
@@ -110,6 +130,7 @@ impl TaskRepository<'_> {
             state.name.as_str(),
             state.kind,
             position,
+            conflict_state_id,
         )
         .await?;
 
@@ -211,26 +232,75 @@ impl TaskRepository<'_> {
         id: Uuid,
         name: &TaskStateName,
     ) -> Result<TaskState> {
-        let renamed = sqlx::query_as!(
-            TaskState,
-            r#"
-            UPDATE task_states
-            SET name = $3
-            WHERE id = $1 AND project_id = $2
-            RETURNING id, project_id, name, kind as "kind: TaskStateKind", position, created_at
-            "#,
+        let updated = sqlx::query!(
+            "UPDATE task_states SET name = $3 WHERE id = $1 AND project_id = $2",
             id,
             project_id,
             name.as_str(),
         )
-        .fetch_optional(&mut *tx)
+        .execute(&mut *tx)
         .await
-        .map_err(map_state_error)?
-        .ok_or(Error::NotFound)?;
+        .map_err(map_state_error)?;
+        if updated.rows_affected() == 0 {
+            return Err(Error::NotFound);
+        }
 
         debug!(project_id = %project_id, state_id = %id, "task state renamed");
 
-        Ok(renamed)
+        // Read back through the one row shape, which resolves the conflict
+        // state's name.
+        self.find_state_in_tx(&mut tx, project_id, id).await
+    }
+
+    /// Set or clear a state's auto-merge configuration (`SPEC.md`, "Task
+    /// states"; ADR 0045).
+    ///
+    /// `conflict_state` is `Some` to turn `auto_merge` on with that conflict
+    /// state and `None` to turn it off; [`crate::models::AutoMergeInput`] has
+    /// already checked the pair and the state's kind. What is left is a fact
+    /// about the project, decided here under the lock: the name must be a
+    /// `queue` state of this project (400 `conflict_state must name a queue
+    /// state of this project`) and not this state (400 `conflict_state must
+    /// be a different state`). The table's two `CHECK`s back both of the
+    /// model's rules. An unknown state is [`Error::NotFound`].
+    pub async fn set_auto_merge(
+        &self,
+        mut tx: Locked<'_>,
+        project_id: Uuid,
+        id: Uuid,
+        conflict_state: Option<&TaskStateName>,
+    ) -> Result<TaskState> {
+        let conflict_state_id = match conflict_state {
+            Some(name) => Some(resolve_conflict_state(&mut tx, project_id, name, Some(id)).await?),
+            None => None,
+        };
+
+        let updated = sqlx::query!(
+            r#"
+            UPDATE task_states
+            SET auto_merge = $3, conflict_state_id = $4
+            WHERE id = $1 AND project_id = $2
+            "#,
+            id,
+            project_id,
+            conflict_state_id.is_some(),
+            conflict_state_id,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(map_state_error)?;
+        if updated.rows_affected() == 0 {
+            return Err(Error::NotFound);
+        }
+
+        debug!(
+            project_id = %project_id,
+            state_id = %id,
+            auto_merge = conflict_state_id.is_some(),
+            "task state auto-merge set",
+        );
+
+        self.find_state_in_tx(&mut tx, project_id, id).await
     }
 
     /// Move a state to `position`, re-packing the rest around it.
@@ -275,7 +345,7 @@ impl TaskRepository<'_> {
         self.find_state_in_tx(&mut tx, project_id, id).await
     }
 
-    /// Delete a state, refusing the four cases the documents reserve.
+    /// Delete a state, refusing the five cases the documents reserve.
     ///
     /// Every refusal below is a count over the project's current rows, and
     /// without the lock a concurrent mutation could remove the last queue
@@ -287,7 +357,10 @@ impl TaskRepository<'_> {
     /// `task_states`). All four are [`Error::Conflict`], the 409 `SPEC.md`
     /// promises, with the messages `cannot delete the human state`, `cannot
     /// delete the last queue state`, `cannot delete the last terminal state`
-    /// and `state is in use by tasks`. An unknown state is [`Error::NotFound`].
+    /// and `state is in use by tasks`. A fifth, the same kind of refusal: a
+    /// state another state names as its conflict state is 409 `state is the
+    /// conflict state of <name>` (`task_states.conflict_state_id` is `ON
+    /// DELETE RESTRICT`). An unknown state is [`Error::NotFound`].
     ///
     /// The in-use check is an `EXISTS` under the lock because it produces the
     /// right message; `tasks.state_id`'s `ON DELETE RESTRICT` is the backstop
@@ -315,6 +388,27 @@ impl TaskRepository<'_> {
                 ));
             }
             _ => {}
+        }
+
+        // `conflict_state_id` is `ON DELETE RESTRICT`; asked first so the
+        // answer names the state that would be left pointing at nothing.
+        let referenced_by = sqlx::query_scalar!(
+            r#"
+            SELECT name
+            FROM task_states
+            WHERE project_id = $1 AND conflict_state_id = $2
+            ORDER BY position, name
+            LIMIT 1
+            "#,
+            project_id,
+            id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(name) = referenced_by {
+            return Err(Error::Conflict(format!(
+                "state is the conflict state of {name}"
+            )));
         }
 
         let in_use = sqlx::query_scalar!(
@@ -359,10 +453,12 @@ impl TaskRepository<'_> {
         let state = sqlx::query_as!(
             TaskState,
             r#"
-            SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
-            FROM task_states
-            WHERE project_id = $1 AND kind = 'queue'
-            ORDER BY position, name
+            SELECT s.id, s.project_id, s.name, s.kind as "kind: TaskStateKind", s.position,
+                   s.auto_merge, c.name AS "conflict_state?", s.created_at
+            FROM task_states AS s
+            LEFT JOIN task_states AS c ON c.id = s.conflict_state_id
+            WHERE s.project_id = $1 AND s.kind = 'queue'
+            ORDER BY s.position, s.name
             LIMIT 1
             "#,
             project_id,
@@ -529,9 +625,10 @@ impl TaskRepository<'_> {
             TaskState,
             r#"
             SELECT s.id, s.project_id, s.name, s.kind as "kind: TaskStateKind", s.position,
-                   s.created_at
+                   s.auto_merge, c.name AS "conflict_state?", s.created_at
             FROM profile_states AS p
             JOIN task_states AS s ON s.id = p.state_id
+            LEFT JOIN task_states AS c ON c.id = s.conflict_state_id
             WHERE p.profile_id = $1
             ORDER BY s.position, s.name
             "#,
@@ -564,9 +661,10 @@ impl TaskRepository<'_> {
             TaskState,
             r#"
             SELECT s.id, s.project_id, s.name, s.kind as "kind: TaskStateKind", s.position,
-                   s.created_at
+                   s.auto_merge, c.name AS "conflict_state?", s.created_at
             FROM profile_states AS p
             JOIN task_states AS s ON s.id = p.state_id
+            LEFT JOIN task_states AS c ON c.id = s.conflict_state_id
             WHERE p.profile_id = $1 AND s.project_id = $2
             ORDER BY s.position, s.name
             "#,
@@ -637,9 +735,11 @@ where
     let state = sqlx::query_as!(
         TaskState,
         r#"
-        SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
-        FROM task_states
-        WHERE id = $1 AND project_id = $2
+        SELECT s.id, s.project_id, s.name, s.kind as "kind: TaskStateKind", s.position,
+               s.auto_merge, c.name AS "conflict_state?", s.created_at
+        FROM task_states AS s
+        LEFT JOIN task_states AS c ON c.id = s.conflict_state_id
+        WHERE s.id = $1 AND s.project_id = $2
         "#,
         id,
         project_id,
@@ -662,10 +762,12 @@ where
     let states = sqlx::query_as!(
         TaskState,
         r#"
-        SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
-        FROM task_states
-        WHERE project_id = $1
-        ORDER BY position, name
+        SELECT s.id, s.project_id, s.name, s.kind as "kind: TaskStateKind", s.position,
+               s.auto_merge, c.name AS "conflict_state?", s.created_at
+        FROM task_states AS s
+        LEFT JOIN task_states AS c ON c.id = s.conflict_state_id
+        WHERE s.project_id = $1
+        ORDER BY s.position, s.name
         "#,
         project_id,
     )
@@ -688,9 +790,11 @@ where
     let state = sqlx::query_as!(
         TaskState,
         r#"
-        SELECT id, project_id, name, kind as "kind: TaskStateKind", position, created_at
-        FROM task_states
-        WHERE project_id = $1 AND name = $2
+        SELECT s.id, s.project_id, s.name, s.kind as "kind: TaskStateKind", s.position,
+               s.auto_merge, c.name AS "conflict_state?", s.created_at
+        FROM task_states AS s
+        LEFT JOIN task_states AS c ON c.id = s.conflict_state_id
+        WHERE s.project_id = $1 AND s.name = $2
         "#,
         project_id,
         name,
@@ -703,6 +807,9 @@ where
 
 /// The one `INSERT` into `task_states`, shared by the default set and the
 /// caller-supplied one.
+///
+/// `auto_merge` is on exactly when a conflict state is given, which is the
+/// pair `CHECK` of the table.
 async fn insert_state_row(
     tx: &mut PgConnection,
     project_id: Uuid,
@@ -710,25 +817,62 @@ async fn insert_state_row(
     name: &str,
     kind: TaskStateKind,
     position: i32,
+    conflict_state_id: Option<Uuid>,
 ) -> Result<TaskState> {
-    let inserted = sqlx::query_as!(
-        TaskState,
+    sqlx::query!(
         r#"
-        INSERT INTO task_states (id, project_id, name, kind, position)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, project_id, name, kind as "kind: TaskStateKind", position, created_at
+        INSERT INTO task_states (id, project_id, name, kind, position, auto_merge, conflict_state_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         "#,
         id,
         project_id,
         name,
         kind as TaskStateKind,
         position,
+        conflict_state_id.is_some(),
+        conflict_state_id,
     )
-    .fetch_one(&mut *tx)
+    .execute(&mut *tx)
     .await
     .map_err(map_state_error)?;
 
-    Ok(inserted)
+    // Read back through the one row shape, which resolves the conflict
+    // state's name.
+    state_by_id(&mut *tx, project_id, id)
+        .await?
+        .ok_or(Error::NotFound)
+}
+
+/// The id of the state a conflicting automatic merge sends a task to, named
+/// `name` in this project.
+///
+/// It must be a `queue` state of the project (an unknown name, a `human` or a
+/// `terminal` state are all the one 400) and not the state being configured,
+/// `own_id` — which a name the model already compared cannot catch when the
+/// same request renames the state away from it.
+async fn resolve_conflict_state(
+    tx: &mut PgConnection,
+    project_id: Uuid,
+    name: &TaskStateName,
+    own_id: Option<Uuid>,
+) -> Result<Uuid> {
+    let row = sqlx::query!(
+        r#"
+        SELECT id, kind as "kind: TaskStateKind"
+        FROM task_states
+        WHERE project_id = $1 AND name = $2
+        "#,
+        project_id,
+        name.as_str(),
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    match row {
+        Some(row) if Some(row.id) == own_id => Err(TaskError::ConflictStateIsSelf.into()),
+        Some(row) if row.kind == TaskStateKind::Queue => Ok(row.id),
+        _ => Err(TaskError::ConflictStateNotQueue.into()),
+    }
 }
 
 /// One past the project's last position: where an append lands.
@@ -844,8 +988,16 @@ fn map_state_error(err: sqlx::Error) -> Error {
             _ => {}
         }
     }
-    if let Some("tasks_state_id_fkey") = foreign_key_violation(&err) {
-        return Error::Conflict("state is in use by tasks".into());
+    match foreign_key_violation(&err) {
+        Some("tasks_state_id_fkey") => {
+            return Error::Conflict("state is in use by tasks".into());
+        }
+        // The backstop under `delete_state`'s own check, which names the
+        // referencing state; this path cannot, having only the constraint.
+        Some("task_states_conflict_state_id_fkey") => {
+            return Error::Conflict("state is the conflict state of another state".into());
+        }
+        _ => {}
     }
 
     Error::from(err)

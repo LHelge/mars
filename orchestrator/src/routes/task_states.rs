@@ -46,7 +46,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::events::TaskActor;
-use crate::models::{TaskState, TaskStateKind, TaskStateName};
+use crate::models::{AutoMergeInput, TaskState, TaskStateKind, TaskStateName};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::routes::{CurrentUser, Path};
@@ -86,11 +86,14 @@ struct CreateStateRequest {
     name: String,
     kind: serde_json::Value,
     position: Option<i32>,
+    #[serde(default)]
+    auto_merge: bool,
+    conflict_state: Option<String>,
 }
 
 /// `POST /projects/{pid}/task-states` → the new state (201; 400 for an invalid
-/// name, kind or position, 404 for an unknown project, 409 for a taken name or
-/// a second `human` state).
+/// name, kind or position or an invalid auto-merge pair, 404 for an unknown
+/// project, 409 for a taken name or a second `human` state).
 async fn create(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
@@ -105,6 +108,10 @@ async fn create(
 
     let actor = TaskActor::User { user_id: user.id };
     let name: String = name.into();
+    let auto_merge = AutoMergeInput {
+        auto_merge: body.auto_merge,
+        conflict_state: body.conflict_state,
+    };
     let created = retry_on_serialization_failure("create_task_state", || async {
         let mut mutation = TrackerMutation::begin(&state.pool, pid, actor).await?;
         let created = create_state(
@@ -113,6 +120,7 @@ async fn create(
                 name: name.clone(),
                 kind,
                 position: body.position,
+                auto_merge: auto_merge.clone(),
             },
         )
         .await?;
@@ -169,22 +177,43 @@ struct UpdateStateRequest {
     position: Option<i32>,
     #[serde(default, deserialize_with = "present")]
     kind: Option<serde_json::Value>,
+    auto_merge: Option<bool>,
+    /// `Some(None)` for an explicit `"conflict_state": null`, which gives the
+    /// field as much as a name does: it replaces the pair.
+    #[serde(default, deserialize_with = "present")]
+    conflict_state: Option<Option<String>>,
+}
+
+impl UpdateStateRequest {
+    /// The auto-merge pair this body replaces, or `None` when it gives
+    /// neither field. Either field replaces both, so a missing `auto_merge`
+    /// beside a `conflict_state` reads as `false` (`SPEC.md`, "Task states").
+    fn auto_merge(&self) -> Option<AutoMergeInput> {
+        if self.auto_merge.is_none() && self.conflict_state.is_none() {
+            return None;
+        }
+        Some(AutoMergeInput {
+            auto_merge: self.auto_merge.unwrap_or(false),
+            conflict_state: self.conflict_state.clone().flatten(),
+        })
+    }
 }
 
 /// `Some(value)` whenever the field is in the body, `null` included.
 ///
 /// serde only calls a `deserialize_with` for a key that is present, so the
 /// `None` left by `default` means "absent" and nothing else.
-fn present<'de, D>(deserializer: D) -> std::result::Result<Option<serde_json::Value>, D::Error>
+fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    serde_json::Value::deserialize(deserializer).map(Some)
+    T::deserialize(deserializer).map(Some)
 }
 
 /// `PUT /projects/{pid}/task-states/{name}` → the updated state (400 for an
-/// invalid name, a negative position or any `kind`; 404 for an unknown project
-/// or state; 409 for a taken name).
+/// invalid name, a negative position, any `kind` or an invalid auto-merge
+/// pair; 404 for an unknown project or state; 409 for a taken name).
 ///
 /// An empty body is a no-op: 200 with the state unchanged and no event.
 async fn update(
@@ -199,6 +228,7 @@ async fn update(
 
     let actor = TaskActor::User { user_id: user.id };
     let update = StateUpdate {
+        auto_merge: body.auto_merge(),
         name: body.name,
         position: body.position,
     };
@@ -226,7 +256,8 @@ async fn update(
 
 /// `DELETE /projects/{pid}/task-states/{name}` → 204 (404 for an unknown
 /// project or state; 409 for the `human` state, the last `queue` state, the
-/// last `terminal` state, or a state tasks are still in).
+/// last `terminal` state, a state tasks are still in, or a state another
+/// state names as its conflict state).
 async fn remove(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
@@ -279,5 +310,36 @@ mod tests {
         assert_eq!(empty.name, None);
         assert_eq!(empty.position, None);
         assert!(empty.kind.is_none());
+        assert_eq!(empty.auto_merge(), None);
+    }
+
+    /// Either field replaces both; neither leaves them alone.
+    #[test]
+    fn an_update_body_pairs_auto_merge_with_its_conflict_state() {
+        let parse = |body| serde_json::from_value::<UpdateStateRequest>(body).unwrap();
+
+        assert_eq!(
+            parse(json!({ "auto_merge": false })).auto_merge(),
+            Some(AutoMergeInput::default())
+        );
+        assert_eq!(
+            parse(json!({ "conflict_state": null })).auto_merge(),
+            Some(AutoMergeInput::default())
+        );
+        assert_eq!(
+            parse(json!({ "conflict_state": "ready" })).auto_merge(),
+            Some(AutoMergeInput {
+                auto_merge: false,
+                conflict_state: Some("ready".into()),
+            })
+        );
+        assert_eq!(
+            parse(json!({ "auto_merge": true, "conflict_state": "ready" })).auto_merge(),
+            Some(AutoMergeInput {
+                auto_merge: true,
+                conflict_state: Some("ready".into()),
+            })
+        );
+        assert_eq!(parse(json!({ "name": "qa" })).auto_merge(), None);
     }
 }

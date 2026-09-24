@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT s.id, s.project_id, s.name, s.kind as \"kind: TaskStateKind\", s.position,\n                   s.created_at\n            FROM profile_states AS p\n            JOIN task_states AS s ON s.id = p.state_id\n            WHERE p.profile_id = $1 AND s.project_id = $2\n            ORDER BY s.position, s.name\n            ",
+  "query": "\n            SELECT s.id, s.project_id, s.name, s.kind as \"kind: TaskStateKind\", s.position,\n                   s.auto_merge, c.name AS \"conflict_state?\", s.created_at\n            FROM profile_states AS p\n            JOIN task_states AS s ON s.id = p.state_id\n            LEFT JOIN task_states AS c ON c.id = s.conflict_state_id\n            WHERE p.profile_id = $1 AND s.project_id = $2\n            ORDER BY s.position, s.name\n            ",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,28 @@
       },
       {
         "ordinal": 5,
+        "name": "auto_merge",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "task_states",
+            "name": "auto_merge"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "conflict_state?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_states",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -93,8 +115,10 @@
       false,
       false,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "a1e3ea731133b66f062a838639f004bb0c234a88bfc71a3e2c2aec00fd2c7b6d"
+  "hash": "7081ce69125b5400d1fb9a63b4cde9ec82076c994c729fc3d7f0d2c12506b6f0"
 }

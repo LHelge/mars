@@ -1,10 +1,10 @@
 ---
 id: ahv3c
 title: Drop a session's ref at session end when a hand-off ref or an integration head already holds its tip
-status: open
+status: done
 priority: P2
 created: "2026-09-24T08:17:13.290161Z"
-updated: "2026-09-24T08:17:13.290161Z"
+updated: "2026-09-24T12:33:34.684308157Z"
 tags:
   - orchestrator
   - frontend
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - dhzqz
 parent: kc8k3
+attempts: 1
 ---
 
 Part of epic kc8k3; read its decision first, and the ADR written by dhzqz. dhzqz drops the ref of a session that made no commits. This task drops the ref of a session whose commits are all kept elsewhere: an implementer that handed off its last commit, a reviewer that started from a hand-off and committed nothing new, or a session whose branch was merged into an integration head.

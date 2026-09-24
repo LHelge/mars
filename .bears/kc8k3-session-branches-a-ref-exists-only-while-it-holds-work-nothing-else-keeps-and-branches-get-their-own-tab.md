@@ -2,10 +2,10 @@
 id: kc8k3
 title: "Session branches: a ref exists only while it holds work nothing else keeps, and branches get their own tab"
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-09-24T08:16:43.130292Z"
-updated: "2026-09-24T08:19:51.467991Z"
+updated: "2026-09-24T12:33:34.719051318Z"
 tags:
   - orchestrator
   - frontend

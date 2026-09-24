@@ -109,6 +109,12 @@ async function stage(
   client: Api,
   project: Project,
 ): Promise<Stage> {
+  // This suite is the manual task merge, so `merge` must hold an approved task
+  // until a person merges it: a new project seeds it as an auto-merge state
+  // (`SPEC.md`, "Task states"; ADR 0045), which would merge it at once.
+  await client.put(`/projects/${project.id}/task-states/merge`, {
+    auto_merge: false,
+  });
   await createTask(client, project.id, {
     title: "Add greeting",
     state: "ready",

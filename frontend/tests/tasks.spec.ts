@@ -694,7 +694,12 @@ test("the states editor adds, renames and removes a column, and says why it cann
   await add.getByLabel("Position").fill("3");
   await add.getByRole("button", { name: "Add state" }).click();
 
-  const row = (name: string) => page.getByRole("row").filter({ hasText: name });
+  // By the name cell: an auto-merge row's conflict-state select lists the
+  // other queue states, so a row's text alone matches more than one row.
+  const row = (name: string) =>
+    page
+      .getByRole("row")
+      .filter({ has: page.getByRole("cell", { name, exact: true }) });
   await expect(row("qa")).toBeVisible();
 
   await openBoard(page, project);
@@ -821,7 +826,9 @@ test("a second browser context follows the first without reloading", async ({
 
   // A state renamed: `states_changed` refreshes the columns themselves.
   await page.goto(`/projects/${project.id}?tab=states`);
-  const row = page.getByRole("row").filter({ hasText: "ready" });
+  const row = page
+    .getByRole("row")
+    .filter({ has: page.getByRole("cell", { name: "ready", exact: true }) });
   await row.getByRole("button", { name: "Rename" }).click();
   const rename = page.getByRole("form", { name: "Rename ready" });
   await rename.getByLabel("New name").fill("todo");

@@ -1,10 +1,10 @@
 ---
 id: dhzqz
 title: Drop a session's ref at session end when the session made no commits beyond its base
-status: open
+status: done
 priority: P2
 created: "2026-09-24T08:17:00.445343Z"
-updated: "2026-09-24T08:17:00.445343Z"
+updated: "2026-09-24T11:33:35.377869306Z"
 tags:
   - orchestrator
   - frontend
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - g3qdk
 parent: kc8k3
+attempts: 1
 ---
 
 Part of epic kc8k3; read its decision first. A planner, or a reviewer that forwards a hand-off without committing, ends with `session/<sid>` exactly at the commit it was cloned from, and the end-of-session fetch-back still writes `refs/sessions/<sid>` there (`orchestrator/src/git/session.rs`, `fetch_back`; called from `session/service.rs` `fetch_back` on `end` and from `session/owner.rs` `fetch_back` when an ephemeral session's `result` arrives). That ref holds nothing and should not exist.

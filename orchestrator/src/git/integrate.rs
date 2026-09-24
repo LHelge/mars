@@ -688,7 +688,7 @@ fn merge_message(
 /// `git merge-base --is-ancestor`, whose exit code is the answer: 0 yes, 1 no,
 /// anything else a failure. This is what separates a fast-forward from a real
 /// merge without parsing what `git merge` printed.
-async fn is_ancestor(
+pub(crate) async fn is_ancestor(
     repo: &Path,
     ancestor: &str,
     descendant: &str,

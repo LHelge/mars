@@ -763,6 +763,35 @@ impl GitService {
         self.ready_project(project_id).await?;
 
         let guard = self.locks.lock(project_id).await;
+        self.merge_handoff_locked(
+            &guard, project_id, task_id, handoff_id, target, message, actor,
+        )
+        .await
+    }
+
+    /// [`GitService::merge_handoff`], under a project git lock the caller
+    /// already holds.
+    ///
+    /// For the auto-merge job, which holds the lock from its re-read of the
+    /// task through the tracker mutation that moves it (`ARCHITECTURE.md`,
+    /// "Task tracker" → "Automatic merges"). The caller has established that
+    /// the project is `ready`; everything else — the target's kind, the
+    /// verification of the current approved hand-off, the default message,
+    /// the outcome event — is exactly the task merge's.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn merge_handoff_locked(
+        &self,
+        guard: &ProjectGitGuard,
+        project_id: Uuid,
+        task_id: Uuid,
+        handoff_id: Uuid,
+        target: &str,
+        message: Option<&str>,
+        actor: &GitActor,
+    ) -> Result<MergeOutcome> {
+        let target_ref = GitRef::parse(target)?;
+        require_kind(matches!(target_ref, GitRef::Head(_)), &target_ref)?;
+
         let approved = self
             .handoffs
             .approved_commit(project_id, task_id, handoff_id)
@@ -789,7 +818,7 @@ impl GitService {
         let label = handoff_id.to_string();
 
         self.merge_commit(
-            &guard,
+            guard,
             PinnedSource {
                 commit: &approved.commit,
                 label: &label,
@@ -800,6 +829,32 @@ impl GitService {
             actor,
         )
         .await
+    }
+
+    /// Is `commit` already contained in the integration head `branch`?
+    ///
+    /// Under a lock the caller holds, so the answer stays true until it lets
+    /// go. The auto-merge job's step 3: a hand-off commit the default branch
+    /// already contains was merged by a run that crashed before its tracker
+    /// commit, and only the move is left to do (`ARCHITECTURE.md`, "Task
+    /// tracker" → "Automatic merges"). A branch that does not resolve is
+    /// [`GitError::UnknownRef`], which the job counts as a failure and retries.
+    pub async fn is_merged_into(
+        &self,
+        guard: &ProjectGitGuard,
+        commit: &str,
+        branch: &str,
+    ) -> Result<bool> {
+        let branch_ref = GitRef::parse(branch)?;
+        require_kind(matches!(branch_ref, GitRef::Head(_)), &branch_ref)?;
+        let GitRef::Commit(commit) = GitRef::parse(commit)? else {
+            return Err(GitError::InvalidRef(commit.to_string()).into());
+        };
+
+        let repo = self.paths.project_repo(guard.project_id());
+        let head = refs::resolve(&repo, &branch_ref).await?;
+
+        Ok(integrate::is_ancestor(&repo, &commit, &head.commit).await?)
     }
 
     /// Rebase a branch onto another (`POST /projects/{pid}/git/rebase`; the

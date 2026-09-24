@@ -376,7 +376,7 @@ async fn close_parent_if_last_child(m: &mut TrackerMutation<'_>, task: &Task) ->
 /// "The project's first terminal state" is a position, not a name: a project
 /// that renamed or reordered its terminal columns closes parents into
 /// whichever one now sits leftmost (`SPEC.md`, "Tasks").
-async fn lowest_terminal_state(m: &mut TrackerMutation<'_>) -> Result<TaskState> {
+pub(crate) async fn lowest_terminal_state(m: &mut TrackerMutation<'_>) -> Result<TaskState> {
     let project_id = m.project_id();
 
     TaskRepository::new(m.pool())

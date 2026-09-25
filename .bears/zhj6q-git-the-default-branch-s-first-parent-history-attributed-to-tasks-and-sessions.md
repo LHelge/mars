@@ -1,15 +1,16 @@
 ---
 id: zhj6q
 title: "Git: the default branch's first-parent history, attributed to tasks and sessions"
-status: open
+status: done
 priority: P2
 created: "2026-09-25T21:03:46.427805809Z"
-updated: "2026-09-25T21:03:46.427805809Z"
+updated: "2026-09-25T22:47:45.403196486Z"
 tags:
   - orchestrator
   - git
   - docs
 parent: ny9yq
+attempts: 1
 ---
 
 ## Summary

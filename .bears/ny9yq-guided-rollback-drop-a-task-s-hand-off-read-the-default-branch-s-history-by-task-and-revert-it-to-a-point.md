@@ -2,10 +2,10 @@
 id: ny9yq
 title: "Guided rollback: drop a task's hand-off, read the default branch's history by task, and revert it to a point"
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-09-25T21:03:25.419857441Z"
-updated: "2026-09-25T21:03:25.419857441Z"
+updated: "2026-09-25T22:47:45.474337684Z"
 tags:
   - orchestrator
   - frontend

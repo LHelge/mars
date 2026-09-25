@@ -1,10 +1,10 @@
 ---
 id: ftpaq
 title: "Board: show that a task is waiting for its author's branch, with the way to land it"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-25T21:00:48.788085363Z"
-updated: "2026-09-25T21:13:33.365859154Z"
+updated: "2026-09-25T22:47:45.333998026Z"
 tags:
   - frontend
   - tracker

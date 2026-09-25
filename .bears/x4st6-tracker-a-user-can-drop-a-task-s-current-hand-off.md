@@ -1,15 +1,16 @@
 ---
 id: x4st6
 title: "Tracker: a user can drop a task's current hand-off"
-status: open
+status: done
 priority: P1
 created: "2026-09-25T21:03:46.405990395Z"
-updated: "2026-09-25T21:03:46.405990395Z"
+updated: "2026-09-25T22:47:45.378018364Z"
 tags:
   - orchestrator
   - tracker
   - docs
 parent: ny9yq
+attempts: 1
 ---
 
 ## Summary

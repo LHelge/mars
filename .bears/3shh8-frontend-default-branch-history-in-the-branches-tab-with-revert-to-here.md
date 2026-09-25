@@ -1,10 +1,10 @@
 ---
 id: "3shh8"
 title: "Frontend: default-branch history in the Branches tab, with \"Revert to here\""
-status: open
+status: done
 priority: P2
 created: "2026-09-25T21:04:24.804786266Z"
-updated: "2026-09-25T21:04:24.804786266Z"
+updated: "2026-09-25T22:47:45.473919219Z"
 tags:
   - frontend
   - git
@@ -13,6 +13,7 @@ depends_on:
   - zhj6q
   - zhcgs
 parent: ny9yq
+attempts: 1
 ---
 
 ## Summary

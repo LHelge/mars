@@ -2,10 +2,10 @@
 id: "4txx2"
 title: Dispatcher waits for a task's author to land its work on the default branch
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-25T21:00:10.184093257Z"
-updated: "2026-09-25T21:00:10.184093257Z"
+updated: "2026-09-25T22:47:45.334827010Z"
 tags:
   - orchestrator
   - frontend

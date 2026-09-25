@@ -1,10 +1,10 @@
 ---
 id: zhcgs
 title: "Git: revert an integration head to a commit, optionally reopening the tasks merged since"
-status: open
+status: done
 priority: P2
 created: "2026-09-25T21:04:13.040067790Z"
-updated: "2026-09-25T21:04:13.040067790Z"
+updated: "2026-09-25T22:47:45.454257258Z"
 tags:
   - orchestrator
   - git
@@ -14,6 +14,7 @@ depends_on:
   - x4st6
   - zhj6q
 parent: ny9yq
+attempts: 1
 ---
 
 ## Summary

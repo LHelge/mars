@@ -1,10 +1,10 @@
 ---
 id: k7juh
 title: "Frontend: drop hand-off in the task drawer"
-status: open
+status: done
 priority: P2
 created: "2026-09-25T21:04:13.088338462Z"
-updated: "2026-09-25T21:04:13.088338462Z"
+updated: "2026-09-25T22:47:45.429705434Z"
 tags:
   - frontend
   - tracker
@@ -12,6 +12,7 @@ tags:
 depends_on:
   - x4st6
 parent: ny9yq
+attempts: 1
 ---
 
 ## Summary

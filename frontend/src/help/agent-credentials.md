@@ -31,7 +31,7 @@ With no credential at all, the launch form offers **Add credential** first. **La
 
 ### Automatic and scheduled runs
 
-Sessions started by the dispatcher or by a schedule have no person behind them, so a **Me** credential never reaches them. They need a credential stored for the project or for **Everyone**. A profile that has neither can't be saved with automatic launching or a schedule turned on. If that credential is later deleted, the runs are skipped until one is back. [Automation](help:automation) has the details.
+Sessions started by the dispatcher or by a schedule have no person behind them, so a **Me** credential never reaches them. They need a credential stored for the project or for **Everyone**. A new project's implementer and reviewer are launched this way, so storing one of these is what sets them working. A profile that has neither can't be saved with automatic launching or a schedule turned on. If that credential is later deleted, the runs are skipped until one is back. [Automation](help:automation) has the details.
 
 ### When a credential stops working
 

@@ -12,7 +12,7 @@ The board's columns are the project's own states, and you can edit them on the *
 
 A project keeps at least one queue state and one terminal state. Renaming a state renames it everywhere at once, including in the profiles that serve it. A state that still holds tasks can't be deleted, and neither can a state that is another state's conflict state.
 
-With the starter profiles, a task goes like this. The planner turns a `backlog` item into tasks in `ready`. The implementer claims one, does the work and hands it to `review`. The reviewer approves it on to `merge`, or sends it back to `ready` with what has to change. In `merge`, Mars merges the approved work into the default branch and moves the task to `done` by itself. Any of these steps can be yours instead.
+With the starter profiles, a task goes like this. The planner, which you talk to, turns a `backlog` item into tasks in `ready`. The dispatcher launches an implementer run for each one, which claims it, does the work and hands it to `review`. There the dispatcher launches a reviewer run, which approves it on to `merge` or sends it back to `ready` with what has to change. In `merge`, Mars merges the approved work into the default branch and moves the task to `done` by itself. The implementer and reviewer runs start by themselves only once an [agent credential](help:agent-credentials) is stored for the project or for everyone ([Automation](help:automation)). Any of these steps can be yours instead.
 
 ### Auto-merge states
 

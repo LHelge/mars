@@ -446,6 +446,11 @@ export interface TemplateContext {
  * so the schedule fieldset the `ephemeral` kind reveals is filled in and
  * editable before the first save. Nothing here judges the expression: whether
  * it is valid is the server's answer alone (ADR 0043).
+ *
+ * An auto-launched template brings its `auto_launch` the same way, so the
+ * toggle starts ticked. Nothing here checks for the credential that needs:
+ * the editor's notice says so before the save, and the save's 400 at the
+ * toggle is the answer (`SPEC.md`, "Agent profiles"; ADR 0051).
  */
 export function prefillFromTemplate(
   template: ProfileTemplate,
@@ -468,6 +473,7 @@ export function prefillFromTemplate(
       system_prompt: template.system_prompt,
       mcp_tools: [...template.mcp_tools],
       serves_states: kept,
+      auto_launch: template.auto_launch,
       schedule_cron: template.schedule_cron,
       schedule_prompt: template.schedule_prompt,
     }),

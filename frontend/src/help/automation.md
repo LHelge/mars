@@ -4,7 +4,7 @@ The first two start sessions, and both are settings of an ephemeral profile. Onl
 
 ### Launching for tasks as they arrive
 
-Tick **Let the dispatcher launch this profile** in the profile's **Unattended launches** section. The dispatcher then watches the states the profile serves and launches a session of it for a task that can be claimed there. It picks the same task the agent's `ready` tool would offer first: highest priority first, then the lowest task number. The launch works like yours from a task: the task is claimed in the same step, the agent is told which task it holds, and the session starts from the task's current hand-off, if it has one.
+Tick **Let the dispatcher launch this profile** in the profile's **Unattended launches** section. A new project's `implementer` and `reviewer` come with it ticked, so a task put in `ready` is implemented, reviewed and, through auto-merge, merged with nobody launching anything, once the credential below is stored. The dispatcher then watches the states the profile serves and launches a session of it for a task that can be claimed there. It picks the same task the agent's `ready` tool would offer first: highest priority first, then the lowest task number. The launch works like yours from a task: the task is claimed in the same step, the agent is told which task it holds, and the session starts from the task's current hand-off, if it has one.
 
 The dispatcher reacts to the board, so a task moved into a served state is normally picked up within a second. A timer sweeps behind it in case a change was missed. A few more rules:
 
@@ -52,4 +52,4 @@ A live session is one that is creating or running, whoever launched it, so your 
 
 ### The credential unattended runs use
 
-An unattended session has no person behind it, so a credential stored for **Me** can't reach it. It needs an [agent credential](help:agent-credentials) stored for the project or for **Everyone**. A profile can't be saved with the dispatcher or a schedule turned on until one exists. If that credential is deleted later, the profile's runs are skipped and claim nothing until one is back.
+An unattended session has no person behind it, so a credential stored for **Me** can't reach it. It needs an [agent credential](help:agent-credentials) stored for the project or for **Everyone**. Until one exists, the starter implementer and reviewer simply wait: their tasks stay unclaimed, and you can launch either by hand with **Run once**. A profile can't be saved with the dispatcher or a schedule turned on until one exists either, and that includes an edit to the starter implementer or reviewer: store the credential, or untick the dispatcher setting to save without it. If that credential is deleted later, the profile's runs are skipped and claim nothing until one is back.

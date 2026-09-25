@@ -366,14 +366,44 @@ describe("nextFreeName", () => {
 });
 
 describe("prefillFromTemplate", () => {
+  /** The unseeded `merger` of `SPEC.md`, "Role profile templates". */
   const TEMPLATE: ProfileTemplate = {
-    name: "reviewer",
+    name: "merger",
     kind: "conversational",
+    backend: "claude",
+    serves_states: ["merge"],
+    mcp_tools: ["list_session_branches", "merge"],
+    system_prompt: "You are the merger of this project.",
+    is_default: false,
+    auto_launch: false,
+    schedule_cron: null,
+    schedule_prompt: null,
+  };
+
+  /** The seeded default: conversational, serving no state. */
+  const CLAUDE: ProfileTemplate = {
+    name: "claude",
+    kind: "conversational",
+    backend: "claude",
+    serves_states: [],
+    mcp_tools: [],
+    system_prompt: "You are Claude Code, running inside Mars.",
+    is_default: true,
+    auto_launch: false,
+    schedule_cron: null,
+    schedule_prompt: null,
+  };
+
+  /** A seeded role the dispatcher launches by itself (ADR 0051). */
+  const AUTO_LAUNCHED: ProfileTemplate = {
+    name: "reviewer",
+    kind: "ephemeral",
     backend: "claude",
     serves_states: ["review"],
     mcp_tools: ["list_session_branches"],
-    system_prompt: "You are a reviewer of this project.",
-    is_default: true,
+    system_prompt: "You are the reviewer of this project.",
+    is_default: false,
+    auto_launch: true,
     schedule_cron: null,
     schedule_prompt: null,
   };
@@ -387,6 +417,7 @@ describe("prefillFromTemplate", () => {
     mcp_tools: [],
     system_prompt: "You are the tech-debt scanner of this project.",
     is_default: false,
+    auto_launch: false,
     schedule_cron: "0 4 * * *",
     schedule_prompt: "Scan this project for technical debt.",
   };
@@ -398,10 +429,10 @@ describe("prefillFromTemplate", () => {
       queueStates: ["backlog", "ready", "review", "merge"],
     });
 
-    expect(form.name).toBe("reviewer");
-    expect(form.serves_states).toEqual(["review"]);
-    expect(form.mcp_tools).toEqual(["list_session_branches"]);
-    expect(form.system_prompt).toBe("You are a reviewer of this project.");
+    expect(form.name).toBe("merger");
+    expect(form.serves_states).toEqual(["merge"]);
+    expect(form.mcp_tools).toEqual(["list_session_branches", "merge"]);
+    expect(form.system_prompt).toBe("You are the merger of this project.");
     expect(droppedStates).toEqual([]);
 
     // Everything the template does not carry is a new profile's default.
@@ -412,29 +443,46 @@ describe("prefillFromTemplate", () => {
     expect(form.secrets).toEqual([]);
     expect(form.partial_messages).toBe(true);
     expect(form.idle_timeout_secs).toBe(String(DEFAULT_IDLE_TIMEOUT_SECS));
+    expect(form.auto_launch).toBe(false);
+  });
+
+  it("keeps a template that serves no state serving none", () => {
+    const { form, droppedStates } = prefillFromTemplate(CLAUDE, {
+      defaultImage: "img:1",
+      existingNames: ["planner", "implementer", "reviewer"],
+      queueStates: ["backlog", "ready", "review", "merge"],
+    });
+
+    expect(form.name).toBe("claude");
+    expect(form.kind).toBe("conversational");
+    // Not the `["ready"]` a blank profile starts on: that would show it the
+    // implementer's queue.
+    expect(form.serves_states).toEqual([]);
+    expect(toInput(form).serves_states).toEqual([]);
+    expect(droppedStates).toEqual([]);
   });
 
   it("suffixes the name when the project already has that role", () => {
     const { form } = prefillFromTemplate(TEMPLATE, {
       defaultImage: "img:1",
-      existingNames: ["planner", "reviewer"],
-      queueStates: ["review"],
+      existingNames: ["planner", "merger"],
+      queueStates: ["merge"],
     });
 
-    expect(form.name).toBe("reviewer-2");
+    expect(form.name).toBe("merger-2");
   });
 
   it("drops a served state this project has no queue state for", () => {
     const { form, droppedStates } = prefillFromTemplate(
-      { ...TEMPLATE, serves_states: ["review", "triage"] },
+      { ...TEMPLATE, serves_states: ["merge", "triage"] },
       {
         defaultImage: "img:1",
         existingNames: [],
-        queueStates: ["ready", "review"],
+        queueStates: ["ready", "merge"],
       },
     );
 
-    expect(form.serves_states).toEqual(["review"]);
+    expect(form.serves_states).toEqual(["merge"]);
     expect(droppedStates).toEqual(["triage"]);
   });
 
@@ -445,7 +493,7 @@ describe("prefillFromTemplate", () => {
       queueStates: null,
     });
 
-    expect(form.serves_states).toEqual(["review"]);
+    expect(form.serves_states).toEqual(["merge"]);
     expect(droppedStates).toEqual([]);
   });
 
@@ -453,13 +501,34 @@ describe("prefillFromTemplate", () => {
     const { form } = prefillFromTemplate(TEMPLATE, {
       defaultImage: "img:1",
       existingNames: [],
-      queueStates: ["review"],
+      queueStates: ["merge"],
     });
 
     expect(form.schedule_cron).toBe("");
     expect(form.schedule_prompt).toBe("");
     expect(toInput(form).schedule_cron).toBeNull();
     expect(toInput(form).schedule_prompt).toBeNull();
+  });
+
+  it("starts an auto-launched template with the toggle on", () => {
+    const { form } = prefillFromTemplate(AUTO_LAUNCHED, {
+      defaultImage: "img:1",
+      existingNames: [],
+      queueStates: ["backlog", "ready", "review", "merge"],
+    });
+
+    expect(form.kind).toBe("ephemeral");
+    expect(form.auto_launch).toBe(true);
+    // Partial messages follow the kind the template brought.
+    expect(form.partial_messages).toBe(false);
+    // The cap is a new profile's default, and nothing schedules it.
+    expect(form.max_concurrent).toBe(String(MIN_MAX_CONCURRENT));
+    expect(form.scheduled).toBe(false);
+
+    const input = toInput(form);
+    expect(input.auto_launch).toBe(true);
+    expect(input.serves_states).toEqual(["review"]);
+    expect(input.schedule_cron).toBeNull();
   });
 
   it("pre-fills the schedule of a scheduled template", () => {
@@ -482,15 +551,15 @@ describe("prefillFromTemplate", () => {
     const input = toInput(form);
     expect(input.schedule_cron).toBe("0 4 * * *");
     expect(input.schedule_prompt).toBe("Scan this project for technical debt.");
-    // A schedule is not an auto-launch: the template turns on neither.
+    // A schedule is not an auto-launch: the template turns on only its own.
     expect(input.auto_launch).toBe(false);
   });
 
   it("never carries the template's is_default into the form", () => {
-    const { form } = prefillFromTemplate(TEMPLATE, {
+    const { form } = prefillFromTemplate(CLAUDE, {
       defaultImage: "img:1",
       existingNames: [],
-      queueStates: ["review"],
+      queueStates: ["ready"],
     });
 
     expect(form).not.toHaveProperty("is_default");

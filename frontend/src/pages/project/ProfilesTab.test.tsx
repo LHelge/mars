@@ -69,7 +69,7 @@ function profile(): Profile {
   return {
     id: PROFILE_ID,
     project_id: PROJECT_ID,
-    name: "implementer",
+    name: "claude",
     kind: "conversational",
     backend: "claude",
     image: "ghcr.io/example/mars-session:fake",

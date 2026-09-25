@@ -53,6 +53,9 @@ const PROJECT_ID = "00000000-0000-4000-8000-0000000000a1";
 const TASK_ID = "00000000-0000-4000-8000-0000000000b2";
 const PROFILE_ID = "00000000-0000-4000-8000-0000000000c3";
 const SESSION_ID = "00000000-0000-4000-8000-0000000000d4";
+const PLANNER_ID = "00000000-0000-4000-8000-0000000000c4";
+const IMPLEMENTER_ID = "00000000-0000-4000-8000-0000000000c5";
+const REVIEWER_ID = "00000000-0000-4000-8000-0000000000c6";
 const NUMBER = 7;
 
 function project(): Project {
@@ -73,17 +76,18 @@ function project(): Project {
   };
 }
 
+/** The seeded default: conversational, serving no state (ADR 0051). */
 function profile(): Profile {
   return {
     id: PROFILE_ID,
     project_id: PROJECT_ID,
-    name: "implementer",
+    name: "claude",
     kind: "conversational",
     backend: "claude",
     image: "ghcr.io/example/mars-session:fake",
     model: null,
     system_prompt: "",
-    serves_states: ["ready"],
+    serves_states: [],
     secrets: [],
     mcp_tools: [],
     runtime: null,
@@ -99,6 +103,20 @@ function profile(): Profile {
     next_scheduled_at: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
+  };
+}
+
+/** A seeded role: ephemeral, auto-launched, over one queue. */
+function role(id: string, name: string, state: string): Profile {
+  return {
+    ...profile(),
+    id,
+    name,
+    kind: "ephemeral",
+    serves_states: [state],
+    partial_messages: false,
+    is_default: false,
+    auto_launch: true,
   };
 }
 
@@ -210,7 +228,7 @@ function mount() {
 }
 
 /** Open one of the two forms and wait for its profile list. */
-async function openForm(action = "Open in session") {
+async function openForm(action = "Open in session", option = /^claude/) {
   // The toggles are shut until the project has been read and is `ready`
   // (`tasks/launchRules.ts`).
   const toggle = screen.getByRole<HTMLButtonElement>("button", {
@@ -221,7 +239,7 @@ async function openForm(action = "Open in session") {
   });
   fireEvent.click(toggle);
   const form = await screen.findByRole("form", { name: action });
-  await within(form).findByRole("option", { name: /implementer/ });
+  await within(form).findByRole("option", { name: option });
   return form;
 }
 
@@ -265,6 +283,50 @@ afterEach(() => {
 });
 
 describe("LaunchForTask", () => {
+  it("offers the seeded set a sensible launch for a task in ready", async () => {
+    // A new project's profiles, in the order the API returns them.
+    vi.mocked(listProfiles).mockResolvedValue([
+      profile(),
+      {
+        ...profile(),
+        id: PLANNER_ID,
+        name: "planner",
+        serves_states: ["backlog"],
+      },
+      role(IMPLEMENTER_ID, "implementer", "ready"),
+      role(REVIEWER_ID, "reviewer", "review"),
+    ]);
+    vi.mocked(createSession).mockResolvedValue(session());
+    mount();
+
+    // Talking about the task: nobody conversational serves `ready`, so the
+    // first conversational profile — the default `claude` — is offered.
+    const talk = await openForm();
+    expect(
+      within(talk).getByLabelText<HTMLSelectElement>("Agent profile").value,
+    ).toBe(PROFILE_ID);
+
+    // Running it once: the ephemeral profile that serves `ready`.
+    fireEvent.click(screen.getByRole("button", { name: "Run once" }));
+    const run = await screen.findByRole("form", { name: "Run once" });
+    await within(run).findByRole("option", {
+      name: "implementer — serves ready",
+    });
+    expect(
+      within(run).getByLabelText<HTMLSelectElement>("Agent profile").value,
+    ).toBe(IMPLEMENTER_ID);
+    expect(within(run).getByRole("option", { name: "reviewer" })).toBeDefined();
+
+    fireEvent.click(within(run).getByRole("button", { name: "Run once" }));
+    await waitFor(() => {
+      expect(createSession).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(createSession).mock.calls[0]?.[1]).toEqual({
+      profile_id: IMPLEMENTER_ID,
+      task_id: TASK_ID,
+    } satisfies SessionCreateInput);
+  });
+
   it("sends no base_ref of its own and settles both caches", async () => {
     vi.mocked(createSession).mockResolvedValue(session());
 

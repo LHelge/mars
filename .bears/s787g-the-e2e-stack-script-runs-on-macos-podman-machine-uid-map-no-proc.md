@@ -1,10 +1,10 @@
 ---
 id: s787g
 title: "The e2e stack script runs on macOS: Podman machine uid map, no /proc"
-status: open
+status: done
 priority: P2
 created: "2026-09-25T10:24:52.267989Z"
-updated: "2026-09-25T10:24:52.267989Z"
+updated: "2026-09-25T10:25:03.056961Z"
 tags:
   - frontend
   - tests

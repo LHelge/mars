@@ -1,10 +1,10 @@
 ---
 id: "35xvy"
 title: "Orchestrator: seed `claude` as the default profile, implementer and reviewer ephemeral with auto_launch; ADR 0051 and SPEC"
-status: open
+status: done
 priority: P2
 created: "2026-09-25T09:17:20.534068Z"
-updated: "2026-09-25T09:17:20.534068Z"
+updated: "2026-09-25T10:08:21.963508Z"
 tags:
   - orchestrator
   - docs

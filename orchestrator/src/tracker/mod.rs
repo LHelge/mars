@@ -43,6 +43,7 @@ pub mod leases;
 pub mod mutation;
 pub mod provenance;
 pub mod retry;
+pub mod rollback;
 pub mod rounds;
 pub mod state;
 pub mod states;
@@ -69,6 +70,7 @@ pub use leases::{
 pub use mutation::{Locked, MutationOutcome, TrackerMutation};
 pub use provenance::resolve_origin;
 pub use retry::retry_on_serialization_failure;
+pub use rollback::{REOPEN_STATE_NOT_OPEN, Reopen, RevertRequest, RevertResult, revert_and_reopen};
 pub use rounds::{RoundLimitRedirect, send_back, send_back_redirect};
 pub use state::{StateChangeOptions, StateChangeResult, StateEventKind};
 pub use states::{NewStateInput, StateUpdate, create_state, delete_state, update_state};

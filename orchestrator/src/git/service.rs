@@ -4,8 +4,9 @@
 //! Everything below this module is a primitive: one git command, or one
 //! temporary clone, against refs somebody else resolved under a lock somebody
 //! else took. This is where those become the operations the product has —
-//! sync, diff, session-branch listing, merge, rebase and push — and it is the
-//! single code path for humans and agents (ADR 0007). A route hands its
+//! sync, diff, session-branch listing, history, merge, rebase, revert and push
+//! — and it is the single code path for humans and agents (ADR 0007), revert
+//! aside, which only users reach (ADR 0053). A route hands its
 //! request through unchanged and answers whatever comes back; an MCP tool does
 //! the same with [`GitActor::Session`] instead of [`GitActor::User`].
 //!
@@ -74,7 +75,7 @@ use super::refs::{GitRef, ResolvedRef};
 use super::{
     ComparePage, DataPaths, FetchOutcome, GitActor, GitCredentialProvider, GitError,
     MAX_PATCH_BYTES, MergeOutcome, ProjectGitGuard, ProjectGitLocks, PushOutcome, RebaseOutcome,
-    diff, history, integrate, mirror, push, refs, session,
+    diff, history, integrate, mirror, push, refs, revert, session,
 };
 use crate::models::{
     Diff, GitMergeDetail, GitPushDetail, GitRebaseDetail, GitSyncDetail, HistoryEntry,
@@ -107,6 +108,20 @@ const OP_PUSH: &str = "push";
 /// ([`crate::tracker::handoffs::HandoffService`]), and one spelling of it is
 /// one fewer string for a client to have to match twice.
 pub(crate) const NOT_READY: &str = "project is not ready";
+
+/// What a revert whose `expected_head` is not the head any more is told
+/// (409; `SPEC.md`, "Git").
+pub const BRANCH_HAS_MOVED: &str = "branch has moved";
+
+/// What [`GitService::revert_locked`] produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevertOutcome {
+    /// The revert commit the head now points at.
+    pub commit: String,
+    /// The first-parent range `to..head` it took back, newest first, each
+    /// entry attributed as the history attributes it.
+    pub reverted: Vec<HistoryEntry>,
+}
 
 /// How much life a credential must have left to be worth starting a push with
 /// (ADR 0002). Five minutes, as the fetch asks for.
@@ -602,6 +617,21 @@ impl GitService {
 
         let log = history::first_parent_page(&repo, &head.commit, before, limit).await?;
 
+        self.attributed_entries(project_id, log).await
+    }
+
+    /// First-parent log entries as [`HistoryEntry`]s: each entry's range
+    /// (`history::entry_range`), the hand-offs those ranges pinned, and the
+    /// sessions the `Requested-By` trailers name.
+    ///
+    /// One definition for the history page and for a revert's `reverted`,
+    /// so the two attribute a commit identically.
+    async fn attributed_entries(
+        &self,
+        project_id: Uuid,
+        log: Vec<history::LogEntry>,
+    ) -> Result<Vec<HistoryEntry>> {
+        let repo = self.paths.project_repo(project_id);
         let mut ranges = Vec::with_capacity(log.len());
         for entry in &log {
             ranges.push(history::entry_range(&repo, entry).await?);
@@ -673,6 +703,113 @@ impl GitService {
         let commits = history::range_commits(&repo, head, exclude).await?;
 
         self.attribute_commits(project_id, &commits).await
+    }
+
+    /// The refusals of a revert request that need no repository: `branch` an
+    /// integration head, `to` and `expected_head` full object ids (400).
+    ///
+    /// [`GitService::revert_locked`] applies the same checks again; this is
+    /// for a caller that wants a malformed request refused before it waits
+    /// for the project git lock (`ARCHITECTURE.md`, "Git model", Revert).
+    pub fn check_revert_request(branch: &str, to: &str, expected_head: &str) -> Result<()> {
+        revert_head_ref(branch)?;
+        for (field, commit) in [("to", to), ("expected_head", expected_head)] {
+            if !crate::models::is_commit_id(commit) {
+                return Err(Error::BadRequest(format!(
+                    "{field} must be a full lowercase hexadecimal git object id"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Refuse a project that is not `ready` (409) or does not exist (404),
+    /// before any lock: what every git operation checks first.
+    pub async fn require_ready(&self, project_id: Uuid) -> Result<()> {
+        self.ready_project(project_id).await.map(|_| ())
+    }
+
+    /// Revert the integration head `branch` to `to` with one new commit, under
+    /// a project git lock the caller holds (`POST /projects/{pid}/git/revert`;
+    /// `ARCHITECTURE.md`, "Git model", Revert).
+    ///
+    /// Under the lock: the head is resolved and compared with
+    /// `expected_head` (409 [`BRANCH_HAS_MOVED`] when they differ, so the
+    /// confirmation the user saw is the one applied); `to` has to be on the
+    /// head's first-parent line and strictly older than it (400); the
+    /// reverted first-parent range `to..head` is read and attributed exactly
+    /// as the history is; and the commit `git commit-tree <to>^{tree} -p
+    /// <head>` is written under the bot identity with a `Requested-By:
+    /// user:<id>` trailer and swapped in with `git update-ref`. The caller
+    /// keeps the lock for whatever follows — reopening the reverted tasks —
+    /// and has checked that the project is `ready`.
+    ///
+    /// No `git` event: a revert names no session (`SPEC.md`, "Git").
+    pub async fn revert_locked(
+        &self,
+        guard: &ProjectGitGuard,
+        branch: &str,
+        to: &str,
+        expected_head: &str,
+        user_id: Uuid,
+    ) -> Result<RevertOutcome> {
+        Self::check_revert_request(branch, to, expected_head)?;
+        let head_ref = revert_head_ref(branch)?;
+        let GitRef::Head(branch_name) = &head_ref else {
+            return Err(GitError::InvalidRef(branch.to_string()).into());
+        };
+        let project_id = guard.project_id();
+        let repo = self.paths.project_repo(project_id);
+
+        let head = refs::resolve(&repo, &head_ref).await?;
+        if head.git_ref != head_ref {
+            // A tag of the same name is not an integration head.
+            return Err(GitError::UnknownRef(head_ref.api_name()).into());
+        }
+        if head.commit != expected_head {
+            return Err(Error::Conflict(BRANCH_HAS_MOVED.to_string()));
+        }
+        if to == head.commit {
+            return Err(Error::BadRequest(format!(
+                "to must be older than the head of {}",
+                head_ref.api_name()
+            )));
+        }
+        match history::require_on_first_parent_line(&repo, &head.commit, to).await {
+            Ok(()) => {}
+            Err(GitError::UnknownRef(_)) => {
+                return Err(Error::BadRequest(format!(
+                    "to is not on the first-parent history of {}",
+                    head_ref.api_name()
+                )));
+            }
+            Err(error) => return Err(error.into()),
+        }
+
+        let log = history::first_parent_range(&repo, &head.commit, to).await?;
+        let message = revert::revert_message(
+            branch_name,
+            to,
+            log.iter()
+                .map(|entry| (entry.commit.as_str(), entry.subject.as_str())),
+            &revert::requested_by_user(user_id),
+        );
+        let reverted = self.attributed_entries(project_id, log).await?;
+
+        let identity = self.credentials.commit_identity(project_id).await?;
+        let commit = revert::revert_to(
+            guard,
+            &self.paths,
+            branch_name,
+            &head.commit,
+            to,
+            &message,
+            &identity,
+        )
+        .await?;
+
+        Ok(RevertOutcome { commit, reverted })
     }
 
     /// The diff from `merge-base(base, head)` to `head`
@@ -1447,6 +1584,14 @@ fn history_entry<'a>(
         tasks,
         sessions,
     }
+}
+
+/// The integration head a revert names, or 400.
+fn revert_head_ref(branch: &str) -> GitResult<GitRef> {
+    let parsed = GitRef::parse(branch)?;
+    require_kind(matches!(parsed, GitRef::Head(_)), &parsed)?;
+
+    Ok(parsed)
 }
 
 /// Refuse a ref whose kind is wrong for the role it was given, naming it as

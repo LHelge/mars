@@ -19,7 +19,8 @@
 //!
 //! [`range_commits`] is the same question over any range, `exclude..head`:
 //! what a revert to a point would take back is `range_commits(head,
-//! Some(point))`.
+//! Some(point))`, and [`first_parent_range`] is that range's own first-parent
+//! line, the entries a revert lists (`ARCHITECTURE.md`, "Git model", Revert).
 
 use std::path::Path;
 
@@ -98,6 +99,41 @@ pub async fn first_parent_page(
     Ok(parse_log(&output.stdout))
 }
 
+/// Every entry of `head`'s first-parent line down to, and not including,
+/// `exclude`, newest first: the first-parent range `exclude..head`.
+///
+/// What a revert to `exclude` takes back, entry by entry (`ARCHITECTURE.md`,
+/// "Git model", Revert). The caller has established that `exclude` is on
+/// `head`'s first-parent line ([`require_on_first_parent_line`]); for any
+/// other commit `git log --first-parent <head> ^<exclude>` would still answer,
+/// but with a line that does not end where the caller thinks it does. Both
+/// are full object ids, checked again because they reach argv.
+pub async fn first_parent_range(
+    repo: &Path,
+    head: &str,
+    exclude: &str,
+) -> std::result::Result<Vec<LogEntry>, GitError> {
+    require_commit_id(head)?;
+    require_commit_id(exclude)?;
+    let excluded = format!("^{exclude}");
+
+    let output = GitCommand::new()
+        .args([
+            "log",
+            "--first-parent",
+            "-z",
+            LOG_FORMAT,
+            "--end-of-options",
+            head,
+            &excluded,
+        ])
+        .cwd(repo)
+        .run_ok()
+        .await?;
+
+    Ok(parse_log(&output.stdout))
+}
+
 /// The range a first-parent entry brought in: every commit reachable from
 /// `entry` and not from `parents[0]`, or `entry` alone when it has at most one
 /// parent (see the module documentation).
@@ -154,7 +190,10 @@ pub async fn range_commits(
 /// stops short of it otherwise: the excluded parents cut the walk off exactly
 /// below `before`, so the answer costs the distance to the cursor and not the
 /// length of the whole history.
-async fn require_on_first_parent_line(
+///
+/// `pub(crate)` for the revert, whose `to` has to be on the same line
+/// ([`super::revert`]).
+pub(crate) async fn require_on_first_parent_line(
     repo: &Path,
     head: &str,
     before: &str,

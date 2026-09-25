@@ -58,3 +58,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0050](0050-session-refs-hold-only-unkept-work.md) | Session refs stay one per session and are kept only while they hold work no other retained ref holds; not one branch per task | accepted |
 | [0051](0051-seed-a-default-claude-profile-and-auto-launched-roles.md) | Seed a default `claude` profile, and the implementer and reviewer ephemeral and auto-launched; not a "no profile" launch | accepted |
 | [0052](0052-dispatcher-waits-for-a-task-author-s-work.md) | The dispatcher waits for a task's author session to land its commits on the default branch; not a prompt at session end, and not holding auto-merge | accepted |
+| [0053](0053-revert-integration-heads-never-reset-users-only.md) | Roll an integration head back by a revert commit, never a reset, and only for users; not over MCP, and no general git editor | accepted |

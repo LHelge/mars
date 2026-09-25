@@ -1,6 +1,6 @@
 //! `/api/projects/{pid}/git` (`SPEC.md`, "Git (`/api/projects/{pid}/git`)").
 //!
-//! The six endpoints the UI drives git with, and nothing more: every rule
+//! The seven endpoints the UI drives git with, and nothing more: every rule
 //! about refs, locking, syncing, credentials and outcome events belongs to
 //! [`GitService`], which is the one code path humans and agents share (ADR
 //! 0007). A handler here parses HTTP, names the actor and hands the request
@@ -17,6 +17,11 @@
 //! - a merge `message` is at most [`MAX_MESSAGE_BYTES`];
 //! - `force` defaults to `false`, so a force-push is always something the
 //!   caller asked for in as many words (`SPEC.md`, "Git").
+//!
+//! The revert is the one endpoint that reaches past [`GitService`]: reverting
+//! may also reopen tasks, so it goes through
+//! [`revert_and_reopen`](crate::tracker::revert_and_reopen), which holds the
+//! git lock across the revert and the tracker mutation (ADR 0053).
 //!
 //! Everything else already answers the documented status: an unknown project
 //! is 404 and one that is not `ready` is 409, both decided before any git work
@@ -42,6 +47,7 @@ use crate::git::{DiffSelector, GitActor, GitService};
 use crate::models::{Diff, HistoryEntry, SessionBranch};
 use crate::prelude::*;
 use crate::routes::{CurrentUser, Path, Query};
+use crate::tracker::{Reopen, RevertRequest, TaskDto, revert_and_reopen};
 
 /// The longest merge commit message a caller may supply.
 ///
@@ -74,6 +80,7 @@ pub fn routes() -> Router<AppState> {
         .route("/{pid}/git/merge", post(merge))
         .route("/{pid}/git/rebase", post(rebase))
         .route("/{pid}/git/push", post(push))
+        .route("/{pid}/git/revert", post(revert))
 }
 
 /// The service for this request, built as every other caller builds it.
@@ -383,6 +390,72 @@ async fn push(
     Ok(Json(PushResponse {
         remote_branch: outcome.remote_branch,
         commit: outcome.commit,
+    }))
+}
+
+// ---- revert ----
+
+/// `{ branch, to, expected_head, reopen?: { state, comment } }` (`SPEC.md`,
+/// "Git").
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevertBody {
+    /// The integration head to revert.
+    branch: String,
+    /// The full id of a strictly older commit on its first-parent line.
+    to: String,
+    /// The full id of the head the user confirmed against.
+    expected_head: String,
+    /// Reopen the terminal tasks of the reverted range.
+    reopen: Option<ReopenBody>,
+}
+
+/// `{ state, comment }`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReopenBody {
+    state: String,
+    comment: String,
+}
+
+/// `{ commit, reverted, reopened }` (`SPEC.md`, "Git").
+#[derive(Debug, Serialize)]
+struct RevertResponse {
+    commit: String,
+    reverted: Vec<HistoryEntry>,
+    reopened: Vec<TaskDto>,
+}
+
+/// `POST /projects/{pid}/git/revert` → the revert commit, the first-parent
+/// range it took back and the tasks it reopened.
+///
+/// 400 for a `branch` that is not an integration head, a `to` that is not a
+/// strictly older commit of its first-parent line, a malformed id, an unknown
+/// or terminal reopen state and an empty comment; 409 `branch has moved`
+/// when `expected_head` is not the head any more.
+async fn revert(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(pid): Path<Uuid>,
+    Json(body): Json<RevertBody>,
+) -> Result<Json<RevertResponse>> {
+    debug!(project_id = %pid, op = "revert", "git request");
+
+    let request = RevertRequest {
+        branch: body.branch,
+        to: body.to,
+        expected_head: body.expected_head,
+        reopen: body.reopen.map(|reopen| Reopen {
+            state: reopen.state,
+            comment: reopen.comment,
+        }),
+    };
+    let result = revert_and_reopen(&state, pid, user.id, request).await?;
+
+    Ok(Json(RevertResponse {
+        commit: result.outcome.commit,
+        reverted: result.outcome.reverted,
+        reopened: result.reopened,
     }))
 }
 

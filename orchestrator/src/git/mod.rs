@@ -54,6 +54,11 @@
 //! behind `GET /projects/{pid}/git/history` (`ARCHITECTURE.md`, "Git model",
 //! History).
 //!
+//! [`revert`] is the one write built on that walk: an integration head moved
+//! forward to a new commit whose tree is an earlier commit's, behind
+//! `POST /projects/{pid}/git/revert` (`ARCHITECTURE.md`, "Git model", Revert;
+//! ADR 0053).
+//!
 //! [`service`] is what the rest of the orchestrator calls. [`GitService`]
 //! composes the primitives above into the operations the REST routes, the MCP
 //! tools and the session endpoints expose: it takes the project git lock once,
@@ -76,6 +81,7 @@ pub mod mirror;
 pub mod paths;
 pub mod push;
 pub mod refs;
+pub mod revert;
 pub mod service;
 pub mod session;
 pub mod tempclone;
@@ -99,7 +105,8 @@ pub use paths::DataPaths;
 pub use push::{ComparePage, PushOutcome, github_compare_url, push};
 pub use refs::{GitRef, RefEntry, ResolvedRef};
 pub use service::{
-    ApprovedHandoff, DiffSelector, GitService, HandoffVerifier, NoHandoffs, PinnedSource,
+    ApprovedHandoff, BRANCH_HAS_MOVED, DiffSelector, GitService, HandoffVerifier, NoHandoffs,
+    PinnedSource, RevertOutcome,
 };
 pub use session::{
     FetchedBack, create_work_clone, fetch_back, fetch_back_ended, remove_work_clone, resolve_base,

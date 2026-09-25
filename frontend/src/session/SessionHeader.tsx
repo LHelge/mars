@@ -118,7 +118,13 @@ export function SessionHeader({ session, status, onStop }: SessionHeaderProps) {
               label="Session link"
             />
           </div>
-          <SessionActions session={session} onStop={onStop} />
+          <SessionActions
+            session={session}
+            onStop={onStop}
+            onShowBranch={() => {
+              setBranchOpen(true);
+            }}
+          />
         </div>
       </div>
 

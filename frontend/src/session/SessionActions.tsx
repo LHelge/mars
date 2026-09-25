@@ -23,7 +23,6 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { Alert } from "../components/Alert";
-import { ConfirmPanel } from "../components/ConfirmPanel";
 import { Icon } from "../components/icons";
 import { SubmitButton } from "../components/SubmitButton";
 import { SYNC_TITLE } from "../components/git/syncHint";
@@ -33,6 +32,7 @@ import { deleteSession, endSession, retrySession } from "../services/sessions";
 import type { Session } from "../types";
 import { shortSha } from "../utils/format";
 import { SessionDeleteConfirm } from "./SessionDeleteConfirm";
+import { SessionEndConfirm } from "./SessionEndConfirm";
 import { sessionActions } from "./sessionActionRules";
 import { disposeSessionStore, getSessionStore } from "./sessionStore";
 import { useStopSession } from "./useStopSession";
@@ -42,6 +42,8 @@ export interface SessionActionsProps {
   session: Session;
   /** The socket's stop, which falls back to `POST /sessions/{id}/stop`. */
   onStop: () => void;
+  /** Opens the header's branch panel, which the End warning points to. */
+  onShowBranch: () => void;
 }
 
 /** What a retry does (`SPEC.md`, "Sessions": `POST /sessions/{id}/retry`). */
@@ -53,7 +55,11 @@ function message(caught: unknown, fallback: string): string {
   return errorMessage(caught, fallback);
 }
 
-export function SessionActions({ session, onStop }: SessionActionsProps) {
+export function SessionActions({
+  session,
+  onStop,
+  onShowBranch,
+}: SessionActionsProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -226,10 +232,10 @@ export function SessionActions({ session, onStop }: SessionActionsProps) {
 
       {confirming === "end" && (
         <div className="w-full max-w-md">
-          <ConfirmPanel
-            message="End this session? The container stops and the agent cannot be given anything more to do."
-            confirmLabel="End the session"
+          <SessionEndConfirm
+            session={session}
             pending={end.isPending}
+            onShowBranch={onShowBranch}
             onConfirm={() => {
               end.mutate();
             }}

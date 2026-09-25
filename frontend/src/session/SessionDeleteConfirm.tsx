@@ -16,8 +16,8 @@ import { queryKeys } from "../services/queryKeys";
 import type { Session } from "../types";
 import {
   DELETE_CONSEQUENCES,
-  unmergedCommitsWarning,
-} from "./sessionDeleteWarning";
+  sessionUnmergedWarning,
+} from "./sessionUnmergedWarning";
 
 export interface SessionDeleteConfirmProps {
   session: Session;
@@ -42,10 +42,11 @@ export function SessionDeleteConfirm({
     queryFn: () => listSessionBranches(session.project_id),
   });
 
-  const warning = unmergedCommitsWarning(
+  const warning = sessionUnmergedWarning(
     branches.data,
     session.id,
     session.branch,
+    "delete",
   );
 
   return (

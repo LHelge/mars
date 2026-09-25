@@ -32,7 +32,6 @@ import type { SessionTracker } from "./utils/fixtures";
 import {
   commitInSessionWorkClone,
   defaultProfile,
-  endSession,
   gitRevParse,
   loginViaToken,
   mirrorPath,
@@ -209,7 +208,13 @@ test("launch with a first message and watch the transcript", async ({
 }) => {
   await loginViaToken(context, user);
 
-  const sessionId = await launchFromUi(page, sessions, api, project, "hello stub");
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
 
   // `creating → running` happens on stdin attach, not on `init`
   // (`ARCHITECTURE.md`, "Launch sequence"; ADR 0032).
@@ -351,7 +356,13 @@ test("second and third turns render subagent, edit diff, shell, deltas and denia
   sessions,
 }) => {
   await loginViaToken(context, user);
-  const sessionId = await launchFromUi(page, sessions, api, project, "hello stub");
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
   await waitForTurn(api, sessionId, 0);
 
   await compose(page, "next");
@@ -419,7 +430,13 @@ test("after the fixture is exhausted the stub echoes", async ({
   sessions,
 }) => {
   await loginViaToken(context, user);
-  const sessionId = await launchFromUi(page, sessions, api, project, "hello stub");
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
 
   // Three turns of fixture, then every stdin line yields `Stub reply to: …`.
   await waitForTurn(api, sessionId, 0);
@@ -497,7 +514,13 @@ test("stop parks the session and shows stopped", async ({
   await loginViaToken(context, user);
   await stubKnobs(api, project.id, { MARS_STUB_LINE_DELAY_MS: "400" });
 
-  const sessionId = await launchFromUi(page, sessions, api, project, "hello stub");
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
   await expectState(page, "running");
   // Wait for the CLI's `init`, so the stop lands mid-turn and the header has a
   // `cli_session_id` to show once the state change refreshes its row.
@@ -535,7 +558,13 @@ test("sending a message to a parked session relaunches it", async ({
   sessions,
 }) => {
   await loginViaToken(context, user);
-  const sessionId = await launchFromUi(page, sessions, api, project, "hello stub");
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
   const running = await waitForTurn(api, sessionId, 0);
   const cliSessionId = running.cli_session_id;
   expect(cliSessionId).not.toBeNull();
@@ -578,7 +607,13 @@ test("end moves to done and disables the composer", async ({
   sessions,
 }) => {
   await loginViaToken(context, user);
-  const sessionId = await launchFromUi(page, sessions, api, project, "hello stub");
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
   await waitForTurn(api, sessionId, 0);
 
   const actions = header(page);
@@ -627,7 +662,13 @@ test("ending a session right after launch leaves no container", async ({
   sessions,
 }) => {
   await loginViaToken(context, user);
-  const sessionId = await launchFromUi(page, sessions, api, project, "hello stub");
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "hello stub",
+  );
 
   // No wait for `running`: the End button is offered while the session is
   // still `creating`, and pressing it there cancels the launch
@@ -666,7 +707,13 @@ test("a CLI that exits non-zero fails the session and retry parks it", async ({
     MARS_STUB_EXIT_CODE: "1",
   });
 
-  const sessionId = await launchFromUi(page, sessions, api, project, "fail please");
+  const sessionId = await launchFromUi(
+    page,
+    sessions,
+    api,
+    project,
+    "fail please",
+  );
 
   // An unrecoverable CLI error is `failed`, not `parked` (`ARCHITECTURE.md`,
   // "Session lifecycle").
@@ -708,7 +755,6 @@ test("title defaults to the message's first line, truncated to 80 characters", a
   project,
   sessions,
 }) => {
-
   const multiline = await sessions.launch(api, project.id, {
     base_ref: "main",
     message: "Line one\nLine two",
@@ -757,7 +803,7 @@ test("an idle session is parked without user action", async ({
   await waitForSessionState(api, session.id, "running", 90_000);
 });
 
-test("deleting an ended session warns of its unmerged commits and takes its branch", async ({
+test("ending and deleting a session warn of its unmerged commits, and the delete takes its branch", async ({
   page,
   context,
   user,
@@ -775,9 +821,41 @@ test("deleting an ended session warns of its unmerged commits and takes its bran
     { "NOTES.md": "work\n" },
     "feat: unmerged",
   );
-  // Ending fetches the branch back into the mirror (`ARCHITECTURE.md`, "Stop
-  // semantics"), which is what gives it an `ahead` to warn about.
-  await endSession(api, session.id);
+  // A sync fetches the branch back into the mirror (`SPEC.md`, "Sessions"),
+  // which is what gives it an `ahead` to warn about while the session lives:
+  // opening the End confirmation reads the last sync and never syncs itself.
+  await api.post(`/sessions/${session.id}/sync`);
+  const branchName = session.branch ?? `refs/sessions/${session.id}`;
+
+  // `SPEC.md`, "Frontend", Confirmations: the End panel names the commits and
+  // what they hold back, as a warning, not a refusal.
+  await page.goto(`/sessions/${session.id}`);
+  const actions = header(page);
+  await actions.getByRole("button", { name: "End", exact: true }).click();
+  await expect(
+    actions.getByText(
+      `${branchName} has 1 commit not on main. Tasks it filed will not be dispatched until they are merged.`,
+    ),
+  ).toBeVisible({ timeout: 30_000 });
+  // Its link opens the header's branch panel, where the commits can be merged.
+  await actions
+    .getByRole("button", { name: "Open the branch panel to merge them" })
+    .click();
+  await expect(
+    actions.getByRole("button", { name: "branch", exact: true }),
+  ).toHaveAttribute("aria-expanded", "true");
+  // Ending fetches the branch back into the mirror again (`ARCHITECTURE.md`,
+  // "Stop semantics"), and `done` can be seen before that fetch has written
+  // the ref, which the delete below would then race: wait for the end's own
+  // answer, not only for the state.
+  const ended = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith(`/api/sessions/${session.id}/end`),
+    { timeout: 60_000 },
+  );
+  await actions.getByRole("button", { name: "End the session" }).click();
+  expect((await ended).ok()).toBe(true);
   await waitForSessionState(api, session.id, "done", 60_000);
   const mirror = mirrorPath(project.id);
   expect(gitRevParse(mirror, `refs/sessions/${session.id}`)).toMatch(
@@ -791,7 +869,7 @@ test("deleting an ended session warns of its unmerged commits and takes its bran
   // `SPEC.md`, "Frontend", Confirmations: a warning, not a refusal.
   await expect(
     page.getByText(
-      `${session.branch ?? `refs/sessions/${session.id}`} has 1 commit not on main; they will be lost.`,
+      `${branchName} has 1 commit not on main; they will be lost.`,
     ),
   ).toBeVisible({ timeout: 30_000 });
   // The row's button, and below it the panel's, which confirms.

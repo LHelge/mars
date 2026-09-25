@@ -59,3 +59,11 @@ export function taskCardTestId(taskNumber: number): string {
  * the drawer, so the name is not unique on the page.
  */
 export const AUTHOR_BRANCH_WAIT = "author-branch-wait";
+
+/**
+ * The drawer's current hand-off block (`src/tasks/HandoffPanel.tsx`): the
+ * commit the next launch starts from. It has no accessible name of its own,
+ * and its words also appear in the history below it, so whether a task still
+ * has a current hand-off is asked of this hook.
+ */
+export const CURRENT_HANDOFF = "current-handoff";

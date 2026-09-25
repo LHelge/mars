@@ -120,6 +120,23 @@ export function releaseTask(pid: string, ref: TaskPathRef): Promise<Task> {
 }
 
 /**
+ * `POST /projects/{pid}/tasks/{id}/drop-handoff` — clears the current
+ * hand-off so the next launch starts from the default branch, and writes the
+ * comment as the user's; the record stays in the history. 409 when the task
+ * has no current hand-off, 400 for an empty comment (`SPEC.md`, "Code
+ * hand-offs and review").
+ */
+export function dropHandoff(
+  pid: string,
+  ref: TaskPathRef,
+  comment: string,
+): Promise<Task> {
+  return apiPost<Task>(`/projects/${seg(pid)}/tasks/${seg(ref)}/drop-handoff`, {
+    comment,
+  });
+}
+
+/**
  * The SSE URL of `SPEC.md`, "SSE: task stream". `EventSource` cannot send an
  * `Authorization` header, so the access token travels as `?token=`.
  *

@@ -11,7 +11,9 @@
 // hand-off is refused, requesting changes sends the task back without losing
 // the commit, the revision diff is read by hand-off id without syncing, a
 // commit that is not the source session's tip is refused, and an implementer
-// whose tip a hand-off holds ends with no session ref and its changes intact.
+// whose tip a hand-off holds ends with no session ref and its changes intact,
+// and a dropped hand-off leaves the task with none while its record stays in
+// the history.
 //
 // **Where the work comes from.** The stub CLI replays a transcript and executes
 // nothing, so — exactly as `git.spec.ts` does — a scenario stands in for the
@@ -63,6 +65,7 @@ import type { Api } from "./utils/test-helpers";
 import { apiClient, expect, test } from "./utils/fixtures";
 import type { SessionTracker } from "./utils/fixtures";
 import {
+  CURRENT_HANDOFF,
   commitInSessionWorkClone,
   createTask,
   endSession,
@@ -1059,4 +1062,81 @@ test("an implementer that handed off its tip ends with no ref and still shows it
   expect(() =>
     gitRevParse(fixture.mirror, `refs/sessions/${session}`),
   ).toThrow();
+});
+
+test("dropping the hand-off clears it from the drawer and keeps it in the history", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  const fixture = await stage(sessions, api, project);
+  const session = await implementer(fixture);
+  const commit = commitInSessionWorkClone(
+    session,
+    { "greeting.txt": "hello\n" },
+    "feat: greeting",
+  );
+  const handoff = await publishRevision(fixture.client, fixture.project.id, 1, {
+    source: session,
+    commit,
+    comment: "Built on the wrong base",
+    state: "review",
+  });
+
+  const panel = await openTask(page, project);
+  const section = handoffSection(panel);
+  await expect(section.getByTestId(CURRENT_HANDOFF)).toBeVisible();
+
+  await section.getByRole("button", { name: "Drop hand-off", exact: true }).click();
+  // The confirmation says what the drop does and what it keeps, and names its
+  // target on the button (`SPEC.md`, "Frontend", Confirmations).
+  await expect(
+    section.getByText(/next launch for this task starts from the default branch/),
+  ).toBeVisible();
+  const confirm = section.getByRole("button", { name: "Drop hand-off of #1" });
+
+  // The comment is required, and refused before any request is made.
+  await confirm.click();
+  await expect(section.getByText("Say why the hand-off is dropped.")).toBeVisible();
+  await expect(section.getByTestId(CURRENT_HANDOFF)).toBeVisible();
+
+  await section
+    .getByLabel("Comment", { exact: true })
+    .fill("The base was wrong; start over from main");
+  await confirm.click();
+
+  await expect(section.getByTestId(CURRENT_HANDOFF)).toHaveCount(0, {
+    timeout: LIVE_TIMEOUT,
+  });
+  await expect(section.getByText("No code hand-off")).toBeVisible();
+  await expect(
+    section.getByRole("button", { name: "Drop hand-off", exact: true }),
+  ).toHaveCount(0);
+  // The reason is on the thread as the user's own comment.
+  await expect(
+    panel.getByText("The base was wrong; start over from main").first(),
+  ).toBeVisible();
+
+  // The record: the pointer is gone, the state is unchanged and the dropped
+  // hand-off stays in the history with its retained ref (`SPEC.md`, "Code
+  // hand-offs and review").
+  const task = await getTask(fixture.client, fixture.project.id, 1);
+  expect(task.handoff).toBeNull();
+  expect(task.state).toBe("review");
+  expect(task.handoffs.map((one) => one.id)).toEqual([handoff.id]);
+  expect(gitRevParse(fixture.mirror, `refs/handoffs/${handoff.id}`)).toBe(commit);
+
+  // With nothing left to drop, the API refuses a second drop.
+  const again = await fixture.client.send(
+    "POST",
+    `/projects/${fixture.project.id}/tasks/1/drop-handoff`,
+    { comment: "again" },
+    { allow: [409] },
+  );
+  expect(again.status).toBe(409);
+  expect(again.text).toContain("task has no current hand-off");
 });

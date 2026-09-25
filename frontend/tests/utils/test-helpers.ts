@@ -108,6 +108,7 @@ export { callSessionTool, createTaskAsSession } from "./mcp";
 
 export {
   AUTHOR_BRANCH_WAIT,
+  CURRENT_HANDOFF,
   LAUNCH_SOURCE,
   PROFILE_AUTOMATION,
   STREAMING_CURSOR,

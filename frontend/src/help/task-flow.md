@@ -53,6 +53,7 @@ A state change can carry a **hand-off**: a pointer to committed work, with a com
 
 - **Publish revision** names a session and a full 40-character commit id. Mars syncs that session's branch first, and the branch tip must equal the commit you named. Uncommitted changes are never included. Mars then keeps that exact commit, so later commits on the branch don't change what was handed off.
 - **Approve**, **Request changes** and **Forward without decision** pass the current hand-off on to another state, with or without a review decision. Forwarding doesn't replace the work with the reviewer's own branch.
+- **Drop hand-off** clears the current hand-off when its commit shouldn't be built on, for example after it was merged and rolled back. It asks for a comment saying why, which goes on the task's thread. The task keeps its state, and the dropped hand-off stays in its history. Agents can't do this; only people can.
 
 A new revision always starts unreviewed. An earlier approval stays in the task's history, but it never carries over to new code.
 

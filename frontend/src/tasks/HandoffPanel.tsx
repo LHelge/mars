@@ -26,6 +26,11 @@
 // commit's diff inside the section rather than navigating away from the
 // argument it belongs to.
 //
+// `Drop hand-off` sits at the end of the same row, and only while there is a
+// current hand-off to drop: it is the way back to the default branch when the
+// pinned commit is known to be bad, and it asks first, with the comment the
+// thread will carry (`DropHandoffConfirm.tsx`).
+//
 // The section opens with one line saying what a hand-off is and a link to the
 // help page's `task-flow` topic, because the rest of the panel assumes it.
 
@@ -37,6 +42,7 @@ import { MarkdownBody } from "../components/Markdown";
 import { SubmitButton } from "../components/SubmitButton";
 import { Icon, ICON_CLASS } from "../components/icons";
 import { useCopyToClipboard } from "../components/useClipboardCopy";
+import { CURRENT_HANDOFF } from "../utils/testIds";
 import type { Handoff, TaskDetail } from "../types";
 import {
   formatDateTime,
@@ -44,6 +50,7 @@ import {
   shortId,
   shortSha,
 } from "../utils/format";
+import { DropHandoffConfirm } from "./DropHandoffConfirm";
 import { HandoffDiff } from "./HandoffDiff";
 import { HandoffHistory } from "./HandoffHistory";
 import { MergeTaskAction } from "./MergeTaskAction";
@@ -68,7 +75,9 @@ export interface HandoffPanelProps {
 
 /** Which form is open, if any. */
 type OpenForm =
-  { kind: "revision" } | { kind: "review"; decision: ReviewDecision };
+  | { kind: "revision" }
+  | { kind: "review"; decision: ReviewDecision }
+  | { kind: "drop" };
 
 export function HandoffPanel({ projectId, task }: HandoffPanelProps) {
   const [open, setOpen] = useState<OpenForm | null>(null);
@@ -147,6 +156,19 @@ export function HandoffPanel({ projectId, task }: HandoffPanelProps) {
             </span>
           ),
         )}
+
+        {current !== null && (
+          <SubmitButton
+            type="button"
+            variant="ghost"
+            disabled={open?.kind === "drop"}
+            onClick={() => {
+              setOpen({ kind: "drop" });
+            }}
+          >
+            Drop hand-off
+          </SubmitButton>
+        )}
       </div>
 
       {open?.kind === "revision" && (
@@ -166,6 +188,10 @@ export function HandoffPanel({ projectId, task }: HandoffPanelProps) {
           decision={open.decision}
           onDone={close}
         />
+      )}
+
+      {open?.kind === "drop" && current !== null && (
+        <DropHandoffConfirm projectId={projectId} task={task} onDone={close} />
       )}
 
       {shown !== null && (
@@ -204,7 +230,10 @@ function CurrentHandoff({
   const comment = handoffComment(task.comments, handoff);
 
   return (
-    <div className="border-console-border bg-console-bg space-y-2 rounded border p-3">
+    <div
+      data-testid={CURRENT_HANDOFF}
+      className="border-console-border bg-console-bg space-y-2 rounded border p-3"
+    >
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         {handoff.source_session_id === null ? (
           <span className="text-console-muted font-mono text-xs">

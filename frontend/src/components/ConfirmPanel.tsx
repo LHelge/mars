@@ -45,6 +45,12 @@ export interface ConfirmPanelProps {
   /** What is about to happen, naming the thing it happens to. */
   message: ReactNode;
   /**
+   * What the confirmation asks for besides a yes, such as the comment a drop
+   * of a task's hand-off requires; rendered between the message and the
+   * refusal, and owned by the caller like everything else here.
+   */
+  children?: ReactNode;
+  /**
    * The confirming button's label, and so its accessible name: it names its
    * target — `Delete user ada`, not `Delete` — because a table of rows offers
    * the same verb a dozen times over.
@@ -63,6 +69,7 @@ export interface ConfirmPanelProps {
 export function ConfirmPanel({
   tone = "danger",
   message,
+  children,
   confirmLabel,
   cancelLabel = "Cancel",
   pending = false,
@@ -75,6 +82,8 @@ export function ConfirmPanel({
       className={`bg-console-bg flex flex-col gap-2 rounded border p-2 ${TONES[tone]}`}
     >
       <p className="text-console-text max-w-prose text-sm">{message}</p>
+
+      {children}
 
       {error !== null && <Alert kind="error">{error}</Alert>}
 

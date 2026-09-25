@@ -1,5 +1,5 @@
-// The task API's own verbs — update, release, delete and the dependency edges
-// — one hook each (`SPEC.md`, "Tasks"), and the settle rule every task write
+// The task API's own verbs — update, release, delete, dropping a hand-off and
+// the dependency edges — one hook each (`SPEC.md`, "Tasks"), and the settle rule every task write
 // shares. A write with a request of its own — a comment, a merge, a launch —
 // makes it where it lives and settles through `useSettleTask` here.
 //
@@ -30,6 +30,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   addDependency as addDependencyRequest,
   deleteTask,
+  dropHandoff,
   releaseTask,
   removeDependency as removeDependencyRequest,
   updateTask,
@@ -193,6 +194,21 @@ export function useRemoveDependency(
   const request = useCallback(
     (edge: DependencyEdge) =>
       removeDependencyRequest(projectId, number, edge.depends_on, edge.kind),
+    [projectId, number],
+  );
+  return useSettledWrite(request, projectId, number);
+}
+
+/**
+ * `POST .../drop-handoff`: the next launch starts from the default branch.
+ * 409 when there is no current hand-off left to drop.
+ */
+export function useDropHandoff(
+  projectId: string,
+  number: number,
+): (comment: string) => Promise<Task> {
+  const request = useCallback(
+    (comment: string) => dropHandoff(projectId, number, comment),
     [projectId, number],
   );
   return useSettledWrite(request, projectId, number);

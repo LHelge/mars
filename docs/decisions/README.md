@@ -43,7 +43,7 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0035](0035-compose-engine-variants-as-override-files.md) | Carry the Podman/Docker compose difference in one-line override files | accepted |
 | [0036](0036-agent-credentials-belong-to-the-backend.md) | Agent credentials belong to the backend and are resolved implicitly | accepted |
 | [0037](0037-nextest-runs-the-backend-suite.md) | `cargo nextest` runs the backend suite; the live engine suites keep `cargo test` | accepted |
-| [0038](0038-seed-role-profiles-at-project-creation.md) | Seed the four role profiles at project creation, copied not referenced | accepted; `merger` no longer seeded (0045) |
+| [0038](0038-seed-role-profiles-at-project-creation.md) | Seed the four role profiles at project creation, copied not referenced | accepted; `merger` no longer seeded (0045); default `claude` and auto-launched roles (0051) |
 | [0039](0039-layered-dev-session-image.md) | A layered dev session image on top of the contract base | accepted |
 | [0040](0040-render-markdown-in-the-browser.md) | Markdown is rendered in the browser from text; no server-side HTML | accepted |
 | [0041](0041-tracker-row-locks-are-no-key-update.md) | Tracker row locks are `FOR NO KEY UPDATE`, so they never block a foreign-key check | accepted |
@@ -56,3 +56,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0048](0048-podman-services-outside-a-pod.md) | The Podman deployment runs outside podman-compose's pod; not a Podman 6 requirement | accepted |
 | [0049](0049-session-ref-goes-with-the-session.md) | A session's branch ref is deleted with the session; no separate branch-delete action | accepted |
 | [0050](0050-session-refs-hold-only-unkept-work.md) | Session refs stay one per session and are kept only while they hold work no other retained ref holds; not one branch per task | accepted |
+| [0051](0051-seed-a-default-claude-profile-and-auto-launched-roles.md) | Seed a default `claude` profile, and the implementer and reviewer ephemeral and auto-launched; not a "no profile" launch | accepted |

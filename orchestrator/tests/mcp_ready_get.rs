@@ -57,7 +57,7 @@ const TASK_ARG_MESSAGE: &str = r##"task must be a UUID, a number, or "#<number>"
 
 // ---- fixture ----
 
-/// A project with the default states, its default profile (which serves
+/// A project with the default states, its seeded `implementer` (which serves
 /// `ready`), and a live session of that profile to call as.
 struct Fixture {
     user: AuthenticatedUser,
@@ -69,7 +69,7 @@ struct Fixture {
 async fn seed(app: &TestApp) -> Fixture {
     let user = signed_in(app, "agent-owner").await;
     let project_id = project(app, &user, "mars").await;
-    let profile_id = default_profile(app, project_id).await;
+    let profile_id = implementer_profile(app, project_id).await;
 
     let seeded = app
         .seed_mcp_session(project_id, profile_id, SessionState::Running)
@@ -115,17 +115,19 @@ async fn project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> Uuid {
     .id
 }
 
-/// The seeded profile that carries `is_default`, which is the `implementer`
-/// over `ready` (`SPEC.md`, "Role profile templates").
+/// The seeded `implementer`, the one role profile over `ready` (`SPEC.md`,
+/// "Role profile templates").
 ///
-/// By the flag and not by position: a project is seeded with three role
-/// profiles and only one of them serves `ready`.
-async fn default_profile(app: &TestApp, project_id: Uuid) -> Uuid {
+/// By name and not by the default flag: the default profile is `claude`, which
+/// serves no state (ADR 0051), and only the `implementer` serves `ready`.
+async fn implementer_profile(app: &TestApp, project_id: Uuid) -> Uuid {
     ProjectRepository::new(&app.pool)
-        .find_default_profile(project_id)
+        .list_profiles(project_id)
         .await
         .expect("the profiles read")
-        .expect("a new project has its default profile")
+        .into_iter()
+        .find(|profile| profile.name == "implementer")
+        .expect("a new project has its implementer")
         .id
 }
 
@@ -335,7 +337,7 @@ async fn ready_excludes_blocked_held_unserved_and_foreign_tasks() {
 
     // Held by somebody else.
     let held = task(&app, user, pid, "held", "ready", 2).await;
-    let profile_id = default_profile(&app, pid).await;
+    let profile_id = implementer_profile(&app, pid).await;
     let other_session = seed_session(&app, pid, profile_id).await;
     hold(&app, pid, id(&held), other_session).await;
 
@@ -509,7 +511,7 @@ async fn get_task_accepts_every_documented_reference_and_matches_the_rest_detail
     // A comment, a hand-off and a session link, so every arm of `TaskDetail`
     // carries something. The link goes on before the child does: an open child
     // blocks its parent, and a blocked task cannot be claimed.
-    let profile_id = default_profile(&app, pid).await;
+    let profile_id = implementer_profile(&app, pid).await;
     let worker = seed_session(&app, pid, profile_id).await;
     publish_handoff(&app, pid, parent_id, worker).await;
     link_session(&app, pid, parent_id, worker, user.user.id).await;

@@ -347,8 +347,8 @@ async fn project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> Uuid {
 
 /// The project's default agent profile, to hang sessions off.
 ///
-/// By the flag: a project is seeded with three role profiles and this is the
-/// one a launch defaults to (`SPEC.md`, "Role profile templates").
+/// By the flag: a project is seeded with four profiles and this is the one a
+/// launch defaults to, `claude` (`SPEC.md`, "Role profile templates").
 async fn default_profile(pool: &PgPool, project_id: Uuid) -> Uuid {
     sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM agent_profiles WHERE project_id = $1 AND is_default",

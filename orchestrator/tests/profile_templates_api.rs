@@ -28,9 +28,10 @@ const TEST_REMOTE: &str = "https://example.invalid/org/repo.git";
 /// The one path.
 const PATH: &str = "/api/profile-templates";
 
-/// The nine fields of `ProfileTemplate` (`SPEC.md`, "Agent profiles"),
+/// The ten fields of `ProfileTemplate` (`SPEC.md`, "Agent profiles"),
 /// sorted.
-const TEMPLATE_FIELDS: [&str; 9] = [
+const TEMPLATE_FIELDS: [&str; 10] = [
+    "auto_launch",
     "backend",
     "is_default",
     "kind",
@@ -43,9 +44,11 @@ const TEMPLATE_FIELDS: [&str; 9] = [
 ];
 
 /// Every role in the order of the table of `SPEC.md`, "Role profile
-/// templates", which is the order they are served in: the four queue roles
-/// first — the first three of them seeded — then the offered-only scanner.
-const ROLES: [&str; 5] = [
+/// templates", which is the order they are served in: `claude`, the default,
+/// then the four queue roles — the first three of them seeded — then the
+/// offered-only scanner.
+const ROLES: [&str; 6] = [
+    "claude",
     "planner",
     "implementer",
     "reviewer",
@@ -56,9 +59,12 @@ const ROLES: [&str; 5] = [
 /// The scheduled template, which project creation does not seed.
 const SCANNER: &str = "tech-debt-scanner";
 
-/// The roles project creation seeds: every queue role but the merger, whose
-/// `merge` state the orchestrator serves (ADR 0045).
-const SEEDED: [&str; 3] = ["planner", "implementer", "reviewer"];
+/// The roles project creation seeds: `claude` and every queue role but the
+/// merger, whose `merge` state the orchestrator serves (ADR 0045, 0051).
+const SEEDED: [&str; 4] = ["claude", "planner", "implementer", "reviewer"];
+
+/// The two seeded roles the dispatcher launches by itself (ADR 0051).
+const AUTO_LAUNCHED: [&str; 2] = ["implementer", "reviewer"];
 
 /// The Claude adapter's preferred credential name, which a schedule needs at
 /// `global` or `project` scope (`SPEC.md`, "Agent profiles" → "Scheduled
@@ -109,16 +115,27 @@ async fn the_templates_are_served_in_the_documented_shape_and_order() {
         // Not from the template (`SPEC.md`, "Role profile templates": "Every
         // other field is the documented default").
         assert_eq!(template["backend"], json!("claude"));
-        // The four queue roles talk to a person; the scheduled one runs one
-        // prompt and ends, which is what lets it carry a schedule at all.
-        let scheduled = template["name"] == json!(SCANNER);
+        // The auto-launched roles and the scheduled one run one prompt and
+        // end, which is what lets them carry `auto_launch` or a schedule at
+        // all; the rest talk to a person.
+        let name = template["name"]
+            .as_str()
+            .expect("a template carries a name");
+        let scheduled = name == SCANNER;
+        let auto_launched = AUTO_LAUNCHED.contains(&name);
         assert_eq!(
             template["kind"],
-            json!(if scheduled {
+            json!(if scheduled || auto_launched {
                 "ephemeral"
             } else {
                 "conversational"
             }),
+            "`{name}`: kind",
+        );
+        assert_eq!(
+            template["auto_launch"],
+            json!(auto_launched),
+            "`{name}`: auto_launch"
         );
 
         let prompt = template["system_prompt"]
@@ -130,13 +147,15 @@ async fn the_templates_are_served_in_the_documented_shape_and_order() {
             template["name"]
         );
 
-        assert!(
-            !template["serves_states"]
+        // Every role serves a queue; the default serves none, so it never
+        // sees another role's work (ADR 0051).
+        assert_eq!(
+            template["serves_states"]
                 .as_array()
                 .expect("serves_states is an array")
                 .is_empty(),
-            "`{}` serves no state",
-            template["name"],
+            name == "claude",
+            "`{name}`: served states",
         );
 
         let mut keys: Vec<&str> = template
@@ -151,21 +170,23 @@ async fn the_templates_are_served_in_the_documented_shape_and_order() {
 
     // The table of "Role profile templates", which the endpoint reports and
     // `tests/profile_templates.rs` checks against the document.
-    assert_eq!(templates[0]["serves_states"], json!(["backlog"]));
+    assert_eq!(templates[0]["serves_states"], json!([]));
     assert_eq!(templates[0]["mcp_tools"], json!([]));
-    assert_eq!(templates[3]["serves_states"], json!(["merge"]));
+    assert_eq!(templates[1]["serves_states"], json!(["backlog"]));
+    assert_eq!(templates[1]["mcp_tools"], json!([]));
+    assert_eq!(templates[4]["serves_states"], json!(["merge"]));
     assert_eq!(
-        templates[3]["mcp_tools"],
+        templates[4]["mcp_tools"],
         json!(["list_session_branches", "merge"])
     );
 
-    // The schedule pair: null on every role a person launches, both set on
-    // the scanner, whose expression fires once a day.
-    for template in &templates[..4] {
+    // The schedule pair: null on every role that is not scheduled, both set
+    // on the scanner, whose expression fires once a day.
+    for template in &templates[..5] {
         assert_eq!(template["schedule_cron"], json!(null));
         assert_eq!(template["schedule_prompt"], json!(null));
     }
-    let scanner = &templates[4];
+    let scanner = &templates[5];
     assert_eq!(scanner["schedule_cron"], json!("0 4 * * *"));
     assert!(
         !scanner["schedule_prompt"]
@@ -184,7 +205,7 @@ async fn the_templates_are_served_in_the_documented_shape_and_order() {
         .filter(|t| t["is_default"] == json!(true))
         .map(|t| t["name"].as_str().expect("a template carries a name"))
         .collect();
-    assert_eq!(defaults, ["implementer"]);
+    assert_eq!(defaults, ["claude"]);
 }
 
 #[tokio::test]
@@ -203,7 +224,7 @@ async fn a_template_is_a_body_the_profiles_endpoint_accepts() {
         .parse()
         .expect("the id is a uuid");
 
-    let template = templates(&app, &user).await[0].clone();
+    let template = templates(&app, &user).await[1].clone();
 
     // What the frontend sends on: the template without `is_default`, under a
     // name that is free in this project — the seeded ones already hold their
@@ -285,9 +306,73 @@ async fn the_scheduled_template_is_a_body_the_profiles_endpoint_accepts() {
     // Stored and read back with the next run the server computed, so no
     // client parses cron.
     assert_ne!(created["next_scheduled_at"], json!(null));
-    // Offered, never seeded: the schedule is the only automation, and
-    // `auto_launch` stays off until someone turns it on.
+    // The schedule is the scanner's only automation: its template carries
+    // `auto_launch` off, and the body sent it on.
     assert_eq!(created["auto_launch"], json!(false));
+}
+
+/// An auto-launched template is sent on with its `auto_launch`, so creating
+/// one is the create endpoint's ordinary credential rule: refused without an
+/// agent credential the dispatcher can use, created with one.
+#[tokio::test]
+async fn an_auto_launched_template_needs_the_credential_the_endpoint_asks_for() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "radia").await;
+
+    let response = app
+        .post_as(&user, "/api/projects")
+        .json(&json!({ "name": "mars", "remote_url": TEST_REMOTE }))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let pid: Uuid = response.json::<Value>()["id"]
+        .as_str()
+        .expect("a project carries an id")
+        .parse()
+        .expect("the id is a uuid");
+
+    let implementer = templates(&app, &user)
+        .await
+        .into_iter()
+        .find(|t| t["name"] == json!("implementer"))
+        .expect("the implementer is offered");
+    assert_eq!(implementer["auto_launch"], json!(true));
+
+    // What the frontend sends on, under a name the seeded one does not hold.
+    let mut body = implementer.clone();
+    let object = body.as_object_mut().expect("a template is an object");
+    object.remove("is_default");
+    object.insert("name".into(), json!("implementer-2"));
+
+    let refused = app
+        .post_as(&user, &format!("/api/projects/{pid}/profiles"))
+        .json(&body)
+        .await;
+    refused.assert_status(StatusCode::BAD_REQUEST);
+    refused.assert_json(&json!({
+        "status": 400,
+        "error": "auto_launch requires this backend's agent credential at global or project scope",
+    }));
+
+    let stored = app
+        .post_as(&user, "/api/secrets")
+        .json(&json!({
+            "scope": "project",
+            "scope_id": pid.to_string(),
+            "name": OAUTH_TOKEN,
+            "value": FAKE_CREDENTIAL,
+        }))
+        .await;
+    stored.assert_status(StatusCode::CREATED);
+
+    let created = app
+        .post_as(&user, &format!("/api/projects/{pid}/profiles"))
+        .json(&body)
+        .await;
+    created.assert_status(StatusCode::CREATED);
+    let created = created.json::<Value>();
+    assert_eq!(created["kind"], json!("ephemeral"));
+    assert_eq!(created["auto_launch"], json!(true));
+    assert_eq!(created["serves_states"], json!(["ready"]));
 }
 
 #[tokio::test]
@@ -324,7 +409,8 @@ async fn the_merger_and_the_scheduled_template_are_not_seeded_into_a_new_project
 
     // A schedule spends money on a cadence nobody asked for (ADR 0038), and
     // the seeded `merge` state is merged by the orchestrator (ADR 0045), so
-    // creation seeds the three conversational roles and nothing else.
+    // creation seeds the default and the three roles of the board and
+    // nothing else (ADR 0051).
     assert_eq!(names, SEEDED);
 }
 

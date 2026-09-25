@@ -1,6 +1,6 @@
 # 0038. Seed the four role profiles at project creation, copied not referenced
 
-Status: accepted. Superseded in one respect by ADR 0045: `merger` is no longer seeded, because an orchestrator job merges approved hand-offs; the other three roles and the copy-not-reference rule stand.
+Status: accepted. Superseded in one respect by ADR 0045: `merger` is no longer seeded, because an orchestrator job merges approved hand-offs; the other three roles and the copy-not-reference rule stand. Superseded in one respect by ADR 0051: a default `claude` profile is seeded first, and `implementer` and `reviewer` are seeded ephemeral with `auto_launch`, so a seeded profile may spend money without a person launching it.
 
 ## Context
 

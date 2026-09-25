@@ -94,8 +94,8 @@ fn password_change_required() -> Value {
 }
 
 /// A project to hang profiles on, created through its own endpoint so it is
-/// seeded exactly as a real one is: the seven default states and the three role
-/// profiles of `SPEC.md`, "Role profile templates".
+/// seeded exactly as a real one is: the seven default states and the four
+/// seeded profiles of `SPEC.md`, "Role profile templates".
 async fn project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> Uuid {
     let response = app
         .post_as(user, "/api/projects")
@@ -174,13 +174,13 @@ fn names(profiles: &[Value]) -> Vec<&str> {
         .collect()
 }
 
-/// The three role profiles `POST /api/projects` seeds, in listing order
-/// (`SPEC.md`, "Role profile templates"). This suite's own profiles are named
-/// so that they never collide with these.
-const SEEDED: [&str; 3] = ["planner", "implementer", "reviewer"];
+/// The four profiles `POST /api/projects` seeds, in listing order (`SPEC.md`,
+/// "Role profile templates"). This suite's own profiles are named so that
+/// they never collide with these.
+const SEEDED: [&str; 4] = ["claude", "planner", "implementer", "reviewer"];
 
 /// The seeded profile that carries `is_default`.
-const SEEDED_DEFAULT: &str = "implementer";
+const SEEDED_DEFAULT: &str = "claude";
 
 /// `SEEDED` followed by `extra`: the listing is oldest first, and anything
 /// this suite creates is newer than the ones the project was seeded with.
@@ -298,15 +298,16 @@ async fn every_endpoint_is_refused_while_a_password_change_is_pending() {
 // ---- list ----
 
 #[tokio::test]
-async fn listing_shows_the_three_seeded_profiles_in_the_documented_shape() {
+async fn listing_shows_the_four_seeded_profiles_in_the_documented_shape() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
     let pid = project(&app, &user, "mars").await;
 
     let profiles = list(&app, &user, pid).await;
 
-    // The seeded role templates, oldest first, in the order a task travels
-    // through them (`SPEC.md`, "Role profile templates").
+    // The seeded templates, oldest first: the default, then the roles in the
+    // order a task travels through them (`SPEC.md`, "Role profile
+    // templates").
     assert_eq!(names(&profiles), SEEDED);
 
     let default = default_profile(&profiles);
@@ -320,7 +321,9 @@ async fn listing_shows_the_three_seeded_profiles_in_the_documented_shape() {
     assert_eq!(default["runtime"], Value::Null);
     assert_eq!(default["mcp_tools"], json!([]));
     assert_eq!(default["secrets"], json!([]));
-    assert_eq!(default["serves_states"], json!(["ready"]));
+    // The default serves no queue, so it never sees a role's work (ADR 0051).
+    assert_eq!(default["serves_states"], json!([]));
+    assert_eq!(default["auto_launch"], json!(false));
     assert_eq!(default["partial_messages"], json!(true));
     assert_eq!(default["idle_timeout_secs"], json!(1800));
     assert_eq!(default["is_default"], json!(true));
@@ -888,7 +891,9 @@ async fn an_update_that_sends_the_whole_profile_back_keeps_the_default() {
     response.assert_status_ok();
     let updated = response.json::<Value>();
     assert_eq!(updated["is_default"], json!(true));
-    assert_eq!(updated["serves_states"], json!(["ready"]));
+    // The seeded default serves nothing, and an empty list sent back is
+    // kept rather than read as "omitted".
+    assert_eq!(updated["serves_states"], json!([]));
     assert_eq!(updated["name"], json!(SEEDED_DEFAULT));
 
     // And so is a `PUT` that simply omits the flag.
@@ -1016,16 +1021,60 @@ async fn the_unattended_fields_default_to_off_and_one() {
     assert_eq!(scout["auto_launch"], json!(false));
     assert_eq!(scout["max_concurrent"], json!(1));
 
-    // The seeded role profiles are launched by people, so none of them
-    // launches itself (ADR 0042).
+    // The seeded implementer and reviewer launch themselves, and are
+    // ephemeral so that they may; the default and the planner talk to a
+    // person (ADR 0051). They are seeded that way whether or not a
+    // credential exists — the dispatcher checks at launch.
     for profile in list(&app, &user, pid).await {
+        let auto_launched =
+            profile["name"] == json!("implementer") || profile["name"] == json!("reviewer");
         assert_eq!(
             profile["auto_launch"],
-            json!(false),
-            "{} launches itself",
+            json!(auto_launched),
+            "{}: auto_launch",
             profile["name"]
         );
+        assert_eq!(
+            profile["kind"],
+            json!(if auto_launched {
+                "ephemeral"
+            } else {
+                "conversational"
+            }),
+            "{}: kind",
+            profile["name"]
+        );
+        assert_eq!(profile["max_concurrent"], json!(1));
     }
+}
+
+/// Saving a seeded auto-launched profile without an agent credential the
+/// jobs could use is the create endpoint's ordinary 400 — the seeding does
+/// not relax the rule for a later edit (ADR 0051) — and switching
+/// `auto_launch` off is what saves it.
+#[tokio::test]
+async fn editing_a_seeded_auto_launched_profile_without_a_credential_is_refused() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = project(&app, &user, "mars").await;
+
+    let implementer = list(&app, &user, pid)
+        .await
+        .into_iter()
+        .find(|profile| profile["name"] == json!("implementer"))
+        .expect("a new project has the implementer");
+
+    let mut body = implementer.clone();
+    body["model"] = json!("sonnet");
+    let refused = put(&app, &user, pid, id_of(&implementer), &body).await;
+    assert_error(&refused, StatusCode::BAD_REQUEST, NO_CREDENTIAL);
+
+    body["auto_launch"] = json!(false);
+    let saved = put(&app, &user, pid, id_of(&implementer), &body).await;
+    saved.assert_status_ok();
+    let saved = saved.json::<Value>();
+    assert_eq!(saved["auto_launch"], json!(false));
+    assert_eq!(saved["model"], json!("sonnet"));
 }
 
 #[tokio::test]

@@ -12,7 +12,7 @@
 //!
 //! [`create::create_project`] is what `POST /api/projects` runs: one
 //! transaction that writes the project row, the default task states, the four
-//! role profiles of [`seeded_profile_templates`] and — when the caller
+//! seeded profiles of [`seeded_profile_templates`] and — when the caller
 //! supplied one —
 //! the project-scoped `GIT_CREDENTIAL` secret, or none of them. It touches
 //! neither git nor the filesystem, so a rolled-back creation leaves nothing on

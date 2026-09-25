@@ -110,6 +110,17 @@ impl Fixture {
         id_of(&response.json::<Value>())
     }
 
+    /// The seeded `implementer`, which serves `ready` and nothing else.
+    async fn implementer(&self, app: &TestApp) -> Uuid {
+        let implementer = seeded_profiles(app, &self.user, self.project_id)
+            .await
+            .into_iter()
+            .find(|profile| profile["name"] == json!("implementer"))
+            .expect("a project is seeded with an implementer");
+
+        id_of(&implementer)
+    }
+
     /// The launch under test, as `actor`.
     async fn launch(
         &self,
@@ -130,20 +141,26 @@ fn id_of(body: &Value) -> Uuid {
         .expect("the id is a uuid")
 }
 
-/// The id of the project's seeded `default` profile, which serves `ready`.
+/// The id of the project's seeded default profile, `claude`: conversational,
+/// serving no state (`SPEC.md`, "Role profile templates").
 async fn default_profile(app: &TestApp, user: &AuthenticatedUser, pid: Uuid) -> Uuid {
+    let default = seeded_profiles(app, user, pid)
+        .await
+        .into_iter()
+        .find(|profile| profile["is_default"] == json!(true))
+        .expect("a project is seeded with a default profile");
+
+    id_of(&default)
+}
+
+/// Every profile of the project, as `GET /projects/{pid}/profiles` returns it.
+async fn seeded_profiles(app: &TestApp, user: &AuthenticatedUser, pid: Uuid) -> Vec<Value> {
     let response = app
         .get_as(user, &format!("/api/projects/{pid}/profiles"))
         .await;
     response.assert_status_ok();
 
-    let profiles = response.json::<Vec<Value>>();
-    let default = profiles
-        .iter()
-        .find(|profile| profile["is_default"] == json!(true))
-        .expect("a project is seeded with a default profile");
-
-    id_of(default)
+    response.json::<Vec<Value>>()
 }
 
 /// A task of this project in the named state, inserted as the tracker inserts
@@ -413,12 +430,13 @@ async fn an_unattended_launch_can_require_the_profile_s_served_states() {
     let app = TestApp::spawn().await;
     let fixture = Fixture::create(&app).await;
 
-    // The seeded default profile serves `ready` and nothing else, so a task
+    // The seeded implementer serves `ready` and nothing else, so a task
     // waiting for a person is not one it may be put on by itself.
+    let implementer = fixture.implementer(&app).await;
     let escalated = task_in(&app, &fixture, "escalated", "needs_human").await;
     let before = session_count(&app, &fixture).await;
 
-    let mut request = LaunchRequest::new(fixture.profile_id);
+    let mut request = LaunchRequest::new(implementer);
     request.task = Some(TaskRef::Id(escalated.id));
     request.require_served_state = true;
 
@@ -444,7 +462,7 @@ async fn an_unattended_launch_can_require_the_profile_s_served_states() {
 
     // A task in the one state it does serve is launched.
     let ready = ready_task(&app, &fixture, "Fix the login form").await;
-    let mut request = LaunchRequest::new(fixture.profile_id);
+    let mut request = LaunchRequest::new(implementer);
     request.task = Some(TaskRef::Id(ready.id));
     request.require_served_state = true;
 

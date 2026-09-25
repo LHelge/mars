@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Count slowly from 1 to 30, one number per line."}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Reply with exactly the word ZEBRA."}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Count slowly from 1 to 30, one number per line."}]}}
+{"type":"control_request","request_id":"probe-1","request":{"subtype":"interrupt"}}

@@ -19,7 +19,7 @@ FROM node:22-bookworm-slim
 # CI and the README derive the value with:
 #   sed -n 's/^ARG CLAUDE_CODE_VERSION=//p' images/claude/Dockerfile
 # so this line stays exactly `ARG CLAUDE_CODE_VERSION=<x.y.z>`, unquoted.
-ARG CLAUDE_CODE_VERSION=2.1.274
+ARG CLAUDE_CODE_VERSION=2.1.282
 
 LABEL org.opencontainers.image.title="mars-session-claude" \
       org.opencontainers.image.description="Mars v1 session image: Claude Code CLI as the unprivileged agent user" \

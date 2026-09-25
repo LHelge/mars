@@ -1,0 +1,96 @@
+{
+  "events": [
+    {
+      "cli_session_id": "360e7797-2fe3-4f32-a2fc-cde3139024be",
+      "kind": "init",
+      "mcp_servers": [
+        {
+          "name": "mars-orchestrator",
+          "status": "failed"
+        }
+      ],
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "tools": [
+        "Task",
+        "Bash",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "DesignSync",
+        "Edit",
+        "EnterWorktree",
+        "ExitWorktree",
+        "ListAgents",
+        "Monitor",
+        "NotebookEdit",
+        "PushNotification",
+        "Read",
+        "RemoteTrigger",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "SendMessage",
+        "Skill",
+        "TaskStop",
+        "ToolSearch",
+        "WebFetch",
+        "WebSearch",
+        "Workflow",
+        "Write"
+      ]
+    },
+    {
+      "kind": "text",
+      "message_id": "msg_011CfQ7qV6wLV4X7rtm7rBMT",
+      "text": "PONG"
+    },
+    {
+      "cost_usd": 0.020228,
+      "duration_ms": 1746,
+      "is_error": false,
+      "kind": "result",
+      "num_turns": 1,
+      "permission_denials": [],
+      "subtype": "success",
+      "terminal_reason": "completed",
+      "usage": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 3848,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 3848,
+        "cache_read_input_tokens": 23910,
+        "inference_geo": "not_available",
+        "input_tokens": 2,
+        "iterations": [
+          {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 3848,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 3848,
+            "cache_read_input_tokens": 23910,
+            "input_tokens": 2,
+            "output_tokens": 5,
+            "type": "message"
+          }
+        ],
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    }
+  ],
+  "state": {
+    "credential": null,
+    "partial_messages": false,
+    "resumed": false
+  }
+}

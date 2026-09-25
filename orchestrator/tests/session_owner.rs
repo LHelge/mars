@@ -414,6 +414,42 @@ fn native_lines(scenario: &str) -> Vec<String> {
         .collect()
 }
 
+/// The `session_id` the recording's first line carries, which is what the owner
+/// must store as `cli_session_id`. Read from the recording rather than copied
+/// here, so a CLI version bump with a new recording does not edit this file.
+fn recorded_session_id(lines: &[String]) -> String {
+    let first = lines.first().expect("the recording has a first line");
+    let value: Value = serde_json::from_str(first).expect("the first line is JSON");
+    value["session_id"]
+        .as_str()
+        .expect("the first line carries a session_id")
+        .to_string()
+}
+
+/// `total_cost_usd`, `usage.input_tokens` and `usage.output_tokens` of every
+/// `result` line of a recording, in order: what the owner's counters are
+/// asserted against (`ARCHITECTURE.md`, "Cost accounting").
+fn recorded_results(lines: &[String]) -> Vec<(f64, i64, i64)> {
+    lines
+        .iter()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|value| value["type"] == "result")
+        .map(|value| {
+            (
+                value["total_cost_usd"]
+                    .as_f64()
+                    .expect("a result has a cost"),
+                value["usage"]["input_tokens"]
+                    .as_i64()
+                    .expect("input tokens"),
+                value["usage"]["output_tokens"]
+                    .as_i64()
+                    .expect("output tokens"),
+            )
+        })
+        .collect()
+}
+
 /// Append `bytes` to the transcript verbatim and answer its new length.
 async fn append_bytes(dirs: &SessionDirs, bytes: &[u8]) -> u64 {
     let path = dirs.stream_jsonl();
@@ -881,8 +917,8 @@ async fn an_init_stores_the_cli_session_id_and_warns_about_the_mcp_server() {
 
     let (stored, state) = session_state(&app.pool, fixture.session_id).await;
     assert_eq!(
-        stored.as_deref(),
-        Some("daf41536-4488-45cc-9bdb-5a2c7244e0ba"),
+        stored,
+        Some(recorded_session_id(&lines)),
         "the CLI's own session id was not stored",
     );
     assert_eq!(state, "running");
@@ -978,14 +1014,12 @@ async fn an_init_for_a_session_that_is_not_running_still_stores_the_id() {
     // Deliberately left in `creating`.
     let owner = spawn_owner(&app, &fixture, 0, false);
 
-    let length = append_line(&fixture.dirs, &native_lines("multi_turn")[0]).await;
+    let lines = native_lines("multi_turn");
+    let length = append_line(&fixture.dirs, &lines[0]).await;
     wait_for_offset(&app.pool, fixture.session_id, length).await;
 
     let (stored, state) = session_state(&app.pool, fixture.session_id).await;
-    assert_eq!(
-        stored.as_deref(),
-        Some("daf41536-4488-45cc-9bdb-5a2c7244e0ba")
-    );
+    assert_eq!(stored, Some(recorded_session_id(&lines)));
     assert_eq!(state, "creating", "the owner transitioned the session");
     assert_eq!(
         kinds(&app.pool, fixture.session_id).await,
@@ -1007,6 +1041,13 @@ async fn two_results_accumulate_the_counters_by_their_increase() {
 
     let (_, _, _, before) = counters(&app.pool, fixture.session_id).await;
     let lines = native_lines("multi_turn");
+    let [
+        (first_cost, first_in, first_out),
+        (total_cost, second_in, second_out),
+    ] = recorded_results(&lines)[..]
+    else {
+        panic!("multi_turn records two results");
+    };
 
     // Through the first `result`.
     let mut length = 0;
@@ -1016,25 +1057,29 @@ async fn two_results_accumulate_the_counters_by_their_increase() {
     wait_for_offset(&app.pool, fixture.session_id, length).await;
     let (cost, input, output, _) = counters(&app.pool, fixture.session_id).await;
     assert!(
-        (cost - 0.0412002).abs() < 1e-9,
+        (cost - first_cost).abs() < 1e-9,
         "the first result cost {cost}"
     );
-    assert_eq!((input, output), (2, 5));
+    assert_eq!((input, output), (first_in, first_out));
 
     for line in &lines[4..] {
         length = append_line(&fixture.dirs, line).await;
     }
     wait_for_offset(&app.pool, fixture.session_id, length).await;
 
-    // 0.0470666 is the process's running total, not the second turn's own cost,
-    // so the session's total is the later number and not the sum of the two
-    // (`ARCHITECTURE.md`, "Cost accounting").
+    // The second `total_cost_usd` is the process's running total, not the
+    // second turn's own cost, so the session's total is the later number and
+    // not the sum of the two (`ARCHITECTURE.md`, "Cost accounting").
     let (cost, input, output, after) = counters(&app.pool, fixture.session_id).await;
     assert!(
-        (cost - 0.0470666).abs() < 1e-9,
+        (cost - total_cost).abs() < 1e-9,
         "the two results cost {cost}"
     );
-    assert_eq!((input, output), (4, 13), "usage is summed per turn");
+    assert_eq!(
+        (input, output),
+        (first_in + second_in, first_out + second_out),
+        "usage is summed per turn"
+    );
     assert!(after > before, "last_activity_at did not advance");
 
     owner.shutdown().await;
@@ -1050,6 +1095,13 @@ async fn the_cumulative_baseline_is_restored_across_adoption() {
     mark_running(&app, fixture.session_id).await;
 
     let lines = native_lines("multi_turn");
+    let [
+        (_, first_in, first_out),
+        (total_cost, second_in, second_out),
+    ] = recorded_results(&lines)[..]
+    else {
+        panic!("multi_turn records two results");
+    };
     let first = spawn_owner(&app, &fixture, 0, false);
     let mut length = 0;
     for line in &lines[..4] {
@@ -1066,10 +1118,13 @@ async fn the_cumulative_baseline_is_restored_across_adoption() {
 
     let (cost, input, output, _) = counters(&app.pool, fixture.session_id).await;
     assert!(
-        (cost - 0.0470666).abs() < 1e-9,
+        (cost - total_cost).abs() < 1e-9,
         "the adopted owner charged {cost} instead of the increase",
     );
-    assert_eq!((input, output), (4, 13));
+    assert_eq!(
+        (input, output),
+        (first_in + second_in, first_out + second_out)
+    );
 
     second.shutdown().await;
 }

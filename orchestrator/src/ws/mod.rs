@@ -55,7 +55,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::engine::{ContainerId, EngineError};
-use crate::events::Notice;
+use crate::events::{AgentEventBody, Notice};
 use crate::models::SessionState;
 use crate::prelude::*;
 use crate::repositories::SessionRepository;
@@ -560,10 +560,16 @@ async fn on_frame(
 /// The one read in this module: the replay and every live, safety and lag
 /// read are the same call, which is why a notice can never mean anything the
 /// safety read would not also recover.
+///
+/// A `result` among what was sent is followed by one `session` frame: the
+/// same commit moved the session's cost and token counters, and nothing else
+/// would tell the client until the next state change (`SPEC.md`, "WebSocket:
+/// session stream").
 async fn drain(
     context: &mut SocketContext,
     out: &mpsc::Sender<Message>,
 ) -> std::result::Result<(), End> {
+    let mut counters_moved = false;
     loop {
         let page = SessionRepository::new(&context.state.pool)
             .events_after_page(context.session_id, context.cursor, PAGE)
@@ -577,11 +583,15 @@ async fn drain(
 
         for event in page {
             let seq = event.seq;
+            counters_moved |= matches!(event.event.body, AgentEventBody::Result { .. });
             send(out, ServerMessage::Event { event }).await?;
             context.cursor = seq;
         }
 
         if short {
+            if counters_moved {
+                return send_session(context, out).await;
+            }
             return Ok(());
         }
     }

@@ -473,6 +473,63 @@ async fn a_state_change_sends_both_its_event_and_a_session_snapshot() {
     socket.close().await;
 }
 
+/// A `result` moves the session's cost and token counters in the commit that
+/// stores it, and no state changes: the socket follows the event with a fresh
+/// `session` frame, or the client's header would keep the counters of the last
+/// state change.
+#[tokio::test]
+async fn a_result_is_followed_by_a_session_snapshot_with_its_counters() {
+    let app = TestApp::spawn().await;
+    let fixture = arrange(&app).await;
+
+    let mut socket = app
+        .ws(fixture.session_id, &fixture.user.access_token, 0)
+        .await;
+
+    assert_eq!(expect_session(&mut socket).await["cost_usd"], 0.0);
+
+    let result = AgentEvent::new(AgentEventBody::Result {
+        subtype: "success".to_string(),
+        terminal_reason: Some("completed".to_string()),
+        is_error: false,
+        num_turns: 1,
+        duration_ms: 1200,
+        cost_usd: Some(0.25),
+        usage: Some(json!({ "input_tokens": 12, "output_tokens": 34 })),
+        permission_denials: Vec::new(),
+    });
+    let repository = SessionRepository::new(&app.pool);
+    let mut tx = app.pool.begin().await.expect("a transaction begins");
+    repository
+        .append_event(&mut tx, fixture.session_id, &result)
+        .await
+        .expect("the result appends");
+    repository
+        .add_usage(&mut tx, fixture.session_id, 0.25, 12, 34)
+        .await
+        .expect("the counters move");
+    tx.commit().await.expect("the transaction commits");
+
+    assert_eq!(expect_event(&mut socket).await["kind"], "result");
+    let session = expect_session_frame(&mut socket).await;
+    assert_eq!(session["cost_usd"], 0.25);
+    assert_eq!(session["input_tokens"], 12);
+    assert_eq!(session["output_tokens"], 34);
+
+    socket.close().await;
+}
+
+/// The next frame, asserted to be a `session` snapshot.
+async fn expect_session_frame(socket: &mut axum_test::TestWebSocket) -> Value {
+    let frame = next_json(socket).await;
+    assert_eq!(
+        frame["type"], "session",
+        "expected a session frame: {frame}"
+    );
+
+    frame["session"].clone()
+}
+
 #[tokio::test]
 async fn a_lost_notification_is_covered_by_the_safety_read() {
     let app = TestApp::spawn().await;

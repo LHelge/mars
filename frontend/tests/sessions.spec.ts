@@ -17,12 +17,11 @@
 // environment (`ARCHITECTURE.md`, "Launch sequence"; `images/stub/claude`).
 //
 // **Where the header's numbers come from.** The socket sends a `session` frame
-// on open and "on every state change" (`SPEC.md`, "WebSocket: session stream"),
-// and nothing else refreshes the row the header draws. So `cost`, `in`, `out`
-// and `cli` in the header are the values as of the last state change, and a
-// turn's own cost is asserted where it arrives live — on the transcript's
-// result row, which renders the `result` event's `cost_usd` — with the session's
-// accumulated counters asserted through the API beside it.
+// on open, on every state change and after every `result` (`SPEC.md`,
+// "WebSocket: session stream"), so the header's `cost`, `in` and `out` follow
+// each turn as it ends. The transcript's result row renders the `result`
+// event's `cost_usd`, the running total, labelled `total`; the session's
+// accumulated counters are asserted through the API beside it.
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -556,9 +555,12 @@ test("sending a message to a parked session relaunches it", async ({
 
   // The resumed process replays the fixture from its first turn, so the reply
   // is the same text again — `.last()` is the new one — and the cost counters
-  // gain that turn's value a second time, because `--resume` does not carry the
-  // earlier process's totals forward (`ARCHITECTURE.md`, "Cost accounting").
+  // gain that turn's value a second time: the stub, like the pinned CLI,
+  // reports the resumed total on top of the conversation's, and only the
+  // increase is charged (`ARCHITECTURE.md`, "Cost accounting"). The header
+  // follows without a state change.
   await waitForCost(api, sessionId, TURN_COST[0] * 2);
+  await expect(headerField(page, "cost")).toHaveText("$0.1455");
   await reveal(
     page,
     transcript(page)

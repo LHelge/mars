@@ -1,4 +1,6 @@
-// The end of a turn: what it cost and how long it took.
+// The end of a turn: how long it took and what the conversation has cost so
+// far. The backend reports a running total, not the turn's own cost, so it is
+// labelled as one; the session header carries the session's sum.
 
 import type { ResultMessage as ResultMessageData } from "../sessionStore";
 import { COST_DECIMALS, formatUsd } from "../../utils/format";
@@ -26,7 +28,9 @@ export function ResultMessage({ message }: ResultMessageProps) {
       </span>
       <span>{formatDuration(message.duration_ms)}</span>
       {message.cost_usd !== undefined && (
-        <span>{formatUsd(message.cost_usd, COST_DECIMALS)}</span>
+        <span title="The agent's running total at the end of this turn, not this turn's own cost">
+          total {formatUsd(message.cost_usd, COST_DECIMALS)}
+        </span>
       )}
     </div>
   );

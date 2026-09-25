@@ -423,7 +423,7 @@ The agent-to-agent (and human-to-agent) communication channel.
 
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |
-| `id` | `UUID` | PK | |
+| `id` | `UUID` | PK | A time-ordered UUIDv7, so comments written in one transaction, which share `created_at`, list in the order they were written: the listing orders by `(created_at, id)`. |
 | `task_id` | `UUID` | NOT NULL, FK `tasks(id)` ON DELETE CASCADE | |
 | `author_user_id` | `UUID` | NULL, FK `users(id)` ON DELETE SET NULL | |
 | `author_session_id` | `UUID` | NULL, FK `sessions(id)` ON DELETE SET NULL | |

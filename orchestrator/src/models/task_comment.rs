@@ -44,7 +44,7 @@ impl NewTaskComment {
     /// A comment written by a signed-in user.
     pub fn from_user(task_id: Uuid, author_user_id: Uuid, body: impl Into<String>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
             task_id,
             author_user_id: Some(author_user_id),
             author_session_id: None,
@@ -56,7 +56,7 @@ impl NewTaskComment {
     /// A comment written by an agent session over MCP.
     pub fn from_session(task_id: Uuid, author_session_id: Uuid, body: impl Into<String>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
             task_id,
             author_user_id: None,
             author_session_id: Some(author_session_id),
@@ -68,7 +68,7 @@ impl NewTaskComment {
     /// A comment the orchestrator writes itself: reaper releases, escalations.
     pub fn from_system(task_id: Uuid, body: impl Into<String>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
             task_id,
             author_user_id: None,
             author_session_id: None,

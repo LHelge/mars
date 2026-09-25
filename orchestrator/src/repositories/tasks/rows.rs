@@ -1143,8 +1143,10 @@ impl TaskRepository<'_> {
     ///
     /// `TaskDetail.comments` (`SPEC.md`, "Tasks"), in the order
     /// `task_comments_task_idx (task_id, created_at)` carries. `id` breaks
-    /// ties, so two comments written in the same transaction — and therefore
-    /// sharing `NOW()` — still come back in a stable order.
+    /// ties, and comment ids are time-ordered UUIDv7s
+    /// ([`NewTaskComment`](crate::models::NewTaskComment)), so two comments
+    /// written in the same transaction — and therefore sharing `NOW()` — come
+    /// back in the order they were written.
     pub async fn list_comments(&self, project_id: Uuid, task_id: Uuid) -> Result<Vec<TaskComment>> {
         let comments = sqlx::query_as!(
             TaskComment,

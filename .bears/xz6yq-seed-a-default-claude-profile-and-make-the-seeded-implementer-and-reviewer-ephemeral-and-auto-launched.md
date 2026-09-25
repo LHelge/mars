@@ -2,10 +2,10 @@
 id: xz6yq
 title: Seed a default `claude` profile, and make the seeded implementer and reviewer ephemeral and auto-launched
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-09-25T09:17:00.794553Z"
-updated: "2026-09-25T09:17:00.794553Z"
+updated: "2026-09-25T11:05:44.216059Z"
 tags:
   - orchestrator
   - frontend

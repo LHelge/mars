@@ -127,6 +127,13 @@ async function stage(
  * A session launched for the task over REST and waited to `running`, which is
  * what says its work clone exists. Launching from the drawer is
  * `task-sessions.spec.ts`; here it is arrangement.
+ *
+ * It names no profile, so it runs the project's default, `claude`: the roles
+ * in this file are the parts the sessions play, not profile names. The seeded
+ * `implementer` and `reviewer` carry `auto_launch` (ADR 0051) and serve the
+ * `ready` and `review` this task passes through, but no agent credential the
+ * dispatcher can use is ever stored here, so they never start
+ * (`tests/README.md`, "Automation and the seeded roles").
  */
 async function implementer(stage: Stage): Promise<string> {
   const session = await stage.sessions.launch(stage.client, stage.project.id, {
@@ -413,7 +420,10 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
   const panel = await openTask(second.page, project);
 
   // `SPEC.md`, "Frontend", "Hand-off controls": the launch defaults to the
-  // hand-off commit and says so, with nothing to disclose.
+  // hand-off commit and says so, with nothing to disclose. The base is the
+  // launch's and not the profile's: no conversational profile of a new project
+  // serves `review` — the seeded reviewer is ephemeral (ADR 0051) — so the
+  // form starts on `claude`, and the hand-off reaches it all the same.
   let form = await openLaunchForm(panel);
   await expect(
     form.getByText(

@@ -199,8 +199,11 @@ start_orchestrator() {
     # is short because `dispatcher.spec.ts` waits on a launch nobody made: the
     # `task_events` wake-up is what normally starts one within a second, and this
     # timer is only the fallback under it (`ARCHITECTURE.md`, "Dispatcher"). It
-    # costs the rest of the suite nothing, since a sweep over projects with no
-    # `auto_launch` profile reads two queries and launches nothing.
+    # costs the rest of the suite nothing: every project's seeded implementer
+    # and reviewer carry `auto_launch` (ADR 0051), but no scenario stores an
+    # agent credential they could use outside its own project, so a sweep
+    # launches nothing anywhere else (`tests/README.md`, "Automation and the
+    # seeded roles").
     (
         cd "$RUN_DIR" &&
             exec env -i \

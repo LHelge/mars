@@ -97,7 +97,7 @@ test("…", async ({ page, context, user, api, project, sessions }) => {
 | Fixture | What it is |
 | --- | --- |
 | `user` | a fresh user through the test-only route (`SPEC.md`, "Test-only routes") |
-| `api` | a REST client authenticated as `user`, whose user scope is given a fake agent credential so the launch forms take their ordinary path. A second client — an admin, a reviewer — is `apiClient(request, token)` |
+| `api` | a REST client authenticated as `user`, whose user scope is given a fake agent credential so the launch forms take their ordinary path — a scope the dispatcher can never use ("Automation and the seeded roles" below). A second client — an admin, a reviewer — is `apiClient(request, token)` |
 | `repo` | a local bare upstream with one commit on `main`, plus whatever `repoFiles` declares |
 | `project` | a project cloned from `repo`, waited to `ready` |
 | `sessions` | the scenario's sessions. `sessions.launch(...)` launches one; `sessions.track(client, id)` registers one the UI launched; `sessions.sweep(client, projectId)` registers a whole project, whose automation is paused and whose every session is ended at teardown. All three are cleaned up when the scenario finishes, so no container outlives a run |
@@ -112,6 +112,46 @@ dispatch" and "Scheduled agents"), so `dispatcher.spec.ts` and
 id they have to end, and one that arrives after the last assertion would
 outlive the run. Every other spec registers each session as it launches it, and
 needs none of this.
+
+### Automation and the seeded roles
+
+Every project a scenario creates is seeded with four profiles (`SPEC.md`, "Role
+profile templates"; ADR 0051): `claude`, the default — conversational, serving
+no state — which every launch that names no profile runs; `planner` over
+`backlog`; and `implementer` over `ready` and `reviewer` over `review`, both
+ephemeral and carrying `auto_launch`. The stack runs the dispatcher
+(`DISPATCHER_INTERVAL_SECS=10`, woken by every task event), so those two would
+claim any task a scenario puts in `ready` or `review` — except that the
+dispatcher skips a profile whose agent credential does not resolve at `global`
+or `project` scope (`ARCHITECTURE.md`, "Unattended launches" → "Eligibility").
+The suite keeps it that way, and this is its one rule for it:
+
+- **No scenario stores an agent credential at `global` scope.** One would make
+  every seeded implementer and reviewer on the instance live at once, in every
+  project of every spec that runs after it. The credential the `api` fixture
+  gives each user is at `user` scope, which an unattended launch can never use,
+  so the launch forms take their ordinary path and the dispatcher still has
+  nothing to launch with.
+- **A scenario that needs an unattended launch stores its credential at
+  `project` scope, in its own project, and deletes it in `afterEach`** —
+  `dispatcher.spec.ts` and `schedules.spec.ts`. Before storing it, it calls
+  `turnOffAutoLaunch(api, project.id)`, which turns `auto_launch` off on every
+  profile that carries it — on a new project, the seeded implementer and
+  reviewer — so the only automation live in that project is the one the
+  scenario turns on itself. Saving `auto_launch: false` needs no credential, so
+  that order always works; the other order would leave a window in which the
+  seeded roles are live. Such a scenario also registers its project with
+  `sessions.sweep`, above.
+
+So a scenario that moves tasks through `ready` and `review` by hand —
+`task-sessions.spec.ts`, `handoffs.spec.ts`, `automerge.spec.ts` — needs no
+arrangement against the dispatcher, and one that wants a profile with a
+particular shape (a conversational one over `ready`, an ephemeral one to
+`Run once`) creates it rather than relying on what was seeded. The seeded set
+itself is asserted in one place, and the `claude` launch in another:
+
+- `projects.spec.ts` › `a project created from a bare repository reaches ready without a reload`
+- `sessions.spec.ts` › `a fresh project's launch form preselects claude and opens a conversation with a composer`
 
 Two options are set per spec file with `test.use`: `repoFiles`, above, and
 `agentCredential`. The launch forms warn when the caller has no agent
@@ -167,7 +207,7 @@ of `SPEC.md`, "Frontend". `node tests/coverage-check.mjs` checks each
 | --- | --- |
 | Login and invites | `auth.spec.ts` › `must change password before anything else`; `auth.spec.ts` › `login and logout`; `auth.spec.ts` › `login rejects a wrong password`; `auth.spec.ts` › `a deep link is preserved through login`; `auth.spec.ts` › `an admin invites a user who accepts via the logged link`; `auth.spec.ts` › `a revoked invitation cannot be accepted`; `auth.spec.ts` › `a password reset through the logged link replaces the password`; `auth.spec.ts` › `the settings page changes the password and keeps only this session`; the escalation opt-out is `settings.spec.ts` › `the escalation opt-out is saved, survives a reload and is what the API reports` |
 | Projects | `projects.spec.ts` › `the new-project form refuses a remote that is not https`; `projects.spec.ts` › `a project created from a bare repository reaches ready without a reload`; `projects.spec.ts` › `a clone that fails shows its message and the retry succeeds`; `projects.spec.ts` › `fetch now moves the upstream ref and leaves the integration head`; `projects.spec.ts` › `a shared directory is added, refused twice, cleared and removed`; `projects.spec.ts` › `clearing and removing a shared directory wait for the running session to end`; `projects.spec.ts` › `the settings form renames the project and bounds max_attempts`; `projects.spec.ts` › `a project is deleted once its running session has ended` |
-| Agent profiles | `projects.spec.ts` › `the default profile is edited and an ephemeral one is created beside it`; `projects.spec.ts` › `an unknown served state or tool is a 400 the editor cannot produce`; `session-view.spec.ts` › `ephemeral run once from the project page` |
+| Agent profiles | the seeded four — `claude` the default, `implementer` and `reviewer` carrying `auto-launch` — are `projects.spec.ts` › `a project created from a bare repository reaches ready without a reload`; the launch form preselecting `claude` and opening a conversation with a composer is `sessions.spec.ts` › `a fresh project's launch form preselects claude and opens a conversation with a composer`; `projects.spec.ts` › `the default profile is edited and an ephemeral one is created beside it`; `projects.spec.ts` › `an unknown served state or tool is a 400 the editor cannot produce`; `session-view.spec.ts` › `ephemeral run once from the project page` |
 | Sessions | `sessions.spec.ts` › `launch with a first message and watch the transcript`; `sessions.spec.ts` › `interject mid-turn`; `sessions.spec.ts` › `stop parks the session and shows stopped`; `sessions.spec.ts` › `sending a message to a parked session relaunches it`; `sessions.spec.ts` › `end moves to done and disables the composer`; `sessions.spec.ts` › `ending a session right after launch leaves no container`; `sessions.spec.ts` › `a CLI that exits non-zero fails the session and retry parks it`; `sessions.spec.ts` › `title defaults to the message's first line, truncated to 80 characters`; `sessions.spec.ts` › `an idle session is parked without user action`; `sessions.spec.ts` › `after the fixture is exhausted the stub echoes`; `session-view.spec.ts` › `terminal into a running container`; `session-view.spec.ts` › `metadata header` |
 | Task board | `tasks.spec.ts` › `columns show the default states in order and an empty project invites a first task`; `tasks.spec.ts` › `a task created from the board form lands in backlog and opens in the drawer`; `tasks.spec.ts` › `an edit and a comment made in the drawer survive a reload`; `tasks.spec.ts` › `the drawer moves a card across columns and closes and reopens it`; `tasks.spec.ts` › `a blocks dependency blocks a card, clears when it closes, and refuses a cycle`; `tasks.spec.ts` › `a parent closes by itself when its last child closes`; `tasks.spec.ts` › `the states editor adds, renames and removes a column, and says why it cannot`; `tasks.spec.ts` › `release is disabled while no session holds the task`; `tasks.spec.ts` › `the drawer takes focus, keeps Tab inside it and gives focus back to the card`; `tasks.spec.ts` › `Escape asks before discarding a draft and shuts an open form first`; `tasks.spec.ts` › `Escape shuts a hand-off form and a confirmation before the drawer`; `task-sessions.spec.ts` › `open in session claims the task and the card shows its session`; `task-sessions.spec.ts` › `a held task cannot be opened in a second session`; `task-sessions.spec.ts` › `release from the drawer clears the claim without escalating`; `task-sessions.spec.ts` › `ending the session releases its task and says so on the thread`; `task-sessions.spec.ts` › `run once runs an ephemeral profile on the task and gives it back`; the escalation email is `task-sessions.spec.ts` › `an escalation at the attempt limit emails the assignee, and not one who opted out` |
 | Automatic dispatch | `dispatcher.spec.ts` › `the dispatcher picks up a task moved into a served state, and a pause stops the next one` |
@@ -189,8 +229,8 @@ of `SPEC.md`, "Frontend". `node tests/coverage-check.mjs` checks each
 | Project page | `git.spec.ts` › `the branches tab holds the git panel and the sessions tab does not` — the Sessions tab without the git panel, the `Branches` tab link, and the tab's integration heads, `Merge any ref` and session-branch table in that order; every other `git.spec.ts` scenario on the project page opens `?tab=branches`; the tab list's order and `parseProjectTab` are Vitest tests beside the registry (`src/pages/project/tabs.test.ts`), and the heads' order and upstream pairing beside their helper (`src/components/git/integrationHeads.test.ts`); a head's `Push…` is `git.spec.ts` › `pushing main from its integration head row` — the form under the head's row with the remote branch defaulting to `main`, the rejection while upstream has advanced, and the push that lands once `origin/main` is merged in, with no compare link |
 | Copy links | `tasks.spec.ts` › `a task link opens the drawer directly and Copy link writes the canonical URL`; `tasks.spec.ts` › `a drawer opened by link falls back to the board, and a child link moves focus`; `session-view.spec.ts` › `copy link`; the return destination through login is `auth.spec.ts` › `a deep link is preserved through login` |
 | Dashboard | `task-sessions.spec.ts` › `the dashboard lists running and parked sessions across projects`; `task-sessions.spec.ts` › `a task moved into needs_human shows on the dashboard` |
-| Role templates | `projects.spec.ts` › `a profile started from the reviewer template is saved as reviewer-2`; the suffixing, the dropped states and the pre-fill itself are Vitest tests beside the helper (`src/pages/project/profileForm.test.ts`) |
-| Unattended launches | `dispatcher.spec.ts` › `the dispatcher picks up a task moved into a served state, and a pause stops the next one` — the profile editor's toggle, the project form's `Pause automation` and the header's `automation paused` chip; the credential warning under the toggle and the `max_concurrent` floor are Vitest tests beside the helpers (`src/pages/project/profileForm.test.ts`, `src/pages/project/projectSettings.test.ts`) |
+| Role templates | `projects.spec.ts` › `a profile started from the reviewer template is saved as reviewer-2` — including the `auto_launch` the template brings, refused at the toggle while the project has no credential an unattended launch could use, and saved once it is unticked; the suffixing, the dropped states and the pre-fill itself are Vitest tests beside the helper (`src/pages/project/profileForm.test.ts`) |
+| Unattended launches | `dispatcher.spec.ts` › `the dispatcher picks up a task moved into a served state, and a pause stops the next one` — with the seeded roles' `auto_launch` turned off first ("Automation and the seeded roles" above), the profile editor's toggle, the project form's `Pause automation` and the header's `automation paused` chip; the credential warning under the toggle and the `max_concurrent` floor are Vitest tests beside the helpers (`src/pages/project/profileForm.test.ts`, `src/pages/project/projectSettings.test.ts`) |
 | Scheduled profiles | `schedules.spec.ts` › `a due schedule launches a session nobody asked for, and a pause stops the next tick` — the `Schedule` fieldset's two fields, the `schedule` chip in the profiles list and the read-only `Next run`/`Last run` outputs; the field-by-field routing of the server's refusals and the placeholder are Vitest tests beside the editor (`src/pages/project/ProfilesTab.test.tsx`) |
 | Launch source | `dispatcher.spec.ts` › `the dispatcher picks up a task moved into a served state, and a pause stops the next one` — the `dispatcher` tag in the project's session list and in the session header; `schedules.spec.ts` › `a due schedule launches a session nobody asked for, and a pause stops the next tick` — the `schedule` tag in both places; a person's session carrying no tag is every other scenario in the suite |
 | Session state | `session-view.spec.ts` › `full history after reload and in a second tab`; `session-view.spec.ts` › `reconnect resumes without duplicates`; `session-view.spec.ts` › `older history loads on scroll-up`; `session-reconnect.spec.ts` › `a reconnect keeps the session page mounted, terminal and all` |
@@ -202,7 +242,7 @@ of `SPEC.md`, "Frontend". `node tests/coverage-check.mjs` checks each
 | Task-board search | `tasks.spec.ts` › `board search matches titles and exact numbers, and resets on a project change` |
 | Board refresh ordering | `tasks.spec.ts` › `a second browser context follows the first without reloading` |
 | Hand-off controls | `handoffs.spec.ts` › `publishing a revision pins the commit and moves the task to review`; `handoffs.spec.ts` › `a reviewer's session starts from the hand-off commit and is told about it`; `handoffs.spec.ts` › `approving forwards the hand-off to merge and unlocks the task merge`; `handoffs.spec.ts` › `the task merge lands the pinned commit even after the branch advanced`; `handoffs.spec.ts` › `the merge control is shut without an approval and a superseded review is refused`; `handoffs.spec.ts` › `requesting changes sends the task back and a new revision resets the review`; `handoffs.spec.ts` › `the revision diff is read by hand-off id without syncing anything`; `handoffs.spec.ts` › `a commit that is not the source session's tip is refused`; `handoffs.spec.ts` › `a review of a superseded revision says the hand-off changed`; the base disclosure is `task-sessions.spec.ts` › `the launch form discloses the base the session will start from` |
-| Composer | `sessions.spec.ts` › `interject mid-turn`; `sessions.spec.ts` › `end moves to done and disables the composer`; `session-view.spec.ts` › `ephemeral run once from the project page` |
+| Composer | `sessions.spec.ts` › `interject mid-turn`; `sessions.spec.ts` › `a fresh project's launch form preselects claude and opens a conversation with a composer`; `sessions.spec.ts` › `end moves to done and disables the composer`; `session-view.spec.ts` › `ephemeral run once from the project page` |
 
 The helper layer asserts itself in `helpers.spec.ts`, and `smoke.spec.ts` is the
 one scenario that needs no stack.

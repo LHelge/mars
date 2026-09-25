@@ -40,6 +40,7 @@ import {
   gitRevParse,
   listBranches,
   loginViaToken,
+  PROFILE_AUTOMATION,
   randomSuffix,
   reposDir,
   uniqueName,
@@ -149,19 +150,36 @@ test("a project created from a bare repository reaches ready without a reload", 
   await expect(page.getByText("No sessions yet")).toBeVisible();
 
   await projectTab(page, "Profiles").click();
-  // The three role profiles a project is seeded with (`SPEC.md`, "Role profile
-  // templates"), the implementer carrying the `default` badge.
-  for (const role of ["planner", "implementer", "reviewer"]) {
-    await expect(
-      page
-        .getByRole("row")
-        .filter({ has: page.getByText(role, { exact: true }) }),
-    ).toBeVisible();
+  // The four profiles a project is seeded with (`SPEC.md`, "Role profile
+  // templates"; ADR 0051): `claude` carrying the `default` badge and serving
+  // nothing, the planner a person launches, and the implementer and the
+  // reviewer the dispatcher may launch by itself. No credential this project
+  // can use unattended exists, so the chip is all the `auto-launch` does here.
+  const seeded = [
+    { name: "claude", automation: "manual" },
+    { name: "planner", automation: "manual" },
+    { name: "implementer", automation: "auto-launch" },
+    { name: "reviewer", automation: "auto-launch" },
+  ];
+  for (const { name, automation } of seeded) {
+    const row = page
+      .getByRole("row")
+      .filter({ has: page.getByText(name, { exact: true }) });
+    await expect(row).toBeVisible();
+    await expect(row.getByTestId(PROFILE_AUTOMATION)).toHaveText(automation);
   }
   const defaultRow = page
     .getByRole("row")
-    .filter({ has: page.getByText("implementer", { exact: true }) });
+    .filter({ has: page.getByText("claude", { exact: true }) });
   await expect(defaultRow.getByText("default", { exact: true })).toHaveCount(1);
+  await expect(defaultRow.getByText("nothing", { exact: true })).toBeVisible();
+  // Those four and no other: every profile row, and only a profile row, has
+  // an `Edit` button.
+  await expect(
+    page
+      .getByRole("row")
+      .filter({ has: page.getByRole("button", { name: "Edit", exact: true }) }),
+  ).toHaveCount(seeded.length);
 
   await projectTab(page, "Shared directories").click();
   await expect(page.getByText("No shared directories yet")).toBeVisible();
@@ -267,21 +285,27 @@ test("the default profile is edited and an ephemeral one is created beside it", 
   await loginViaToken(context, user);
 
   await page.goto(`/projects/${project.id}?tab=profiles`);
-  // The seeded default profile (`SPEC.md`, "Role profile templates").
+  // The seeded default profile, `claude`, which serves no state (`SPEC.md`,
+  // "Role profile templates").
   await page
     .getByRole("row")
-    .filter({ has: page.getByText("implementer", { exact: true }) })
+    .filter({ has: page.getByText("claude", { exact: true }) })
     .getByRole("button", { name: "Edit" })
     .click();
 
   // The editor's own fields are addressed by id: it also carries a free-text
   // "Secret name to declare" box, which a label lookup for "Name" would match.
-  const editor = page.getByRole("form", { name: "Edit implementer" });
+  const editor = page.getByRole("form", { name: "Edit claude" });
+  await expect(editor.locator("#profile-name")).toHaveValue("claude");
+  for (const state of ["backlog", "ready", "review", "merge"]) {
+    await expect(
+      editor.getByRole("checkbox", { name: state, exact: true }),
+    ).not.toBeChecked();
+  }
   await editor.locator("#profile-name").fill("architect");
   await editor
     .locator("#profile-system-prompt")
     .fill("Plan the work; never write code.");
-  await editor.getByRole("checkbox", { name: "ready", exact: true }).uncheck();
   await editor.getByRole("checkbox", { name: "backlog", exact: true }).check();
   await editor
     .getByRole("checkbox", { name: /Stream partial messages/ })
@@ -369,6 +393,14 @@ test("a profile started from the reviewer template is saved as reviewer-2", asyn
       exact: true,
     }),
   ).toBeChecked();
+  // The seeded reviewer is ephemeral and auto-launched (ADR 0051), and the
+  // template brings both with it.
+  await expect(editor.locator("#profile-kind")).toHaveValue("ephemeral");
+  await expect(
+    editor.getByRole("checkbox", {
+      name: /Let the dispatcher launch this profile/,
+    }),
+  ).toBeChecked();
 
   // `Blank` puts the defaults back: the pre-fill is a starting point, and
   // choosing it again is not an instantiation of anything.
@@ -380,6 +412,29 @@ test("a profile started from the reviewer template is saved as reviewer-2", asyn
   ).not.toBeChecked();
 
   await editor.locator("#profile-template").selectOption("reviewer");
+  await editor.getByRole("button", { name: "Create profile" }).click();
+
+  // This project has no agent credential an unattended launch could use — the
+  // `api` fixture's is the user's own — so the save is refused at the toggle,
+  // in the server's words, with the way out beside it (`SPEC.md`, "Agent
+  // profiles"; ADR 0051). Nothing was created.
+  const autoLaunch = editor.getByRole("checkbox", {
+    name: /Let the dispatcher launch this profile/,
+  });
+  await expect(
+    editor.getByText(
+      /auto_launch requires this backend's agent credential at global or project scope/,
+    ),
+  ).toBeVisible();
+  await expect(autoLaunch).toBeChecked();
+  expect(
+    (
+      await api.get<Profile[]>(`/projects/${project.id}/profiles`)
+    ).some((candidate) => candidate.name === "reviewer-2"),
+  ).toBe(false);
+
+  // Unticked, the same template saves as a reviewer a person launches.
+  await autoLaunch.uncheck();
   await editor.getByRole("button", { name: "Create profile" }).click();
 
   const row = page
@@ -396,14 +451,16 @@ test("a profile started from the reviewer template is saved as reviewer-2", asyn
   const stored = profiles.find((candidate) => candidate.name === "reviewer-2");
   expect(stored?.serves_states).toEqual(["review"]);
   expect(stored?.mcp_tools).toEqual(["list_session_branches"]);
+  expect(stored?.kind).toBe("ephemeral");
+  expect(stored?.auto_launch).toBe(false);
   expect(stored?.system_prompt).toMatch(
     /^You are a reviewer of this project\./,
   );
   // `is_default` is informational on the template and never applied here:
-  // the seeded `implementer` is still the project's default.
+  // the seeded `claude` is still the project's default.
   expect(stored?.is_default).toBe(false);
   expect(profiles.find((candidate) => candidate.is_default)?.name).toBe(
-    "implementer",
+    "claude",
   );
 });
 

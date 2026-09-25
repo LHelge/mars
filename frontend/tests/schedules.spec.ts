@@ -51,6 +51,7 @@ import {
   loginViaToken,
   runSchedulerTick,
   setProjectSecret,
+  turnOffAutoLaunch,
   waitFor,
   waitForSessionState,
   type Api,
@@ -173,6 +174,14 @@ test("a due schedule launches a session nobody asked for, and a pause stops the 
   // Everything this scenario leaves behind belongs to the project, including
   // the session it never launched.
   sessions.sweep(api, project.id);
+
+  // The credential below is one the dispatcher can use too, and a new project's
+  // seeded `implementer` and `reviewer` carry `auto_launch` (ADR 0051). Nothing
+  // here puts a task in `ready` or `review`, but the rule of this suite is that
+  // a project holding such a credential has them off before it is stored, so
+  // the only automation live here is the schedule this scenario is about
+  // (`tests/README.md`, "Automation and the seeded roles").
+  await turnOffAutoLaunch(api, project.id);
 
   // A scheduled run has no user, so the `user`-scope credential the `api`
   // fixture seeds does not qualify and the save below would be refused with a

@@ -9,9 +9,13 @@
 //! **It composes and decides almost nothing.** Every rule it applies already
 //! exists, and this job is the order they are asked in:
 //!
-//! - which task — [`ready_summaries`], the very query behind the MCP `ready`
+//! - which task — [`ready_candidates`], the very query behind the MCP `ready`
 //!   tool, so the task dispatched is the first row that tool would have offered
 //!   the same profile (priority, then number);
+//! - is its base complete — [`GitService::author_work_landed`]: a task filed
+//!   by a session whose commits are not on the default branch yet waits for
+//!   them, because a session launched from that branch would not have what
+//!   the task was written against (ADR 0052);
 //! - may it launch — [`unattended_capacity`], the pause and the three caps
 //!   (ADR 0042), re-asked before *every* launch because each launch it makes
 //!   changes the counts the next one is measured against;
@@ -23,7 +27,7 @@
 //!   the same claim transaction, the same generated task message, the same
 //!   hand-off base and the same release when the launch fails in `creating`.
 //!
-//! **The claim decides, not the listing.** [`ready_summaries`] is a lock-free
+//! **The claim decides, not the listing.** [`ready_candidates`] is a lock-free
 //! pool read and is stale the moment it returns: an agent claiming over MCP, a
 //! person pressing "run once" or the previous profile of this very run can take
 //! a listed task first. That race has one answer and it is inside the launch —
@@ -33,12 +37,13 @@
 //! Here it is a `debug` line and the next candidate, never an error: losing a
 //! race to somebody who is already doing the work is the system behaving.
 //!
-//! **No lock is held across a launch, and none is taken here at all.** The
-//! candidate reads are pool reads, and each launch takes the project git lock
-//! and then the project row lock inside [`create_session`], in that order and
-//! releases both before this loop continues (ADR 0021). A sweep over twenty
-//! projects therefore never holds one project's lock while another's rows are
-//! written.
+//! **No lock is held across a launch.** The candidate reads are pool reads,
+//! and each launch takes the project git lock and then the project row lock
+//! inside [`create_session`], in that order and releases both before this loop
+//! continues (ADR 0021). The one lock taken here is the project git lock
+//! around the author check, released before the launch asks for it again. A
+//! sweep over twenty projects therefore never holds one project's lock while
+//! another's rows are written.
 //!
 //! **The timer is the fallback, the wake-up is what makes it prompt.**
 //! [`spawn_waker`] subscribes to the one Postgres listener's fan-out and asks
@@ -58,6 +63,15 @@
 //! job takes no filter. A lagged broadcast receiver is therefore treated
 //! exactly like a notice, and a reconnection's `Resync` is one more wake-up.
 //!
+//! **An author's merge is picked up by the timer.** A task held back for its
+//! author's work becomes dispatchable when that work reaches the default
+//! branch. A task merge writes task events and wakes the job; a plain branch
+//! merge of the author's session writes only a `git` event on that session,
+//! which is a `session_events` notice, and those wake nobody — so such a task
+//! is launched by the next tick, within `DISPATCHER_INTERVAL_SECS`. The check
+//! itself is a silent fetch-back and writes no event, so asking cannot wake
+//! the job either.
+//!
 //! **A run does not wake itself forever.** Every launch writes task events of
 //! its own (`claimed`), so a run that dispatched something wakes the job once
 //! more. That follow-up run finds the tasks it just claimed held and launches
@@ -66,23 +80,26 @@
 //! `session_state` notices a launch writes — `creating` and `running` are not
 //! terminal and wake nobody.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use super::scheduler::JobWaker;
 use super::{CronService, JobReport};
 use crate::events::{AnyNotice, EventFanout, Notice};
+use crate::git::GitService;
 use crate::models::session::SessionState;
 use crate::models::{AgentProfile, ProfileKind, Project, ProjectStatus, TaskRef, TaskStateKind};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
 use crate::secrets::has_unattended_credential;
 use crate::session::{LaunchActor, LaunchRequest, create_session, unattended_capacity};
-use crate::tracker::leases::{READY_DEFAULT_LIMIT, ready_summaries};
+use crate::tracker::leases::{READY_DEFAULT_LIMIT, ready_candidates};
 
 /// How long a wake-up waits for the rest of its burst before the job runs.
 ///
@@ -105,6 +122,19 @@ const SKIP_NOT_EPHEMERAL: &str = "not_ephemeral";
 const SKIP_NO_CREDENTIAL: &str = "no_credential";
 /// The profile serves no `queue` state, so no task can ever be its.
 const SKIP_NO_SERVED_STATES: &str = "no_served_states";
+/// The session that filed the task has commits the default branch does not
+/// contain yet ("A task waits for its author's work"; ADR 0052).
+const SKIP_AUTHOR_WORK_UNLANDED: &str = "author_work_unlanded";
+
+/// Whether each author session's work has landed, asked at most once per run.
+///
+/// Many tasks share one planner, and the answer is a fetch-back and a
+/// containment check under the project git lock. A run is short and the
+/// dispatcher is the only thing that could change the answer that is not a
+/// person's merge, which the next run sees. A check that failed is cached as
+/// not landed, so the failure is counted once and every task of that author is
+/// held back for the rest of the run: failing closed is the point.
+type AuthorWork = HashMap<Uuid, bool>;
 
 impl CronService {
     /// Launch an ephemeral session for the best claimable task of every
@@ -134,6 +164,7 @@ impl CronService {
         let project_ids = projects.list_ids_by_status(ProjectStatus::Ready).await?;
 
         let mut report = JobReport::default();
+        let mut authors = AuthorWork::new();
 
         for project_id in project_ids {
             // Re-read the row rather than trusting the listing: the pause is a
@@ -165,7 +196,10 @@ impl CronService {
             };
 
             for profile in profiles {
-                match self.dispatch_profile(&project, &profile, &mut report).await {
+                match self
+                    .dispatch_profile(&project, &profile, &mut authors, &mut report)
+                    .await
+                {
                     Ok(Halt::Continue) => {}
                     // A bound wider than this profile refused: no later profile
                     // of this project can launch either, so the scan stops here
@@ -202,6 +236,7 @@ impl CronService {
         &self,
         project: &Project,
         profile: &AgentProfile,
+        authors: &mut AuthorWork,
         report: &mut JobReport,
     ) -> Result<Halt> {
         // A conversational profile cannot be launched unattended at all: it has
@@ -245,7 +280,7 @@ impl CronService {
         // stepped over, so re-asking after every launch would only repeat the
         // same rows. The page is deep enough that the caps run out first.
         let candidates =
-            ready_summaries(&self.state.pool, project.id, &served, READY_DEFAULT_LIMIT).await?;
+            ready_candidates(&self.state.pool, project.id, &served, READY_DEFAULT_LIMIT).await?;
         if candidates.is_empty() {
             return Ok(Halt::Continue);
         }
@@ -287,6 +322,24 @@ impl CronService {
                 return Ok(Halt::for_refusal(refusal));
             }
 
+            if let Some(author) = candidate.created_by_session_id
+                && !self
+                    .author_work_landed(project, author, authors, report)
+                    .await
+            {
+                debug!(
+                    project_id = %project.id,
+                    profile_id = %profile.id,
+                    task_id = %candidate.summary.id,
+                    author_session_id = %author,
+                    reason = SKIP_AUTHOR_WORK_UNLANDED,
+                    "dispatch skipped",
+                );
+                report.skipped += 1;
+                continue;
+            }
+
+            let candidate = candidate.summary;
             let mut request = LaunchRequest::new(profile.id);
             request.task = Some(TaskRef::Id(candidate.id));
             // The whole point of an unattended launch: the task must be in a
@@ -353,6 +406,55 @@ impl CronService {
         }
 
         Ok(Halt::Continue)
+    }
+
+    /// Has the work of `author`, the session that filed a candidate, landed on
+    /// the project's default branch? ("A task waits for its author's work";
+    /// ADR 0052.)
+    ///
+    /// Answered from `authors` when this run already asked. Otherwise under
+    /// the project git lock, taken here only around the check and released
+    /// before the launch, which takes it again itself ([`create_session`]).
+    /// A failure is logged, counted in `failures` and answered `false`: a task
+    /// whose author's work cannot be judged is not launched from a base that
+    /// may lack it.
+    async fn author_work_landed(
+        &self,
+        project: &Project,
+        author: Uuid,
+        authors: &mut AuthorWork,
+        report: &mut JobReport,
+    ) -> bool {
+        if let Some(landed) = authors.get(&author) {
+            return *landed;
+        }
+
+        let answer = match project.default_branch.as_deref() {
+            Some(branch) => {
+                let guard = self.state.git_locks.lock(project.id).await;
+                GitService::from_state(&self.state)
+                    .author_work_landed(&guard, author, branch)
+                    .await
+            }
+            // A `ready` project always has one (`docs/data-model.md`,
+            // `projects`); a row that does not has no base to launch from
+            // either.
+            None => Err(Error::Conflict(crate::git::service::NOT_READY.to_string())),
+        };
+
+        let landed = answer.unwrap_or_else(|error| {
+            error!(
+                project_id = %project.id,
+                author_session_id = %author,
+                error = %error,
+                "the dispatcher could not tell whether a task author's work has landed",
+            );
+            report.failures += 1;
+            false
+        });
+        authors.insert(author, landed);
+
+        landed
     }
 }
 

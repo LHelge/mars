@@ -857,6 +857,60 @@ impl GitService {
         Ok(integrate::is_ancestor(&repo, &commit, &head.commit).await?)
     }
 
+    /// Has the work of `session_id` — a task's author — landed on the
+    /// integration head `default_branch`?
+    ///
+    /// The dispatcher's hold-back (`ARCHITECTURE.md`, "Dispatcher", A task
+    /// waits for its author's work; ADR 0052). Under a lock the caller holds.
+    /// The session is fetched back silently first, so a live planner's latest
+    /// commits are what is judged and no `git` event is written: an event here
+    /// would be a notice, and a notice a wake-up of the job asking. The answer
+    /// is `true` when any of these holds:
+    ///
+    /// - the session has no work tree and no ref ([`GitError::UnknownRef`]
+    ///   from the sync): it produced nothing, or ended with nothing of its
+    ///   own (ADR 0050);
+    /// - its tip is its recorded `base_commit`: it made no commits;
+    /// - its tip is contained in (equal to, or an ancestor of) the head.
+    ///
+    /// A tip held only by a hand-off ref is **not** landed: a hand-off is not
+    /// the default branch, and a session launched from the default branch
+    /// would not have it.
+    ///
+    /// # Errors
+    ///
+    /// Anything the sync or the containment check fails with other than a
+    /// missing ref, and [`GitError::UnknownRef`] when `default_branch` does
+    /// not resolve. The dispatcher fails closed on every one of them.
+    pub async fn author_work_landed(
+        &self,
+        guard: &ProjectGitGuard,
+        session_id: Uuid,
+        default_branch: &str,
+    ) -> Result<bool> {
+        let branch_ref = GitRef::parse(default_branch)?;
+        require_kind(matches!(branch_ref, GitRef::Head(_)), &branch_ref)?;
+
+        let tip = match self.sync_session_silent(guard, session_id).await {
+            Ok(tip) => tip,
+            Err(Error::Git(GitError::UnknownRef(_))) => return Ok(true),
+            Err(error) => return Err(error),
+        };
+
+        let base_commit = SessionRepository::new(&self.pool)
+            .fetch_back_basis(session_id)
+            .await?
+            .and_then(|basis| basis.base_commit);
+        if base_commit.as_deref() == Some(tip.as_str()) {
+            return Ok(true);
+        }
+
+        let repo = self.paths.project_repo(guard.project_id());
+        let head = refs::resolve(&repo, &branch_ref).await?;
+
+        Ok(integrate::is_ancestor(&repo, &tip, &head.commit).await?)
+    }
+
     /// Rebase a branch onto another (`POST /projects/{pid}/git/rebase`; the
     /// `rebase` MCP tool).
     ///

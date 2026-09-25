@@ -228,6 +228,38 @@ pub async fn ready_summaries(
     served_state_ids: &[Uuid],
     limit: i64,
 ) -> Result<Vec<TaskSummary>> {
+    Ok(ready_candidates(pool, project_id, served_state_ids, limit)
+        .await?
+        .into_iter()
+        .map(|candidate| candidate.summary)
+        .collect())
+}
+
+/// One row of [`ready_candidates`]: what `ready` would send, and the session
+/// that filed the task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadyCandidate {
+    pub summary: TaskSummary,
+    /// `tasks.created_by_session_id`: the author whose work the dispatcher
+    /// waits for (`ARCHITECTURE.md`, "Dispatcher", A task waits for its
+    /// author's work). Kept out of [`TaskSummary`], whose shape is the MCP
+    /// `ready` tool's contract.
+    pub created_by_session_id: Option<Uuid>,
+}
+
+/// [`ready_summaries`] with each task's author beside it, in the same order
+/// under the same rules: the dispatcher's candidate read, so the task it
+/// launches is still the first row `ready` would have offered.
+///
+/// # Errors
+///
+/// [`ready_summaries`]'s.
+pub async fn ready_candidates(
+    pool: &PgPool,
+    project_id: Uuid,
+    served_state_ids: &[Uuid],
+    limit: i64,
+) -> Result<Vec<ReadyCandidate>> {
     if !(READY_MIN_LIMIT..=READY_MAX_LIMIT).contains(&limit) {
         return Err(Error::BadRequest(LIMIT_OUT_OF_RANGE.into()));
     }
@@ -236,7 +268,13 @@ pub async fn ready_summaries(
         .list_claimable(project_id, served_state_ids, limit)
         .await?;
 
-    Ok(rows.into_iter().map(summary).collect())
+    Ok(rows
+        .into_iter()
+        .map(|row| ReadyCandidate {
+            created_by_session_id: row.created_by_session_id,
+            summary: summary(row),
+        })
+        .collect())
 }
 
 /// One claimable row as the `ready` tool sends it.

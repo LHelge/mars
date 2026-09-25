@@ -47,7 +47,8 @@ use chrono::Utc;
 use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::cron::{JobName, JobReport};
 use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
-use mars_orchestrator::git::testutil::TestUpstream;
+use mars_orchestrator::git::testutil::{TestUpstream, run_git, test_identity};
+use mars_orchestrator::git::{DataPaths, GitActor, GitService, create_work_clone, resolve_base};
 use mars_orchestrator::models::{
     HandoffCaller, NewSession, NewTask, Priority, ProfileKind, ProjectStatus, ProjectUpdate,
     Session, SessionLaunchSource, SessionState, Task,
@@ -227,9 +228,23 @@ impl Fixture {
     /// A task of this project in the named state, at `priority`, inserted the
     /// way the tracker inserts one.
     async fn task(&self, app: &TestApp, title: &str, state: &str, priority: Priority) -> Task {
+        self.task_by(app, title, state, priority, None).await
+    }
+
+    /// [`Fixture::task`], filed by `author` as the MCP `create_task` tool
+    /// records it (`tasks.created_by_session_id`).
+    async fn task_by(
+        &self,
+        app: &TestApp,
+        title: &str,
+        state: &str,
+        priority: Priority,
+        author: Option<Uuid>,
+    ) -> Task {
         let tasks = TaskRepository::new(&app.pool);
         let mut new = NewTask::new(self.project_id, title).expect("the title parses");
         new.priority = priority;
+        new.created_by_session_id = author;
         new.state_id = Some(
             tasks
                 .find_state_by_name(self.project_id, state)
@@ -305,6 +320,52 @@ impl Fixture {
         tx.commit().await.expect("the transaction commits");
 
         inserted
+    }
+
+    /// A planner: a session with a work clone of `main` and its base commit
+    /// recorded, as the launcher leaves one, and one commit of its own that
+    /// the default branch does not have.
+    async fn author_with_commit(&self, app: &TestApp, profile_id: Uuid) -> Uuid {
+        let session_id = self.seed_session(app, profile_id).await.id;
+        let paths = DataPaths::from_config(&app.state.config);
+
+        let base = {
+            let guard = app.state.git_locks.lock(self.project_id).await;
+            let base = resolve_base(&guard, &paths, None, "main")
+                .await
+                .expect("the base resolves");
+            create_work_clone(&guard, &paths, session_id, &base, &test_identity())
+                .await
+                .expect("the work clone is created");
+            base
+        };
+        let mut tx = app.pool.begin().await.expect("a transaction begins");
+        SessionRepository::new(&app.pool)
+            .set_base_commit(&mut tx, session_id, &base.commit)
+            .await
+            .expect("the base commit is recorded");
+        tx.commit().await.expect("the transaction commits");
+
+        let work = paths.session_work(session_id);
+        std::fs::write(work.join("PLAN.md"), "the plan\n").expect("the plan is written");
+        run_git(&work, &["add", "--", "PLAN.md"]).await;
+        run_git(&work, &["commit", "--quiet", "-m", "docs: the plan"]).await;
+
+        session_id
+    }
+
+    /// Merge the author's branch into `main`, as the Branches tab does.
+    async fn merge_author(&self, app: &TestApp, author: Uuid) {
+        GitService::from_state(&app.state)
+            .merge_branch(
+                self.project_id,
+                &author.to_string(),
+                "main",
+                None,
+                &GitActor::User(self.user.user.id),
+            )
+            .await
+            .expect("the merge succeeds");
     }
 
     /// Set the project's automation pause, as the project page does.
@@ -687,6 +748,94 @@ async fn a_held_task_is_stepped_over_and_the_next_one_is_dispatched() {
             .lease_holder_session_id,
         Some(holder.id),
     );
+}
+
+// ---- a task waits for its author's work ----
+
+/// A task filed by a session whose commits are not on the default branch is
+/// held back — it would be launched from a base without what it was written
+/// against — and dispatched by the first run after they are merged
+/// (`ARCHITECTURE.md`, "Dispatcher", A task waits for its author's work;
+/// ADR 0052). A task with no author beside it is dispatched as ever.
+#[tokio::test]
+async fn a_task_waits_until_its_author_s_commits_are_on_the_default_branch() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let profile_id = fixture
+        .auto_profile(&app, "auto-worker", &["ready"], 3)
+        .await;
+
+    let author = fixture.author_with_commit(&app, profile_id).await;
+    let waiting = fixture
+        .task_by(
+            &app,
+            "Implement the plan",
+            "ready",
+            Priority::CRITICAL,
+            Some(author),
+        )
+        .await;
+    let unauthored = fixture
+        .task(&app, "Fix the login form", "ready", Priority::LOW)
+        .await;
+
+    let report = dispatch(&app).await;
+    assert_eq!(report.items, 1, "only the unauthored task: {report:?}");
+    assert_eq!(report.skipped, 1, "{report:?}");
+    assert_eq!(report.failures, 0, "{report:?}");
+    assert_eq!(
+        fixture
+            .read_task(&app, waiting.id)
+            .await
+            .lease_holder_session_id,
+        None,
+        "the task was launched from a base without its author's work",
+    );
+    let launched: Vec<Session> = fixture
+        .sessions(&app)
+        .await
+        .into_iter()
+        .filter(|session| session.launch_source == SessionLaunchSource::Dispatcher)
+        .collect();
+    assert_eq!(launched.len(), 1);
+    assert_eq!(launched[0].task_id, Some(unauthored.id));
+
+    fixture.merge_author(&app, author).await;
+
+    let report = dispatch(&app).await;
+    assert_eq!(report.items, 1, "the author's work landed: {report:?}");
+    assert_eq!(report.failures, 0, "{report:?}");
+    assert!(
+        fixture
+            .read_task(&app, waiting.id)
+            .await
+            .lease_holder_session_id
+            .is_some(),
+        "the task was not dispatched once its author's work landed",
+    );
+}
+
+/// Every task of one unlanded author is held back, and none of them is a
+/// failure: a planner files many tasks, and they all wait for the same merge.
+#[tokio::test]
+async fn every_task_of_an_unlanded_author_waits() {
+    let app = TestApp::spawn().await;
+    let fixture = Fixture::create(&app).await;
+    let profile_id = fixture
+        .auto_profile(&app, "auto-worker", &["ready"], 3)
+        .await;
+
+    let author = fixture.author_with_commit(&app, profile_id).await;
+    for title in ["First step of the plan", "Second step of the plan"] {
+        fixture
+            .task_by(&app, title, "ready", Priority::MEDIUM, Some(author))
+            .await;
+    }
+
+    let report = dispatch(&app).await;
+    assert_eq!(report.items, 0, "{report:?}");
+    assert_eq!(report.skipped, 2, "{report:?}");
+    assert_eq!(report.failures, 0, "{report:?}");
 }
 
 // ---- what is never dispatched ----

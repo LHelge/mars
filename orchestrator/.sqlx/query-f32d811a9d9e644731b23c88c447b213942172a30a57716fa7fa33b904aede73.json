@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT t.id, t.number, t.title, t.description, s.name AS state, t.priority, t.labels,\n                   t.attempts, d.depends_on_count AS \"depends_on_count!\"\n            FROM tasks AS t\n            JOIN task_states AS s ON s.id = t.state_id\n            CROSS JOIN LATERAL (\n                SELECT COUNT(*) AS depends_on_count\n                FROM task_dependencies AS e\n                WHERE e.task_id = t.id\n            ) AS d\n            WHERE t.project_id = $1\n              AND t.state_id = ANY($2)\n              AND NOT t.blocked\n              AND t.lease_holder_session_id IS NULL\n            ORDER BY t.priority, t.number\n            LIMIT $3\n            ",
+  "query": "\n            SELECT t.id, t.number, t.title, t.description, s.name AS state, t.priority, t.labels,\n                   t.attempts, d.depends_on_count AS \"depends_on_count!\",\n                   t.created_by_session_id\n            FROM tasks AS t\n            JOIN task_states AS s ON s.id = t.state_id\n            CROSS JOIN LATERAL (\n                SELECT COUNT(*) AS depends_on_count\n                FROM task_dependencies AS e\n                WHERE e.task_id = t.id\n            ) AS d\n            WHERE t.project_id = $1\n              AND t.state_id = ANY($2)\n              AND NOT t.blocked\n              AND t.lease_holder_session_id IS NULL\n            ORDER BY t.priority, t.number\n            LIMIT $3\n            ",
   "describe": {
     "columns": [
       {
@@ -96,6 +96,17 @@
         "name": "depends_on_count!",
         "type_info": "Int8",
         "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_by_session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "created_by_session_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -114,8 +125,9 @@
       false,
       false,
       false,
-      null
+      null,
+      true
     ]
   },
-  "hash": "81502ecf7d27dfe5484fd5b5acb301b0e17272f31042c8fdf3e8d18f7d8c0053"
+  "hash": "f32d811a9d9e644731b23c88c447b213942172a30a57716fa7fa33b904aede73"
 }

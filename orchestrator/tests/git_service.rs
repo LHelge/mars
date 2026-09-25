@@ -36,7 +36,7 @@ use mars_orchestrator::git::{
 };
 use mars_orchestrator::models::{
     BranchName, EventRow, NewAgentProfile, NewProject, NewSession, ProfileKind, Project,
-    ProjectStatus, RemoteUrl, User,
+    ProjectStatus, RemoteUrl, SessionState, StateChange, User,
 };
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{ProjectRepository, SessionRepository};
@@ -189,6 +189,62 @@ impl Fixture {
         run_git(&work, &["commit", "--quiet", "-m", message]).await;
 
         session_id
+    }
+
+    /// A session with a work clone of `main` and its base commit recorded, as
+    /// the launcher leaves one, and no commit of its own yet.
+    async fn launched_session(&self) -> Uuid {
+        let session_id = self.seed_session().await;
+        let paths = self.paths();
+
+        let base = {
+            let guard = self.app.state.git_locks.lock(self.project.id).await;
+            let base = resolve_base(&guard, &paths, None, "main")
+                .await
+                .expect("the base resolves");
+            create_work_clone(&guard, &paths, session_id, &base, &test_identity())
+                .await
+                .expect("the work clone is created");
+            base
+        };
+
+        let mut tx = self.app.pool.begin().await.expect("a transaction begins");
+        SessionRepository::new(&self.app.pool)
+            .set_base_commit(&mut tx, session_id, &base.commit)
+            .await
+            .expect("the base commit is recorded");
+        tx.commit().await.expect("the transaction commits");
+
+        session_id
+    }
+
+    /// Commit one file in a session's work clone, as its agent would.
+    async fn commit_in(&self, session_id: Uuid, path: &str, message: &str) {
+        let work = self.paths().session_work(session_id);
+        std::fs::write(work.join(path), "work\n").expect("the file is written");
+        run_git(&work, &["add", "--", path]).await;
+        run_git(&work, &["commit", "--quiet", "-m", message]).await;
+    }
+
+    /// Move a session through `running` to `state`.
+    async fn end_session(&self, session_id: Uuid, state: SessionState) {
+        for to in [SessionState::Running, state] {
+            let mut tx = self.app.pool.begin().await.expect("a transaction begins");
+            SessionRepository::new(&self.app.pool)
+                .set_state(&mut tx, session_id, to, &StateChange::plain())
+                .await
+                .expect("the session moves");
+            tx.commit().await.expect("the transaction commits");
+        }
+    }
+
+    /// The dispatcher's question, under the project git lock.
+    async fn author_work_landed(&self, session_id: Uuid) -> bool {
+        let guard = self.app.state.git_locks.lock(self.project.id).await;
+        self.service()
+            .author_work_landed(&guard, session_id, "main")
+            .await
+            .expect("the check runs")
     }
 
     /// Every event stored for a session, oldest first.
@@ -841,4 +897,101 @@ async fn a_project_that_is_not_ready_is_refused_before_the_lock() {
         "expected the documented conflict, got {error:?}"
     );
     assert!(fixture.events(session_id).await.is_empty());
+}
+
+// ---- author work (`ARCHITECTURE.md`, "Dispatcher", A task waits for its
+// author's work; ADR 0052) ----
+
+#[tokio::test]
+async fn an_author_with_no_commits_has_landed_and_the_check_records_nothing() {
+    let fixture = Fixture::create("author-no-commits").await;
+    let session_id = fixture.launched_session().await;
+
+    assert!(fixture.author_work_landed(session_id).await);
+    assert!(
+        fixture.events(session_id).await.is_empty(),
+        "the check is a silent sync: an event would wake the dispatcher"
+    );
+}
+
+#[tokio::test]
+async fn an_author_with_commits_ahead_of_the_default_branch_has_not_landed() {
+    let fixture = Fixture::create("author-ahead").await;
+    let session_id = fixture.launched_session().await;
+    fixture
+        .commit_in(session_id, "PLAN.md", "docs: the plan")
+        .await;
+
+    assert!(!fixture.author_work_landed(session_id).await);
+    assert!(fixture.events(session_id).await.is_empty());
+}
+
+#[tokio::test]
+async fn an_author_whose_branch_was_merged_into_the_default_branch_has_landed() {
+    let fixture = Fixture::create("author-merged").await;
+    let session_id = fixture.launched_session().await;
+    fixture
+        .commit_in(session_id, "PLAN.md", "docs: the plan")
+        .await;
+    assert!(!fixture.author_work_landed(session_id).await);
+
+    fixture
+        .service()
+        .merge_branch(
+            fixture.project.id,
+            &session_id.to_string(),
+            "main",
+            None,
+            &GitActor::User(fixture.user.id),
+        )
+        .await
+        .expect("the merge succeeds");
+
+    assert!(fixture.author_work_landed(session_id).await);
+
+    // The live session keeps committing: the new commit is not on main.
+    fixture
+        .commit_in(session_id, "MORE.md", "docs: more plan")
+        .await;
+    assert!(!fixture.author_work_landed(session_id).await);
+}
+
+#[tokio::test]
+async fn an_author_with_no_work_tree_and_no_ref_has_landed() {
+    let fixture = Fixture::create("author-nothing").await;
+    let session_id = fixture.seed_session().await;
+
+    assert!(fixture.author_work_landed(session_id).await);
+}
+
+#[tokio::test]
+async fn an_author_whose_tip_only_a_hand_off_holds_has_not_landed() {
+    let fixture = Fixture::create("author-handoff").await;
+    let session_id = fixture.launched_session().await;
+    fixture
+        .commit_in(session_id, "PLAN.md", "docs: the plan")
+        .await;
+
+    let paths = fixture.paths();
+    let repo = paths.project_repo(fixture.project.id);
+    {
+        let guard = fixture.app.state.git_locks.lock(fixture.project.id).await;
+        let tip = fixture
+            .service()
+            .sync_session_silent(&guard, session_id)
+            .await
+            .expect("the session syncs");
+        refs::retain_handoff(&repo, Uuid::new_v4(), &tip)
+            .await
+            .expect("the hand-off ref is written");
+    }
+    fixture.end_session(session_id, SessionState::Done).await;
+
+    assert!(!fixture.author_work_landed(session_id).await);
+    assert!(
+        refs::resolve(&repo, &GitRef::Session(session_id))
+            .await
+            .is_err(),
+        "the ended session keeps no ref of its own: the hand-off holds its tip (ADR 0050)"
+    );
 }

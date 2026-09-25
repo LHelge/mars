@@ -144,6 +144,10 @@ pub struct TaskSummaryRow {
     pub attempts: i16,
     /// Outgoing `task_dependencies` edges of every kind.
     pub depends_on_count: i64,
+    /// The session that filed the task, if any: what the dispatcher's
+    /// hold-back asks about (`ARCHITECTURE.md`, "Dispatcher"). Not part of the
+    /// `ready` tool's answer.
+    pub created_by_session_id: Option<Uuid>,
 }
 
 /// A dead session that still holds leases, as the stuck-task reaper finds it
@@ -759,7 +763,8 @@ impl TaskRepository<'_> {
             TaskSummaryRow,
             r#"
             SELECT t.id, t.number, t.title, t.description, s.name AS state, t.priority, t.labels,
-                   t.attempts, d.depends_on_count AS "depends_on_count!"
+                   t.attempts, d.depends_on_count AS "depends_on_count!",
+                   t.created_by_session_id
             FROM tasks AS t
             JOIN task_states AS s ON s.id = t.state_id
             CROSS JOIN LATERAL (

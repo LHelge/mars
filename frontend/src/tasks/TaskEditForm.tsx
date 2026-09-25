@@ -49,7 +49,7 @@ import {
   taskEditValuesDiffer,
 } from "./taskEdit";
 import { TaskFields } from "./TaskFields";
-import { useTaskFields } from "./taskFields";
+import { useTaskFields } from "./useTaskFields";
 import { parseLabels } from "./taskLabels";
 import { useTaskStore } from "./taskStore";
 import { useUpdateTask } from "./taskWrites";

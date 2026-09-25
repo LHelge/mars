@@ -15,7 +15,7 @@ import { FormField } from "../components/FormField";
 import { parseTaskPriority } from "../types";
 import type { Task } from "../types";
 import { PRIORITIES, PRIORITY_MEANING } from "./taskChrome";
-import type { TaskFieldErrors, TaskFieldValues } from "./taskFields";
+import type { TaskFieldErrors, TaskFieldValues } from "./useTaskFields";
 
 export interface TaskFieldsProps {
   /**

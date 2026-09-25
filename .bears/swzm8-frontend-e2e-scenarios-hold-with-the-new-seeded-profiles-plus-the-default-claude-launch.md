@@ -1,10 +1,10 @@
 ---
 id: swzm8
 title: "Frontend E2E: scenarios hold with the new seeded profiles, plus the default `claude` launch"
-status: open
+status: done
 priority: P2
 created: "2026-09-25T09:17:34.610205Z"
-updated: "2026-09-25T09:17:40.753251Z"
+updated: "2026-09-25T11:05:42.731555Z"
 tags:
   - frontend
   - tests

@@ -546,7 +546,7 @@ podman build -t mars-orchestrator:dev orchestrator
 
 The builder stage's `rust:<version>-trixie` tag and `orchestrator/rust-toolchain.toml` must move together, and the builder's Debian release must stay the same as the runtime stage's, because Orchestrator CI runs the git tests in that builder image to check the git the runtime ships; the Dockerfile says both at the `FROM` line.
 
-The nginx image builds the frontend with `npm ci && npm run build` on `node:22-alpine` and serves the result from `nginx:1.27-alpine`, with `nginx/nginx.conf` and `nginx/default.conf.template` installed so the official entrypoint renders the server block from `ORCHESTRATOR_HOST` and `API_PORT`. Its build context is the repository root, because it needs both `frontend/` and `nginx/`:
+The nginx image builds the frontend with `npm ci && npm run build` on `node:24-alpine` and serves the result from `nginx:1.27-alpine`, with `nginx/nginx.conf` and `nginx/default.conf.template` installed so the official entrypoint renders the server block from `ORCHESTRATOR_HOST` and `API_PORT`. Its build context is the repository root, because it needs both `frontend/` and `nginx/`:
 
 ```bash
 podman build -f nginx/Dockerfile -t mars-nginx:dev .

@@ -12,7 +12,7 @@
 #
 # The CLI is installed from npm rather than the curl installer: that installer
 # puts the binary under ~/.local, which is a mount at runtime.
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim
 
 # The single source of truth for the pinned CLI version. `--permission-prompts
 # none` (ARCHITECTURE.md, "Claude Code invocation") requires 2.1.259 or later.

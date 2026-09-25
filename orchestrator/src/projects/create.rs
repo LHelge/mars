@@ -4,9 +4,9 @@
 //! credential?}` and answers a `cloning` project (`SPEC.md`, "Projects"), but
 //! a project is never only its row. It starts with the default task states,
 //! `merge` among them an auto-merge state sending conflicts back to `ready`
-//! (ADR 0045), with the three seeded role profiles of
-//! [`seeded_profile_templates`] — `planner`, `implementer`, `reviewer` — on
-//! the built-in Claude image, and —
+//! (ADR 0045), with the four seeded profiles of [`seeded_profile_templates`]
+//! — `claude` (the default), `planner`, `implementer`, `reviewer` — on the
+//! built-in Claude image, and —
 //! when the caller supplied one — with its remote credential stored as the
 //! project-scoped, orchestrator-only secret `GIT_CREDENTIAL`
 //! (`docs/data-model.md`, `task_states`, `profile_states`, `agent_profiles`,
@@ -121,8 +121,8 @@ pub async fn create_project(
     let credential = credential_buffer(input.credential)?;
 
     // Through the model's own path, so the defaults of a seeded profile are
-    // the documented ones — `conversational`, `claude`, `bypass`, 1800 seconds
-    // and the kind's `partial_messages` — rather than literals repeated here
+    // the documented ones — `claude`, `bypass`, 1800 seconds and the kind's
+    // `partial_messages` — rather than literals repeated here
     // (`SPEC.md`, "Agent profiles"), and so a template that ever stopped
     // validating fails the creation instead of reaching the column.
     //

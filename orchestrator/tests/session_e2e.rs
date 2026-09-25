@@ -395,28 +395,22 @@ impl Fixture {
         id_of(&response.json::<Value>())
     }
 
-    /// An `auto_launch` ephemeral profile of this project, serving `states`.
-    ///
-    /// The image is the project's default, which
-    /// [`TestApp::spawn_with_engine`] set to the stub, so a session this
-    /// profile launches runs the same replay as every other scenario here.
-    async fn auto_profile(&self, app: &TestApp, states: &[&str]) -> Uuid {
+    /// The seeded profile named `name`, as `GET /projects/{pid}/profiles`
+    /// returns it.
+    async fn seeded_profile(&self, app: &TestApp, name: &str) -> Value {
         let response = app
-            .post_as(
+            .get_as(
                 &self.user,
                 &format!("/api/projects/{}/profiles", self.project_id),
             )
-            .json(&json!({
-                "name": format!("auto-{}", suffix()),
-                "kind": "ephemeral",
-                "auto_launch": true,
-                "max_concurrent": 1,
-                "serves_states": states,
-            }))
             .await;
-        response.assert_status(StatusCode::CREATED);
+        response.assert_status_ok();
 
-        id_of(&response.json::<Value>())
+        response
+            .json::<Vec<Value>>()
+            .into_iter()
+            .find(|profile| profile["name"] == json!(name))
+            .unwrap_or_else(|| panic!("a project is seeded with a {name} profile"))
     }
 
     /// A scheduled ephemeral profile of this project, on the same image.
@@ -1264,8 +1258,9 @@ impl RunningDispatcher {
 /// releases its task without a person anywhere in the loop.
 ///
 /// **Nothing is launched by hand.** The only calls this scenario makes are a
-/// profile, a task and a state change — the three things a user does on the
-/// board. `POST /api/projects/{pid}/sessions` is never reached, which is
+/// credential, a task and a state change — the three things a user does — and
+/// the profile is the `implementer` project creation seeded with `auto_launch`
+/// (ADR 0051), so no profile is written either. `POST /api/projects/{pid}/sessions` is never reached, which is
 /// asserted through `launch_source` and `created_by` on the row that appears.
 ///
 /// **What the stub cannot do.** It replays a fixture and calls no MCP tool at
@@ -1288,7 +1283,14 @@ async fn a_task_moved_into_a_served_state_is_dispatched_run_and_released() {
         let fixture = StubFixture::load();
         let project = Fixture::create(&app).await;
         project.store_agent_credential(&app).await;
-        let profile_id = project.auto_profile(&app, &["ready"]).await;
+        // The seeded implementer, as it comes: ephemeral, over `ready`, and
+        // marked for unattended launching (ADR 0051). The credential above is
+        // what lets the dispatcher start it.
+        let implementer = project.seeded_profile(&app, "implementer").await;
+        assert_eq!(implementer["kind"], json!("ephemeral"));
+        assert_eq!(implementer["auto_launch"], json!(true));
+        assert_eq!(implementer["serves_states"], json!(["ready"]));
+        let profile_id = id_of(&implementer);
 
         // Out of reach to begin with: `backlog` is not served, so the job's
         // startup tick has nothing to do and the launch below is provably the

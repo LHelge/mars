@@ -399,8 +399,8 @@ pub struct NewAgentProfile {
     /// *transaction's* start, so several profiles inserted by one transaction
     /// share it to the microsecond and `ORDER BY created_at` — the documented
     /// "oldest first" of `GET /projects/{pid}/profiles` — would fall through
-    /// to the name. The three seeded role profiles are listed in the order a
-    /// task travels through them, not alphabetically, so
+    /// to the name. The four seeded profiles are listed in template order —
+    /// the default, then the order a task travels — not alphabetically, so
     /// [`crate::projects::create_project`] spaces their timestamps by hand
     /// (`SPEC.md`, "Role profile templates"). Every other caller leaves this
     /// `None` and takes the column default.

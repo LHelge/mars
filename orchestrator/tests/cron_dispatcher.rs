@@ -86,13 +86,28 @@ struct Fixture {
     _upstream: TestUpstream,
     user: AuthenticatedUser,
     project_id: Uuid,
-    /// The id of the `project`-scope credential row, for the one scenario that
-    /// takes it away again.
-    credential_id: Uuid,
+    /// The id of the `project`-scope credential row, for the scenario that
+    /// takes it away again; `None` until one is stored.
+    credential_id: Option<Uuid>,
 }
 
 impl Fixture {
+    /// The fixture every scenario but one uses: a credential stored, and the
+    /// project's seeded `auto_launch` roles — the implementer and the reviewer
+    /// (ADR 0051) — deleted, so the only profiles the dispatcher can pick are
+    /// the ones the scenario creates. The seeded roles themselves are
+    /// dispatched by the scenario under "the seeded roles".
     async fn create(app: &TestApp) -> Self {
+        let mut fixture = Self::seeded(app).await;
+        fixture.delete_seeded_auto_launch_roles(app).await;
+        fixture.store_credential(app).await;
+
+        fixture
+    }
+
+    /// A new project exactly as creation leaves it: its seeded profiles, and
+    /// no agent credential.
+    async fn seeded(app: &TestApp) -> Self {
         let upstream = TestUpstream::create().await;
         let name = Uuid::new_v4().simple().to_string()[..8].to_string();
         let user = app
@@ -122,25 +137,63 @@ impl Fixture {
             cloned.status_message,
         );
 
-        // An `auto_launch` profile is refused at save without one, and the job
-        // checks again at launch (`ARCHITECTURE.md`, "Eligibility").
+        Self {
+            _upstream: upstream,
+            user,
+            project_id,
+            credential_id: None,
+        }
+    }
+
+    /// Store the Claude agent credential at `project` scope, as the secrets
+    /// page does. An `auto_launch` profile is refused at save without one,
+    /// and the job checks again at launch (`ARCHITECTURE.md`, "Eligibility").
+    async fn store_credential(&mut self, app: &TestApp) {
         let stored = app
-            .post_as(&user, "/api/secrets")
+            .post_as(&self.user, "/api/secrets")
             .json(&json!({
                 "scope": "project",
-                "scope_id": project_id.to_string(),
+                "scope_id": self.project_id.to_string(),
                 "name": OAUTH_TOKEN,
                 "value": FAKE_CREDENTIAL,
             }))
             .await;
         stored.assert_status(StatusCode::CREATED);
-        let credential_id = id_of(&stored.json::<Value>());
+        self.credential_id = Some(id_of(&stored.json::<Value>()));
+    }
 
-        Self {
-            _upstream: upstream,
-            user,
-            project_id,
-            credential_id,
+    /// This project's profiles, oldest first, as the profiles endpoint
+    /// lists them.
+    async fn profiles(&self, app: &TestApp) -> Vec<Value> {
+        let response = app
+            .get_as(
+                &self.user,
+                &format!("/api/projects/{}/profiles", self.project_id),
+            )
+            .await;
+        response.assert_status_ok();
+
+        response.json::<Vec<Value>>()
+    }
+
+    /// Delete every seeded profile carrying `auto_launch`, through the
+    /// profiles endpoint.
+    async fn delete_seeded_auto_launch_roles(&self, app: &TestApp) {
+        for profile in self.profiles(app).await {
+            if profile["auto_launch"] != json!(true) {
+                continue;
+            }
+            let deleted = app
+                .delete_as(
+                    &self.user,
+                    &format!(
+                        "/api/projects/{}/profiles/{}",
+                        self.project_id,
+                        id_of(&profile)
+                    ),
+                )
+                .await;
+            deleted.assert_status(StatusCode::NO_CONTENT);
         }
     }
 
@@ -699,7 +752,10 @@ async fn a_profile_without_a_resolvable_credential_claims_nothing() {
     let removed = app
         .delete_as(
             &fixture.user,
-            &format!("/api/secrets/{}", fixture.credential_id),
+            &format!(
+                "/api/secrets/{}",
+                fixture.credential_id.expect("the fixture stored one")
+            ),
         )
         .await;
     removed.assert_status(StatusCode::NO_CONTENT);
@@ -714,6 +770,52 @@ async fn a_profile_without_a_resolvable_credential_claims_nothing() {
         0,
         "a profile that cannot authenticate claimed a task",
     );
+}
+
+// ---- the seeded roles ----
+
+/// A new project's seeded implementer is dispatched on a `ready` task by
+/// itself, but only once an agent credential the job can use is stored
+/// (ADR 0051): before that the run skips it, claims nothing and launches
+/// nothing.
+#[tokio::test]
+async fn the_seeded_implementer_is_dispatched_once_a_credential_is_stored() {
+    let app = TestApp::spawn().await;
+    let mut fixture = Fixture::seeded(&app).await;
+    let implementer = fixture
+        .profiles(&app)
+        .await
+        .into_iter()
+        .find(|profile| profile["name"] == json!("implementer"))
+        .expect("a new project has the implementer");
+    assert_eq!(implementer["kind"], json!("ephemeral"));
+    assert_eq!(implementer["auto_launch"], json!(true));
+
+    let task = fixture
+        .task(&app, "Fix the login form", "ready", Priority::HIGH)
+        .await;
+
+    // No credential: the implementer has work and is skipped for it. The
+    // reviewer has none, so it is not asked and not counted.
+    let before = dispatch(&app).await;
+    assert_eq!(before.items, 0, "{before:?}");
+    assert_eq!(before.skipped, 1, "{before:?}");
+    assert_eq!(before.failures, 0, "{before:?}");
+    assert!(fixture.sessions(&app).await.is_empty());
+    assert_eq!(fixture.read_task(&app, task.id).await.attempts, 0);
+
+    fixture.store_credential(&app).await;
+
+    let after = dispatch(&app).await;
+    assert_eq!(after.items, 1, "{after:?}");
+    assert_eq!(after.failures, 0, "{after:?}");
+
+    let sessions = fixture.sessions(&app).await;
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].profile_id, id_of(&implementer));
+    assert_eq!(sessions[0].kind, ProfileKind::Ephemeral);
+    assert_eq!(sessions[0].task_id, Some(task.id));
+    assert_eq!(sessions[0].launch_source, SessionLaunchSource::Dispatcher);
 }
 
 /// A `conversational` profile is never dispatched, whatever its row says.

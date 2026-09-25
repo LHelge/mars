@@ -195,8 +195,8 @@ impl CronService {
     ///
     /// # Errors
     ///
-    /// Only from the two reads that stand between this profile and its
-    /// candidates — the credential lookup and the listing. A launch is counted,
+    /// Only from the reads that stand between this profile and a launch —
+    /// the served states, the listing and the credential lookup. A launch is counted,
     /// never returned, so one profile's failure costs the next one nothing.
     async fn dispatch_profile(
         &self,
@@ -213,22 +213,6 @@ impl CronService {
                 project_id = %project.id,
                 profile_id = %profile.id,
                 reason = SKIP_NOT_EPHEMERAL,
-                "dispatch skipped",
-            );
-            report.skipped += 1;
-            return Ok(Halt::Continue);
-        }
-
-        // Checked again at launch time because a credential that resolved when
-        // the profile was saved can have been deleted since (`ARCHITECTURE.md`,
-        // "Unattended launches" → "Eligibility"). One line per run, at `info`,
-        // because it is a configuration fault a person has to fix; nothing of
-        // the credential itself is logged (rule 3).
-        if !has_unattended_credential(&self.state.pool, project.id, profile.backend).await? {
-            info!(
-                project_id = %project.id,
-                profile_id = %profile.id,
-                reason = SKIP_NO_CREDENTIAL,
                 "dispatch skipped",
             );
             report.skipped += 1;
@@ -262,6 +246,29 @@ impl CronService {
         // same rows. The page is deep enough that the caps run out first.
         let candidates =
             ready_summaries(&self.state.pool, project.id, &served, READY_DEFAULT_LIMIT).await?;
+        if candidates.is_empty() {
+            return Ok(Halt::Continue);
+        }
+
+        // Checked at launch time because a credential that resolved when the
+        // profile was saved can have been deleted since, and because a new
+        // project's seeded implementer and reviewer carry `auto_launch` before
+        // any credential exists (`ARCHITECTURE.md`, "Unattended launches" →
+        // "Eligibility"; ADR 0051). Asked only once there is work, so a project
+        // with nothing queued and no credential — every new one — logs
+        // nothing; with work waiting it is one line per run, at `info`,
+        // because a person has to store a credential for it to move. Nothing
+        // of the credential itself is logged (rule 3).
+        if !has_unattended_credential(&self.state.pool, project.id, profile.backend).await? {
+            info!(
+                project_id = %project.id,
+                profile_id = %profile.id,
+                reason = SKIP_NO_CREDENTIAL,
+                "dispatch skipped",
+            );
+            report.skipped += 1;
+            return Ok(Halt::Continue);
+        }
 
         for candidate in candidates {
             // Before every launch, never once per profile: each session this

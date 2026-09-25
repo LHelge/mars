@@ -178,7 +178,7 @@ Constraints and indexes:
 
 ### `agent_profiles`
 
-Per-project configuration of one kind of agent. Every project gets three conversational profiles on creation — `planner`, `implementer` (the default one) and `reviewer` — each with the served state, tool list and `system_prompt` of its role copied from the templates in `SPEC.md`, "Role profile templates" (ADR 0038). No `merger` is seeded: the `merge` state is merged by the orchestrator (ADR 0045). They are ordinary rows from then on.
+Per-project configuration of one kind of agent. Every project gets four profiles on creation — `claude` (the default one, conversational, serving no state), `planner` (conversational), and `implementer` and `reviewer` (`ephemeral` with `auto_launch`) — each with the kind, served states, tool list, `auto_launch` and `system_prompt` of its template copied from `SPEC.md`, "Role profile templates" (ADR 0038, 0051). No `merger` is seeded: the `merge` state is merged by the orchestrator (ADR 0045). They are ordinary rows from then on.
 
 | Column | Type | Constraints | Notes |
 | --- | --- | --- | --- |

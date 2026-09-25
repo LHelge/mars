@@ -9,8 +9,8 @@
 //! given — and the subsection's fenced blocks are read in that order.
 //!
 //! It also checks the table beside those texts — kind, served states, tool
-//! lists, the schedule expression, which one is the default and which ones
-//! creation seeds — and runs the deny-list of
+//! lists, the schedule expression, which ones auto-launch, which one is the
+//! default and which ones creation seeds — and runs the deny-list of
 //! `tests/common/tracker_products.rs` over each prompt: a prompt tells the
 //! agent to use the task tools of its own session, and a product name in it
 //! would send the agent looking for something else.
@@ -97,8 +97,8 @@ fn documented_prompt(name: &str) -> String {
         .expect("a subsection has at least one block")
 }
 
-/// The `| name | kind | serves | tools | cron | default | seeded |` row of the
-/// table, as its seven cells.
+/// The `| name | kind | serves | tools | cron | auto | default | seeded |` row
+/// of the table, as its eight cells.
 fn documented_row(name: &str) -> Vec<String> {
     let cell = format!("| `{name}` |");
     let line = section()
@@ -203,7 +203,7 @@ fn the_document_defines_exactly_the_templates_the_code_knows() {
 fn the_table_says_what_the_templates_say() {
     for template in profile_templates() {
         let row = documented_row(template.name);
-        assert_eq!(row.len(), 7, "`{}`: seven cells", template.name);
+        assert_eq!(row.len(), 8, "`{}`: eight cells", template.name);
 
         assert_eq!(
             cell_names(&row[1]),
@@ -231,12 +231,18 @@ fn the_table_says_what_the_templates_say() {
         );
         assert_eq!(
             row[5],
+            if template.auto_launch { "yes" } else { "no" },
+            "`{}`: the auto-launch flag",
+            template.name,
+        );
+        assert_eq!(
+            row[6],
             if template.is_default { "yes" } else { "no" },
             "`{}`: the default flag",
             template.name,
         );
         assert_eq!(
-            row[6],
+            row[7],
             if template.seeded { "yes" } else { "no" },
             "`{}`: whether project creation seeds it",
             template.name,

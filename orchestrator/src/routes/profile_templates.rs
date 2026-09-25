@@ -2,8 +2,8 @@
 //! templates").
 //!
 //! The one read-only endpoint over [`profile_templates`], so the profile
-//! editor can pre-fill a new profile from a role: the way the four seeded
-//! roles reach a project that predates the seeding of ADR 0038, the way a
+//! editor can pre-fill a new profile from a role: the way the seeded roles
+//! reach a project that predates their seeding (ADR 0038, 0051), the way a
 //! deleted one comes back, and the only way the roles project creation does
 //! *not* seed — the scheduled `tech-debt-scanner` — reach a project at all.
 //! Creating the profile is the ordinary `POST /projects/{pid}/profiles`; there
@@ -13,10 +13,10 @@
 //!
 //! A top-level path rather than `/projects/{pid}/…`: the templates are the
 //! same whatever project is open, and nothing here reads the database. A
-//! scheduled template is offered like any other and refused like any other:
-//! `POST /projects/{pid}/profiles` is where the agent credential a schedule
-//! needs is checked, so a project with none gets that endpoint's documented
-//! 400 and not a shorter list here.
+//! scheduled or auto-launched template is offered like any other and refused
+//! like any other: `POST /projects/{pid}/profiles` is where the agent
+//! credential a schedule or `auto_launch` needs is checked, so a project with
+//! none gets that endpoint's documented 400 and not a shorter list here.
 //!
 //! The templates themselves carry only what makes a role a role, so `backend`
 //! is taken from the profile
@@ -55,6 +55,10 @@ struct ProfileTemplateDto {
     mcp_tools: &'static [&'static str],
     system_prompt: &'static str,
     is_default: bool,
+    /// Whether the dispatcher launches the role by itself; sent on like the
+    /// other fields, so the create endpoint's credential rule applies
+    /// (`SPEC.md`, "Agent profiles").
+    auto_launch: bool,
     /// Null on every role a person launches; a 5-field UTC expression on a
     /// scheduled one (`SPEC.md`, "Agent profiles" → "Scheduled profiles").
     schedule_cron: Option<&'static str>,
@@ -91,6 +95,7 @@ async fn list(
                 mcp_tools: template.mcp_tools,
                 system_prompt: template.system_prompt,
                 is_default: template.is_default,
+                auto_launch: defaults.auto_launch,
                 schedule_cron: template.schedule_cron,
                 schedule_prompt: template.schedule_prompt,
             })

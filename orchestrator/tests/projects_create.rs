@@ -1,5 +1,5 @@
 //! Creating a project against a real Postgres: the row, the seven default
-//! task states with `merge` merging by itself, the three seeded role profiles, the `GIT_CREDENTIAL` secret,
+//! task states with `merge` merging by itself, the four seeded profiles, the `GIT_CREDENTIAL` secret,
 //! and the rollback that leaves none of them behind (`SPEC.md`, "Projects"
 //! and "Role profile templates"; `docs/data-model.md`, `task_states`,
 //! `profile_states`, `agent_profiles`, `secrets`).
@@ -159,7 +159,7 @@ async fn the_default_task_states_are_seeded_in_board_order() {
 }
 
 #[tokio::test]
-async fn the_seeded_profiles_are_the_three_conversational_role_templates() {
+async fn the_seeded_profiles_are_the_default_and_the_three_role_templates() {
     let app = TestApp::spawn().await;
     let user = app
         .insert_user("creator", "creator@example.com", false, false)
@@ -175,16 +175,16 @@ async fn the_seeded_profiles_are_the_three_conversational_role_templates() {
         .await
         .expect("the profiles are read");
 
-    // Oldest first, which for the seeded three is the order a task travels
+    // Oldest first: the default, then the roles in the order a task travels
     // through them (`SPEC.md`, "Role profile templates").
     let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["planner", "implementer", "reviewer"]);
+    assert_eq!(names, ["claude", "planner", "implementer", "reviewer"]);
 
-    // Exactly three, whatever else `GET /profile-templates` offers: the
+    // Exactly four, whatever else `GET /profile-templates` offers: the
     // merger, whose `merge` state the orchestrator serves (ADR 0045), and a
     // template that would spend money on a schedule are offered and never
     // seeded (`SPEC.md`, "Role profile templates").
-    assert_eq!(profiles.len(), 3);
+    assert_eq!(profiles.len(), 4);
     assert!(
         profile_templates().len() > seeded_profile_templates().count(),
         "this assertion is only worth making while something is offered but \
@@ -202,13 +202,28 @@ async fn the_seeded_profiles_are_the_three_conversational_role_templates() {
             profile.system_prompt.as_deref(),
             Some(template.system_prompt)
         );
+        assert_eq!(profile.kind, template.kind);
+        // The implementer and the reviewer are dispatched by themselves once
+        // a credential is stored (ADR 0051); the default and the planner
+        // talk to a person.
+        let auto_launched = matches!(template.name, "implementer" | "reviewer");
+        assert_eq!(profile.auto_launch, auto_launched, "{}", template.name);
+        assert_eq!(
+            profile.kind,
+            if auto_launched {
+                ProfileKind::Ephemeral
+            } else {
+                ProfileKind::Conversational
+            },
+            "{}",
+            template.name,
+        );
 
         // Everything else is the documented default of "Agent profiles".
-        assert_eq!(profile.kind, ProfileKind::Conversational);
-        // Nothing a new project starts with runs by itself.
+        // Nothing a new project starts with runs on a schedule.
         assert_eq!(profile.schedule_cron, None);
         assert_eq!(profile.schedule_prompt, None);
-        assert!(!profile.auto_launch);
+        assert_eq!(profile.max_concurrent, 1);
         assert_eq!(profile.backend, AgentBackend::Claude);
         assert_eq!(profile.permission_mode, "bypass");
         // The configured image, not a literal of this test's own: the value
@@ -218,19 +233,27 @@ async fn the_seeded_profiles_are_the_three_conversational_role_templates() {
         assert_eq!(profile.model, None);
         assert_eq!(profile.runtime, None);
         assert!(profile.secrets.is_empty());
-        assert!(profile.partial_messages);
+        // At the kind's own default: on for a conversation, off for a run.
+        assert_eq!(
+            profile.partial_messages, !auto_launched,
+            "{}",
+            template.name
+        );
         assert_eq!(profile.idle_timeout_secs, 1800);
     }
 
-    // The implementer is the row the default-profile lookup every launch makes
-    // finds.
+    // `claude` is the row the default-profile lookup every launch makes
+    // finds: a conversation that serves no queue (ADR 0051).
     let default = projects
         .find_default_profile(project.id)
         .await
         .expect("the lookup runs")
         .expect("the project has a default profile");
-    assert_eq!(default.name, "implementer");
-    assert_eq!(default.serves_states, vec!["ready".to_string()]);
+    assert_eq!(default.name, "claude");
+    assert_eq!(default.kind, ProfileKind::Conversational);
+    assert!(default.serves_states.is_empty());
+    assert!(default.mcp_tools.is_empty());
+    assert!(!default.auto_launch);
 }
 
 #[tokio::test]
@@ -413,7 +436,7 @@ async fn a_duplicate_name_rolls_back_the_states_the_profile_and_the_secret() {
     // — no orphan secret.
     assert_eq!(count(&app.pool, COUNT_PROJECTS).await, 1);
     assert_eq!(count(&app.pool, COUNT_TASK_STATES).await, 7);
-    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 3);
+    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 4);
     assert_eq!(count(&app.pool, COUNT_SECRETS).await, 0);
 }
 
@@ -443,17 +466,19 @@ async fn two_projects_are_created_independently() {
     assert!(second.has_credential);
 
     assert_eq!(count(&app.pool, COUNT_TASK_STATES).await, 14);
-    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 6);
+    assert_eq!(count(&app.pool, COUNT_PROFILES).await, 8);
     assert_eq!(count(&app.pool, COUNT_SECRETS).await, 1);
 
-    // Each project's default profile serves its own `ready` state.
+    // Each project's implementer serves its own `ready` state.
     let tasks = TaskRepository::new(&app.pool);
     for project in [&first, &second] {
         let profile = ProjectRepository::new(&app.pool)
-            .find_default_profile(project.id)
+            .list_profiles(project.id)
             .await
-            .expect("the lookup runs")
-            .expect("the project has a default profile");
+            .expect("the profiles are read")
+            .into_iter()
+            .find(|profile| profile.name == "implementer")
+            .expect("the project has its implementer");
         let served = tasks
             .list_profile_states(profile.id)
             .await

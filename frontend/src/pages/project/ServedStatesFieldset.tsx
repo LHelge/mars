@@ -49,7 +49,7 @@ export function ServedStatesFieldset({
       description={
         dispatched
           ? "The dispatcher watches these queue states and, within the caps, launches a session of this profile for each unheld, unblocked task in them, holding that task from the start."
-          : "Queue states this profile picks work up from: the agent's ready tool lists the unheld, unblocked tasks in them, and it can claim only those. A launch for a named task works whatever its state."
+          : "Queue states this profile picks work up from: the agent's ready tool lists the unheld, unblocked tasks in them, and it can claim only those. A launch for a named task works whatever its state. A profile you only talk to, such as the seeded default claude, serves none."
       }
       help="task-flow"
     >

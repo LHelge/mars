@@ -373,7 +373,7 @@ export function ProfileEditor({
             <FieldShell
               label="Start from"
               name="profile-template"
-              hint="A role template fills the name, kind, served states, git tools, prompt and — on a scheduled role — its schedule; you can change anything before saving."
+              hint="A role template fills the name, kind, served states, git tools, prompt and — on a role that runs by itself — its unattended launches or its schedule; you can change anything before saving."
             >
               {(control) => (
                 <>
@@ -396,7 +396,7 @@ export function ProfileEditor({
                   {pendingTemplate !== null && (
                     <ConfirmPanel
                       tone="caution"
-                      message={`Start from ${pendingTemplate === BLANK_TEMPLATE ? "a blank profile" : pendingTemplate}? It overwrites the name, kind, served states, git tools, system prompt and schedule you have filled in.`}
+                      message={`Start from ${pendingTemplate === BLANK_TEMPLATE ? "a blank profile" : pendingTemplate}? It overwrites the name, kind, served states, git tools, system prompt, unattended launches and schedule you have filled in.`}
                       confirmLabel={`Start from ${pendingTemplate === BLANK_TEMPLATE ? "blank" : pendingTemplate}`}
                       cancelLabel="Keep what I wrote"
                       onConfirm={() => {
@@ -624,9 +624,13 @@ export function ProfileEditor({
                   <UnattendedCredentialNotice unattended={unattended} />
                 )}
 
+                {/* A role template can arrive with the toggle ticked
+                    (`SPEC.md`, "Role profile templates"), so the refusal also
+                    names the other way out: saving without it. */}
                 {autoLaunchError !== null && (
                   <p className="text-state-failed pt-2 text-xs">
-                    {autoLaunchError}. <CredentialLink />
+                    {autoLaunchError}. <CredentialLink />, or untick this to
+                    save the profile without unattended launches.
                   </p>
                 )}
 

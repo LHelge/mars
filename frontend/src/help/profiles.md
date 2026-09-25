@@ -1,5 +1,7 @@
 A profile is the recipe for a project's sessions. It sets how a session runs, which work it picks up, what it runs in and what it may touch. Every session is launched from one. Profiles belong to one project and are edited on its **Profiles** tab. A change applies to the next launch and leaves running sessions alone.
 
+A new project starts with four profiles. `claude`, the default, is a conversational session that serves no state, for talking to an agent about anything. `planner` is conversational too and serves `backlog`. `implementer` and `reviewer` are ephemeral, serve `ready` and `review`, and are launched by the dispatcher once an [agent credential](help:agent-credentials) is stored for the project or for everyone ([Getting started](help:getting-started)).
+
 Two fields decide an agent's role: its **served states** and its **system prompt**. A planner serves `backlog` and hands tasks on to `ready`. A reviewer serves `review` and sends each task either on to be merged or back to `ready`. A state doesn't need a profile at all when Mars does its work: in a new project nobody serves `merge`, because it is an auto-merge state ([Task flow](help:task-flow)).
 
 ### Kind: conversational or ephemeral
@@ -15,7 +17,7 @@ The kind also sets the default for **partial messages**: on for conversational, 
 
 ### Served states
 
-These are the task states a profile picks work up from. Only queue states can be served. The agent's `ready` tool lists the unheld, unblocked tasks in them, and the agent can claim only those. When you launch a session for a named task, the task's state doesn't matter. [Task flow](help:task-flow) covers states, claims and hand-offs.
+These are the task states a profile picks work up from. Only queue states can be served, and a profile you only talk to, such as `claude`, serves none. The agent's `ready` tool lists the unheld, unblocked tasks in them, and the agent can claim only those. When you launch a session for a named task, the task's state doesn't matter. [Task flow](help:task-flow) covers states, claims and hand-offs.
 
 ### Model
 
@@ -63,4 +65,4 @@ A starter profile's prompt is your project's own copy, so editing it changes no 
 
 ### Default profile
 
-Each project has exactly one default profile, marked `default` on the **Profiles** tab. It is the one already selected in the project's launch form, and a new profile starts on its image. The default profile can't be deleted, and neither can a profile that still has sessions.
+Each project has exactly one default profile, marked `default` on the **Profiles** tab. In a new project it is `claude`. It is the one already selected in the project's launch form, and a new profile starts on its image. The default profile can't be deleted, and neither can a profile that still has sessions.

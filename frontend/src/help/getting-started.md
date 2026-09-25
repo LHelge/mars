@@ -17,7 +17,7 @@ Agents need something to authenticate with: a Claude subscription token or an An
 
 ### 3. Launch a session
 
-On the project's **Sessions** tab, pick a profile and choose **Launch session**. The project's default profile is already selected there. You can also give the session:
+On the project's **Sessions** tab, pick a profile and choose **Launch session**. The project's default profile, `claude`, is already selected there: a plain Claude Code session in the project that you talk to. You can also give the session:
 
 - a **first message**;
 - a **task**, which the session then holds from the start;
@@ -31,15 +31,18 @@ A conversational session keeps running when nobody is watching. When it goes qui
 
 ### The starter profiles
 
-A new project comes with three starter profiles, and the project's **Profiles** tab lists them:
+A new project comes with four starter profiles, and the project's **Profiles** tab lists them:
 
-- **planner** works on the `backlog`: it turns a request into tasks an implementer can pick up, and never writes code.
-- **implementer** works on `ready`: it claims a task, does the work and hands a commit over for review. This is the default profile.
+- **claude** is the default profile, for talking to an agent. It is conversational, serves no queue and has no git tools, so it does what you ask in the conversation, and uses the task tools when you ask about the board.
+- **planner** works on the `backlog`: it turns a request into tasks an implementer can pick up, and never writes code. It is conversational, so you plan with it.
+- **implementer** works on `ready`: it claims a task, does the work and hands a commit over for review.
 - **reviewer** works on `review`: it checks the handed-over commit, then approves it on to `merge` or sends it back to `ready` with concrete comments.
 
-The fourth queue, `merge`, needs no agent. It is an **auto-merge** state: Mars itself merges each approved task that arrives there into the default branch and closes the task. A merge that conflicts sends the task back to `ready` with the conflicting paths. So a new project's reviewed work lands on the default branch by itself, and it waits there until someone pushes it ([Branches and merging](help:branches)).
+The implementer and the reviewer are ephemeral: each run takes one task and ends. Both come with automatic launching on, so the dispatcher starts them by itself for every task that reaches their state, but only once an [agent credential](help:agent-credentials) is stored for the project or for **Everyone**. Until then they wait, and you can still launch one for a task with **Run once** ([Automation](help:automation)).
 
-Each profile is an ordinary profile with a system prompt written for its role. That copy belongs to your project, so you can change it freely. A **merger** profile is still offered under **Start from** when you add a profile, for a project that turns auto-merge off and wants an agent in that seat. [Agent profiles](help:profiles) covers what a profile decides, and [Task flow](help:task-flow) shows how a task moves between these roles.
+The fourth queue, `merge`, needs no agent. It is an **auto-merge** state: Mars itself merges each approved task that arrives there into the default branch and closes the task. A merge that conflicts sends the task back to `ready` with the conflicting paths. So once that credential is stored, a task you put in `ready` travels to `done` by itself, and the merged work waits on the default branch until someone pushes it ([Branches and merging](help:branches)).
+
+Each profile is an ordinary profile with a system prompt written for its role. That copy belongs to your project, so you can change it freely. Every starter profile is also offered under **Start from** when you add a profile, which is how a project created before one of them existed gets it. So is a **merger** profile, for a project that turns auto-merge off and wants an agent in that seat. [Agent profiles](help:profiles) covers what a profile decides, and [Task flow](help:task-flow) shows how a task moves between these roles.
 
 ### Working with others
 

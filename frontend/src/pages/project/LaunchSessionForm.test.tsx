@@ -43,6 +43,7 @@ vi.mock("../../services/sessions", () => ({ createSession: vi.fn() }));
 const PROJECT_ID = "00000000-0000-4000-8000-0000000000a1";
 const PROFILE_ID = "00000000-0000-4000-8000-0000000000c3";
 const SESSION_ID = "00000000-0000-4000-8000-0000000000d4";
+const IMPLEMENTER_ID = "00000000-0000-4000-8000-0000000000c4";
 
 function project(defaultBranch: string): Project {
   return {
@@ -62,17 +63,18 @@ function project(defaultBranch: string): Project {
   };
 }
 
+/** The seeded default: conversational, serving no state (ADR 0051). */
 function profile(): Profile {
   return {
     id: PROFILE_ID,
     project_id: PROJECT_ID,
-    name: "implementer",
+    name: "claude",
     kind: "conversational",
     backend: "claude",
     image: "ghcr.io/example/mars-session:fake",
     model: null,
     system_prompt: "",
-    serves_states: ["ready"],
+    serves_states: [],
     secrets: [],
     mcp_tools: [],
     runtime: null,
@@ -161,7 +163,7 @@ function mount(defaultBranch = "main") {
 
 /** The form is ready once the profile list has arrived and one is selected. */
 async function waitForProfiles(): Promise<void> {
-  await screen.findByRole("option", { name: /implementer/ });
+  await screen.findByRole("option", { name: /^claude/ });
 }
 
 function baseRefSelect(): HTMLSelectElement {
@@ -195,6 +197,43 @@ afterEach(() => {
 });
 
 describe("LaunchSessionForm", () => {
+  it("preselects the default claude profile ahead of the roles", async () => {
+    // A new project's list, in the order the API returns it: the default
+    // first, then an auto-launched role.
+    vi.mocked(listProfiles).mockResolvedValue([
+      profile(),
+      {
+        ...profile(),
+        id: IMPLEMENTER_ID,
+        name: "implementer",
+        kind: "ephemeral",
+        serves_states: ["ready"],
+        partial_messages: false,
+        is_default: false,
+        auto_launch: true,
+      },
+    ]);
+    mount("main");
+    await waitForProfiles();
+
+    const select = screen.getByLabelText<HTMLSelectElement>("Agent profile");
+    expect(select.value).toBe(PROFILE_ID);
+    expect(
+      screen.getByRole("option", {
+        name: "claude — conversational, serves no queue",
+      }),
+    ).toBeDefined();
+    expect(
+      screen.getByRole("option", {
+        name: "implementer — ephemeral, serves ready",
+      }),
+    ).toBeDefined();
+    // A conversation needs no message to start.
+    expect(
+      screen.getByRole("button", { name: "Launch session" }),
+    ).toBeDefined();
+  });
+
   it("follows the project's default branch instead of posting a copy of it", async () => {
     const { renameDefaultBranch } = mount("main");
     await waitForProfiles();

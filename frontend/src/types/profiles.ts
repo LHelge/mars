@@ -108,6 +108,13 @@ export interface ProfileTemplate {
   system_prompt: string;
   is_default: boolean;
   /**
+   * The profile field of the same name, sent on as it is: `true` on a template
+   * the dispatcher launches by itself (`implementer` and `reviewer`), whose
+   * `kind` is then `ephemeral`, and `false` on every other (`SPEC.md`, "Agent
+   * profiles"; ADR 0051).
+   */
+  auto_launch: boolean;
+  /**
    * The cron expression a scheduled template runs on, or `null` on a template
    * a person launches. Set exactly with `schedule_prompt`, and only on a
    * template whose `kind` is `ephemeral` (`SPEC.md`, "Agent profiles" →

@@ -103,7 +103,7 @@ RUN set -eux; \
     chown 1000:1000 /opt/cargo/bin/cargo-binstall; \
     rm -f /tmp/cargo-binstall.tgz
 
-# Node 22 and npm come from the base image. corepack installs the pnpm and yarn
+# Node 24 and npm come from the base image. corepack installs the pnpm and yarn
 # shims, and the global npm prefix moves under the session home so that
 # `npm install -g` works without root. The prefix is on a bind mount at
 # runtime, so what is created here is only the empty directory; npm recreates

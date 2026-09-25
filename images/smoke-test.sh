@@ -16,7 +16,7 @@
 #   - the dev image (images/claude-dev, ADR 0039), when DEV_IMAGE names one,
 #     keeps every line of that contract — uid, HOME, cwd, the entrypoint
 #     redirects and the same pinned CLI — and on top of it: cargo, rustc,
-#     cargo clippy, rustfmt, cargo binstall, node and npm all resolve both for
+#     cargo clippy, rustfmt, cargo binstall, bea, node and npm all resolve both for
 #     the command the entrypoint execs and in `/bin/bash -l`, with
 #     /session/home bind-mounted empty as the launcher mounts it; `cargo new`
 #     plus `cargo build --offline` succeeds in /session/work; `agent` can write
@@ -423,6 +423,7 @@ rustc --version
 cargo clippy --version
 rustfmt --version
 cargo binstall -V
+bea --version
 node --version
 npm --version
 command -v cargo

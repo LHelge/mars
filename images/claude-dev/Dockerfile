@@ -20,14 +20,16 @@ FROM ${BASE_IMAGE}
 ARG RUST_VERSION=1.98.1
 ARG RUSTUP_VERSION=1.29.1
 ARG CARGO_BINSTALL_VERSION=1.23.0
+ARG BEARS_VERSION=0.9.0
 
 # The CLI version is not pinned again here: `org.opencontainers.image.version`
 # and `mars.claude_code_version` are inherited from the base image, which is
 # the single source of truth for it (images/claude/Dockerfile).
 LABEL org.opencontainers.image.title="mars-session-claude-dev" \
-      org.opencontainers.image.description="Mars session dev image: Claude Code CLI plus a Rust and Node toolchain as the unprivileged agent user" \
+      org.opencontainers.image.description="Mars session dev image: Claude Code CLI plus a Rust and Node toolchain and Bears as the unprivileged agent user" \
       org.opencontainers.image.source="https://github.com/LHelge/mars"
-LABEL mars.rust_version=$RUST_VERSION
+LABEL mars.rust_version=$RUST_VERSION \
+      mars.bears_version=$BEARS_VERSION
 
 # Installation needs root; the image ends on `agent` again below.
 # DL3066 warns that a non-numeric user id may not resolve on the host; `root`
@@ -121,6 +123,20 @@ ENV RUSTUP_HOME=/opt/rustup \
     NPM_CONFIG_PREFIX=/session/home/.npm-global \
     PATH=/opt/cargo/bin:/session/home/.npm-global/bin:$PATH
 
+# Bears (`bea`, the bea-rs crate), because the repositories moving to Mars
+# track their work in it and an agent should find its CLI and MCP server
+# without installing either first. Compiled, not downloaded: the upstream
+# linux-x86_64 release binary links against glibc 2.39 while this image is
+# bookworm with 2.36, and there is no arm64 asset, so neither cargo-binstall
+# nor a pinned download can supply one. Built as `agent` with a throwaway
+# CARGO_HOME and target directory so neither the registry cache nor the build
+# tree stays in the layer; only the binary lands in /opt/cargo/bin.
+RUN set -eux; \
+    su agent -p -s /bin/bash -c \
+        "CARGO_HOME=/tmp/bears-cargo CARGO_TARGET_DIR=/tmp/bears-target \
+         cargo install --locked --root /opt/cargo 'bea-rs@${BEARS_VERSION}'"; \
+    rm -rf /tmp/bears-cargo /tmp/bears-target
+
 # SC2016 sees the unexpanded `$PATH` below; that is the point — the profile
 # script must expand it when the login shell sources it, not now.
 # hadolint ignore=SC2016
@@ -143,12 +159,13 @@ RUN set -eux; \
     [ "$(getent passwd agent | cut -d: -f6)" = "/session/home" ]; \
     [ "$(getent passwd agent | cut -d: -f7)" = "/bin/bash" ]; \
     [ -x /usr/local/bin/mars-entrypoint ]; \
-    su agent -p -s /bin/bash -c 'command -v claude git cargo rustc rustfmt cargo-binstall node npm corepack rg fdfind'; \
+    su agent -p -s /bin/bash -c 'command -v claude git cargo rustc rustfmt cargo-binstall bea node npm corepack rg fdfind'; \
     su agent -p -s /bin/bash -c 'rustc --version' | grep -F "${RUST_VERSION}"; \
     su agent -p -s /bin/bash -c 'cargo --version' | grep -F "${RUST_VERSION}"; \
     su agent -p -s /bin/bash -c 'cargo fmt --version'; \
     su agent -p -s /bin/bash -c 'cargo clippy --version'; \
     su agent -p -s /bin/bash -c 'cargo binstall -V'; \
+    su agent -p -s /bin/bash -c 'bea --version' | grep -F "${BEARS_VERSION}"; \
     su agent -p -s /bin/bash -c 'node --version'; \
     su agent -p -s /bin/bash -c 'npm --version'; \
     su agent -p -s /bin/bash -c 'corepack --version'; \

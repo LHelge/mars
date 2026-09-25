@@ -110,7 +110,8 @@ jobs:
     needs: lint
     runs-on: ubuntu-latest
     # The dev image installs a Rust toolchain and asserts it with an offline
-    # cargo build, which is several minutes on top of the other two builds.
+    # cargo build and compiles Bears' `bea`, which is several minutes on top of
+    # the other two builds.
     timeout-minutes: 45
     strategy:
       # Each engine is its own evidence; a Docker failure must not hide the

@@ -23,7 +23,7 @@ import type { Task, TaskState } from "../types";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { CONTROL } from "../components/fieldStyles";
 import { TaskFields } from "./TaskFields";
-import { useTaskFields } from "./taskFields";
+import { useTaskFields } from "./useTaskFields";
 import { parseLabels } from "./taskLabels";
 import { useTaskStore } from "./taskStore";
 

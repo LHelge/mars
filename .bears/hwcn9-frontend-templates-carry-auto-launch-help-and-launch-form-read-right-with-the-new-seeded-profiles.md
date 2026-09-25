@@ -1,10 +1,10 @@
 ---
 id: hwcn9
 title: "Frontend: templates carry auto_launch, help and launch form read right with the new seeded profiles"
-status: open
+status: done
 priority: P2
 created: "2026-09-25T09:17:27.971344Z"
-updated: "2026-09-25T09:17:38.142403Z"
+updated: "2026-09-25T10:18:28.734088Z"
 tags:
   - frontend
   - profiles

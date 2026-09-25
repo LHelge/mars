@@ -1,6 +1,6 @@
 # Verifying the claude session image with real credentials
 
-Manual and credentialed; never runs in CI. Last run: Claude Code 2.1.274, model `claude-sonnet-5`, rootless Podman 6.1.2, 2026-09-18, `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. About 0.35 USD of reported cost for all runs. The credential lives only in the operator's shell (rule 3 of `CLAUDE.md`).
+Manual and credentialed; never runs in CI. The pin moved to 2.1.282 on 2026-09-25 on the strength of the live probe (`orchestrator/tests/fixtures/claude/2.1.282/NOTES.md`: the same line kinds, the same `init` per turn, the same subagent tool names and the same authentication-failure shape) and the MCP recording below; the procedure below was not repeated for it. Last full run: Claude Code 2.1.274, model `claude-sonnet-5`, rootless Podman 6.1.2, 2026-09-18, `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. About 0.35 USD of reported cost for all runs. The credential lives only in the operator's shell (rule 3 of `CLAUDE.md`).
 
 ## Procedure
 
@@ -98,7 +98,7 @@ for line in sys.stdin:
 
 ## Recording the MCP conformance fixtures
 
-`orchestrator/tests/fixtures/mcp/<version>/` is what the pinned CLI sent the Mars MCP server, one request per file, and `orchestrator/tests/mcp_conformance.rs` replays it on every test run (`CLAUDE.md`, "Testing expectations"). Record a new directory whenever `CLAUDE_CODE_VERSION` changes; the suite's `the_pinned_cli_version_has_been_recorded` fails until you do. Last run: Claude Code 2.1.274, rootless Podman 6.1.2, 2026-09-22.
+`orchestrator/tests/fixtures/mcp/<version>/` is what the pinned CLI sent the Mars MCP server, one request per file, and `orchestrator/tests/mcp_conformance.rs` replays it on every test run (`CLAUDE.md`, "Testing expectations"). Record a new directory whenever `CLAUDE_CODE_VERSION` changes; the suite's `the_pinned_cli_version_has_been_recorded` fails until you do. Last run: Claude Code 2.1.282, rootless Podman 6.1.2, 2026-09-25.
 
 ```bash
 podman build -t mars-session-claude:$V images/claude     # the image under test, as above
@@ -117,3 +117,5 @@ Observed on 2.1.274:
 - [x] A tool failure answered as a JSON-RPC error (`get_task` → `-32004`, `task not found`) reaches the model as a `tool_result` with `is_error: true` and the message as its text.
 - [x] What the CLI accepts on this revision was read from the result schemas bundled in the binary (`strings` of `claude.exe`, searching for `cacheScope`). Every result has a `resultType` that must be `complete` for the methods Mars serves. A list result needs an integer `ttlMs` of at least 0 and a `cacheScope` of `public` or `private`. A tool's `inputSchema` needs `type: "object"`. A call result needs a `content` array and allows a boolean `isError`. `tests/common/mcp_2026_07_28.rs` mirrors exactly this and quotes the definitions.
 - [x] The CLI's own account of the connection is in `home/.cache/claude-cli-nodejs/-session-work/mcp-logs-mars-orchestrator/*.jsonl`, which the script prints with any bearer value replaced. It shows `protocolEra: "modern"`, `negotiatedProtocolVersion: "2026-07-28"` and one line per tool call.
+
+Observed on 2.1.282 (2026-09-25): the same four requests on the same revision, `2026-07-28`. The one difference in what the client sends is that `clientCapabilities.elicitation` now names its two modes, `{"form":{},"url":{}}`, where 2.1.274 sent `{}`; Mars never elicits, so nothing answers it. The result schemas bundled in the binary are unchanged apart from the minifier's names, so `tests/common/mcp_2026_07_28.rs` stands.

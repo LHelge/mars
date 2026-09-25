@@ -1,0 +1,96 @@
+{
+  "events": [
+    {
+      "cli_session_id": "58d4d777-3e9d-4d7d-b2ab-223b3691321c",
+      "kind": "init",
+      "mcp_servers": [
+        {
+          "name": "mars-orchestrator",
+          "status": "failed"
+        }
+      ],
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "tools": [
+        "Task",
+        "Bash",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "DesignSync",
+        "Edit",
+        "EnterWorktree",
+        "ExitWorktree",
+        "ListAgents",
+        "Monitor",
+        "NotebookEdit",
+        "PushNotification",
+        "Read",
+        "RemoteTrigger",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "SendMessage",
+        "Skill",
+        "TaskStop",
+        "ToolSearch",
+        "WebFetch",
+        "WebSearch",
+        "Workflow",
+        "Write"
+      ]
+    },
+    {
+      "kind": "text",
+      "message_id": "msg_011CfQ7t97zZ4PXw87UgmRg3",
+      "text": "PONG"
+    },
+    {
+      "cost_usd": 0.0402578,
+      "duration_ms": 1310,
+      "is_error": false,
+      "kind": "result",
+      "num_turns": 1,
+      "permission_denials": [],
+      "subtype": "success",
+      "terminal_reason": "completed",
+      "usage": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 9119,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 9119,
+        "cache_read_input_tokens": 18639,
+        "inference_geo": "not_available",
+        "input_tokens": 2,
+        "iterations": [
+          {
+            "cache_creation": {
+              "ephemeral_1h_input_tokens": 9119,
+              "ephemeral_5m_input_tokens": 0
+            },
+            "cache_creation_input_tokens": 9119,
+            "cache_read_input_tokens": 18639,
+            "input_tokens": 2,
+            "output_tokens": 5,
+            "type": "message"
+          }
+        ],
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    }
+  ],
+  "state": {
+    "credential": null,
+    "partial_messages": false,
+    "resumed": false
+  }
+}

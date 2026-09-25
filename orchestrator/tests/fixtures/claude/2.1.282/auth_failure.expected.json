@@ -1,0 +1,89 @@
+{
+  "events": [
+    {
+      "cli_session_id": "9e656ff2-31a5-4401-83aa-d28ac30bfaa9",
+      "kind": "init",
+      "mcp_servers": [
+        {
+          "name": "mars-orchestrator",
+          "status": "failed"
+        }
+      ],
+      "model": "claude-sonnet-5",
+      "resumed": false,
+      "tools": [
+        "Task",
+        "Bash",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "DesignSync",
+        "Edit",
+        "EnterWorktree",
+        "ExitWorktree",
+        "ListAgents",
+        "NotebookEdit",
+        "Read",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "SendMessage",
+        "Skill",
+        "TaskStop",
+        "ToolSearch",
+        "WebFetch",
+        "WebSearch",
+        "Workflow",
+        "Write"
+      ]
+    },
+    {
+      "fatal": true,
+      "kind": "error",
+      "message": "Authentication failed with CLAUDE_CODE_OAUTH_TOKEN (project scope); replace the secret and send the next message."
+    },
+    {
+      "kind": "text",
+      "message_id": "6a04a595-5aa7-45ae-a375-232235d8420b",
+      "text": "Not logged in · Please run /login"
+    },
+    {
+      "cost_usd": 0.0,
+      "duration_ms": 2389,
+      "is_error": true,
+      "kind": "result",
+      "num_turns": 1,
+      "permission_denials": [],
+      "subtype": "success",
+      "terminal_reason": "api_error",
+      "usage": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "inference_geo": "",
+        "input_tokens": 0,
+        "iterations": [],
+        "output_tokens": 0,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_fetch_requests": 0,
+          "web_search_requests": 0
+        },
+        "service_tier": "standard",
+        "speed": "standard"
+      }
+    }
+  ],
+  "state": {
+    "credential": {
+      "name": "CLAUDE_CODE_OAUTH_TOKEN",
+      "scope": "project"
+    },
+    "partial_messages": false,
+    "resumed": false
+  }
+}

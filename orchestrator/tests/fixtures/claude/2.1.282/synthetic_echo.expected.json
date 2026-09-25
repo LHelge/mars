@@ -1,0 +1,41 @@
+{
+  "events": [
+    {
+      "backend": "claude",
+      "kind": "raw",
+      "native": {
+        "message": {
+          "content": [
+            {
+              "text": "Reply with exactly the word PONG.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        "type": "user"
+      }
+    },
+    {
+      "backend": "claude",
+      "kind": "raw",
+      "native": {
+        "message": {
+          "content": [
+            {
+              "text": "A message the orchestrator never wrote.",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        "type": "user"
+      }
+    }
+  ],
+  "state": {
+    "credential": null,
+    "partial_messages": false,
+    "resumed": false
+  }
+}

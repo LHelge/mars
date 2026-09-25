@@ -1,0 +1,5 @@
+this line is not JSON at all
+["a JSON array is not a native line"]
+{"type":"tabulation","note":"a top-level type no rule covers"}
+{"type":"system","subtype":"a_subtype_no_rule_covers","note":"kept verbatim"}
+{"type":"assistant","message":{"id":"msg_synthetic_raw","content":[{"type":"gizmo","payload":{"n":1}}]}}

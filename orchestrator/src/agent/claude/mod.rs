@@ -30,7 +30,7 @@ pub use translate::SUBAGENT_TOOL_NAMES;
 /// fixtures under `tests/fixtures/claude/` were recorded from. A bump changes
 /// all three together and adds fixtures rather than editing old ones
 /// (`CLAUDE.md`, "Testing expectations").
-pub const CLAUDE_CLI_VERSION: &str = "2.1.274";
+pub const CLAUDE_CLI_VERSION: &str = "2.1.282";
 
 /// The CLI binary as it is found on the session image's `PATH`.
 pub const CLAUDE_CLI_BINARY: &str = launch::BINARY;

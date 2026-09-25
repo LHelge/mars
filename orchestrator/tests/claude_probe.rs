@@ -661,11 +661,15 @@ fn subagent_tool_names(session: &Session) -> Vec<String> {
 /// Feed every recorded line through the adapter with a state matching the
 /// launch, and check the two shapes the whole transcript hangs on.
 ///
-/// No panic, `init` becomes `init` and `result` becomes `result`; the per-rule
-/// assertions belong to the fixture suite that is built on the recordings.
+/// No panic, the first `init` of a `session_id` becomes `init` and `result`
+/// becomes `result`; the per-rule assertions belong to the fixture suite that
+/// is built on the recordings. The CLI writes an `init` at the start of every
+/// turn, and the translator turns only the first one of a process into an
+/// event (`SPEC.md`, "AgentEvent"), so a repeat is not checked here.
 fn translate_recorded(session: &Session, config: TranslateConfig) {
     let backend = ClaudeBackend::new();
     let mut state = TranslateState::new(config);
+    let mut seen_sessions: Vec<String> = Vec::new();
 
     for (index, line) in session.stdout.iter().enumerate() {
         let events = backend.translate(line, &mut state);
@@ -673,7 +677,16 @@ fn translate_recorded(session: &Session, config: TranslateConfig) {
             continue;
         };
 
-        if is_init(&value) {
+        let first_init = is_init(&value) && {
+            let id = string_at(&value, "session_id").unwrap_or_default();
+            let first = !seen_sessions.contains(&id);
+            if first {
+                seen_sessions.push(id);
+            }
+            first
+        };
+
+        if first_init {
             assert!(
                 events.iter().any(|event| event.body.kind() == "init"),
                 "{}: line {} is `system`/`init` but produced {:?}",

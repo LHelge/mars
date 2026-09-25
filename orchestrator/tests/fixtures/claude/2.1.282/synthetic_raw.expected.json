@@ -1,0 +1,49 @@
+{
+  "events": [
+    {
+      "backend": "claude",
+      "kind": "raw",
+      "native": "this line is not JSON at all"
+    },
+    {
+      "backend": "claude",
+      "kind": "raw",
+      "native": [
+        "a JSON array is not a native line"
+      ]
+    },
+    {
+      "backend": "claude",
+      "kind": "raw",
+      "native": {
+        "note": "a top-level type no rule covers",
+        "type": "tabulation"
+      }
+    },
+    {
+      "backend": "claude",
+      "kind": "raw",
+      "native": {
+        "note": "kept verbatim",
+        "subtype": "a_subtype_no_rule_covers",
+        "type": "system"
+      }
+    },
+    {
+      "backend": "claude",
+      "kind": "raw",
+      "message_id": "msg_synthetic_raw",
+      "native": {
+        "payload": {
+          "n": 1
+        },
+        "type": "gizmo"
+      }
+    }
+  ],
+  "state": {
+    "credential": null,
+    "partial_messages": false,
+    "resumed": false
+  }
+}

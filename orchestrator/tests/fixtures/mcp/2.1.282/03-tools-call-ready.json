@@ -1,0 +1,43 @@
+{
+  "method": "POST",
+  "path": "/mcp",
+  "headers": {
+    "accept": "application/json, text/event-stream",
+    "content-type": "application/json",
+    "host": "orchestrator:7001",
+    "mcp-method": "tools/call",
+    "mcp-name": "ready",
+    "mcp-protocol-version": "2026-07-28"
+  },
+  "body": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "_meta": {
+        "claudecode/toolUseId": "toolu_fake0001",
+        "io.modelcontextprotocol/clientCapabilities": {
+          "elicitation": {
+            "form": {},
+            "url": {}
+          },
+          "roots": {
+            "listChanged": true
+          }
+        },
+        "io.modelcontextprotocol/clientInfo": {
+          "description": "Anthropic's agentic coding tool",
+          "name": "claude-code",
+          "title": "Claude Code",
+          "version": "2.1.282",
+          "websiteUrl": "https://claude.com/claude-code"
+        },
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "progressToken": 1
+      },
+      "arguments": {},
+      "name": "ready"
+    }
+  },
+  "status": 200
+}

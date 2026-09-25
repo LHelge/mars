@@ -1,0 +1,1 @@
+{"type":"assistant","message":{"id":"msg_synthetic_thinking","role":"assistant","content":[{"type":"thinking","thinking":"The migration has to run before the backfill.","signature":"fake-signature"},{"type":"thinking","thinking":"","signature":"fake-signature"},{"type":"redacted_thinking","data":"fake-redacted-payload"},{"type":"text","text":"Run the migration first."}]}}

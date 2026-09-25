@@ -33,6 +33,7 @@
 
 pub mod comments;
 pub mod dependencies;
+pub mod drop_handoff;
 pub mod dto;
 pub mod escalation;
 pub mod graph;
@@ -51,6 +52,7 @@ use crate::prelude::*;
 
 pub use comments::{CommentAuthor, add_comment};
 pub use dependencies::{add_dependency, remove_dependency, resolve_dependency};
+pub use drop_handoff::{NO_CURRENT_HANDOFF, drop_handoff};
 pub use dto::{
     CommentDto, DependencyRef, HandoffDto, TaskDetailDto, TaskDto, TaskSessionLinkDto, TaskSummary,
 };

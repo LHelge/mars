@@ -14,6 +14,7 @@
 //! | `DELETE /projects/{pid}/tasks/{id}/dependencies/{dep}?kind=` | one edge of that kind removed, 200 with the dependant |
 //! | `POST /projects/{pid}/tasks/{id}/comments` | one comment written, 201 with it |
 //! | `POST /projects/{pid}/tasks/{id}/release` | a [`release_by_user`] mutation, 200 with the task |
+//! | `POST /projects/{pid}/tasks/{id}/drop-handoff` | a [`drop_handoff`] mutation, 200 with the task |
 //! | `GET /tasks?state_kind=` | the dashboard's cross-project list |
 //!
 //! **The three lists take no lock.** A board read takes no part in anyone's
@@ -78,7 +79,7 @@ use crate::tracker::tasks::{
 };
 use crate::tracker::{
     CommentAuthor, CommentDto, HandoffService, TaskDetailDto, TaskDto, TrackerMutation,
-    add_comment, dependencies, release_by_user, retry_on_serialization_failure,
+    add_comment, dependencies, drop_handoff, release_by_user, retry_on_serialization_failure,
 };
 
 /// What `GET /tasks` without a `state_kind` is told (400).
@@ -119,6 +120,7 @@ pub fn project_routes() -> Router<AppState> {
         )
         .route("/{pid}/tasks/{id}/comments", post(comment))
         .route("/{pid}/tasks/{id}/release", post(release))
+        .route("/{pid}/tasks/{id}/drop-handoff", post(drop_current_handoff))
 }
 
 // ---- create ----
@@ -717,6 +719,54 @@ async fn release(
     .await?;
 
     Ok(Json(released))
+}
+
+// ---- drop hand-off ----
+
+/// `POST /projects/{pid}/tasks/{id}/drop-handoff` (`SPEC.md`, "Code hand-offs
+/// and review").
+///
+/// `comment` rather than `body`, the name every hand-off change gives its
+/// required comment.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DropHandoffRequest {
+    comment: String,
+}
+
+/// `POST /projects/{pid}/tasks/{id}/drop-handoff` → the task without its
+/// current hand-off (200).
+///
+/// Clears `current_handoff_id` and nothing else, so the task's next launch
+/// starts from the project's default branch; the hand-off history and its refs
+/// stay ([`drop_handoff`]). A held task is allowed and keeps its lease.
+///
+/// 400 for an empty comment; 404 for an unknown project, an unknown task and a
+/// reference that addresses no task at all; 409 `task has no current
+/// hand-off`. One mutation, so a refusal leaves neither a row change, a
+/// comment nor an event.
+async fn drop_current_handoff(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((pid, id)): Path<(Uuid, String)>,
+    Json(body): Json<DropHandoffRequest>,
+) -> Result<Json<TaskDto>> {
+    let reference = task_ref(&id)?;
+
+    let task = retry_on_serialization_failure("drop_handoff", || async {
+        let mut mutation =
+            TrackerMutation::begin(&state.pool, pid, TaskActor::User { user_id: user.id }).await?;
+
+        let task = locked_task(&mut mutation, pid, reference).await?;
+        let task = drop_handoff(&mut mutation, task.id, user.id, &body.comment).await?;
+
+        mutation.commit().await?;
+
+        Ok(task)
+    })
+    .await?;
+
+    Ok(Json(task))
 }
 
 // ---- shared ----

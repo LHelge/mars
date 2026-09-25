@@ -55,6 +55,7 @@ import {
   listProjectSessions,
   loginViaToken,
   setProjectSecret,
+  turnOffAutoLaunch,
   waitFor,
   waitForSessionState,
   type Api,
@@ -203,6 +204,18 @@ test("the dispatcher picks up a task moved into a served state, and a pause stop
   // Everything this scenario leaves behind belongs to the project, including
   // the sessions it never names.
   sessions.sweep(api, project.id);
+
+  // The seeded `implementer` over `ready` and `reviewer` over `review` carry
+  // `auto_launch` already (ADR 0051), and are older than the profile below, so
+  // with the credential stored the dispatcher would run the implementer on the
+  // first task instead. Off before the credential exists, so no run of the job
+  // ever sees them live (`tests/README.md`, "Automation and the seeded
+  // roles"); the toggle this scenario is about is then the only one on.
+  const seeded = await turnOffAutoLaunch(api, project.id);
+  expect(seeded.map((one) => one.name).sort()).toEqual([
+    "implementer",
+    "reviewer",
+  ]);
 
   // An unattended launch has no user, so the `user`-scope credential the `api`
   // fixture seeds does not qualify: the save is refused with a 400 until the

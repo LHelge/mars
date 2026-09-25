@@ -27,7 +27,7 @@
 import type { Locator, Page } from "@playwright/test";
 
 import type { Api } from "./utils/test-helpers";
-import type { Project, Session } from "../src/types";
+import type { Profile, Project, Session } from "../src/types";
 import { expect, test } from "./utils/fixtures";
 import type { SessionTracker } from "./utils/fixtures";
 import {
@@ -281,6 +281,66 @@ test("launch with a first message and watch the transcript", async ({
   // once it has read its first stdin line.
   await reveal(page, rows.getByText("Session started (stub)"));
   await reveal(page, rows.getByText("hello stub", { exact: true }));
+});
+
+test("a fresh project's launch form preselects claude and opens a conversation with a composer", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+
+  // What a new project is seeded with in front of its roles (`SPEC.md`, "Role
+  // profile templates"; ADR 0051): `claude`, the default, conversational and
+  // serving no state.
+  const profiles = await api.get<Profile[]>(`/projects/${project.id}/profiles`);
+  const claude = profiles.find((profile) => profile.is_default);
+  expect(claude?.name).toBe("claude");
+  expect(claude?.kind).toBe("conversational");
+  expect(claude?.serves_states).toEqual([]);
+  expect(claude?.auto_launch).toBe(false);
+  if (claude === undefined) return;
+
+  // The launch form starts on it without anything being chosen, and reads as
+  // a conversation rather than a run.
+  await page.goto(`/projects/${project.id}?tab=sessions`);
+  const form = page.getByRole("form", { name: "Launch a session" });
+  await expect(form).toBeVisible();
+  const select = form.getByLabel("Agent profile");
+  await expect(select).toHaveValue(claude.id);
+  await expect(select.locator(`option[value="${claude.id}"]`)).toHaveText(
+    "claude — conversational, serves no queue",
+  );
+
+  // Launched as it stands: nothing but a first message is filled in.
+  await form.getByLabel("First message (optional)").fill("hello claude");
+  await form.getByRole("button", { name: "Launch session" }).click();
+  await page.waitForURL(/\/sessions\/[0-9a-f-]{8}-/);
+  const sessionId = sessions.track(
+    api,
+    page.url().slice(page.url().lastIndexOf("/") + 1),
+  );
+
+  const session = await waitForSessionState(api, sessionId, "running", 90_000);
+  expect(session.profile_id).toBe(claude.id);
+  expect(session.kind).toBe("conversational");
+  expect(session.task_id).toBeNull();
+  await expectState(page, "running");
+
+  // A conversation keeps its composer, and it takes the next message: the
+  // first turn is replayed to its end, and what is sent after it lands in the
+  // transcript beside the first (`SPEC.md`, "Frontend", "Composer").
+  await waitForTurn(api, sessionId, 0);
+  await expect(
+    composer(page).getByLabel("Message", { exact: true }),
+  ).toBeEnabled();
+  await compose(page, "and one more thing");
+  const rows = transcript(page);
+  await reveal(page, rows.getByText("hello claude", { exact: true }));
+  await reveal(page, rows.getByText("and one more thing", { exact: true }));
 });
 
 test("second and third turns render subagent, edit diff, shell, deltas and denial", async ({

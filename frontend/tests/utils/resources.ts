@@ -147,7 +147,11 @@ export async function moveUpstreamInto(
 
 // --- profiles and secrets ---------------------------------------------------
 
-/** The project's default profile, the one sessions launch with when none is named. */
+/**
+ * The project's default profile, the one sessions launch with when none is
+ * named: on a new project the seeded `claude`, conversational and serving no
+ * state (`SPEC.md`, "Role profile templates").
+ */
 export async function defaultProfile(
   client: Api,
   projectId: string,
@@ -164,7 +168,11 @@ export async function defaultProfile(
   return profile;
 }
 
-/** The whole profile as a `PUT` body: `PUT` replaces, so nothing may be dropped. */
+/**
+ * The whole profile as a `PUT` body: `PUT` replaces, so nothing may be dropped
+ * — an omitted `auto_launch`, `max_concurrent` or schedule would take its
+ * default again (`SPEC.md`, "Agent profiles").
+ */
 function toProfileInput(profile: Profile): ProfileInput {
   return {
     name: profile.name,
@@ -180,7 +188,44 @@ function toProfileInput(profile: Profile): ProfileInput {
     serves_states: profile.serves_states,
     partial_messages: profile.partial_messages,
     idle_timeout_secs: profile.idle_timeout_secs,
+    auto_launch: profile.auto_launch,
+    max_concurrent: profile.max_concurrent,
+    schedule_cron: profile.schedule_cron,
+    schedule_prompt: profile.schedule_prompt,
   };
+}
+
+/**
+ * Turns `auto_launch` off on every profile of the project that carries it and
+ * returns the profiles it changed.
+ *
+ * A new project is seeded with an `implementer` over `ready` and a `reviewer`
+ * over `review`, both ephemeral and auto-launched (`SPEC.md`, "Role profile
+ * templates"; ADR 0051). The dispatcher skips them for as long as no agent
+ * credential resolves at `global` or `project` scope, which is every project in
+ * this suite but the ones whose scenario stores a project-scope credential. A
+ * scenario that does must call this *before* storing it, or the seeded roles
+ * start claiming its tasks the moment one reaches `ready` or `review`
+ * (`tests/README.md`, "Automation and the seeded roles"). Saving
+ * `auto_launch: false` needs no credential, so the order is always possible.
+ */
+export async function turnOffAutoLaunch(
+  client: Api,
+  projectId: string,
+): Promise<Profile[]> {
+  const profiles = await client.get<Profile[]>(
+    `/projects/${projectId}/profiles`,
+  );
+  const changed: Profile[] = [];
+  for (const profile of profiles.filter((one) => one.auto_launch)) {
+    changed.push(
+      await client.put<Profile>(
+        `/projects/${projectId}/profiles/${profile.id}`,
+        { ...toProfileInput(profile), auto_launch: false },
+      ),
+    );
+  }
+  return changed;
 }
 
 /**

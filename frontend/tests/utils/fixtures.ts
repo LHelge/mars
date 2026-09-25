@@ -134,7 +134,10 @@ export const test = base.extend<E2EOptions & E2EFixtures>({
   api: async ({ request, user, agentCredential }, use) => {
     const client = apiClient(request, user.access_token);
     // The user's own scope, so it is gone with the user and no other
-    // scenario's page can see it.
+    // scenario's page can see it. It is also a scope no unattended launch can
+    // use, which is what keeps the dispatcher off every project's seeded
+    // `implementer` and `reviewer` (`tests/README.md`, "Automation and the
+    // seeded roles").
     if (agentCredential) {
       await seedAgentCredential(client);
     }

@@ -90,6 +90,13 @@ const CONFLICT_COMMENT =
  * A task `number` in `ready` claimed by an implementer session launched for it
  * from `main`, waited to `running` — which is what says its work clone exists.
  * Returns the session id.
+ *
+ * "Implementer" is the part it plays, not the profile: the launch names none,
+ * so it runs the project's default, `claude`, and a person's launch ignores
+ * served states (`ARCHITECTURE.md`, "Launching a session for a task"). The
+ * seeded `implementer` and `reviewer` are auto-launched (ADR 0051) but never
+ * run here, because nothing in this file stores an agent credential the
+ * dispatcher can use (`tests/README.md`, "Automation and the seeded roles").
  */
 async function implementer(
   sessions: SessionTracker,
@@ -250,7 +257,9 @@ test("an approved hand-off in merge is merged without a session and closes the t
   expect(task.state).toBe("done");
   expect(task.closed_at).not.toBeNull();
   expect(task.handoff?.review_status).toBe("approved");
-  // No agent, no session: the implementer is the project's only one.
+  // No agent, no session: the implementer is the project's only one. The
+  // seeded reviewer the task passed by in `review` launched nothing either,
+  // for want of a credential it could use (see `implementer`).
   const launched = await listProjectSessions(api, project.id);
   expect(launched.map((one) => one.id)).toEqual([session]);
 });

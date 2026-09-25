@@ -87,6 +87,7 @@ export {
   sendInput,
   setProfileSecrets,
   setProjectSecret,
+  turnOffAutoLaunch,
   waitForSessionState,
   type CreateProjectOptions,
   type ForwardInput,

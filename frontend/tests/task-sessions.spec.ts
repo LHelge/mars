@@ -181,15 +181,21 @@ test("open in session claims the task and the card shows its session", async ({
     title: "Implement greeting",
     state: "ready",
   });
-  const profile = await defaultProfile(api, project.id);
+  // The form defaults to the first conversational profile that serves the
+  // task's state (`SPEC.md`, "Frontend", "Task board";
+  // `tasks/launchRules.ts`). None of the seeded ones does — `claude` serves
+  // nothing, the planner `backlog`, and the implementer over `ready` is
+  // ephemeral (ADR 0051) — so the scenario brings its own, and the rule is
+  // what picks it over `claude`, which comes first in the list.
+  const profile = await api.post<Profile>(`/projects/${project.id}/profiles`, {
+    name: "pair",
+    kind: "conversational",
+    serves_states: ["ready"],
+  });
 
   const panel = await openTask(page, project, 1);
   const form = await openLaunchForm(panel, "Open in session");
 
-  // The form defaults to the first conversational profile that serves the
-  // task's state, which for a fresh project is the seeded `implementer` over
-  // `ready` (`SPEC.md`, "Frontend", "Task board"; `tasks/launchRules.ts`).
-  // The other seeded roles are offered too, each over its own queue.
   await expect(form.getByLabel("Agent profile")).toHaveValue(profile.id);
   await expect(
     form.getByLabel("Agent profile").locator(`option[value="${profile.id}"]`),
@@ -382,8 +388,8 @@ test("run once runs an ephemeral profile on the task and gives it back", async (
     title: "Run me once",
     state: "ready",
   });
-  // `Run once` needs an ephemeral profile to offer; a project is created with
-  // conversational ones only (`orchestrator/src/projects/create.rs`).
+  // The scenario's own ephemeral profile, rather than the seeded `implementer`
+  // that also serves `ready` (ADR 0051): what runs here is arranged here.
   const oneshot = await api.post<Profile>(
     `/projects/${project.id}/profiles`,
     { name: "oneshot", kind: "ephemeral", serves_states: ["ready"] },
@@ -391,6 +397,10 @@ test("run once runs an ephemeral profile on the task and gives it back", async (
 
   const panel = await openTask(page, project, 1);
   const form = await openLaunchForm(panel, "Run once");
+  // The form offers only ephemeral profiles and starts on the first that
+  // serves the task's state, which is the older seeded implementer; choosing
+  // is the user's.
+  await form.getByLabel("Agent profile").selectOption(oneshot.id);
   await expect(form.getByLabel("Agent profile")).toHaveValue(oneshot.id);
 
   const sessionId = await submitLaunch(page, form, sessions, api, "Run once");

@@ -51,7 +51,10 @@ import type { SessionTracker } from "./utils/fixtures";
 import {
   AUTHOR_BRANCH_WAIT,
   commitInSessionWorkClone,
+  createTask,
   createTaskAsSession,
+  forwardHandoff,
+  getTask,
   commitToBareRepo,
   gitIsAncestor,
   gitLogLast,
@@ -60,6 +63,7 @@ import {
   loginViaToken,
   mirrorPath,
   moveUpstreamInto,
+  publishRevision,
   sessionWorkPath,
   taskCardTestId,
   transcript,
@@ -363,10 +367,12 @@ test("the branches tab holds the git panel and the sessions tab does not", async
     sections.getByRole("link", { name: "Branches", exact: true }),
   ).toHaveAttribute("aria-current", "page");
 
-  // In the order the operator works: the heads, upstream in, the session refs.
+  // In the order the operator works: the heads, what went into them,
+  // upstream in, the session refs.
   const panel = branches(page);
   await expect(panel.getByRole("heading", { level: 3 })).toHaveText([
     "Integration heads",
+    "History",
     "Merge any ref",
     "Session branches",
   ]);
@@ -893,6 +899,102 @@ test("pushing main from its integration head row", async ({
   await expect(
     form.getByRole("link", { name: "Open compare on GitHub" }),
   ).toHaveCount(0);
+});
+
+test("reverting main to before two task merges reopens the tasks without their hand-offs", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  const { sessionId, mirror } = await stage(sessions, api, project);
+  const base = gitRevParse(mirror, "main");
+
+  // Two tasks merged into `main` by auto-merge, each from its own commit on
+  // the one session: a revision pins the session's tip, an approval moves it
+  // to `merge`, and the job merges it and closes the task in `done`. A user's
+  // REST hand-off may name any session of the project (`SPEC.md`, "Code
+  // hand-offs and review").
+  for (const [number, content] of [
+    [1, "v2\n"],
+    [2, "v3\n"],
+  ] as const) {
+    const task = await createTask(api, project.id, {
+      title: `Change the app to ${content.trim()}`,
+      state: "ready",
+    });
+    expect(task.number).toBe(number);
+    const commit = commitInSessionWorkClone(
+      sessionId,
+      { "src/app.txt": content },
+      `feat: ${content.trim()}`,
+    );
+    const revision = await publishRevision(api, project.id, number, {
+      source: sessionId,
+      commit,
+      comment: "Ready for review",
+      state: "review",
+    });
+    await forwardHandoff(api, project.id, number, {
+      handoffId: revision.id,
+      comment: "LGTM",
+      state: "merge",
+      review: "approved",
+    });
+    await waitFor(
+      async () =>
+        (await getTask(api, project.id, number)).state === "done" ? true : null,
+      { timeoutMs: 30_000, description: `task #${String(number)} merged` },
+    );
+  }
+  expect(gitRevParse(mirror, "main")).not.toBe(base);
+
+  await page.goto(`/projects/${project.id}?tab=branches`);
+  const history = page.getByRole("table", { name: "History of main" });
+  const short = base.slice(0, 7);
+  const baseRow = history.getByRole("row").filter({ hasText: short });
+  await expect(baseRow).toBeVisible({ timeout: 30_000 });
+  // Both merges are above the base, each attributed to its task.
+  await expect(history.getByRole("link", { name: "#1" })).toBeVisible();
+  await expect(history.getByRole("link", { name: "#2" })).toBeVisible();
+
+  await baseRow.getByRole("button", { name: "Revert to here" }).click();
+  await expect(
+    page.getByText(/restoring it to .* 2 commits and these tasks are undone/),
+  ).toBeVisible();
+  await history.getByLabel("Reopen these tasks").check();
+  await history.getByLabel("Move them to").selectOption("ready");
+  await history.getByLabel("Comment").fill("Built on the wrong base");
+  await page.getByRole("button", { name: `Revert main to ${short}` }).click();
+
+  await expect(
+    page.getByText(/Reverted main to .* reopening 2 tasks/),
+  ).toBeVisible();
+  // The history is reread: the revert commit is the new head, above the
+  // commits it undid, which stay in the history.
+  await expect(
+    history
+      .getByRole("row")
+      .nth(1)
+      .getByText(`Revert main to ${base.slice(0, 12)}`),
+  ).toBeVisible();
+  await expect(history.getByRole("link", { name: "#2" })).toBeVisible();
+
+  // One new commit whose tree is the base's; `main` never moved backwards.
+  expect(gitRevParse(mirror, "main^{tree}")).toBe(
+    gitRevParse(mirror, `${base}^{tree}`),
+  );
+  expect(gitIsAncestor(mirror, base, "main")).toBe(true);
+
+  for (const number of [1, 2]) {
+    const task = await getTask(api, project.id, number);
+    expect(task.state).toBe("ready");
+    expect(task.handoff).toBeNull();
+    expect(task.handoffs.length).toBeGreaterThan(0);
+  }
 });
 
 // The compare link is built entirely in the browser from `remote_url`

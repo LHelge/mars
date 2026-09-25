@@ -2,6 +2,8 @@
 // measured against the Mars integration head named by the project's
 // `default_branch`.
 
+import type { Task } from "./tasks";
+
 export interface SessionBranch {
   session_id: string;
   /** `refs/sessions/<session id>`. */
@@ -92,4 +94,73 @@ export interface GitConflictError {
   status: 422;
   error: string;
   conflicts: string[];
+}
+
+/** A task an entry of the history brought in, through one of its hand-offs. */
+export interface HistoryTask {
+  id: string;
+  number: number;
+  title: string;
+  /** The newest hand-off record of the task pinning the commit brought in. */
+  handoff_id: string;
+}
+
+/** A session behind an entry of the history. */
+export interface HistorySession {
+  id: string;
+  title: string | null;
+}
+
+/**
+ * One commit on the first-parent line of an integration head
+ * (`GET /projects/{pid}/git/history`), newest first.
+ */
+export interface HistoryEntry {
+  commit: string;
+  /** The first parent first; empty for a root commit. */
+  parents: string[];
+  /** The message's first line. */
+  subject: string;
+  author_name: string;
+  /** The committer date. */
+  committed_at: string;
+  /**
+   * The commit's `Requested-By` trailer — `user:<id>`, `session:<id>` or
+   * `system` — or null. Read through `parseRequestedBy`
+   * (`components/git/history.ts`), which keeps an unknown spelling as text.
+   */
+  requested_by: string | null;
+  tasks: HistoryTask[];
+  sessions: HistorySession[];
+}
+
+/** `GET /projects/{pid}/git/history`'s query. */
+export interface HistoryQuery {
+  /** An integration head; the project's default branch when omitted. */
+  branch?: string;
+  /** The last `commit` of the previous page, which must be on the first-parent line. */
+  before?: string;
+  /** At most 200 (a larger value is reduced to it); the server's default is 50. */
+  limit?: number;
+}
+
+/** `POST /projects/{pid}/git/revert`. */
+export interface RevertInput {
+  /** An integration head. */
+  branch: string;
+  /** A full object id on the head's first-parent line, strictly older than the head. */
+  to: string;
+  /** The head the confirmation was read at; 409 `branch has moved` otherwise. */
+  expected_head: string;
+  /** Move the terminal tasks of the reverted range to a queue or human state. */
+  reopen?: { state: string; comment: string };
+}
+
+export interface RevertResult {
+  /** The new commit on `branch`, whose tree is `to`'s. */
+  commit: string;
+  /** The first-parent range `to..head`, newest first. */
+  reverted: HistoryEntry[];
+  /** The tasks moved, empty without `reopen`. */
+  reopened: Task[];
 }

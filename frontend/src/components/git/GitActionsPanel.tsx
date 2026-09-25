@@ -3,6 +3,7 @@
 //
 // One component in two places. On the project page's Branches tab it is the
 // whole picture, in the order the operator works: the integration heads, the
+// history of one of them with "Revert to here" (`BranchHistory`), the
 // generic merge that integrates upstream — `origin/main` into `main`
 // (`README.md`, "Operating notes") — and every session ref. In the session
 // view the session table is filtered to one branch, so an operator finishing a
@@ -30,6 +31,7 @@ import { LoadingState } from "../LoadingState";
 import { SectionHeader } from "../SectionHeader";
 import { Icon } from "../icons";
 import { SubmitButton } from "../SubmitButton";
+import { BranchHistory } from "./BranchHistory";
 import { IntegrationHeadTable } from "./IntegrationHeadTable";
 import { integrationHeads } from "./integrationHeads";
 import type { IntegrationHead } from "./integrationHeads";
@@ -256,6 +258,9 @@ export function GitActionsPanel({
         void sessionBranches.refetch();
         if (sessionId === undefined) {
           void branches.refetch();
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.projects.history(project.id),
+          });
         }
       }}
     >
@@ -327,8 +332,8 @@ export function GitActionsPanel({
   }
 
   // The project page, in the order the operator works: what the integration
-  // heads are, bringing upstream into them, then the session refs waiting to
-  // be merged.
+  // heads are and what went into them, bringing upstream into them, then the
+  // session refs waiting to be merged.
   const heads = integrationHeads(branches.data ?? [], project.default_branch);
   const defaultBranch = project.default_branch ?? "main";
 
@@ -337,7 +342,7 @@ export function GitActionsPanel({
       <SectionHeader
         title="Branches"
         help="branches"
-        description="The mirror's integration heads, the merge that brings upstream into them, and every session's ref."
+        description="The mirror's integration heads, their history, the merge that brings upstream into them, and every session's ref."
         actions={refreshButton}
       />
 
@@ -366,6 +371,18 @@ export function GitActionsPanel({
             disabled={busy !== null}
           />
         )}
+      </Block>
+
+      <Block
+        title="History"
+        description="The first-parent history of an integration head, newest first, with the tasks and sessions behind each commit. Revert to here adds one commit restoring the head to that point; nothing is pushed."
+      >
+        <BranchHistory
+          projectId={project.id}
+          heads={heads}
+          disabled={busy !== null}
+          onBusy={report}
+        />
       </Block>
 
       <Block

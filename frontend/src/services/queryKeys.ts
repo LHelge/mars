@@ -42,6 +42,15 @@ export const queryKeys = {
     sessionBranches: (id: string) =>
       ["projects", id, "git", "session-branches"] as const,
     /**
+     * Every loaded page of one integration head's first-parent history
+     * (`GET /projects/{id}/git/history`), as one infinite query per head.
+     * Without a `branch` it is every head's, which is what a revert invalidates.
+     */
+    history: (id: string, branch?: string) =>
+      branch === undefined
+        ? (["projects", id, "git", "history"] as const)
+        : (["projects", id, "git", "history", branch] as const),
+    /**
      * One diff (`GET /projects/{id}/git/diff`), as the Changes panel reads it.
      * Without a `base` the server compares against the project's default
      * branch, which is a key of its own: the answer is not the same query.

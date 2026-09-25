@@ -6,10 +6,14 @@ import type {
   CommitResult,
   Diff,
   DiffTarget,
+  HistoryEntry,
+  HistoryQuery,
   MergeInput,
   PushInput,
   PushResult,
   RebaseInput,
+  RevertInput,
+  RevertResult,
   SessionBranch,
 } from "../types";
 import { ApiError, apiGet, apiPost, seg } from "./apiClient";
@@ -36,6 +40,38 @@ export function getDiff(
     query: { ...target, base },
     signal,
   });
+}
+
+/**
+ * The first-parent history of an integration head, newest first; `before` is
+ * the last `commit` of the previous page.
+ */
+export function listHistory(
+  pid: string,
+  query: HistoryQuery,
+  signal?: AbortSignal,
+): Promise<HistoryEntry[]> {
+  return apiGet<HistoryEntry[]>(`/projects/${seg(pid)}/git/history`, {
+    query: { ...query },
+    signal,
+  });
+}
+
+/**
+ * One new commit on `branch` whose tree is `to`'s; 409 `branch has moved`
+ * when the head is no longer `expected_head`.
+ */
+export function revert(pid: string, input: RevertInput): Promise<RevertResult> {
+  return apiPost<RevertResult>(`/projects/${seg(pid)}/git/revert`, input);
+}
+
+/** The 409 of a revert whose head moved after the confirmation was read. */
+export function isBranchMoved(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    error.error === "branch has moved"
+  );
 }
 
 export function merge(pid: string, input: MergeInput): Promise<CommitResult> {

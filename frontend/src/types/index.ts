@@ -70,10 +70,16 @@ export type {
   Diff,
   DiffStatus,
   DiffTarget,
+  HistoryEntry,
+  HistoryQuery,
+  HistorySession,
+  HistoryTask,
   MergeInput,
   PushInput,
   PushResult,
   RebaseInput,
+  RevertInput,
+  RevertResult,
   SessionBranch,
 } from "./git";
 export type {

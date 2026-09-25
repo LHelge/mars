@@ -4,7 +4,7 @@ Mars keeps its own copy of each project's repository, the project's mirror, and 
 
 | Kind | Looks like | What it is | What moves it |
 | --- | --- | --- | --- |
-| Integration head | `main` | Mars's own branch. Sessions start from it and merges land in it. | A merge or a rebase, nothing else. |
+| Integration head | `main` | Mars's own branch. Sessions start from it and merges land in it. | A merge, a rebase or a revert, nothing else. |
 | Upstream-tracking | `origin/main` | What your remote had at the last fetch. | **Fetch now**, the periodic background fetch, and every fresh launch. |
 | Session ref | `refs/sessions/<id>` | One session's committed work. | **Sync**, the end of the session, and any merge, rebase or push that uses it. |
 
@@ -37,6 +37,12 @@ A push sends exactly one branch to one branch on the remote, using the project's
 After a push to GitHub, Mars shows an **Open compare on GitHub** link for opening a pull request against the default branch. Pushing the default branch to its own name has nothing to compare, so it shows none.
 
 Merged work waits on its integration head until someone pushes it. That includes everything auto-merge lands: in a new project, each approved task is merged into Mars's default branch by itself, and none of it reaches your remote until it is pushed. To publish it, open the project's **Branches** tab and use **Push…** on the head's row under **Integration heads**. The remote branch defaults to the head's own name, so `main` goes to the remote's `main`. After you merge `origin/main` into `main`, this is the push that follows. An agent can push too if its profile grants the `push` tool, but the starter profiles don't ([Agent profiles](help:profiles)).
+
+### Rolling back
+
+The **History** section of the **Branches** tab, under the integration heads, lists the default branch's history one commit per row, newest first: a task merge is one row, with the task and the session its work came from. Another head can be picked from the **Head** select. **Load older** reads further back.
+
+**Revert to here** on a row puts the branch back to that commit's content. It never moves the branch backwards: it adds one new commit on top whose files are those of the chosen commit, so nothing is lost, the undone commits stay in the history, and pushing it needs no force. Before you confirm, it lists every commit it undoes and the tasks they brought in. Tick **Reopen these tasks** to move those of them that are closed to a state you choose, with a comment saying why. Each also loses its current hand-off, so its next launch starts from the reverted branch instead of from the work you just rolled back, and the hand-off stays in its history. If the branch moved while you were reading, nothing happens and you are asked to reload the history and choose again. Like a merge, the revert waits on the branch until you push it with **Push…**.
 
 ### Branch merges and task merges
 

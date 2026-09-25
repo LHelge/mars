@@ -53,6 +53,7 @@ import {
   Square,
   Trash2,
   TriangleAlert,
+  Undo2,
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -79,6 +80,7 @@ export const Icon = {
   merge: GitMerge,
   rebase: GitGraph,
   push: ArrowUpFromLine,
+  revert: Undo2,
 
   // Session controls.
   launch: Play,

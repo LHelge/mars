@@ -1,16 +1,17 @@
 ---
 id: "7yh4k"
 title: End confirmation names a session's commits that are not on the default branch
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-25T21:00:48.811759234Z"
-updated: "2026-09-25T21:00:48.811759234Z"
+updated: "2026-09-25T21:01:12.851980899Z"
 tags:
   - frontend
   - sessions
   - git
   - docs
 parent: "4txx2"
+attempts: 1
 ---
 
 ## Summary

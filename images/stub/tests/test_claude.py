@@ -508,6 +508,23 @@ class TranscriptTests(StubTestCase):
         )
         self.assertIn("no transcript to resume", completed.stderr)
 
+    def test_a_resume_carries_the_transcripts_highest_total_into_its_results(self):
+        fixture = self.write_fixture([assistant("one"), result()])
+        config_dir = self.tmp / "claude"
+        env = {"CLAUDE_CONFIG_DIR": str(config_dir)}
+        first = self.run_stub(["-p", "hi"], fixture=fixture, env_extra=env)
+        session_id = self.lines(first)[0]["session_id"]
+
+        resumed = self.run_stub(
+            ["-p", "again", "--resume", session_id], fixture=fixture, env_extra=env
+        )
+        totals = [
+            line["total_cost_usd"]
+            for line in self.lines(resumed)
+            if line["type"] == "result"
+        ]
+        self.assertEqual(totals, [0.004])
+
 
 class ShippedFixtureTests(StubTestCase):
     """The fixtures the image ships under /opt/mars-stub/fixtures/.

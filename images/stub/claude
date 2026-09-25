@@ -17,6 +17,9 @@ until a line has been read from stdin: the real CLI behaves this way, so the
 session owner must go `running` on stdin attach rather than wait for init
 (ARCHITECTURE.md, "Launch sequence"; ADR 0032). Under -p the init opens the
 replay with nothing on stdin.
+Like 2.1.282, a --resume process reports total_cost_usd for the whole
+conversation: every fixture result it replays adds the highest total the
+resumed transcript already holds (ARCHITECTURE.md, "Cost accounting").
 SIGINT mid-turn ends the turn the way the real CLI does: a user line
 `[Request interrupted by user]`, then a result with subtype
 "error_during_execution", is_error true and terminal_reason
@@ -70,6 +73,7 @@ VALUED = {
 STATE = {
     "session_id": "",
     "transcript": None,
+    "carried_cost": 0.0,
     "transcript_failed": False,
     "delay": 0.0,
     "results": 0,
@@ -199,6 +203,25 @@ def load_mcp_servers(path):
     return [{"name": name, "status": "connected"} for name in servers]
 
 
+def carried_cost(path):
+    """The highest total_cost_usd of the results in a transcript being resumed."""
+    highest = 0.0
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict) and obj.get("type") == "result":
+                    cost = obj.get("total_cost_usd")
+                    if isinstance(cost, (int, float)) and cost > highest:
+                        highest = float(cost)
+    except OSError as error:
+        warn("could not read transcript %s: %s" % (path, error))
+    return highest
+
+
 def write_transcript(line):
     path = STATE["transcript"]
     if not path or STATE["transcript_failed"]:
@@ -229,6 +252,8 @@ def emit(obj):
     STATE["first_line"] = False
     payload = dict(obj)
     payload["session_id"] = STATE["session_id"]
+    if payload.get("type") == "result" and isinstance(payload.get("total_cost_usd"), (int, float)):
+        payload["total_cost_usd"] = payload["total_cost_usd"] + STATE["carried_cost"]
     line = json.dumps(payload, separators=(",", ":"))
     sys.stdout.write(line + "\n")
     sys.stdout.flush()
@@ -391,6 +416,8 @@ def run(argv):
         )
         if resume and not os.path.exists(STATE["transcript"]):
             warn("no transcript to resume at " + STATE["transcript"])
+        elif resume:
+            STATE["carried_cost"] = carried_cost(STATE["transcript"])
 
     fixture = os.environ.get("MARS_STUB_FIXTURE") or DEFAULT_FIXTURE
     turns = load_turns(fixture, "--include-partial-messages" in opts["flags"])

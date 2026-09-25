@@ -94,7 +94,8 @@ pub(crate) struct NativePermissionDenied {
 ///
 /// `usage` is passed through untouched: the owner accumulates it, nothing here
 /// interprets it. `total_cost_usd` is cumulative for the process on 2.1.274,
-/// which is the owner's problem and not the translator's.
+/// and from 2.1.282 across `--resume` as well, which is the owner's problem
+/// and not the translator's.
 ///
 /// `terminal_reason` is read because it is the only field that tells a turn the
 /// user stopped (`aborted_streaming`) from a turn that failed: both arrive with

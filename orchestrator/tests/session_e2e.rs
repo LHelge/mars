@@ -1066,6 +1066,25 @@ async fn a_conversational_session_runs_replays_parks_resumes_and_ends() {
             "the second launch resumed the conversation",
         );
 
+        // The resumed process replays the fixture's first turn again and, as
+        // the pinned CLI does, reports it on top of the conversation's earlier
+        // total, so the session is charged that turn once more and not the
+        // whole conversation twice (`ARCHITECTURE.md`, "Cost accounting").
+        let results = of_kind(&events, "result");
+        let resumed_result = results.last().expect("the resumed turn ended with a result");
+        let carried = resumed_result["cost_usd"]
+            .as_f64()
+            .expect("the resumed result reports a cost");
+        assert!(
+            (carried - 2.0 * turn.cumulative_cost).abs() < 1e-9,
+            "the resumed process reports the conversation's total: {carried}",
+        );
+        let resumed_cost = reload(&app, id).await.cost_usd;
+        assert!(
+            (resumed_cost - 2.0 * turn.cumulative_cost).abs() < 1e-9,
+            "the session's cost is both turns, not the carried total on top of the first: {resumed_cost}",
+        );
+
         // The queued message was delivered, and delivered before the turn it
         // triggered: the `user_message` is recorded before anything is written
         // to stdin (ADR 0020).

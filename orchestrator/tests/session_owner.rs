@@ -221,6 +221,7 @@ struct Owner<'a> {
     kind: ProfileKind,
     start_offset: u64,
     adopted: bool,
+    resumed: bool,
     container_id: Option<ContainerId>,
     stdin: Option<Box<dyn AsyncWrite + Send + Unpin>>,
     register: bool,
@@ -235,6 +236,7 @@ impl<'a> Owner<'a> {
             kind: ProfileKind::Conversational,
             start_offset: 0,
             adopted: false,
+            resumed: false,
             container_id: None,
             stdin: None,
             register: false,
@@ -254,6 +256,13 @@ impl<'a> Owner<'a> {
 
     fn adopted(mut self, adopted: bool) -> Self {
         self.adopted = adopted;
+        self
+    }
+
+    /// Launched with `--resume`, as the launcher marks a relaunch of a
+    /// conversation the CLI already has.
+    fn resumed(mut self, resumed: bool) -> Self {
+        self.resumed = resumed;
         self
     }
 
@@ -307,7 +316,10 @@ impl<'a> Owner<'a> {
             dirs: self.fixture.dirs.clone(),
             backend: Arc::new(ClaudeBackend::new()) as Arc<dyn AgentBackend>,
             start_offset: self.start_offset,
-            translate: TranslateConfig::default(),
+            translate: TranslateConfig {
+                resumed: self.resumed,
+                ..TranslateConfig::default()
+            },
             adopted: self.adopted,
             stdin: self.stdin,
             container_id: self.container_id,
@@ -1127,6 +1139,82 @@ async fn the_cumulative_baseline_is_restored_across_adoption() {
     );
 
     second.shutdown().await;
+}
+
+/// A resumed process reports the whole conversation's total, so its first
+/// `result` is charged only the increase over the last `result` the earlier
+/// process committed, and the session's cost is the resumed total rather than
+/// that total plus the first process's (`ARCHITECTURE.md`, "Cost accounting").
+#[tokio::test]
+async fn a_resumed_process_is_charged_only_its_increase_over_the_conversation() {
+    let app = TestApp::spawn().await;
+    let fixture = fixture(&app).await;
+    mark_running(&app, fixture.session_id).await;
+
+    let first_lines = native_lines("resume_prompt_first");
+    let resumed_lines = native_lines("resume_prompt");
+    let [(first_cost, first_in, first_out)] = recorded_results(&first_lines)[..] else {
+        panic!("resume_prompt_first records one result");
+    };
+    let [(resumed_total, resumed_in, resumed_out)] = recorded_results(&resumed_lines)[..] else {
+        panic!("resume_prompt records one result");
+    };
+    assert!(
+        resumed_total > first_cost,
+        "the recording carries the first process's cost into the resumed total"
+    );
+
+    let first = spawn_owner(&app, &fixture, 0, false);
+    let mut length = 0;
+    for line in &first_lines {
+        length = append_line(&fixture.dirs, line).await;
+    }
+    wait_for_offset(&app.pool, fixture.session_id, length).await;
+    first.shutdown().await;
+
+    relaunch(&app, fixture.session_id).await;
+    let resumed = Owner::new(&app, &fixture)
+        .start_offset(length)
+        .resumed(true)
+        .spawn();
+    for line in &resumed_lines {
+        length = append_line(&fixture.dirs, line).await;
+    }
+    wait_for_offset(&app.pool, fixture.session_id, length).await;
+
+    let (cost, input, output, _) = counters(&app.pool, fixture.session_id).await;
+    assert!(
+        (cost - resumed_total).abs() < 1e-9,
+        "the resumed process charged {cost} instead of the conversation's total {resumed_total}",
+    );
+    assert_eq!(
+        (input, output),
+        (first_in + resumed_in, first_out + resumed_out),
+        "usage is summed per turn"
+    );
+
+    resumed.shutdown().await;
+}
+
+/// Park a running session and launch it again, writing the `state_change` that
+/// marks the new process's start.
+async fn relaunch(app: &TestApp, session_id: Uuid) {
+    let repository = SessionRepository::new(&app.pool);
+    let mut tx = app.pool.begin().await.expect("a transaction begins");
+    for (from, to, reason) in [
+        (SessionState::Running, SessionState::Parked, "cli exited"),
+        (
+            SessionState::Parked,
+            SessionState::Running,
+            "container started, stdin attached",
+        ),
+    ] {
+        repository
+            .transition(&mut tx, session_id, &Transition::new(from, to, reason))
+            .await
+            .expect("the session moves");
+    }
+    tx.commit().await.expect("the transaction commits");
 }
 
 /// A recorded input's echo is suppressed even when it arrives after the owner

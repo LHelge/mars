@@ -1613,6 +1613,33 @@ impl<'a> SessionRepository<'a> {
             start_offset: row.start_offset.max(0) as u64,
         })
     }
+
+    /// The highest `cost_usd` of the session's `result` events before
+    /// `before_seq`, the total a resumed process carries forward
+    /// (`ARCHITECTURE.md`, "Cost accounting").
+    ///
+    /// The highest rather than the last, for the reason the owner's baseline
+    /// keeps the higher value: a lower total adds nothing. `None` when no
+    /// earlier `result` carried a cost.
+    pub async fn result_cost_before(
+        &self,
+        session_id: Uuid,
+        before_seq: i64,
+    ) -> Result<Option<f64>> {
+        let cost = sqlx::query_scalar!(
+            r#"
+            SELECT MAX((payload->>'cost_usd')::float8) AS "cost_usd"
+            FROM events
+            WHERE session_id = $1 AND kind = 'result' AND seq < $2
+            "#,
+            session_id,
+            before_seq,
+        )
+        .fetch_one(self.pool)
+        .await?;
+
+        Ok(cost)
+    }
 }
 
 /// An [`AgentEvent`] as a row about to be appended, observed now and carrying

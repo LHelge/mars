@@ -21,7 +21,10 @@
 //! owner that *adopts* an already-running process after a restart rebuilds that
 //! process's open subagents, denial bookkeeping, input-echo hashes and
 //! cumulative cost baseline by replaying the committed part of its transcript,
-//! publishing nothing (`ARCHITECTURE.md`, "Durability and recovery").
+//! publishing nothing (`ARCHITECTURE.md`, "Durability and recovery"). The cost
+//! baseline alone crosses processes: a resumed CLI reports the conversation's
+//! total, so a resumed process starts from the highest committed one
+//! (`ARCHITECTURE.md`, "Cost accounting").
 //!
 //! **`running` is not this module's decision.** The pinned CLI writes nothing
 //! at all, `system`/`init` included, until it has read a line of stdin, so the
@@ -425,6 +428,19 @@ impl SessionOwner {
             error!(session_id = %self.session_id, "a session owner was run twice");
             return OwnerExit::StoodDown;
         };
+
+        if self.translate.resumed {
+            // A failed read leaves the baseline at zero, which charges the
+            // conversation's earlier cost again: visible in the counters, and
+            // no reason to refuse to tail.
+            if let Err(err) = self.seed_cost_baseline().await {
+                error!(
+                    session_id = %self.session_id,
+                    error = %err,
+                    "could not read the resumed conversation's cost baseline",
+                );
+            }
+        }
 
         if self.adopted {
             // A failed reconstruction is not a reason to refuse to tail: the
@@ -1682,6 +1698,26 @@ impl SessionOwner {
                 "could not append a session event",
             );
         }
+    }
+
+    /// Start the cumulative cost baseline where the resumed conversation left
+    /// it.
+    ///
+    /// A process launched with `--resume` reports `total_cost_usd` for the
+    /// whole conversation, the earlier processes' turns included, so its first
+    /// `result` is charged as the increase over the highest total committed
+    /// before this process's launch (`ARCHITECTURE.md`, "Cost accounting"). An
+    /// adoption replays this process's own region afterwards, which only raises
+    /// the baseline from here.
+    async fn seed_cost_baseline(&mut self) -> Result<()> {
+        let repository = SessionRepository::new(&self.state.pool);
+        let start = repository.process_start(self.session_id).await?;
+        self.last_result_cost = repository
+            .result_cost_before(self.session_id, start.launch_seq)
+            .await?
+            .filter(|cost| cost.is_finite() && *cost >= 0.0);
+
+        Ok(())
     }
 
     /// Rebuild the adopted process's translation memory from retained history.

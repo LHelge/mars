@@ -59,6 +59,7 @@ See `mcp_config`.
 - `init` field names on the resumed launch: ["agents", "analytics_disabled", "apiKeySource", "capabilities", "claude_code_version", "cwd", "fast_mode_disabled_reason", "fast_mode_state", "mcp_servers", "memory_paths", "messaging_socket_path", "model", "output_style", "per_turn_effort_active", "permissionMode", "plugins", "product_feedback_disabled", "session_id", "skills", "slash_commands", "subtype", "terminal_slash_commands", "tools", "type", "uuid", "view_mode"]; a `resumed`-like field is present: false.
 - The resumed `init.session_id` equals the one resumed: true.
 - Exit statuses on stdin EOF: exit status: 0 (fresh), exit status: 0 (resumed).
+- `total_cost_usd`: Some(0.0469236) fresh, then Some(0.0901072) resumed, whose `modelUsage` sums both processes (inputTokens 2 → 4, outputTokens 667 → 674) — cumulative across `--resume`, unlike 2.1.274 (added by hand, qwvb4).
 
 ## resume_prompt_first
 

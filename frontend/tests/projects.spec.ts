@@ -297,9 +297,11 @@ test("the default profile is edited and an ephemeral one is created beside it", 
   // "Secret name to declare" box, which a label lookup for "Name" would match.
   const editor = page.getByRole("form", { name: "Edit claude" });
   await expect(editor.locator("#profile-name")).toHaveValue("claude");
+  // Within the fieldset: `merge` is also the name of a git tool's checkbox.
+  const servedStates = editor.getByRole("group", { name: "Served states" });
   for (const state of ["backlog", "ready", "review", "merge"]) {
     await expect(
-      editor.getByRole("checkbox", { name: state, exact: true }),
+      servedStates.getByRole("checkbox", { name: state, exact: true }),
     ).not.toBeChecked();
   }
   await editor.locator("#profile-name").fill("architect");

@@ -97,8 +97,11 @@ check_preconditions() {
         # keep-id maps this user to uid 1000 inside the container and needs
         # subordinate ids: without them the map has the single root line
         # (ARCHITECTURE.md, "Uid contract").
-        local uid_map_lines
-        uid_map_lines="$(podman unshare cat /proc/self/uid_map 2>/dev/null | grep -c . || true)"
+        # On macOS the containers run in the Podman machine's VM, so that is
+        # where the map is read; `podman unshare` is not available remotely.
+        local uid_map_lines unshare=(podman unshare)
+        [ "$(uname -s)" = "Darwin" ] && unshare=(podman machine ssh -- podman unshare)
+        uid_map_lines="$("${unshare[@]}" cat /proc/self/uid_map 2>/dev/null | grep -c . || true)"
         [ "${uid_map_lines:-0}" -gt 1 ] ||
             fail "rootless podman has no subordinate ids (see /etc/subuid); keep-id cannot map uid 1000"
     elif [ "$(id -u)" != "1000" ]; then
@@ -307,7 +310,7 @@ pid_is_orchestrator() {
     local pid="$1" comm
     [ -n "$pid" ] || return 1
     kill -0 "$pid" 2>/dev/null || return 1
-    comm="$(cat "/proc/$pid/comm" 2>/dev/null || true)"
+    comm="$(process_name "$pid")"
     # Linux truncates /proc/<pid>/comm to 15 characters.
     case "$comm" in
     mars-orchestr*) ;;
@@ -316,7 +319,33 @@ pid_is_orchestrator() {
     # The name alone also fits a developer's own orchestrator; only this
     # stack's runs from its run directory.
     [ -d "$RUN_DIR" ] || return 1
-    [ "$(readlink "/proc/$pid/cwd" 2>/dev/null || true)" = "$(cd "$RUN_DIR" && pwd -P)" ]
+    [ "$(process_cwd "$pid")" = "$(cd "$RUN_DIR" && pwd -P)" ]
+}
+
+# A process's name, its working directory and its state letter: `/proc` on
+# Linux, `ps` and `lsof` on macOS, which has no `/proc`.
+process_name() {
+    if [ -d /proc ]; then
+        cat "/proc/$1/comm" 2>/dev/null || true
+    else
+        basename "$(ps -o comm= -p "$1" 2>/dev/null || true)"
+    fi
+}
+
+process_cwd() {
+    if [ -d /proc ]; then
+        readlink "/proc/$1/cwd" 2>/dev/null || true
+    else
+        lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'
+    fi
+}
+
+process_state() {
+    if [ -d /proc ]; then
+        sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f1
+    else
+        ps -o stat= -p "$1" 2>/dev/null | cut -c1
+    fi
 }
 
 # Whether that pid is a live orchestrator rather than one this shell has yet to
@@ -325,7 +354,7 @@ pid_is_orchestrator() {
 orchestrator_alive() {
     local pid="$1" state
     pid_is_orchestrator "$pid" || return 1
-    state="$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f1)"
+    state="$(process_state "$pid")"
     [ "$state" != "Z" ]
 }
 

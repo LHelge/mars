@@ -596,7 +596,7 @@ The stack sets every orchestrator variable itself and ignores the repository's `
 | --- | --- |
 | `E2E_ENGINE` | `podman` (default) or `docker`; sets `DOCKER_HOST` unless one is already exported, and selects `host.containers.internal` or `host.docker.internal` for `MCP_URL` and `SESSION_EXTRA_HOSTS`. |
 | `E2E_PG_PORT`, `E2E_PG_CONTAINER` | Host port and name of the Postgres container (defaults `5433` and `mars-e2e-pg`, so the `mars-pg` of "Running locally" can stay up). Two stacks on one engine need different names and ports; their state is already separate, because each lives in its own checkout's `frontend/.e2e/`. |
-| `E2E_API_PORT`, `E2E_MCP_PORT` | `API_PORT` and `MCP_PORT` (defaults `7000` and `7001`). The Playwright `webServer` passes `VITE_API_TARGET` so the dev server proxies to the API port actually in use. |
+| `E2E_API_PORT`, `E2E_MCP_PORT` | `API_PORT` and `MCP_PORT` (defaults `7000` and `7001`). The Playwright `webServer` passes `VITE_API_TARGET` so the dev server proxies to the API port actually in use. On macOS, AirPlay Receiver holds port 7000, so set both, for example `7100` and `7101`. |
 | `E2E_BASE_URL` | The frontend origin, used for both `PUBLIC_URL` and `PLAYWRIGHT_BASE_URL` (default `http://localhost:5173`). |
 | `E2E_STUB_IMAGE` | Tag built from `images/stub` and passed as `SESSION_IMAGE_DEFAULT`, so a new project's seeded profiles run the stub (default `localhost/mars-session-stub:dev`). |
 | `E2E_SKIP_IMAGE_BUILD`, `E2E_SKIP_CARGO_BUILD` | `1` reuses the image or the binary already built. |

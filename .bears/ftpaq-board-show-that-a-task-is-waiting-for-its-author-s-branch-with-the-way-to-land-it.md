@@ -1,10 +1,10 @@
 ---
 id: ftpaq
 title: "Board: show that a task is waiting for its author's branch, with the way to land it"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-25T21:00:48.788085363Z"
-updated: "2026-09-25T21:00:48.788085363Z"
+updated: "2026-09-25T21:13:33.365859154Z"
 tags:
   - frontend
   - tracker
@@ -13,6 +13,7 @@ tags:
 depends_on:
   - zpsh4
 parent: "4txx2"
+attempts: 1
 ---
 
 ## Summary

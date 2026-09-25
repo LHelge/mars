@@ -1,10 +1,10 @@
 ---
 id: zpsh4
 title: "Dispatcher: hold back a task until its author session's commits are on the default branch"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-25T21:00:29.504761964Z"
-updated: "2026-09-25T21:01:12.834726258Z"
+updated: "2026-09-25T21:23:26.735838387Z"
 tags:
   - orchestrator
   - dispatcher

@@ -49,6 +49,11 @@
 //! re-exported here, so that the name of the operation and the name of the
 //! module cannot be mistaken for each other at a call site.
 //!
+//! [`history`] is the third read-only query: an integration head's
+//! first-parent history and the commit ranges it is attributed to tasks over,
+//! behind `GET /projects/{pid}/git/history` (`ARCHITECTURE.md`, "Git model",
+//! History).
+//!
 //! [`service`] is what the rest of the orchestrator calls. [`GitService`]
 //! composes the primitives above into the operations the REST routes, the MCP
 //! tools and the session endpoints expose: it takes the project git lock once,
@@ -64,6 +69,7 @@ pub mod command;
 pub mod credentials;
 pub mod diff;
 pub mod error;
+pub mod history;
 pub mod integrate;
 pub mod lock;
 pub mod mirror;

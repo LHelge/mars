@@ -60,6 +60,7 @@
 //! assemble `SPEC.md`'s `Task` and `TaskDetail` out of several of them at
 //! once, without an N+1 per task.
 
+mod attribution;
 mod dependencies;
 mod dto;
 mod events;
@@ -74,6 +75,7 @@ pub(crate) mod testfix;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+pub use attribution::CommitHandoff;
 pub use events::MAX_TASK_EVENT_PAGE;
 pub use graph::BlockedState;
 pub use handoffs::HandoffMergeCandidate;

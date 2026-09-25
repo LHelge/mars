@@ -29,6 +29,7 @@ pub use git::{
     Branch, BranchKind, Diff, DiffFile, DiffStatus, GitMergeDetail, GitPushDetail, GitRebaseDetail,
     GitSyncDetail, SessionBranch, SyncOutcome,
 };
+pub use git::{HistoryEntry, HistorySession, HistoryTask};
 pub use project::{
     BranchName, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_ROUNDS, MAX_BRANCH_NAME_CHARS, MAX_MAX_ATTEMPTS,
     MAX_MAX_ROUNDS, MAX_PROJECT_NAME_CHARS, MIN_MAX_ATTEMPTS, MIN_MAX_CONCURRENT_SESSIONS,

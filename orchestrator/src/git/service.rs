@@ -63,6 +63,7 @@
 //! the lock across the hand-off verification and the merge together
 //! (`ARCHITECTURE.md`, "Git model", Merge, rebase, push).
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -73,13 +74,15 @@ use super::refs::{GitRef, ResolvedRef};
 use super::{
     ComparePage, DataPaths, FetchOutcome, GitActor, GitCredentialProvider, GitError,
     MAX_PATCH_BYTES, MergeOutcome, ProjectGitGuard, ProjectGitLocks, PushOutcome, RebaseOutcome,
-    diff, integrate, mirror, push, refs, session,
+    diff, history, integrate, mirror, push, refs, session,
 };
 use crate::models::{
-    Diff, GitMergeDetail, GitPushDetail, GitRebaseDetail, GitSyncDetail, NewEvent, Project,
-    ProjectStatus, SessionBranch, SessionState, SyncOutcome,
+    Diff, GitMergeDetail, GitPushDetail, GitRebaseDetail, GitSyncDetail, HistoryEntry,
+    HistorySession, HistoryTask, NewEvent, Project, ProjectStatus, SessionBranch, SessionState,
+    SyncOutcome,
 };
 use crate::prelude::*;
+use crate::repositories::tasks::CommitHandoff;
 use crate::repositories::{ProjectRepository, SessionRepository, TaskRepository};
 use crate::tracker::handoffs::TaskHandoffVerifier;
 
@@ -554,6 +557,122 @@ impl GitService {
         drop(guard);
 
         Ok(branches)
+    }
+
+    /// One page of an integration head's first-parent history, newest first,
+    /// each entry attributed to the tasks and sessions behind it
+    /// (`GET /projects/{pid}/git/history`; `ARCHITECTURE.md`, "Git model",
+    /// History).
+    ///
+    /// `branch` is an integration head (400 otherwise) and defaults to the
+    /// project's `default_branch`; `before` is the previous page's last
+    /// commit, which has to be on that head's first-parent line (400
+    /// otherwise); `limit` is the caller's, already bounded. Read-only and
+    /// silent, like the branch listing: the head is resolved under the
+    /// project git lock so the page describes one moment, and the walk then
+    /// runs on that fixed commit without it. No event.
+    pub async fn history(
+        &self,
+        project_id: Uuid,
+        branch: Option<&str>,
+        before: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<HistoryEntry>> {
+        let branch_ref = branch.map(GitRef::parse).transpose()?;
+        if let Some(branch_ref) = &branch_ref {
+            require_kind(matches!(branch_ref, GitRef::Head(_)), branch_ref)?;
+        }
+
+        let (_, default_branch) = self.ready_project(project_id).await?;
+        let head_ref = match branch_ref {
+            Some(branch_ref) => branch_ref,
+            None => GitRef::parse(&format!("refs/heads/{default_branch}"))?,
+        };
+        let repo = self.paths.project_repo(project_id);
+
+        let head = {
+            let _guard = self.locks.lock(project_id).await;
+            refs::resolve(&repo, &head_ref).await?
+        };
+        if head.git_ref != head_ref {
+            // `refs::resolve` retries a missing head as a tag of the same
+            // name; a history is an integration head's and nothing else's.
+            return Err(GitError::UnknownRef(head_ref.api_name()).into());
+        }
+
+        let log = history::first_parent_page(&repo, &head.commit, before, limit).await?;
+
+        let mut ranges = Vec::with_capacity(log.len());
+        for entry in &log {
+            ranges.push(history::entry_range(&repo, entry).await?);
+        }
+        let commits: Vec<String> = ranges.iter().flatten().cloned().collect();
+        let handoffs = self.attribute_commits(project_id, &commits).await?;
+
+        let requesters: Vec<Uuid> = log
+            .iter()
+            .filter_map(|entry| requesting_session(entry.requested_by.as_deref()))
+            .collect();
+        let titles: HashMap<Uuid, Option<String>> = SessionRepository::new(&self.pool)
+            .titles_in_project(project_id, &requesters)
+            .await?
+            .into_iter()
+            .collect();
+
+        Ok(log
+            .into_iter()
+            .zip(ranges)
+            .map(|(entry, range)| {
+                let matched = range
+                    .iter()
+                    .filter_map(|commit| handoffs.get(commit))
+                    .flatten();
+                history_entry(entry, matched, &titles)
+            })
+            .collect())
+    }
+
+    /// Which hand-offs of this project pinned each of `commits`: commit →
+    /// every matching record, oldest first. A commit no hand-off pinned is
+    /// absent.
+    ///
+    /// The attribution rule of "Git model", History, in one place; which
+    /// commits to ask about is the caller's — an entry's range for the
+    /// history, [`GitService::attribute_range`] for a range.
+    pub async fn attribute_commits(
+        &self,
+        project_id: Uuid,
+        commits: &[String],
+    ) -> Result<HashMap<String, Vec<CommitHandoff>>> {
+        let rows = TaskRepository::new(&self.pool)
+            .handoffs_for_commits(project_id, commits)
+            .await?;
+
+        let mut by_commit: HashMap<String, Vec<CommitHandoff>> = HashMap::new();
+        for row in rows {
+            by_commit.entry(row.commit.clone()).or_default().push(row);
+        }
+
+        Ok(by_commit)
+    }
+
+    /// [`GitService::attribute_commits`] over every commit reachable from
+    /// `head` and not from `exclude` — `exclude..head`, the whole of `head`
+    /// when `exclude` is `None`.
+    ///
+    /// Both are full object ids the caller resolved, under a lock it holds if
+    /// the answer has to stay true: what a revert to `exclude` would take back
+    /// is exactly the tasks this names. Read-only.
+    pub async fn attribute_range(
+        &self,
+        project_id: Uuid,
+        head: &str,
+        exclude: Option<&str>,
+    ) -> Result<HashMap<String, Vec<CommitHandoff>>> {
+        let repo = self.paths.project_repo(project_id);
+        let commits = history::range_commits(&repo, head, exclude).await?;
+
+        self.attribute_commits(project_id, &commits).await
     }
 
     /// The diff from `merge-base(base, head)` to `head`
@@ -1260,6 +1379,74 @@ fn is_diff_head(git_ref: &GitRef) -> bool {
         git_ref,
         GitRef::Head(_) | GitRef::Upstream(_) | GitRef::Session(_)
     )
+}
+
+/// The session a `Requested-By: session:<id>` trailer names, or `None` for
+/// any other value (`ARCHITECTURE.md`, "Git model", Commit identity).
+fn requesting_session(requested_by: Option<&str>) -> Option<Uuid> {
+    requested_by?
+        .strip_prefix("session:")
+        .and_then(|id| Uuid::parse_str(id).ok())
+}
+
+/// One [`HistoryEntry`] out of its log record and the hand-offs its range
+/// matched (`SPEC.md`, "Git").
+///
+/// Tasks are listed once each, in the order of their oldest matching
+/// hand-off, naming their newest one: a forward copies its commit, so one
+/// commit can carry several records of one task. Sessions are the hand-offs'
+/// sources in the same order, then the session the trailer names, when it is
+/// one of this project's (`titles`), each once.
+fn history_entry<'a>(
+    entry: history::LogEntry,
+    matched: impl Iterator<Item = &'a CommitHandoff>,
+    titles: &HashMap<Uuid, Option<String>>,
+) -> HistoryEntry {
+    let mut matched: Vec<&CommitHandoff> = matched.collect();
+    matched.sort_by_key(|handoff| (handoff.created_at, handoff.handoff_id));
+
+    let mut tasks: Vec<HistoryTask> = Vec::new();
+    let mut sessions: Vec<HistorySession> = Vec::new();
+    for handoff in matched {
+        match tasks.iter_mut().find(|task| task.id == handoff.task_id) {
+            Some(task) => task.handoff_id = handoff.handoff_id,
+            None => tasks.push(HistoryTask {
+                id: handoff.task_id,
+                number: handoff.task_number,
+                title: handoff.task_title.clone(),
+                handoff_id: handoff.handoff_id,
+            }),
+        }
+        if let Some(id) = handoff.source_session_id
+            && !sessions.iter().any(|session| session.id == id)
+        {
+            sessions.push(HistorySession {
+                id,
+                title: handoff.source_session_title.clone(),
+            });
+        }
+    }
+
+    if let Some(id) = requesting_session(entry.requested_by.as_deref())
+        && let Some(title) = titles.get(&id)
+        && !sessions.iter().any(|session| session.id == id)
+    {
+        sessions.push(HistorySession {
+            id,
+            title: title.clone(),
+        });
+    }
+
+    HistoryEntry {
+        commit: entry.commit,
+        parents: entry.parents,
+        subject: entry.subject,
+        author_name: entry.author_name,
+        committed_at: entry.committed_at,
+        requested_by: entry.requested_by,
+        tasks,
+        sessions,
+    }
 }
 
 /// Refuse a ref whose kind is wrong for the role it was given, naming it as

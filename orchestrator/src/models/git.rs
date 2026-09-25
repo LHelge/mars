@@ -318,6 +318,54 @@ pub struct GitPushDetail {
     pub error: Option<String>,
 }
 
+/// One commit on an integration head's first-parent line, with the tasks and
+/// sessions behind it (`SPEC.md`, "Git": `HistoryEntry`; `ARCHITECTURE.md`,
+/// "Git model", History).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    /// The commit's full object id.
+    pub commit: String,
+    /// Its parents, first parent first; empty for a root commit.
+    pub parents: Vec<String>,
+    /// The first line of its message.
+    pub subject: String,
+    /// The author's name.
+    pub author_name: String,
+    /// The committer date.
+    pub committed_at: DateTime<Utc>,
+    /// The `Requested-By` trailer's value — `user:<id>`, `session:<id>` or
+    /// `system` on a commit the orchestrator made — or `None`.
+    pub requested_by: Option<String>,
+    /// The tasks whose hand-off commits this entry brought in.
+    pub tasks: Vec<HistoryTask>,
+    /// The sessions those hand-offs came from, and the session the
+    /// `Requested-By` trailer names.
+    pub sessions: Vec<HistorySession>,
+}
+
+/// A task a [`HistoryEntry`] is attributed to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryTask {
+    /// The task's id.
+    pub id: Uuid,
+    /// Its per-project number.
+    pub number: i32,
+    /// Its title.
+    pub title: String,
+    /// The hand-off record whose commit matched: the newest one of this task
+    /// pinning that commit, since a forward copies its commit.
+    pub handoff_id: Uuid,
+}
+
+/// A session a [`HistoryEntry`] is attributed to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistorySession {
+    /// The session's id.
+    pub id: Uuid,
+    /// Its title, when it has one.
+    pub title: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

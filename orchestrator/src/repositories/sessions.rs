@@ -291,6 +291,37 @@ impl<'a> SessionRepository<'a> {
         Ok(session)
     }
 
+    /// The id and title of each of `ids` that is a session of `project_id`,
+    /// in no particular order; an id that is not is simply absent.
+    ///
+    /// The history listing's lookup for the sessions `Requested-By` trailers
+    /// name (`SPEC.md`, "Git": `HistoryEntry.sessions`): one round trip for a
+    /// whole page, scoped in the `WHERE` clause, so a trailer naming another
+    /// project's session — or one since deleted — attributes nothing.
+    pub async fn titles_in_project(
+        &self,
+        project_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Option<String>)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query!(
+            r#"
+            SELECT id, title
+            FROM sessions
+            WHERE project_id = $1 AND id = ANY($2)
+            "#,
+            project_id,
+            ids,
+        )
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|row| (row.id, row.title)).collect())
+    }
+
     /// The session whose `mcp_token_hash` is `hash`, or `None`.
     ///
     /// The MCP bearer middleware's one query (`ARCHITECTURE.md`, "MCP design"

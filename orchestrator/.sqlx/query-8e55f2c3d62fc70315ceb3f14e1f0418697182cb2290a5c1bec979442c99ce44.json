@@ -1,0 +1,113 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT h.commit, h.id AS handoff_id, h.created_at,\n                   t.id AS task_id, t.number AS task_number, t.title AS task_title,\n                   h.source_session_id, s.title AS \"source_session_title?\"\n            FROM task_handoffs AS h\n            JOIN tasks AS t ON t.id = h.task_id\n            LEFT JOIN sessions AS s ON s.id = h.source_session_id\n            WHERE t.project_id = $1 AND h.commit = ANY($2)\n            ORDER BY h.created_at, h.id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "commit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "commit"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "handoff_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "task_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "task_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "number"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "task_title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "source_session_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "task_handoffs",
+            "name": "source_session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "source_session_title?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "title"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "8e55f2c3d62fc70315ceb3f14e1f0418697182cb2290a5c1bec979442c99ce44"
+}

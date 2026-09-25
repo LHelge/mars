@@ -1,6 +1,6 @@
 //! `/api/projects/{pid}/git` (`SPEC.md`, "Git (`/api/projects/{pid}/git`)").
 //!
-//! The five endpoints the UI drives git with, and nothing more: every rule
+//! The six endpoints the UI drives git with, and nothing more: every rule
 //! about refs, locking, syncing, credentials and outcome events belongs to
 //! [`GitService`], which is the one code path humans and agents share (ADR
 //! 0007). A handler here parses HTTP, names the actor and hands the request
@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::git::{DiffSelector, GitActor, GitService};
-use crate::models::{Diff, SessionBranch};
+use crate::models::{Diff, HistoryEntry, SessionBranch};
 use crate::prelude::*;
 use crate::routes::{CurrentUser, Path, Query};
 
@@ -69,6 +69,7 @@ const DIFF_FORM: &str = "diff takes either head or handoff_id";
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/{pid}/git/session-branches", get(session_branches))
+        .route("/{pid}/git/history", get(history))
         .route("/{pid}/git/diff", get(diff))
         .route("/{pid}/git/merge", post(merge))
         .route("/{pid}/git/rebase", post(rebase))
@@ -92,6 +93,54 @@ async fn session_branches(
     debug!(project_id = %pid, op = "session-branches", "git request");
 
     Ok(Json(service(&state).list_session_branches(pid).await?))
+}
+
+// ---- history ----
+
+/// The page size a history request without `limit` gets (`SPEC.md`, "Git").
+const DEFAULT_HISTORY_LIMIT: u32 = 50;
+
+/// The largest page a history request gets; a larger `limit` is reduced to
+/// it rather than refused, as `GET /secrets/{id}/uses` does.
+const MAX_HISTORY_LIMIT: u32 = 200;
+
+/// `?branch=&before=&limit=` (`SPEC.md`, "Git").
+#[derive(Debug, Deserialize)]
+struct HistoryQuery {
+    /// An integration head; the project's default branch when absent.
+    branch: Option<String>,
+    /// The previous page's last commit.
+    before: Option<String>,
+    /// The page size.
+    limit: Option<u32>,
+}
+
+/// The page size a `limit` asks for: [`DEFAULT_HISTORY_LIMIT`] when absent,
+/// at most [`MAX_HISTORY_LIMIT`], and 400 for zero.
+fn history_limit(limit: Option<u32>) -> Result<u32> {
+    match limit {
+        None => Ok(DEFAULT_HISTORY_LIMIT),
+        Some(0) => Err(Error::BadRequest("limit must be at least 1".to_string())),
+        Some(limit) => Ok(limit.min(MAX_HISTORY_LIMIT)),
+    }
+}
+
+/// `GET /projects/{pid}/git/history` → the integration head's first-parent
+/// history, newest first, attributed to tasks and sessions.
+async fn history(
+    State(state): State<AppState>,
+    CurrentUser(_): CurrentUser,
+    Path(pid): Path<Uuid>,
+    Query(query): Query<HistoryQuery>,
+) -> Result<Json<Vec<HistoryEntry>>> {
+    debug!(project_id = %pid, op = "history", "git request");
+
+    let limit = history_limit(query.limit)?;
+    let entries = service(&state)
+        .history(pid, query.branch.as_deref(), query.before.as_deref(), limit)
+        .await?;
+
+    Ok(Json(entries))
 }
 
 // ---- diff ----
@@ -430,6 +479,18 @@ mod tests {
             assert_eq!(error.status(), StatusCode::BAD_REQUEST);
             assert_eq!(error.to_string(), DIFF_FORM);
         }
+    }
+
+    /// The history page size: the default, the ceiling and the one refusal.
+    #[test]
+    fn a_history_page_is_fifty_by_default_and_at_most_two_hundred() {
+        assert_eq!(history_limit(None).expect("no limit"), 50);
+        assert_eq!(history_limit(Some(1)).expect("one"), 1);
+        assert_eq!(history_limit(Some(200)).expect("the ceiling"), 200);
+        assert_eq!(history_limit(Some(10_000)).expect("reduced"), 200);
+
+        let error = history_limit(Some(0)).expect_err("zero is refused");
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
     }
 
     /// `force` is the one field whose default is part of the contract.

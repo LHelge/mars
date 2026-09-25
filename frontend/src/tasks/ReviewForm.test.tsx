@@ -75,6 +75,7 @@ function detail(current: Handoff): TaskDetail {
     handoff: current,
     depends_on: [],
     blocks: [],
+    created_by_session_id: null,
     created_at: "2026-03-01T09:00:00Z",
     updated_at: "2026-03-01T09:00:00Z",
     closed_at: null,

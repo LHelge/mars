@@ -25,6 +25,15 @@ export function boardPath(projectId: string, search: URLSearchParams): string {
 }
 
 /**
+ * The project's Branches tab, where a session branch is merged into the
+ * default branch — what a card waiting for its author's branch links to
+ * (`tasks/authorBranch.ts`).
+ */
+export function branchesPath(projectId: string): string {
+  return `/projects/${projectId}?tab=branches`;
+}
+
+/**
  * The `:number` of the route as a task number. Task numbers start at 1 and are
  * plain integers, so anything else — a name, `#12`, `0`, a decimal — names no
  * task and is answered without asking the server.

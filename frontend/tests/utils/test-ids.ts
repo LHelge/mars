@@ -10,6 +10,7 @@
 // `src/utils/testIds.ts` and re-exported below.
 
 export {
+  AUTHOR_BRANCH_WAIT,
   LAUNCH_SOURCE,
   PROFILE_AUTOMATION,
   STREAMING_CURSOR,

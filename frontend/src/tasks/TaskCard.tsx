@@ -1,7 +1,8 @@
 // One card on the task board (`SPEC.md`, "Frontend", "Task board": priority,
 // labels, the holding session with a link, attempts when above one, the round
 // when above one against the project's `max_rounds`, assignee,
-// blocked and dependency indicators, and a parent badge).
+// blocked and dependency indicators, a parent badge, and the line saying the
+// task waits for its author session's branch to reach the default branch).
 //
 // The whole card is a link to `/projects/{pid}/tasks/{number}` — the board
 // with that task's drawer open — apart from the holding session, which is a
@@ -24,6 +25,7 @@ import { Link } from "react-router";
 import { Icon, ICON_CLASS } from "../components/icons";
 import type { Task } from "../types";
 import { taskCardTestId } from "../utils/testIds";
+import { AuthorBranchLine } from "./AuthorBranchLine";
 import { taskPath } from "./taskLink";
 import {
   CHIP,
@@ -148,6 +150,13 @@ function TaskCardView({ task, selected, maxRounds }: TaskCardProps) {
           ))}
         </div>
       </Link>
+
+      {/* Only an unheld task can be waiting for its author's branch, so this
+          and the holding session's footer never show together. */}
+      <AuthorBranchLine
+        task={task}
+        className="border-console-border/60 border-t px-2.5 py-1.5"
+      />
 
       {task.lease_holder_session_id !== null && (
         <div className="border-console-border/60 border-t px-2.5 py-1.5">

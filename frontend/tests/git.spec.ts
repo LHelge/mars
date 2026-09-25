@@ -49,7 +49,9 @@ import type { Api } from "./utils/test-helpers";
 import { expect, test } from "./utils/fixtures";
 import type { SessionTracker } from "./utils/fixtures";
 import {
+  AUTHOR_BRANCH_WAIT,
   commitInSessionWorkClone,
+  createTaskAsSession,
   commitToBareRepo,
   gitIsAncestor,
   gitLogLast,
@@ -59,6 +61,7 @@ import {
   mirrorPath,
   moveUpstreamInto,
   sessionWorkPath,
+  taskCardTestId,
   transcript,
   waitFor,
   waitForSessionState,
@@ -440,6 +443,57 @@ test("merging a session branch into main", async ({
   await expect(transcript(page).getByText("Git merge succeeded")).toBeVisible({
     timeout: 30_000,
   });
+});
+
+test("a task filed by a session waits on the board until its branch reaches main", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  const { sessionId, mirror } = await stage(sessions, api, project);
+  const commit = commitInSessionWorkClone(
+    sessionId,
+    { "docs/plan.md": "# The plan\n" },
+    "docs: plan the work",
+  );
+  await syncSession(api, sessionId);
+
+  // Filed over MCP as the session, which is what records it as the author.
+  const task = await createTaskAsSession(sessionId, "Build on the plan");
+  expect(task.created_by_session_id).toBe(sessionId);
+
+  // The session was launched without a message, so it has no title and the
+  // line names it by its short id, as the Branches tab does.
+  const expected = `Waiting for session ${sessionId.slice(0, 8)}'s branch to reach main (1 commit)`;
+  await page.goto(`/projects/${project.id}?tab=board`);
+  const card = page.getByTestId(taskCardTestId(task.number));
+  const line = card.getByTestId(AUTHOR_BRANCH_WAIT);
+  await expect(line).toHaveText(expected);
+  await expect(line).toHaveAttribute(
+    "href",
+    `/projects/${project.id}?tab=branches`,
+  );
+
+  // The drawer says the same.
+  await card.getByRole("heading", { name: "Build on the plan" }).click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer.getByTestId(AUTHOR_BRANCH_WAIT)).toHaveText(expected);
+
+  // Landing the work through the API — nothing on this page invalidates the
+  // branch list for it — and the line goes on the list's own next read.
+  await api.post(`/projects/${project.id}/git/merge`, {
+    source: sessionId,
+    target: "main",
+  });
+  expect(gitIsAncestor(mirror, commit, "main")).toBe(true);
+
+  await page.goto(`/projects/${project.id}?tab=board`);
+  await expect(card).toBeVisible();
+  await expect(card.getByTestId(AUTHOR_BRANCH_WAIT)).toHaveCount(0);
 });
 
 test("rebasing the session branch onto main", async ({

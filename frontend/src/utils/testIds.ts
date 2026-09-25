@@ -52,3 +52,10 @@ export const PROFILE_AUTOMATION = "profile-automation";
 export function taskCardTestId(taskNumber: number): string {
   return `task-card-${String(taskNumber)}`;
 }
+
+/**
+ * The line saying a task waits for its author session's branch to reach the
+ * default branch (`src/tasks/AuthorBranchLine.tsx`). One on the card and one in
+ * the drawer, so the name is not unique on the page.
+ */
+export const AUTHOR_BRANCH_WAIT = "author-branch-wait";

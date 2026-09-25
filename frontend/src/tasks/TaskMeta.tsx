@@ -17,6 +17,7 @@ import { Icon, ICON_CLASS } from "../components/icons";
 import { projectQueries } from "../services/queryOptions";
 import type { TaskDetail as TaskDetailData } from "../types";
 import { formatDateTime, formatRelative, shortId } from "../utils/format";
+import { AuthorBranchLine } from "./AuthorBranchLine";
 import { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
 import { taskPath } from "./taskLink";
 import { selectTaskById, useTaskStore } from "./taskStore";
@@ -172,6 +173,8 @@ export function TaskMeta({ projectId, task }: TaskMetaProps) {
           <span className="min-w-0">{task.needs_human_reason}</span>
         </p>
       )}
+
+      <AuthorBranchLine task={task} className="max-w-prose" />
     </div>
   );
 }

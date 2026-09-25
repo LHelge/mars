@@ -48,6 +48,7 @@ function task(id: string, number: number, title: string): Task {
     handoff: null,
     depends_on: [],
     blocks: [],
+    created_by_session_id: null,
     created_at: "2026-03-01T11:00:00Z",
     updated_at: "2026-03-01T12:00:00Z",
     closed_at: null,

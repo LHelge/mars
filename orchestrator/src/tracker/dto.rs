@@ -171,6 +171,12 @@ pub struct TaskDto {
     pub depends_on: Vec<DependencyRef>,
     /// The tasks that have a `blocks` dependency on this one.
     pub blocks: Vec<Uuid>,
+    /// The session that filed the task over MCP, or `null` — a person filed
+    /// it, or that session was deleted. The dispatcher holds such a task back
+    /// until the session's work is on the default branch, and the board says
+    /// so (`ARCHITECTURE.md`, "Dispatcher"; ADR 0052). A stored event payload
+    /// written before the field existed reads as `null`.
+    pub created_by_session_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub closed_at: Option<DateTime<Utc>>,
@@ -180,9 +186,9 @@ impl TaskDto {
     /// The single assembly function: a row, its state's name, and its three
     /// neighbouring lists.
     ///
-    /// `created_by_user_id`, `created_by_session_id` and `state_id` are the
-    /// row columns deliberately left behind: `SPEC.md`'s `Task` does not carry
-    /// them.
+    /// `created_by_user_id` and `state_id` are the row columns deliberately
+    /// left behind: `SPEC.md`'s `Task` does not carry them (`state_id` goes
+    /// out as the state's name, `current_handoff_id` as the `handoff` record).
     pub fn from_parts(
         task: &Task,
         state_name: &str,
@@ -210,6 +216,7 @@ impl TaskDto {
             handoff,
             depends_on,
             blocks,
+            created_by_session_id: task.created_by_session_id,
             created_at: task.created_at,
             updated_at: task.updated_at,
             closed_at: task.closed_at,
@@ -431,6 +438,25 @@ mod tests {
     }
 
     #[test]
+    fn a_task_names_the_session_that_filed_it() {
+        let mut row = task(Uuid::new_v4());
+        let author = Uuid::new_v4();
+        row.created_by_session_id = Some(author);
+        let dto = TaskDto::from_parts(&row, "ready", Vec::new(), Vec::new(), None);
+        let encoded = serde_json::to_value(&dto).unwrap();
+
+        assert_eq!(encoded["created_by_session_id"], json!(author));
+        // The user half of the provenance stays behind (`SPEC.md`, "Tasks").
+        assert!(
+            encoded
+                .as_object()
+                .unwrap()
+                .get("created_by_user_id")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn nullable_fields_are_sent_as_null_rather_than_omitted() {
         let row = task(Uuid::new_v4());
         let dto = TaskDto::from_parts(&row, "backlog", Vec::new(), Vec::new(), None);
@@ -444,6 +470,7 @@ mod tests {
             "lease_since",
             "needs_human_reason",
             "handoff",
+            "created_by_session_id",
             "closed_at",
         ] {
             assert_eq!(object.get(nullable), Some(&json!(null)), "{nullable}");

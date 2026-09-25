@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseTaskNumber, taskPath } from "./taskLink";
+import { branchesPath, parseTaskNumber, taskPath } from "./taskLink";
 
 // An obviously fake project id (`CLAUDE.md`, rule 3).
 const PROJECT = "00000000-0000-4000-8000-000000000001";
@@ -8,6 +8,12 @@ const PROJECT = "00000000-0000-4000-8000-000000000001";
 describe("taskPath", () => {
   it("is the route the board links to", () => {
     expect(taskPath(PROJECT, 12)).toBe(`/projects/${PROJECT}/tasks/12`);
+  });
+});
+
+describe("branchesPath", () => {
+  it("is the project page's Branches tab", () => {
+    expect(branchesPath(PROJECT)).toBe(`/projects/${PROJECT}?tab=branches`);
   });
 });
 

@@ -96,6 +96,12 @@ export interface Task {
   depends_on: TaskDependency[];
   /** Ids of the tasks that have a `blocks` dependency on this one. */
   blocks: string[];
+  /**
+   * The session that filed the task over MCP, or `null` for a task a person
+   * created or whose author session was deleted. The dispatcher waits for this
+   * session's work to reach the default branch (`tasks/authorBranch.ts`).
+   */
+  created_by_session_id: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;

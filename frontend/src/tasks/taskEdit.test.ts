@@ -38,6 +38,7 @@ function task(number: number, overrides: Partial<Task> = {}): Task {
     handoff: null,
     depends_on: [],
     blocks: [],
+    created_by_session_id: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     closed_at: null,

@@ -1,10 +1,10 @@
 ---
 id: b7t7s
 title: CLAUDE.md mandates a /frontend-design skill that is not installed
-status: open
+status: done
 priority: P3
 created: "2026-09-21T09:37:47.248791061Z"
-updated: "2026-09-21T09:37:47.248791061Z"
+updated: "2026-09-26T17:18:54.956458140Z"
 tags:
   - docs
   - infra

@@ -8,8 +8,10 @@
 # `tests/engine.rs` needs no Postgres — nothing in it touches the database — but
 # `tests/session_e2e.rs` does, and gets it from the job's service container
 # rather than through testcontainers on the engine under test (see `services`
-# below). The job also builds the stub session image, which is what the
-# end-to-end binary runs (`ARCHITECTURE.md`, "Session image").
+# below). The job also builds the stub session image, before either suite:
+# the end-to-end binary runs sessions on it (`ARCHITECTURE.md`, "Session
+# image"), and the engine suite's real-session-image terminal scenario opens
+# its `/bin/bash -l` as `agent` on it.
 #
 # The end-to-end binary is watched by `images/**` too: a change to the stub CLI
 # or its fixture changes what these scenarios replay.
@@ -206,22 +208,26 @@ jobs:
               ;;
           esac
 
-      # `DOCKER_HOST` is the whole difference between the two jobs (ADR 0004):
-      # the suite skips itself when it is unset, so an empty value here would
-      # be a silently passing run.
-      - name: Engine tests
-        run: cargo test --features integration-tests --test engine -- --nocapture
-        env:
-          DOCKER_HOST: ${{ matrix.docker_host }}
-
       # The image the session end-to-end scenarios run, built with the engine
       # under test so the tag exists on the socket the orchestrator will use.
       # Each engine tags it its own way: Podman stores an unqualified name under
       # `localhost/`, and naming it in full here is what makes `image_exists`
-      # find it without a registry lookup.
+      # find it without a registry lookup. It is built before the engine tests
+      # because `terminal_real_session_image_bash_as_agent` in
+      # `tests/engine.rs` runs `/bin/bash -l` as `agent` on it too.
       - name: Build the stub session image
         working-directory: .
         run: ${{ matrix.engine }} build -t mars-session-stub:ci images/stub
+
+      # `DOCKER_HOST` is the whole difference between the two jobs (ADR 0004):
+      # the suite skips itself when it is unset, so an empty value here would
+      # be a silently passing run. `MARS_STUB_IMAGE` is the same: without it
+      # the real-session-image terminal scenario prints a skip line and passes.
+      - name: Engine tests
+        run: cargo test --features integration-tests --test engine -- --nocapture
+        env:
+          DOCKER_HOST: ${{ matrix.docker_host }}
+          MARS_STUB_IMAGE: ${{ matrix.stub_image }}
 
       # A session on a real container, end to end. Its database is the job's
       # service container, and on Docker — where a

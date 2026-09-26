@@ -48,9 +48,9 @@
 //! `terminal_real_session_image_bash_as_agent` is the one that asserts the
 //! literal `/bin/bash -l` as `agent`, and it needs a real session image: it
 //! takes the tag from `MARS_STUB_IMAGE` (`README.md`, "Development") and
-//! prints a line and passes when that is unset, which is what it does in CI
-//! today — the Engine workflow builds the stub image after the engine step, so
-//! publishing the tag into that step's environment is a CI follow-up.
+//! prints a line and passes when that is unset. The Engine CI workflow builds
+//! the stub image before the engine step and passes its tag in, so in CI the
+//! scenario runs on both the Podman and the Docker leg.
 
 mod common;
 

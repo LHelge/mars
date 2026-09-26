@@ -1,10 +1,10 @@
 ---
 id: agyg2
 title: "A Mars-owned session preamble tells every agent the git flow: commit on session/<sid>, Mars fetches it back, nothing else is the agent's"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-26T20:26:00.089293231Z"
-updated: "2026-09-26T20:26:05.231813973Z"
+updated: "2026-09-26T21:09:23.419441528Z"
 tags:
   - orchestrator
   - agent

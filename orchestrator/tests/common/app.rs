@@ -1334,6 +1334,8 @@ fn test_config(
         // the dispatcher's period is configurable and the cron suite proves it.
         // No loop is ever started in a test, so the value only has to differ.
         ("DISPATCHER_INTERVAL_SECS", "45".to_string()),
+        // And the reapers' shared period, documented default 60, likewise.
+        ("REAPER_INTERVAL_SECS", "75".to_string()),
         // No `RESEND_API_KEY`: mail goes to the mock, and setting a key would
         // only make `MAIL_FROM` required as well (ADR 0026).
     ]

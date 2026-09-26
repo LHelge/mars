@@ -32,11 +32,10 @@ import {
   sessionStoreGeneration,
   useSessionStore,
 } from "./sessionStore";
+import { HISTORY_PAGE_SIZE } from "./historyPageSize";
 import { parseServerMessage } from "./serverMessage";
 import { buildSessionSocketUrl } from "./socketUrl";
 
-/** The history page size; the endpoint caps `limit` at 500. */
-const PAGE_SIZE = 200;
 /** The close code the orchestrator uses after `authentication required`. */
 const AUTH_CLOSE_CODE = 1008;
 /** A second auth close inside this window means refreshing did not help. */
@@ -259,7 +258,7 @@ export class SessionSocket {
     this.store.getState().setStatus("connecting");
     if (this.store.getState().lastSeq === 0) {
       try {
-        const page = await listEvents(this.sessionId, { limit: PAGE_SIZE });
+        const page = await listEvents(this.sessionId, { limit: HISTORY_PAGE_SIZE });
         if (this.dead) return;
         this.store.getState().prependHistory(page.events, page.has_more);
       } catch (error) {
@@ -755,7 +754,7 @@ export class SessionSocket {
     }
     state.setHistoryStatus("loading");
     try {
-      const page = await listEvents(this.sessionId, { before, limit: PAGE_SIZE });
+      const page = await listEvents(this.sessionId, { before, limit: HISTORY_PAGE_SIZE });
       // A page of one login's transcript, arriving after that login ended, is
       // exactly what must never be prepended: the store it was asked for has
       // been cleared, and whoever holds the tab now would be reading somebody

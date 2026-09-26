@@ -56,9 +56,6 @@ mod token_cleanup;
 
 pub use scheduler::spawn_job;
 
-/// How often the two reapers run (`ARCHITECTURE.md`, "Background jobs").
-const REAPER_PERIOD: Duration = Duration::from_secs(60);
-
 /// How often the scheduled-agent job runs (`ARCHITECTURE.md`, "Background
 /// jobs").
 ///
@@ -127,11 +124,13 @@ impl JobName {
 
     /// This job's interval (`ARCHITECTURE.md`, "Background jobs").
     ///
-    /// Two are configurable: the mirror fetch, because it is about a remote an
-    /// operator may want to be gentler with (`MIRROR_FETCH_INTERVAL_SECS`),
-    /// and the dispatcher, whose timer is the fallback behind its `task_events`
+    /// Four are configurable: the mirror fetch, because it is about a remote an
+    /// operator may want to be gentler with (`MIRROR_FETCH_INTERVAL_SECS`);
+    /// the dispatcher, whose timer is the fallback behind its `task_events`
     /// wake-up and therefore the one knob over how long a missed wake-up can go
-    /// unnoticed (`DISPATCHER_INTERVAL_SECS`; `README.md`, "Configuration").
+    /// unnoticed (`DISPATCHER_INTERVAL_SECS`); and the two reapers, on one
+    /// shared period that bounds how late past its timeout an idle session is
+    /// parked (`REAPER_INTERVAL_SECS`; `README.md`, "Configuration").
     ///
     /// The scheduler is deliberately not one of them. Its period *is* the
     /// finest period a 5-field cron expression can express, so a longer one
@@ -143,7 +142,9 @@ impl JobName {
             JobName::Dispatcher => Duration::from_secs(config.dispatcher_interval_secs),
             JobName::Scheduler => SCHEDULER_PERIOD,
             JobName::AutoMerge => AUTO_MERGE_PERIOD,
-            JobName::IdleReaper | JobName::StuckTaskReaper => REAPER_PERIOD,
+            JobName::IdleReaper | JobName::StuckTaskReaper => {
+                Duration::from_secs(config.reaper_interval_secs)
+            }
             JobName::TokenCleanup | JobName::SecretRotation | JobName::OrphanCleanup => {
                 HOURLY_PERIOD
             }

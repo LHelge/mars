@@ -52,6 +52,17 @@ pub const AUTOMATION_MAX_SESSIONS_DEFAULT: i64 = 4;
 /// asks a handful of indexed questions a minute and stops.
 pub const DISPATCHER_INTERVAL_SECS_DEFAULT: u64 = 60;
 
+/// The default value of `REAPER_INTERVAL_SECS` (`README.md`,
+/// "Configuration").
+///
+/// Sixty seconds: the reapers only have to notice an idle session or a lease
+/// whose holder has ended, and a minute past a profile's `idle_timeout_secs`
+/// is nothing against timeouts measured in tens of minutes
+/// (`ARCHITECTURE.md`, "Background jobs"). The variable exists so the
+/// end-to-end stack can park an idle session in seconds rather than wait out
+/// a whole tick.
+pub const REAPER_INTERVAL_SECS_DEFAULT: u64 = 60;
+
 /// Fewest live sessions the instance may allow automation.
 ///
 /// One, for the reason `agent_profiles.max_concurrent` and
@@ -169,6 +180,14 @@ pub struct Config {
     /// configurable because it is the one knob that trades how promptly a
     /// queue is picked up against how often an idle instance asks.
     pub dispatcher_interval_secs: u64,
+    /// How often the idle reaper and the stuck-task reaper run, defaulting to
+    /// [`REAPER_INTERVAL_SECS_DEFAULT`] and at least 1.
+    ///
+    /// It bounds how long past a profile's `idle_timeout_secs` a session is
+    /// parked or failed as stalled, and how long a lease outlives its ended
+    /// holder when nothing else released it (`ARCHITECTURE.md`, "Background
+    /// jobs").
+    pub reaper_interval_secs: u64,
     /// Image used by the default profile of new projects and by the startup
     /// probe; defaults to [`SESSION_IMAGE_DEFAULT`].
     pub session_image_default: String,
@@ -360,6 +379,17 @@ impl Config {
             "DISPATCHER_INTERVAL_SECS",
             DISPATCHER_INTERVAL_SECS_DEFAULT,
         )?;
+        // Bounded below at 1 because a zero period is not "as often as
+        // possible" but a panic in the tick (`tokio::time::interval`), which
+        // would take the job down at its first run instead of here.
+        let reaper_interval_secs: u64 =
+            optional_parsed(&vars, "REAPER_INTERVAL_SECS", REAPER_INTERVAL_SECS_DEFAULT)?;
+        if reaper_interval_secs == 0 {
+            return Err(ConfigError::invalid(
+                "REAPER_INTERVAL_SECS",
+                "must be at least 1",
+            ));
+        }
 
         // Optional so a default installation needs no image name: the value
         // below is the tag the documented build command produces, and both the
@@ -407,6 +437,7 @@ impl Config {
             stop_grace_secs,
             mirror_fetch_interval_secs,
             dispatcher_interval_secs,
+            reaper_interval_secs,
             session_image_default,
             automation_max_sessions,
             resend_api_key,
@@ -457,6 +488,7 @@ impl fmt::Debug for Config {
                 &self.mirror_fetch_interval_secs,
             )
             .field("dispatcher_interval_secs", &self.dispatcher_interval_secs)
+            .field("reaper_interval_secs", &self.reaper_interval_secs)
             .field("session_image_default", &self.session_image_default)
             .field("automation_max_sessions", &self.automation_max_sessions)
             .field(
@@ -628,6 +660,7 @@ mod tests {
         "STOP_GRACE_SECS",
         "MIRROR_FETCH_INTERVAL_SECS",
         "DISPATCHER_INTERVAL_SECS",
+        "REAPER_INTERVAL_SECS",
         "SESSION_IMAGE_DEFAULT",
         "AUTOMATION_MAX_SESSIONS",
         "RESEND_API_KEY",
@@ -745,6 +778,7 @@ mod tests {
             config.dispatcher_interval_secs,
             DISPATCHER_INTERVAL_SECS_DEFAULT
         );
+        assert_eq!(config.reaper_interval_secs, REAPER_INTERVAL_SECS_DEFAULT);
         assert_eq!(
             config.session_image_default,
             "mars-session-claude-dev:latest"
@@ -772,6 +806,24 @@ mod tests {
             load(&vars).expect_err("a non-numeric interval fails"),
             ConfigError::Invalid { ref name, .. } if name == "DISPATCHER_INTERVAL_SECS"
         ));
+    }
+
+    /// The reapers' period is optional, overridable and at least one second: a
+    /// zero period would panic the job's tick rather than run it constantly.
+    #[test]
+    fn the_reaper_interval_is_optional_overridable_and_at_least_one() {
+        let mut vars = required_only();
+        vars.insert("REAPER_INTERVAL_SECS".to_string(), "2".to_string());
+        assert_eq!(load(&vars).expect("loads").reaper_interval_secs, 2);
+
+        for refused in ["0", "-1", "often"] {
+            vars.insert("REAPER_INTERVAL_SECS".to_string(), refused.to_string());
+            let error = load(&vars).expect_err("the interval is refused");
+            assert!(
+                matches!(error, ConfigError::Invalid { ref name, .. } if name == "REAPER_INTERVAL_SECS"),
+                "{refused} should be refused by name, got {error}",
+            );
+        }
     }
 
     /// The instance cap is optional, overridable and bounded below by 1: zero

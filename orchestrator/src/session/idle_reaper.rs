@@ -2,13 +2,14 @@
 //! quiet and fail the ephemeral ones (`ARCHITECTURE.md`, "Background jobs", the
 //! idle reaper row; "Task tracker", "Liveness comes from the session").
 //!
-//! One minute at a time, [`reap_idle`] asks for every `running` session whose
-//! `last_activity_at` is older than its *own* profile's `idle_timeout_secs`
-//! and asks that session's owner to stop. Which stop it is follows from the
-//! kind and nothing else: a conversational session is [`StopReason::Idle`] and
-//! ends `parked`, an ephemeral one is [`StopReason::Stalled`] and ends `failed`
-//! with `sessions.error = "stalled"`, because an ephemeral session is never
-//! parked, resumed or retried (ADR 0003).
+//! Once a tick (`REAPER_INTERVAL_SECS`, a minute by default), [`reap_idle`]
+//! asks for every `running` session whose `last_activity_at` is older than its
+//! *own* profile's `idle_timeout_secs` and asks that session's owner to stop.
+//! Which stop it is follows from the kind and nothing else: a conversational
+//! session is [`StopReason::Idle`] and ends `parked`, an ephemeral one is
+//! [`StopReason::Stalled`] and ends `failed` with `sessions.error =
+//! "stalled"`, because an ephemeral session is never parked, resumed or
+//! retried (ADR 0003).
 //!
 //! **The normal path writes nothing.** The owner is the single writer for its
 //! session: it sends the signals, drains the transcript to end of file and

@@ -57,10 +57,26 @@ const TURN_COST = [0.0727456, 0.1447891, 0.1633155] as const;
 const TURN_COST_TEXT = ["$0.0727", "$0.1448", "$0.1633"] as const;
 
 /**
- * The history page `useSessionSocket` opens with, and the cap the endpoint
- * enforces on `limit` (`SPEC.md`, "Sessions": `GET /sessions/{id}/events`).
+ * The history page size the page under test asks for, read off its first
+ * `GET /sessions/{id}/events` rather than assumed: the dev server Playwright
+ * starts builds it with `VITE_SESSION_HISTORY_PAGE_SIZE`
+ * (`playwright.config.ts`), while a reused dev server or another origin keeps
+ * the default of 200 (`src/session/historyPageSize.ts`).
  */
-const PAGE_SIZE = 200;
+function watchHistoryPageSize(page: Page): () => number {
+  let size: number | null = null;
+  page.on("request", (request) => {
+    if (size !== null) return;
+    const url = new URL(request.url());
+    if (!/\/api\/sessions\/[^/]+\/events$/.test(url.pathname)) return;
+    const limit = Number(url.searchParams.get("limit"));
+    if (Number.isInteger(limit) && limit > 0) size = limit;
+  });
+  return () => {
+    if (size === null) throw new Error("no history page was requested");
+    return size;
+  };
+}
 
 // --- the view's furniture ----------------------------------------------------
 
@@ -348,6 +364,7 @@ test("older history loads on scroll-up", async ({
   sessions,
 }) => {
   await loginViaToken(context, user);
+  const pageSize = watchHistoryPageSize(page);
   const sessionId = await launchFromUi(
     page,
     sessions,
@@ -360,6 +377,7 @@ test("older history loads on scroll-up", async ({
   // The three recorded turns are 90 events; past them every stdin line is one
   // `Stub reply to:` turn of three. The initial window is `PAGE_SIZE` events,
   // so the session needs more than that before a reload can leave any behind.
+  const PAGE_SIZE = pageSize();
   const echoes = Math.ceil((PAGE_SIZE + 30 - first.last_seq) / 3) + 2;
   const texts = Array.from(
     { length: echoes },

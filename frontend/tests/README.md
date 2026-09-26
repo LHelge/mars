@@ -66,13 +66,35 @@ npx playwright test -g "interject mid-turn"
 CI's `timeout-minutes: 45` covers the suite plus the stack build, with room to
 spare.
 
-The three slowest scenarios, and why:
+The slowest scenario, and why:
 
 | Scenario | Time | Bound by |
 | --- | --- | --- |
 | `sessions.spec.ts` › `interject mid-turn` | ~47 s | `MARS_STUB_LINE_DELAY_MS=200` pacing two fixture turns (58 and 159 lines) so the first one is still streaming while the interjection is typed |
-| `sessions.spec.ts` › `an idle session is parked without user action` | 33–46 s | the idle reaper's period, a hard-coded 60 s (`orchestrator/src/cron/mod.rs`, `REAPER_PERIOD`). Making it a configuration variable the stack could set to a few seconds is the only thing that would shorten this |
-| `session-view.spec.ts` › `older history loads on scroll-up` | ~27 s | the session has to commit more than `PAGE_SIZE` = 200 events before a reload can leave any behind (`src/session/useSessionSocket.ts`). A build-time or runtime page size would let the scenario need a fraction of them |
+
+Two scenarios used to sit beside it, bound by constants rather than by what
+they assert, and no longer do:
+
+| Scenario | Before | After | What changed |
+| --- | --- | --- | --- |
+| `sessions.spec.ts` › `an idle session is parked without user action` | 26–66 s | 5–11 s | it waited on the idle reaper's next tick, a hard-coded 60 s. The period is now `REAPER_INTERVAL_SECS` (`README.md`, "Configuration"), which `tests/e2e-stack.sh` sets to 2 |
+| `session-view.spec.ts` › `older history loads on scroll-up` | 51–90 s | 16–54 s | the session has to commit more than one history page before a reload can leave any behind, and a page was a hard-coded 200 events. It is now a build-time constant, `VITE_SESSION_HISTORY_PAGE_SIZE`, which the dev server `playwright.config.ts` starts sets to 100, so the scenario sends about 36 inputs instead of about 69 |
+
+Both columns were measured on the same machine in the same hour, each scenario
+run twice alone and the "After" once more in a full run of the suite, under the
+load of eight other agents building and testing on it (2026-09-26), so the
+spread is the machine's and the figures are for comparing with each other, not
+with the table above. Unloaded, the old figures were 33–46
+s and ~27 s.
+
+The page size stays the client's own choice rather than something the server
+advertises: `GET /sessions/{id}/events` takes any `limit` up to 500, so no
+contract changes with it. It is 100 and not smaller because the stub's three
+recorded turns are 90 events: at 100 every other scenario still opens a session
+with its whole history in the first page, as production does at 200, and only
+this one, which fills past it on purpose, pages. The scenario reads the size
+off the page's first history request instead of assuming it, so it holds
+against a reused `npm run dev` or another origin that keeps the default.
 
 ## How a scenario is arranged
 

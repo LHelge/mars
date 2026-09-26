@@ -781,24 +781,29 @@ test("an idle session is parked without user action", async ({
   project,
   sessions,
 }) => {
-  // One second is the model's floor; the reaper is a cron job on a 60 s period,
-  // so the park lands at the next tick (`ARCHITECTURE.md`, "Session owner
-  // task", point 4).
-  await setProfileIdleTimeout(api, project.id, 1);
-
   const session = await sessions.launch(api, project.id, {
     base_ref: "main",
     message: "hello stub",
   });
   await waitForSessionState(api, session.id, "running", 90_000);
 
+  // One second is the model's floor, and the reaper reads the profile's
+  // timeout at every tick, so lowering it now parks the session at the next
+  // one: `REAPER_INTERVAL_SECS=2` in the stack (`tests/e2e-stack.sh`;
+  // `ARCHITECTURE.md`, "Session owner task", point 4). Lowered only once the
+  // session is running, so the park cannot land before that state was seen.
+  await setProfileIdleTimeout(api, project.id, 1);
+
   const parked = await waitForSessionState(api, session.id, "parked", 90_000);
   expect(parked.parked_at).not.toBeNull();
   // Idleness parks a conversational session; it never fails it.
   expect(parked.error).toBeNull();
 
-  // The park is the reaper's, not a user's, and a message still resumes it.
+  // The park is the reaper's, not a user's, and a message still resumes it:
+  // under a long timeout again, or the resumed session could be parked at
+  // the next tick before its `running` was seen.
   await waitForContainerRemoved(api, session.id);
+  await setProfileIdleTimeout(api, project.id, 1800);
   await sendInput(api, session.id, "back to work");
   await waitForSessionState(api, session.id, "running", 90_000);
 });

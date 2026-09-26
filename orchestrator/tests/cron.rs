@@ -67,14 +67,19 @@ async fn every_job_has_the_documented_name_and_interval() {
         "the test configuration no longer overrides DISPATCHER_INTERVAL_SECS",
     );
 
+    // And the two reapers', which share one (`REAPER_INTERVAL_SECS`,
+    // documented default 60).
+    let reaper = Duration::from_secs(config.reaper_interval_secs);
+    assert_ne!(
+        reaper,
+        Duration::from_secs(60),
+        "the test configuration no longer overrides REAPER_INTERVAL_SECS",
+    );
+
     let expected = [
         (JobName::MirrorFetch, "mirror_fetch", mirror_fetch),
-        (JobName::IdleReaper, "idle_reaper", Duration::from_secs(60)),
-        (
-            JobName::StuckTaskReaper,
-            "stuck_task_reaper",
-            Duration::from_secs(60),
-        ),
+        (JobName::IdleReaper, "idle_reaper", reaper),
+        (JobName::StuckTaskReaper, "stuck_task_reaper", reaper),
         (JobName::Dispatcher, "dispatcher", dispatcher),
         // Not configurable: one minute is the resolution of the cron
         // expressions this job fires, not a knob (ADR 0043).

@@ -366,9 +366,11 @@ export async function sendInput(
 /**
  * Sets the default profile's `idle_timeout_secs`. The model's floor is one
  * second (`orchestrator/src/models/agent_profile.rs`), and the idle reaper is a
- * cron job on a 60 s period, so a session launched under a one-second timeout
- * is parked at the next tick — within about a minute (`ARCHITECTURE.md`,
- * "Session owner task", point 4; "Background jobs").
+ * cron job on the stack's `REAPER_INTERVAL_SECS` of 2 (`tests/e2e-stack.sh`),
+ * so a running session under a one-second timeout is parked at the next tick,
+ * within a few seconds (`ARCHITECTURE.md`, "Session owner task", point 4;
+ * "Background jobs"). The reaper reads the timeout at every tick, so a change
+ * applies to a session already running.
  */
 export async function setProfileIdleTimeout(
   client: Api,

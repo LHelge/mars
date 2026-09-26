@@ -66,7 +66,11 @@ export default defineConfig({
     url: baseURL,
     // A dev server this config starts proxies to the orchestrator the stack
     // actually runs, which is not port 7000 when E2E_API_PORT says otherwise.
-    env: { VITE_API_TARGET: apiURL },
+    // Half the default session history page, so `older history loads on
+    // scroll-up` fills a page with half the inputs; still above the stub's
+    // three recorded turns (90 events), so no other scenario opens a session
+    // with history left behind (`src/session/historyPageSize.ts`).
+    env: { VITE_API_TARGET: apiURL, VITE_SESSION_HISTORY_PAGE_SIZE: "100" },
     // CI controls the server lifetime; locally a developer's `npm run dev` is reused.
     reuseExistingServer: !isCI,
   },

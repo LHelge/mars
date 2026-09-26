@@ -1,10 +1,10 @@
 //! The stuck-task reaper: leases whose holder is gone.
 //!
-//! `ARCHITECTURE.md`, "Background jobs" (`stuck_task_reaper`, every minute)
-//! and "Task tracker" → "Liveness comes from the session, not from tool
-//! calls": a lease has no TTL and is valid exactly as long as its holder is
+//! `ARCHITECTURE.md`, "Background jobs" (`stuck_task_reaper`, every
+//! `REAPER_INTERVAL_SECS`) and "Task tracker" → "Liveness comes from the
+//! session, not from tool calls": a lease has no TTL and is valid exactly as long as its holder is
 //! alive, so a lease held by a `done` or `failed` session is a task nobody is
-//! working on. Every minute this finds those and gives them back.
+//! working on. Every tick this finds those and gives them back.
 //!
 //! **It is the backstop, not the mechanism.** `AppState::on_session_ended`
 //! already releases a session's leases the moment it dies

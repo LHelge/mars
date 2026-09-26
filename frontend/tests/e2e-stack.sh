@@ -193,7 +193,7 @@ start_orchestrator() {
     # the run to real mail delivery, another master key or a session network.
     # `assert_logged_email` below is the check that it held.
     #
-    # Two job intervals are set away from their defaults. `MIRROR_FETCH_INTERVAL_SECS`
+    # Three job intervals are set away from their defaults. `MIRROR_FETCH_INTERVAL_SECS`
     # is long because nothing here waits on a fetch and every one of them touches
     # a `file://` upstream a scenario may be rewriting. `DISPATCHER_INTERVAL_SECS`
     # is short because `dispatcher.spec.ts` waits on a launch nobody made: the
@@ -204,6 +204,13 @@ start_orchestrator() {
     # agent credential they could use outside its own project, so a sweep
     # launches nothing anywhere else (`tests/README.md`, "Automation and the
     # seeded roles").
+    #
+    # `REAPER_INTERVAL_SECS` is short for the same kind of reason: the idle-park
+    # scenario of `sessions.spec.ts` sets a one-second idle timeout and then
+    # waits on the reaper's next tick, which at the default 60 s was most of
+    # its run time. The stuck-task reaper shares the period and only ever
+    # releases a lease sooner; nothing in the suite waits for one to outlive
+    # its ended holder.
     (
         cd "$RUN_DIR" &&
             exec env -i \
@@ -231,6 +238,7 @@ start_orchestrator() {
                 STOP_GRACE_SECS=5 \
                 MIRROR_FETCH_INTERVAL_SECS=600 \
                 DISPATCHER_INTERVAL_SECS=10 \
+                REAPER_INTERVAL_SECS=2 \
                 RUST_LOG=info \
                 "$(orchestrator_binary)" >>"$LOG_FILE" 2>&1
     ) &

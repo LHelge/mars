@@ -3,7 +3,7 @@
 //!
 //! `ARCHITECTURE.md`, "Git model" (Session clone, Fetch-back) is the contract.
 //! A launch resolves `base_ref` to a commit in the project repository
-//! ([`resolve_base`]), creates `DATA_DIR/sessions/<sid>/work` as a reference
+//! ([`resolve_base`]), creates `DATA_DIR/sessions/<sid>/work` as a shared
 //! clone of that repository and puts `session/<sid>` at the resolved commit
 //! ([`create_work_clone`]). Everything that later needs the session's work in
 //! the project repository — `POST /sessions/{id}/end`, `POST
@@ -14,11 +14,13 @@
 //! [`remove_work_clone`] (`ARCHITECTURE.md`, "Storage").
 //!
 //! **What the clone borrows.** The work clone holds no objects of its own:
-//! `--reference` records the mirror in `.git/objects/info/alternates`, so a
+//! `--shared` records the mirror in `.git/objects/info/alternates`, so a
 //! session costs its checkout plus whatever the agent commits (ADR 0001). The
 //! mirror is mounted read-only into the container at the orchestrator's own
 //! path, which is why the alternates entry is built from [`DataPaths`]
-//! (`DATA_DIR`) and never from `DATA_DIR_HOST`.
+//! (`DATA_DIR`) and never from `DATA_DIR_HOST`, and why it is recorded exactly
+//! as `DATA_DIR` spells it: `--shared` writes the path it is given, where
+//! `--reference` would write it with every symlink resolved (ADR 0054).
 //!
 //! **What an ordinary clone does not copy.** `refs/heads/*` arrive as
 //! `refs/remotes/origin/*` and `refs/tags/*` as themselves; the mirror's own
@@ -121,24 +123,28 @@ pub async fn resolve_base(
 /// `session/<session_id>`.
 ///
 /// The steps are `ARCHITECTURE.md`, "Git model" (Session clone): clone the
-/// project repository against itself as the reference, fetch the selected ref
-/// when it is one an ordinary clone does not copy, create the session branch
-/// at the resolved commit, and configure the launching user's identity so the
-/// agent's commits are attributed to them (Commit identity).
+/// project repository `--shared` so it borrows the mirror's objects, fetch
+/// the selected ref when it is one an ordinary clone does not copy, create
+/// the session branch at the resolved commit, and configure the launching
+/// user's identity so the agent's commits are attributed to them (Commit
+/// identity).
 ///
-/// Two flags are added to the documented command line, and neither changes
-/// what it produces:
+/// The clone is `--shared` and nothing else borrows: the one alternates line
+/// it writes is the mirror's path exactly as [`DataPaths`] spells it, which is
+/// the path the mirror is mounted at inside the container. `--reference` is
+/// deliberately not passed as well. It names the same repository, so it would
+/// add nothing a `--shared` clone cannot already read, and git records a
+/// reference by its real path: under a `DATA_DIR` with a symlink in it (macOS
+/// `/var` is one to `/private/var`) the file would gain a second, resolved
+/// line that does not exist in the container, and every git command the agent
+/// ran would complain about it (ADR 0054). `--shared` is also what stops a
+/// clone from a local path copying the source's whole object directory (ADR
+/// 0001, "disk cost per session is the checkout plus new objects only"); it
+/// is the same mechanism the merge and rebase temporary clones use.
 ///
-/// - `--shared`, because `--reference` on a local path does *not* stop
-///   `git clone` copying the source's whole object directory; without it every
-///   session would duplicate the project's history and the alternates file
-///   would be decoration (ADR 0001, "disk cost per session is the checkout
-///   plus new objects only"). It is the same mechanism `ARCHITECTURE.md` uses
-///   for the merge and rebase temporary clones, and it adds no second
-///   alternates entry: the reference is already that path.
-/// - `--no-hardlinks`, so that if an object file were ever copied into the
-///   clone after all it would be a copy, and the work tree — which the agent
-///   writes — can never share an inode with the mirror.
+/// `--no-hardlinks` as well, so that if an object file were ever copied into
+/// the clone after all it would be a copy, and the work tree — which the
+/// agent writes — can never share an inode with the mirror.
 ///
 /// Called for a fresh launch only. Any `work` directory already there is
 /// removed first: a relaunch after a failed `creating` finds whatever the
@@ -168,8 +174,6 @@ pub async fn create_work_clone(
             "--shared",
             "--no-hardlinks",
         ])
-        .arg("--reference")
-        .arg(&repo)
         .arg("--end-of-options")
         .arg(&repo)
         .arg(&work)

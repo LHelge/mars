@@ -59,3 +59,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0051](0051-seed-a-default-claude-profile-and-auto-launched-roles.md) | Seed a default `claude` profile, and the implementer and reviewer ephemeral and auto-launched; not a "no profile" launch | accepted |
 | [0052](0052-dispatcher-waits-for-a-task-author-s-work.md) | The dispatcher waits for a task's author session to land its commits on the default branch; not a prompt at session end, and not holding auto-merge | accepted |
 | [0053](0053-revert-integration-heads-never-reset-users-only.md) | Roll an integration head back by a revert commit, never a reset, and only for users; not over MCP, and no general git editor | accepted |
+| [0054](0054-session-clones-borrow-through-shared-not-reference.md) | A session clone borrows through `--shared` alone, recording the mirror as `DATA_DIR` spells it; not canonicalised paths, and not a test that tolerates a resolved second line | accepted |

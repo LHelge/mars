@@ -46,7 +46,9 @@ fn launching_user() -> CommitIdentity {
 /// base resolution and clone setup run under one acquisition
 /// (`ARCHITECTURE.md`, "Git model", Serialization).
 struct Project {
-    _data: TempDir,
+    /// The directories `DATA_DIR` lives in: one, or two when it is reached
+    /// through a symlink.
+    _data: Vec<TempDir>,
     _upstream: TestUpstream,
     paths: DataPaths,
     guard: ProjectGitGuard,
@@ -56,14 +58,29 @@ impl Project {
     /// An upstream with `main`, a `feature/x` branch and an annotated tag, and
     /// a project repository initialised from it.
     async fn create() -> Self {
+        let data = tempfile::tempdir().expect("a temporary data directory");
+        let data_dir = data.path().to_path_buf();
+        Self::create_in(vec![data], &data_dir).await
+    }
+
+    /// The same project with `DATA_DIR` spelled through a symlink, as macOS
+    /// spells every temporary directory (`/var` is a link to `/private/var`).
+    async fn create_behind_a_symlink() -> Self {
+        let target = tempfile::tempdir().expect("the directory the link names");
+        let holder = tempfile::tempdir().expect("the directory holding the link");
+        let data_dir = holder.path().join("data");
+        std::os::unix::fs::symlink(target.path(), &data_dir).expect("the symlink is created");
+        Self::create_in(vec![holder, target], &data_dir).await
+    }
+
+    async fn create_in(data: Vec<TempDir>, data_dir: &Path) -> Self {
         let upstream = TestUpstream::create().await;
         upstream
             .commit_file("feature/x", "x.txt", "x\n", "feat: start x")
             .await;
         upstream.tag("v1.0.0", "main", true).await;
 
-        let data = tempfile::tempdir().expect("a temporary data directory");
-        let paths = DataPaths::new(data.path());
+        let paths = DataPaths::new(data_dir);
         let guard = ProjectGitLocks::new().lock(Uuid::new_v4()).await;
         let remote = RemoteUrl::local_for_tests(&upstream.path);
 
@@ -157,7 +174,9 @@ async fn assert_clone_is_well_formed(project: &Project, session_id: Uuid, base: 
     assert!(work.join("README.md").is_file(), "the work tree is empty");
 
     // ADR 0001: the objects are borrowed from the mirror at the orchestrator's
-    // own path, which is what has to resolve inside the container too.
+    // own path, which is what has to resolve inside the container too. One
+    // line, spelled as `DATA_DIR` spells it, never with its symlinks resolved
+    // (ADR 0054).
     let alternates = std::fs::read_to_string(work.join(".git/objects/info/alternates"))
         .expect("the clone has an alternates file");
     assert_eq!(alternates, format!("{}\n", repo.join("objects").display()));
@@ -231,6 +250,23 @@ async fn an_omitted_base_starts_from_the_project_default_branch() {
 
     assert_eq!(base.git_ref, GitRef::Head("main".to_string()));
     assert_eq!(base.commit, commit_of(&project.repo(), "main").await);
+    assert_clone_is_well_formed(&project, session_id, &base).await;
+}
+
+#[tokio::test]
+async fn a_data_dir_behind_a_symlink_is_recorded_as_spelled_not_resolved() {
+    let project = Project::create_behind_a_symlink().await;
+    let session_id = Uuid::new_v4();
+
+    let base = project.launch(session_id, None).await;
+
+    // The mount inside the container is at `DATA_DIR`'s own spelling, so a
+    // resolved path in the alternates file would name nothing there.
+    assert_ne!(
+        std::fs::canonicalize(project.repo()).expect("the repository exists"),
+        project.repo(),
+        "the fixture does not put a symlink in the path"
+    );
     assert_clone_is_well_formed(&project, session_id, &base).await;
 }
 

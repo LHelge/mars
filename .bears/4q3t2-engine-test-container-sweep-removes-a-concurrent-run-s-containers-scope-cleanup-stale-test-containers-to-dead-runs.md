@@ -1,10 +1,10 @@
 ---
 id: "4q3t2"
 title: "Engine test container sweep removes a concurrent run's containers: scope cleanup_stale_test_containers to dead runs"
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-26T17:34:03.165407834Z"
-updated: "2026-09-26T19:46:16.722745869Z"
+updated: "2026-09-26T20:25:26.963355012Z"
 tags:
   - orchestrator
   - tests

@@ -1,14 +1,15 @@
 ---
 id: s257z
 title: "Let the E2E suite run repeatedly against one stack: reset the login throttle through a test-only route"
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-20T22:59:28.290265782Z"
-updated: "2026-09-20T22:59:28.290265782Z"
+updated: "2026-09-26T17:16:40.935903603Z"
 tags:
   - orchestrator
   - frontend
   - tests
+attempts: 1
 ---
 
 ## Summary

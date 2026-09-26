@@ -1,15 +1,16 @@
 ---
 id: mrgmh
 title: "Flaky: realtime_acceptance::slow_client_does_not_block_others closes with Away before the last sequence"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-23T14:44:08.145669072Z"
-updated: "2026-09-23T14:44:08.145669072Z"
+updated: "2026-09-26T17:16:40.813185154Z"
 tags:
   - orchestrator
   - realtime
   - tests
   - flaky
+attempts: 1
 ---
 
 Observed in Release run 35874346197 (commit 0877ed1, no Rust change), job `orchestrator / Format, clippy, tests`, under nextest on a hosted runner:

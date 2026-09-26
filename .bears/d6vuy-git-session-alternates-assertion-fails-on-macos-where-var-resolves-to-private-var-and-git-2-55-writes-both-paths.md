@@ -1,14 +1,15 @@
 ---
 id: d6vuy
 title: "git_session: alternates assertion fails on macOS, where /var resolves to /private/var and git 2.55 writes both paths"
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-25T10:08:20.641391Z"
-updated: "2026-09-25T10:08:20.641391Z"
+updated: "2026-09-26T17:16:41.159163282Z"
 tags:
   - orchestrator
   - tests
   - git
+attempts: 1
 ---
 
 Found while verifying epic `xz6yq` on macOS (git 2.55.0, Podman). Four tests in `orchestrator/tests/git_session.rs` fail on `main`, independent of that epic's change: `an_omitted_base_starts_from_the_project_default_branch`, `a_fully_qualified_hand_off_ref_is_a_usable_base`, `every_supported_base_kind_resolves_and_produces_a_clone_at_that_commit`, `a_relaunch_replaces_whatever_a_failed_attempt_left_behind`.

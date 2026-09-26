@@ -1,16 +1,17 @@
 ---
 id: "8mj5h"
 title: Move the project route tests' local HTTP and bare-repository helpers onto tests/common
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-18T12:15:49.991291150Z"
-updated: "2026-09-18T12:15:49.991291150Z"
+updated: "2026-09-26T17:16:40.899316056Z"
 tags:
   - orchestrator
   - tests
   - projects
 depends_on:
   - xfu5s
+attempts: 1
 ---
 
 ## Summary

@@ -1,15 +1,16 @@
 ---
 id: veyht
 title: Make the idle reaper period and the session history page size configurable so the two slowest E2E scenarios stop waiting on constants
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-20T22:59:36.658435117Z"
-updated: "2026-09-20T22:59:36.658435117Z"
+updated: "2026-09-26T17:16:40.980076484Z"
 tags:
   - orchestrator
   - frontend
   - tests
   - perf
+attempts: 1
 ---
 
 ## Summary

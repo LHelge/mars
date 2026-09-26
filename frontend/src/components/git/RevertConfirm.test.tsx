@@ -43,10 +43,12 @@ function entry(commit: string, taskNumber?: number): HistoryEntry {
   return {
     commit,
     parents: [],
+    tree: `${commit.slice(0, 1)}-tree`,
     subject: `subject ${commit.slice(0, 1)}`,
     author_name: "Mars",
     committed_at: "2026-09-25T12:00:00Z",
     requested_by: null,
+    reverted_by: null,
     tasks:
       taskNumber === undefined
         ? []
@@ -189,6 +191,26 @@ describe("RevertConfirm", () => {
     ).toBeTruthy();
     expect(
       screen.getByText(/The branch has moved since this history was read/),
+    ).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onReverted).not.toHaveBeenCalled();
+  });
+
+  it("reads a revert that would change nothing as advice too", async () => {
+    revertMock.mockRejectedValue(
+      new ApiError(
+        409,
+        `nothing to revert: main already matches ${TARGET.slice(0, 12)}`,
+      ),
+    );
+    const onReverted = mount();
+    confirm();
+
+    expect(
+      await screen.findByRole("button", { name: "Reload history" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/The branch already has this commit's content/),
     ).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(onReverted).not.toHaveBeenCalled();

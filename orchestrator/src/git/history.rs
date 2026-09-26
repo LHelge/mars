@@ -21,7 +21,16 @@
 //! what a revert to a point would take back is `range_commits(head,
 //! Some(point))`, and [`first_parent_range`] is that range's own first-parent
 //! line, the entries a revert lists (`ARCHITECTURE.md`, "Git model", Revert).
+//!
+//! **What a later revert undid.** [`revert_target`] reads a revert commit
+//! back from the message [`super::revert::revert_message`] wrote — the two are
+//! one pair — and [`reverted_by`] marks, over the first-parent line from the
+//! head down to the end of a page, every entry a later revert undid. The walk
+//! always starts at the head, so an entry is marked by a revert on an earlier
+//! page too; it costs one `git log` of the line above the page's end, which a
+//! reader paging down has walked already.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -31,8 +40,8 @@ use crate::models::is_commit_id;
 use crate::prelude::*;
 
 /// The fields of one entry, NUL-separated, in the order [`parse_log`] reads
-/// them: commit, parents, author name, committer date, the `Requested-By`
-/// trailer values and the subject.
+/// them: commit, parents, tree, author name, committer date, the
+/// `Requested-By` trailer values and the subject.
 ///
 /// With `-z` every record is NUL-terminated too, so the whole output is a flat
 /// sequence of NUL-terminated fields read [`FIELDS`] at a time. NUL is the one
@@ -40,10 +49,10 @@ use crate::prelude::*;
 /// values are joined by `\x01`; `%(trailers:key=…,valueonly,separator=…)` is
 /// git 2.25, well under the supported floor of 2.39
 /// (`ARCHITECTURE.md`, "Git model", Supported git).
-const LOG_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%cI%x00%(trailers:key=Requested-By,valueonly,separator=%x01)%x00%s";
+const LOG_FORMAT: &str = "--format=%H%x00%P%x00%T%x00%an%x00%cI%x00%(trailers:key=Requested-By,valueonly,separator=%x01)%x00%s";
 
 /// How many fields [`LOG_FORMAT`] prints per commit.
-const FIELDS: usize = 6;
+const FIELDS: usize = 7;
 
 /// One commit on an integration head's first-parent line, as git reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +61,8 @@ pub struct LogEntry {
     pub commit: String,
     /// Its parents, first parent first. Empty for a root commit.
     pub parents: Vec<String>,
+    /// Its tree's full object id: the content the head had at this entry.
+    pub tree: String,
     /// The first line of its message.
     pub subject: String,
     /// The author's name.
@@ -132,6 +143,159 @@ pub async fn first_parent_range(
         .await?;
 
     Ok(parse_log(&output.stdout))
+}
+
+/// Every entry of `head`'s first-parent line from `head` down to and
+/// including `last`, newest first: the walk a page ending at `last` is marked
+/// over ([`reverted_by`]).
+///
+/// `last` is an entry of that line, as a page's last entry is. Excluding its
+/// first parent cuts the walk off exactly below it; a root `last` is the
+/// whole line.
+pub async fn first_parent_line_through(
+    repo: &Path,
+    head: &str,
+    last: &LogEntry,
+) -> std::result::Result<Vec<LogEntry>, GitError> {
+    if let Some(parent) = last.parents.first() {
+        return first_parent_range(repo, head, parent).await;
+    }
+    require_commit_id(head)?;
+
+    let output = GitCommand::new()
+        .args([
+            "log",
+            "--first-parent",
+            "-z",
+            LOG_FORMAT,
+            "--end-of-options",
+            head,
+        ])
+        .cwd(repo)
+        .run_ok()
+        .await?;
+
+    Ok(parse_log(&output.stdout))
+}
+
+/// The short `to` a revert commit of `branch` names, when `entry` is one: the
+/// reading of what [`super::revert::revert_message`] writes, kept as its pair.
+///
+/// A revert commit has exactly one parent, the subject `Revert <branch> to
+/// <SHORT_COMMIT hex digits>` and a `Requested-By: user:<id>` trailer, since
+/// only a user reverts (ADR 0053). A merge, or a commit whose subject merely
+/// reads like a revert without that trailer, is not one.
+pub fn revert_target<'a>(entry: &'a LogEntry, branch: &str) -> Option<&'a str> {
+    use super::revert::{REVERT_SUBJECT_PREFIX, REVERT_SUBJECT_TO, SHORT_COMMIT};
+
+    if entry.parents.len() != 1 {
+        return None;
+    }
+    let by_user = entry
+        .requested_by
+        .as_deref()
+        .is_some_and(|value| value.starts_with("user:"));
+    if !by_user {
+        return None;
+    }
+    let short = entry
+        .subject
+        .strip_prefix(REVERT_SUBJECT_PREFIX)?
+        .strip_prefix(branch)?
+        .strip_prefix(REVERT_SUBJECT_TO)?;
+    let hex = short
+        .bytes()
+        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+
+    (short.len() == SHORT_COMMIT && hex).then_some(short)
+}
+
+/// Which revert commit undid each entry of `line`, as entry commit → the
+/// newest revert commit above it that undid it (`SPEC.md`, "Git":
+/// `HistoryEntry.reverted_by`; `ARCHITECTURE.md`, "Git model", History).
+///
+/// `line` is `branch`'s first-parent line from the head down, newest first —
+/// a whole page's worth at least, [`first_parent_line_through`]. A revert R
+/// to `to` ([`revert_target`]) undoes every entry strictly between `to` and
+/// R. Reverts are applied newest first and one that a newer revert has
+/// already undone undoes nothing: the newer one put back content older than
+/// it, and with it whatever it had taken away. So a later revert to an older
+/// point marks an earlier revert and everything that one undid, and each
+/// entry names the newest revert that undid it.
+///
+/// `to` is matched by its short id against the full ids of `line` below R,
+/// and its tree must be R's, which it is for every revert Mars writes. When
+/// it is not in `line` and `line` stops above the root, it is looked up in
+/// the repository: a commit with R's tree on R's first-parent line is below
+/// the walk, and R undoes everything below itself in `line`.
+pub async fn reverted_by(
+    repo: &Path,
+    branch: &str,
+    line: &[LogEntry],
+) -> std::result::Result<HashMap<String, String>, GitError> {
+    let truncated = line.last().is_some_and(|last| !last.parents.is_empty());
+    let mut undone_by: Vec<Option<usize>> = vec![None; line.len()];
+
+    for (index, revert) in line.iter().enumerate() {
+        if undone_by.get(index).copied().flatten().is_some() {
+            continue;
+        }
+        let Some(short) = revert_target(revert, branch) else {
+            continue;
+        };
+        let below = line.iter().enumerate().skip(index + 1);
+        let end = match below
+            .clone()
+            .find(|(_, entry)| entry.commit.starts_with(short))
+        {
+            Some((target, entry)) if entry.tree == revert.tree => target,
+            Some(_) => continue,
+            None if truncated && target_below_line(repo, revert, short).await? => line.len(),
+            None => continue,
+        };
+        for mark in undone_by
+            .iter_mut()
+            .take(end)
+            .skip(index + 1)
+            .filter(|mark| mark.is_none())
+        {
+            *mark = Some(index);
+        }
+    }
+
+    Ok(line
+        .iter()
+        .zip(undone_by)
+        .filter_map(|(entry, by)| {
+            let by = line.get(by?)?;
+            Some((entry.commit.clone(), by.commit.clone()))
+        })
+        .collect())
+}
+
+/// Is `short` a commit with `revert`'s tree on `revert`'s first-parent line
+/// below it? The fallback of [`reverted_by`] for a `to` below the walk.
+///
+/// `short` is [`revert_target`]'s, hex digits only, so it may reach argv; an
+/// abbreviation git cannot resolve, or resolves ambiguously, is no target.
+async fn target_below_line(
+    repo: &Path,
+    revert: &LogEntry,
+    short: &str,
+) -> std::result::Result<bool, GitError> {
+    let Some(commit) = super::refs::peel(repo, short, "commit").await? else {
+        return Ok(false);
+    };
+    let tree = super::refs::peel(repo, &commit, "tree").await?;
+    if tree.as_deref() != Some(revert.tree.as_str()) || commit == revert.commit {
+        return Ok(false);
+    }
+
+    match require_on_first_parent_line(repo, &revert.commit, &commit).await {
+        Ok(()) => Ok(true),
+        Err(GitError::UnknownRef(_)) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// The range a first-parent entry brought in: every commit reachable from
@@ -257,7 +421,7 @@ fn parse_log(stdout: &str) -> Vec<LogEntry> {
 
     // `split` leaves one empty string after the final terminator; `as_chunks`
     // drops it together with any other incomplete tail.
-    for [commit, parents, author, date, trailers, subject] in fields.as_chunks::<FIELDS>().0 {
+    for [commit, parents, tree, author, date, trailers, subject] in fields.as_chunks::<FIELDS>().0 {
         // A stray newline between records is tolerated rather than trusted
         // never to appear.
         let commit = commit.trim();
@@ -274,6 +438,7 @@ fn parse_log(stdout: &str) -> Vec<LogEntry> {
         entries.push(LogEntry {
             commit: commit.to_string(),
             parents: parents.split_whitespace().map(str::to_string).collect(),
+            tree: tree.to_string(),
             subject: subject.to_string(),
             author_name: author.to_string(),
             committed_at: committed_at.with_timezone(&Utc),
@@ -511,9 +676,9 @@ mod tests {
     fn a_record_that_does_not_parse_is_skipped() {
         let good = "0123456789abcdef0123456789abcdef01234567";
         let output = format!(
-            "not-an-id\0\0x\02026-09-25T10:00:00+00:00\0\0bad\0\
-             {good}\0\0Ada\0not a date\0\0bad date\0\
-             {good}\0\0Ada\02026-09-25T10:00:00+02:00\0system\u{1}user:x\0good\0"
+            "not-an-id\0\0{good}\0x\02026-09-25T10:00:00+00:00\0\0bad\0\
+             {good}\0\0{good}\0Ada\0not a date\0\0bad date\0\
+             {good}\0\0{good}\0Ada\02026-09-25T10:00:00+02:00\0system\u{1}user:x\0good\0"
         );
 
         let entries = parse_log(&output);

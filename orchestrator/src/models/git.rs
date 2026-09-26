@@ -327,6 +327,9 @@ pub struct HistoryEntry {
     pub commit: String,
     /// Its parents, first parent first; empty for a root commit.
     pub parents: Vec<String>,
+    /// Its tree's full object id: equal to the head's when the head's content
+    /// is this entry's, which a revert to it would not change.
+    pub tree: String,
     /// The first line of its message.
     pub subject: String,
     /// The author's name.
@@ -336,6 +339,9 @@ pub struct HistoryEntry {
     /// The `Requested-By` trailer's value — `user:<id>`, `session:<id>` or
     /// `system` on a commit the orchestrator made — or `None`.
     pub requested_by: Option<String>,
+    /// The newest revert commit above this entry on the first-parent line
+    /// that undid it, or `None` (`ARCHITECTURE.md`, "Git model", History).
+    pub reverted_by: Option<String>,
     /// The tasks whose hand-off commits this entry brought in.
     pub tasks: Vec<HistoryTask>,
     /// The sessions those hand-offs came from, and the session the

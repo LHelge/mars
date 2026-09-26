@@ -7,13 +7,15 @@
 //!
 //! - the head moves forward to one new commit whose tree is `to`'s and whose
 //!   only parent is the old head; `reverted` is the attributed first-parent
-//!   range `to..head`, and nothing about any task moves without `reopen`;
+//!   range `to..head`, each naming it in `reverted_by` as the history then
+//!   does, and nothing about any task moves without `reopen`;
 //! - with `reopen`, every terminal task of the range moves to the requested
 //!   state with its current hand-off dropped, the user's comment once and a
 //!   system comment naming the commit, and a task that is not terminal is
 //!   left alone; a terminal task without a current hand-off is reopened too;
 //! - the refusals: a terminal or unknown reopen state and an empty comment
-//!   (400), a stale `expected_head` (409 `branch has moved`), a `to` that is
+//!   (400), a stale `expected_head` (409 `branch has moved`), a head that
+//!   already has `to`'s tree (409 `nothing to revert`), a `to` that is
 //!   not a strictly older first-parent commit and a `branch` that is not an
 //!   integration head (400), no token (401) and an unknown project (404) —
 //!   each leaving the head, the tasks and the event stream untouched.
@@ -283,18 +285,55 @@ async fn a_revert_writes_one_commit_with_to_s_tree_and_moves_no_task() {
     assert_eq!(body.reverted[0].tasks[0].handoff_id, a.handoff_two);
     assert_eq!(task_ids(&body.reverted[1]), [a.task_one.id]);
     assert_eq!(body.reverted[1].tasks[0].handoff_id, a.handoff_one);
+    assert!(
+        body.reverted
+            .iter()
+            .all(|entry| entry.reverted_by.as_deref() == Some(body.commit.as_str())),
+        "what the revert took back names it"
+    );
     assert!(body.reopened.is_empty());
 
     // The history now starts with the revert commit, by the bot, requested by
-    // the user, listing what it took back.
+    // the user, listing what it took back; the entries it undid name it, and
+    // the one it went back to has the head's tree.
     let history = fixture
         .app
         .get_as(
             &a.user,
-            &format!("/api/projects/{}/git/history?limit=1", fixture.project.id),
+            &format!("/api/projects/{}/git/history", fixture.project.id),
         )
         .await
         .json::<Vec<HistoryEntry>>();
+    let marks: Vec<(&str, Option<&str>)> = history
+        .iter()
+        .take(4)
+        .map(|entry| (entry.commit.as_str(), entry.reverted_by.as_deref()))
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            (body.commit.as_str(), None),
+            (a.m.as_str(), Some(body.commit.as_str())),
+            (a.a1.as_str(), Some(body.commit.as_str())),
+            (a.r2.as_str(), None),
+        ]
+    );
+    assert_eq!(history[3].tree, history[0].tree);
+    // A page after the revert's own still names it.
+    let second = fixture
+        .app
+        .get_as(
+            &a.user,
+            &format!(
+                "/api/projects/{}/git/history?limit=1&before={}",
+                fixture.project.id, body.commit
+            ),
+        )
+        .await
+        .json::<Vec<HistoryEntry>>();
+    assert_eq!(second[0].commit, a.m);
+    assert_eq!(second[0].reverted_by.as_deref(), Some(body.commit.as_str()));
+    assert_ne!(history[1].tree, history[0].tree);
     assert_eq!(history[0].commit, body.commit);
     assert_eq!(
         history[0].subject,
@@ -522,6 +561,44 @@ async fn a_stale_expected_head_is_409_and_leaves_the_head() {
     assert_error(&response, StatusCode::CONFLICT, "branch has moved");
 
     assert_eq!(main_commit(&fixture).await, a.m);
+}
+
+#[tokio::test]
+async fn a_revert_that_would_change_nothing_is_409_and_writes_nothing() {
+    let fixture = Fixture::create("revert-noop").await;
+    let a = arrange(&fixture).await;
+    put(&fixture, &a.user, &a.task_one, json!({ "state": "done" })).await;
+    let response = revert(
+        &fixture,
+        &a.user,
+        json!({ "branch": "main", "to": a.r2, "expected_head": a.m }),
+    )
+    .await;
+    response.assert_status(StatusCode::OK);
+    let head = response.json::<RevertResponse>().commit;
+    let before_one = fixture.task_row(a.task_one.id).await;
+    let cursor = cursor(&fixture).await;
+
+    // `main` already has R2's tree: reverting to it again would add an empty
+    // commit and reopen what is already reverted.
+    let response = revert(
+        &fixture,
+        &a.user,
+        json!({
+            "branch": "main", "to": a.r2, "expected_head": head,
+            "reopen": { "state": "ready", "comment": "once more" },
+        }),
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::CONFLICT,
+        &format!("nothing to revert: main already matches {}", &a.r2[..12]),
+    );
+
+    assert_eq!(main_commit(&fixture).await, head, "no commit, no ref move");
+    assert_eq!(fixture.task_row(a.task_one.id).await, before_one);
+    assert!(events_after(&fixture, cursor).await.is_empty(), "no reopen");
 }
 
 #[tokio::test]

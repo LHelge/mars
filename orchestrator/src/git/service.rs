@@ -615,9 +615,29 @@ impl GitService {
             return Err(GitError::UnknownRef(head_ref.api_name()).into());
         }
 
-        let log = history::first_parent_page(&repo, &head.commit, before, limit).await?;
+        let GitRef::Head(branch_name) = &head_ref else {
+            return Err(GitError::UnknownRef(head_ref.api_name()).into());
+        };
 
-        self.attributed_entries(project_id, log).await
+        let log = history::first_parent_page(&repo, &head.commit, before, limit).await?;
+        // What later reverts undid is read over the line from the head down
+        // to this page's end, so a revert on an earlier page marks this one's
+        // entries too. Without a cursor the page is that line already.
+        let line = match (before, log.last()) {
+            (Some(_), Some(last)) => {
+                Some(history::first_parent_line_through(&repo, &head.commit, last).await?)
+            }
+            _ => None,
+        };
+        let undone =
+            history::reverted_by(&repo, branch_name, line.as_deref().unwrap_or(&log)).await?;
+
+        let mut entries = self.attributed_entries(project_id, log).await?;
+        for entry in &mut entries {
+            entry.reverted_by = undone.get(&entry.commit).cloned();
+        }
+
+        Ok(entries)
     }
 
     /// First-parent log entries as [`HistoryEntry`]s: each entry's range
@@ -737,7 +757,9 @@ impl GitService {
     /// Under the lock: the head is resolved and compared with
     /// `expected_head` (409 [`BRANCH_HAS_MOVED`] when they differ, so the
     /// confirmation the user saw is the one applied); `to` has to be on the
-    /// head's first-parent line and strictly older than it (400); the
+    /// head's first-parent line and strictly older than it (400); the head's
+    /// tree must differ from `to`'s (409 `nothing to revert: <branch> already
+    /// matches <short>`, since the commit would change nothing); the
     /// reverted first-parent range `to..head` is read and attributed exactly
     /// as the history is; and the commit `git commit-tree <to>^{tree} -p
     /// <head>` is written under the bot identity with a `Requested-By:
@@ -786,6 +808,13 @@ impl GitService {
             }
             Err(error) => return Err(error.into()),
         }
+        if revert::same_tree(&repo, &head.commit, to).await? {
+            return Err(Error::Conflict(format!(
+                "{}: {branch_name} already matches {}",
+                revert::NOTHING_TO_REVERT,
+                revert::short(to)
+            )));
+        }
 
         let log = history::first_parent_range(&repo, &head.commit, to).await?;
         let message = revert::revert_message(
@@ -795,7 +824,7 @@ impl GitService {
                 .map(|entry| (entry.commit.as_str(), entry.subject.as_str())),
             &revert::requested_by_user(user_id),
         );
-        let reverted = self.attributed_entries(project_id, log).await?;
+        let mut reverted = self.attributed_entries(project_id, log).await?;
 
         let identity = self.credentials.commit_identity(project_id).await?;
         let commit = revert::revert_to(
@@ -808,6 +837,11 @@ impl GitService {
             &identity,
         )
         .await?;
+        // The new commit is the newest revert above every entry it took
+        // back, so it is what each of them now names.
+        for entry in &mut reverted {
+            entry.reverted_by = Some(commit.clone());
+        }
 
         Ok(RevertOutcome { commit, reverted })
     }
@@ -1577,10 +1611,12 @@ fn history_entry<'a>(
     HistoryEntry {
         commit: entry.commit,
         parents: entry.parents,
+        tree: entry.tree,
         subject: entry.subject,
         author_name: entry.author_name,
         committed_at: entry.committed_at,
         requested_by: entry.requested_by,
+        reverted_by: None,
         tasks,
         sessions,
     }

@@ -20,6 +20,8 @@
 //! Both commands take `--end-of-options` and were verified on git 2.39.5, the
 //! supported floor (`ARCHITECTURE.md`, "Git model", Supported git).
 
+use std::path::Path;
+
 use uuid::Uuid;
 
 use super::{CommitIdentity, DataPaths, GitCommand, GitError, ProjectGitGuard, refs};
@@ -36,6 +38,42 @@ pub const SHORT_COMMIT: usize = 12;
 /// The first [`SHORT_COMMIT`] digits of `commit`, or all of it when shorter.
 pub fn short(commit: &str) -> &str {
     commit.get(..SHORT_COMMIT).unwrap_or(commit)
+}
+
+/// A revert subject is `Revert <branch> to <short to>`: these are its fixed
+/// parts, which [`revert_message`] writes and [`super::history::revert_target`]
+/// reads back. A branch name cannot contain a space, so the parts split it
+/// unambiguously.
+pub const REVERT_SUBJECT_PREFIX: &str = "Revert ";
+/// See [`REVERT_SUBJECT_PREFIX`].
+pub const REVERT_SUBJECT_TO: &str = " to ";
+
+/// What a revert whose head already has `to`'s tree is told (409), before the
+/// branch and the short `to`: `nothing to revert: main already matches
+/// <short>` (`SPEC.md`, "Git").
+pub const NOTHING_TO_REVERT: &str = "nothing to revert";
+
+/// Do `head` and `to` have the same tree? A revert between them would write a
+/// commit that changes nothing, which the service refuses.
+///
+/// `git rev-parse --verify --end-of-options <commit>^{tree}` for each
+/// ([`refs::peel`]; `--verify` takes one revision, and without it `rev-parse`
+/// echoes `--end-of-options` back as output): both are full object ids the
+/// caller resolved, checked again because they reach argv. Verified on git
+/// 2.39.5.
+pub async fn same_tree(repo: &Path, head: &str, to: &str) -> std::result::Result<bool, GitError> {
+    let mut trees = Vec::with_capacity(2);
+    for commit in [head, to] {
+        if !is_commit_id(commit) {
+            return Err(GitError::InvalidRef(commit.to_string()));
+        }
+        let tree = refs::peel(repo, commit, "tree")
+            .await?
+            .ok_or_else(|| GitError::UnknownRef(commit.to_string()))?;
+        trees.push(tree);
+    }
+
+    Ok(trees.first() == trees.get(1))
 }
 
 /// Write the revert commit of the integration head `branch` (short name) from
@@ -104,7 +142,10 @@ pub fn revert_message<'a>(
     reverted: impl IntoIterator<Item = (&'a str, &'a str)>,
     requested_by_trailer: &str,
 ) -> String {
-    let mut message = format!("Revert {branch} to {}\n\n", short(to));
+    let mut message = format!(
+        "{REVERT_SUBJECT_PREFIX}{branch}{REVERT_SUBJECT_TO}{}\n\n",
+        short(to)
+    );
     for (commit, subject) in reverted {
         message.push_str(short(commit));
         message.push(' ');
@@ -205,6 +246,285 @@ mod tests {
                 .trim()
                 .to_string()
         }
+
+        /// Bring the work clone's `main` to the bare repository's, after a
+        /// revert wrote there.
+        async fn sync(&self) {
+            let bare = self.bare();
+            let bare = bare.to_str().expect("a UTF-8 path");
+            run_git(&self.work, &["fetch", "--quiet", bare, "main"]).await;
+            run_git(&self.work, &["reset", "--quiet", "--hard", "FETCH_HEAD"]).await;
+        }
+
+        /// Commit `file` on a side branch and merge it into `main` with a
+        /// merge commit, published. Answers the merge.
+        async fn merge_side(&self, side: &str, file: &str) -> String {
+            run_git(&self.work, &["checkout", "--quiet", "-b", side]).await;
+            self.commit(file, side).await;
+            run_git(&self.work, &["checkout", "--quiet", "main"]).await;
+            run_git(
+                &self.work,
+                &[
+                    "merge",
+                    "--quiet",
+                    "--no-ff",
+                    "-m",
+                    &format!("Merge {side} into main\n\nRequested-By: session:fake-session"),
+                    side,
+                ],
+            )
+            .await;
+            self.publish().await;
+            self.rev("HEAD").await
+        }
+
+        /// Revert the bare `main` to `to` as `revert_locked` would, and bring
+        /// the work clone along. Answers the revert commit.
+        async fn revert(&self, to: &str) -> String {
+            let locks = ProjectGitLocks::new();
+            let guard = locks.lock(self.project_id).await;
+            let head = self.bare_rev("refs/heads/main").await;
+            let range = history::first_parent_range(&self.bare(), &head, to)
+                .await
+                .expect("the range reads");
+            let message = revert_message(
+                "main",
+                to,
+                range
+                    .iter()
+                    .map(|entry| (entry.commit.as_str(), entry.subject.as_str())),
+                &requested_by_user(Uuid::nil()),
+            );
+            let commit = revert_to(
+                &guard,
+                &self.paths,
+                "main",
+                &head,
+                to,
+                &message,
+                &test_identity(),
+            )
+            .await
+            .expect("the revert is written");
+            self.sync().await;
+            commit
+        }
+
+        /// What `reverted_by` marks over one page of `main`, as `(entry,
+        /// revert)` pairs in page order; the line is walked from the head to
+        /// the page's end as the service walks it.
+        async fn marks(&self, before: Option<&str>, limit: u32) -> Vec<(String, Option<String>)> {
+            let bare = self.bare();
+            let head = self.bare_rev("refs/heads/main").await;
+            let page = history::first_parent_page(&bare, &head, before, limit)
+                .await
+                .expect("the page reads");
+            let line = match page.last() {
+                Some(last) => history::first_parent_line_through(&bare, &head, last)
+                    .await
+                    .expect("the line reads"),
+                None => Vec::new(),
+            };
+            let undone = history::reverted_by(&bare, "main", &line)
+                .await
+                .expect("the marks read");
+
+            page.into_iter()
+                .map(|entry| {
+                    let by = undone.get(&entry.commit).cloned();
+                    (entry.commit, by)
+                })
+                .collect()
+        }
+    }
+
+    /// The shape found on a real project: `A — B — C — D (merge) — R1
+    /// "Revert main to B" — R2 "Revert main to A" — E (merge)`. Answers
+    /// `[A, B, C, D, R1, R2, E]`.
+    async fn nested_reverts(repo: &Repo) -> [String; 7] {
+        let a = repo.commit("a.txt", "a").await;
+        let b = repo.commit("b.txt", "b").await;
+        let c = repo.commit("c.txt", "c").await;
+        let d = repo.merge_side("side-d", "d.txt").await;
+        let r1 = repo.revert(&b).await;
+        let r2 = repo.revert(&a).await;
+        let e = repo.merge_side("side-e", "e.txt").await;
+
+        [a, b, c, d, r1, r2, e]
+    }
+
+    fn by(commit: &str) -> Option<String> {
+        Some(commit.to_string())
+    }
+
+    #[tokio::test]
+    async fn a_revert_marks_every_entry_between_to_and_itself() {
+        let repo = Repo::create().await;
+        let a = repo.commit("a.txt", "a").await;
+        let b = repo.commit("b.txt", "b").await;
+        let c = repo.commit("c.txt", "c").await;
+        repo.publish().await;
+        let r = repo.revert(&a).await;
+
+        assert_eq!(
+            repo.marks(None, 50).await,
+            [
+                (r.clone(), None),
+                (c, by(&r)),
+                (b, by(&r)),
+                (a.clone(), None),
+            ]
+        );
+        assert_eq!(
+            repo.bare_rev(&format!("{r}^{{tree}}")).await,
+            repo.bare_rev(&format!("{a}^{{tree}}")).await,
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_revert_to_an_older_point_undoes_an_earlier_revert_and_all_it_undid() {
+        let repo = Repo::create().await;
+        let [a, b, c, d, r1, r2, e] = nested_reverts(&repo).await;
+
+        assert_eq!(
+            repo.marks(None, 50).await,
+            [
+                (e, None),
+                (r2.clone(), None),
+                (r1, by(&r2)),
+                (d, by(&r2)),
+                (c, by(&r2)),
+                (b, by(&r2)),
+                (a, None),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_revert_back_to_an_undone_commit_brings_what_it_holds_back() {
+        let repo = Repo::create().await;
+        let a = repo.commit("a.txt", "a").await;
+        let b = repo.commit("b.txt", "b").await;
+        let c = repo.commit("c.txt", "c").await;
+        repo.publish().await;
+        let r1 = repo.revert(&a).await;
+        // Back to C: R1 is undone, and B and C are the head's content again.
+        let r2 = repo.revert(&c).await;
+
+        assert_eq!(
+            repo.marks(None, 50).await,
+            [
+                (r2.clone(), None),
+                (r1, by(&r2)),
+                (c, None),
+                (b, None),
+                (a, None),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_undone_by_a_revert_on_an_earlier_page_is_marked() {
+        let repo = Repo::create().await;
+        let [a, b, c, d, r1, r2, e] = nested_reverts(&repo).await;
+
+        assert_eq!(
+            repo.marks(None, 3).await,
+            [(e, None), (r2.clone(), None), (r1.clone(), by(&r2))]
+        );
+        assert_eq!(
+            repo.marks(Some(&r1), 3).await,
+            [(d, by(&r2)), (c, by(&r2)), (b.clone(), by(&r2))]
+        );
+        assert_eq!(repo.marks(Some(&b), 3).await, [(a, None)]);
+    }
+
+    #[tokio::test]
+    async fn a_revert_to_a_point_below_the_page_marks_the_whole_page() {
+        let repo = Repo::create().await;
+        let a = repo.commit("a.txt", "a").await;
+        repo.commit("b.txt", "b").await;
+        let c = repo.commit("c.txt", "c").await;
+        let d = repo.commit("d.txt", "d").await;
+        repo.publish().await;
+        let r = repo.revert(&a).await;
+
+        // The walk ends at C, above A: A is found in the repository instead.
+        assert_eq!(
+            repo.marks(None, 3).await,
+            [(r.clone(), None), (d, by(&r)), (c, by(&r))]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_commit_that_only_reads_like_a_revert_marks_nothing() {
+        let repo = Repo::create().await;
+        let a = repo.commit("a.txt", "a").await;
+        let b = repo.commit("b.txt", "b").await;
+        repo.publish().await;
+        let subject = format!("Revert main to {}", short(&a));
+
+        // A merge with that subject and a session's trailer.
+        run_git(&repo.work, &["checkout", "--quiet", "-b", "side"]).await;
+        repo.commit("s.txt", "s").await;
+        run_git(&repo.work, &["checkout", "--quiet", "main"]).await;
+        run_git(
+            &repo.work,
+            &[
+                "merge",
+                "--quiet",
+                "--no-ff",
+                "-m",
+                &format!("{subject}\n\nRequested-By: session:fake-session"),
+                "side",
+            ],
+        )
+        .await;
+        let merge = repo.rev("HEAD").await;
+        // A single-parent commit with A's tree and that subject, but no
+        // trailer.
+        let bare_commit = run_git(
+            &repo.work,
+            &[
+                "commit-tree",
+                "-p",
+                &merge,
+                "-m",
+                &subject,
+                &format!("{a}^{{tree}}"),
+            ],
+        )
+        .await
+        .trim()
+        .to_string();
+        run_git(&repo.work, &["reset", "--quiet", "--hard", &bare_commit]).await;
+        repo.publish().await;
+
+        assert_eq!(
+            repo.marks(None, 50).await,
+            [(bare_commit, None), (merge, None), (b, None), (a, None)]
+        );
+    }
+
+    #[tokio::test]
+    async fn same_tree_tells_a_revert_that_would_change_nothing() {
+        let repo = Repo::create().await;
+        let a = repo.commit("a.txt", "a").await;
+        repo.commit("b.txt", "b").await;
+        repo.publish().await;
+        let r = repo.revert(&a).await;
+
+        assert!(
+            same_tree(&repo.bare(), &r, &a)
+                .await
+                .expect("the trees read")
+        );
+        let b = repo.bare_rev(&format!("{r}^")).await;
+        assert!(
+            !same_tree(&repo.bare(), &r, &b)
+                .await
+                .expect("the trees read")
+        );
     }
 
     #[test]

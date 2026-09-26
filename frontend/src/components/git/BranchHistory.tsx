@@ -1,7 +1,9 @@
 // The first-parent history of an integration head on the Branches tab
 // (`SPEC.md`, "Git": `HistoryEntry`; "Frontend", Project page): one row per
 // commit, newest first, with who asked for it and the tasks and sessions
-// behind it, and "Revert to here" on every row but the head's.
+// behind it, and "Revert to here" on every row but the head's, one a later
+// revert undid (muted, linking to that revert's row) and one that already
+// holds the head's content (`history.ts`, `historyRowMark`).
 //
 // It reads like `git log --first-parent`: a merge of a task's hand-off is one
 // row, attributed to that task, so "what went into main after this point" is
@@ -10,10 +12,11 @@
 //
 // A successful revert leaves a note above the table naming the new commit and
 // where it goes next: it waits on the head until someone pushes it, with the
-// head's own `Push…`. The note is the answer to the last revert and is gone
+// head's own `Push…`; the new top row, the revert itself, is scrolled to and
+// highlighted, so the change is visible in the table too. The note is the answer to the last revert and is gone
 // the moment another one is opened or the head changes.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 
@@ -44,7 +47,13 @@ import {
   type TableColumn,
 } from "../tableStyles";
 import type { ReportBusy } from "./formState";
-import { parseRequestedBy, revertRange } from "./history";
+import {
+  historyRowId,
+  historyRowMark,
+  parseRequestedBy,
+  revertRange,
+  type HistoryRowMark,
+} from "./history";
 import type { IntegrationHead } from "./integrationHeads";
 import { RevertConfirm } from "./RevertConfirm";
 import { useBranchHistory } from "./useBranchHistory";
@@ -83,6 +92,8 @@ export function BranchHistory({
   /** The row whose revert confirmation is open, by commit. */
   const [open, setOpen] = useState<string | null>(null);
   const [last, setLast] = useState<LastRevert | null>(null);
+  /** The row drawn highlighted and scrolled to, by commit. */
+  const [highlight, setHighlight] = useState<string | null>(null);
 
   const branch =
     chosen !== null && heads.some((head) => head.name === chosen)
@@ -111,6 +122,7 @@ export function BranchHistory({
                   setChosen(event.target.value);
                   setOpen(null);
                   setLast(null);
+                  setHighlight(null);
                 }}
                 className={`${CONTROL} font-mono`}
               >
@@ -169,7 +181,7 @@ export function BranchHistory({
           <table className={TABLE} aria-label={`History of ${branch}`}>
             <TableHead columns={COLUMNS} />
             <tbody>
-              {entries.map((entry, index) => {
+              {entries.map((entry) => {
                 const range =
                   open === entry.commit
                     ? revertRange(entries, entry.commit)
@@ -180,11 +192,14 @@ export function BranchHistory({
                     projectId={projectId}
                     branch={branch}
                     entry={entry}
-                    isHead={index === 0}
+                    mark={historyRowMark(entry, head)}
+                    highlighted={highlight === entry.commit}
                     opened={range !== null}
                     disabled={disabled}
+                    onShowRow={setHighlight}
                     onToggle={() => {
                       setLast(null);
+                      setHighlight(null);
                       setOpen((current) =>
                         current === entry.commit ? null : entry.commit,
                       );
@@ -206,6 +221,7 @@ export function BranchHistory({
                           onReverted={(result) => {
                             setOpen(null);
                             setLast({ branch, to: entry.commit, result });
+                            setHighlight(result.commit);
                           }}
                         />
                       )
@@ -243,9 +259,13 @@ interface EntryRowsProps {
   projectId: string;
   branch: string;
   entry: HistoryEntry;
-  isHead: boolean;
+  mark: HistoryRowMark;
+  /** Drawn highlighted and scrolled into view: a new revert, or a link's target. */
+  highlighted: boolean;
   opened: boolean;
   disabled: boolean;
+  /** Highlight and scroll to the row of `commit`. */
+  onShowRow: (commit: string) => void;
   onToggle: () => void;
   confirm: ReactNode;
 }
@@ -254,16 +274,36 @@ function EntryRows({
   projectId,
   branch,
   entry,
-  isHead,
+  mark,
+  highlighted,
   opened,
   disabled,
+  onShowRow,
   onToggle,
   confirm,
 }: EntryRowsProps) {
   const short = shortSha(entry.commit);
+  const row = useRef<HTMLTableRowElement>(null);
+  useEffect(() => {
+    if (highlighted) {
+      row.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [highlighted]);
+
+  const undone = mark.kind === "undone";
+  const rowClass = [
+    opened ? "border-0" : ROW,
+    undone ? "opacity-60" : "",
+    highlighted ? "bg-console-accent/10" : "",
+  ].join(" ");
   return (
     <>
-      <tr className={opened ? "border-0" : ROW}>
+      <tr
+        ref={row}
+        id={historyRowId(entry.commit)}
+        className={rowClass}
+        data-highlighted={highlighted || undefined}
+      >
         <td
           className={`${CELL_TOP} text-console-muted font-mono text-xs whitespace-nowrap`}
           title={entry.commit}
@@ -271,7 +311,11 @@ function EntryRows({
           {short}
         </td>
         <td className={`${CELL_TOP} text-console-text min-w-0 text-xs`}>
-          <span className="line-clamp-2 break-words">{entry.subject}</span>
+          <span
+            className={`line-clamp-2 break-words ${undone ? "decoration-console-muted line-through" : ""}`}
+          >
+            {entry.subject}
+          </span>
           <span className="text-console-muted block">{entry.author_name}</span>
         </td>
         <td
@@ -289,7 +333,28 @@ function EntryRows({
           {formatRelative(entry.committed_at)}
         </td>
         <td className={`${CELL_TOP} pr-0 text-right whitespace-nowrap`}>
-          {!isHead && (
+          {mark.kind === "undone" && (
+            <a
+              href={`#${historyRowId(mark.by)}`}
+              title={`Undone by the revert ${mark.by}`}
+              onClick={(event) => {
+                event.preventDefault();
+                onShowRow(mark.by);
+              }}
+              className="text-console-muted hover:text-console-text font-mono text-xs hover:underline"
+            >
+              undone by {shortSha(mark.by)}
+            </a>
+          )}
+          {mark.kind === "current" && (
+            <span
+              title={`${branch} already holds this commit's content`}
+              className="text-console-muted font-mono text-xs"
+            >
+              current content
+            </span>
+          )}
+          {mark.kind === "revertible" && (
             <button
               type="button"
               aria-expanded={opened}

@@ -119,6 +119,8 @@ export interface HistoryEntry {
   commit: string;
   /** The first parent first; empty for a root commit. */
   parents: string[];
+  /** The commit's tree id: the head's when this entry holds its current content. */
+  tree: string;
   /** The message's first line. */
   subject: string;
   author_name: string;
@@ -130,6 +132,11 @@ export interface HistoryEntry {
    * (`components/git/history.ts`), which keeps an unknown spelling as text.
    */
   requested_by: string | null;
+  /**
+   * The newest revert commit above this entry on the first-parent line that
+   * undid it, or null. Read through `historyRowMark`.
+   */
+  reverted_by: string | null;
   tasks: HistoryTask[];
   sessions: HistorySession[];
 }

@@ -982,6 +982,27 @@ test("reverting main to before two task merges reopens the tasks without their h
       .getByText(`Revert main to ${base.slice(0, 12)}`),
   ).toBeVisible();
   await expect(history.getByRole("link", { name: "#2" })).toBeVisible();
+  // The new top row is highlighted, the two rows it undid say so and link to
+  // it, and the base row, whose content `main` now holds again, offers no
+  // second revert.
+  await expect(history.getByRole("row").nth(1)).toHaveAttribute(
+    "data-highlighted",
+    "true",
+  );
+  const revertShort = gitRevParse(mirror, "main").slice(0, 7);
+  await expect(
+    history.getByRole("link", { name: `undone by ${revertShort}` }),
+  ).toHaveCount(2);
+  // The revert's own subject names the base too, so the base is the last row
+  // that mentions it.
+  const baseRowAfter = history
+    .getByRole("row")
+    .filter({ hasText: short })
+    .last();
+  await expect(baseRowAfter.getByText("current content")).toBeVisible();
+  await expect(
+    baseRowAfter.getByRole("button", { name: "Revert to here" }),
+  ).toHaveCount(0);
 
   // One new commit whose tree is the base's; `main` never moved backwards.
   expect(gitRevParse(mirror, "main^{tree}")).toBe(

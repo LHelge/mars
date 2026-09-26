@@ -59,7 +59,8 @@ export function listHistory(
 
 /**
  * One new commit on `branch` whose tree is `to`'s; 409 `branch has moved`
- * when the head is no longer `expected_head`.
+ * when the head is no longer `expected_head`, and 409 `nothing to revert`
+ * when it already has `to`'s tree.
  */
 export function revert(pid: string, input: RevertInput): Promise<RevertResult> {
   return apiPost<RevertResult>(`/projects/${seg(pid)}/git/revert`, input);
@@ -71,6 +72,18 @@ export function isBranchMoved(error: unknown): boolean {
     error instanceof ApiError &&
     error.status === 409 &&
     error.error === "branch has moved"
+  );
+}
+
+/**
+ * The 409 of a revert whose head already has `to`'s content:
+ * `nothing to revert: <branch> already matches <short>`.
+ */
+export function isNothingToRevert(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    error.error.startsWith("nothing to revert")
   );
 }
 

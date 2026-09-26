@@ -17,6 +17,8 @@
 // show the new commit. The confirmation sends `expected_head`, the head the
 // table was read at, and the server's 409 `branch has moved` is not a failure
 // of the user's: it is shown as advice to reload, with the reload beside it.
+// So is a 409 `nothing to revert`, a head that already holds the chosen
+// commit's content.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -24,7 +26,7 @@ import { Link } from "react-router";
 
 import { useFormSubmit } from "../../hooks/useFormSubmit";
 import { errorMessage } from "../../services/errorMessage";
-import { isBranchMoved, revert } from "../../services/git";
+import { isBranchMoved, isNothingToRevert, revert } from "../../services/git";
 import { queryKeys } from "../../services/queryKeys";
 import { listTaskStates } from "../../services/taskStates";
 import { taskPath } from "../../tasks/taskLink";
@@ -40,6 +42,10 @@ import { useReportBusy, type ReportBusy } from "./formState";
 /** What a 409 `branch has moved` reads as: advice, with a reload beside it. */
 const BRANCH_MOVED =
   "The branch has moved since this history was read, so nothing was reverted. Reload the history and choose again.";
+
+/** What a 409 `nothing to revert` reads as: advice too, with the same reload. */
+const NOTHING_TO_REVERT =
+  "The branch already has this commit's content, so there was nothing to revert. Reload the history to see where it stands.";
 
 export interface RevertConfirmProps {
   projectId: string;
@@ -117,12 +123,20 @@ export function RevertConfirm({
     },
     {
       mapError: (caught) =>
-        isBranchMoved(caught) ? BRANCH_MOVED : errorMessage(caught),
+        isBranchMoved(caught)
+          ? BRANCH_MOVED
+          : isNothingToRevert(caught)
+            ? NOTHING_TO_REVERT
+            : errorMessage(caught),
     },
   );
   useReportBusy(formId, run.loading, onBusy);
 
-  const moved = run.error === BRANCH_MOVED;
+  /** A refusal that is advice, not a failure: shown with a reload beside it. */
+  const advice =
+    run.error === BRANCH_MOVED || run.error === NOTHING_TO_REVERT
+      ? run.error
+      : null;
   const count = range.length;
   const commits = `${String(count)} ${count === 1 ? "commit" : "commits"}`;
 
@@ -140,7 +154,7 @@ export function RevertConfirm({
       }
       confirmLabel={`Revert ${branch} to ${short}`}
       pending={run.loading}
-      error={moved ? null : run.error}
+      error={advice === null ? run.error : null}
       onConfirm={() => {
         if (reopen && tasks.length > 0) {
           if (state === "") {
@@ -254,10 +268,10 @@ export function RevertConfirm({
         </div>
       )}
 
-      {moved && (
+      {advice !== null && (
         <QueryErrorAlert
           kind="info"
-          message={BRANCH_MOVED}
+          message={advice}
           retryLabel="Reload history"
           onRetry={() => {
             run.reset();

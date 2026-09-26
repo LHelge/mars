@@ -405,7 +405,7 @@ pub async fn resolve(
 ///
 /// A non-zero exit is an answer here rather than a failure — the caller turns
 /// it into the right [`GitError`] — so this uses [`GitCommand::run`].
-async fn peel(
+pub(crate) async fn peel(
     mirror: &Path,
     spec: &str,
     peel: &str,

@@ -2,6 +2,8 @@
 // "Git": `GET .../git/history` and `POST .../git/revert`; "Frontend", Project
 // page). Pure, so the rows a revert undoes and the tasks it would reopen are
 // computed once, from the pages already loaded, and tested beside this file.
+// What a later revert undid is the server's (`reverted_by`), derived from the
+// whole line above the page; this only reads it with the row's tree.
 
 import type {
   HistoryEntry,
@@ -68,6 +70,49 @@ export function revertRange(
 ): HistoryEntry[] | null {
   const index = entries.findIndex((entry) => entry.commit === to);
   return index <= 0 ? null : entries.slice(0, index);
+}
+
+/**
+ * What a history row is, for what it shows and whether it offers "Revert to
+ * here":
+ *
+ * - `head`: the head itself, which has nothing to revert to;
+ * - `undone`: a later revert (`by`, a full commit id) undid it — drawn muted,
+ *   linking to that revert's row;
+ * - `current`: its tree is the head's, so a revert to it would change nothing
+ *   (the server refuses it with 409 `nothing to revert`);
+ * - `revertible`: every other row.
+ *
+ * `head` is the first loaded entry; without one every row is revertible.
+ */
+export type HistoryRowMark =
+  | { kind: "head" }
+  | { kind: "undone"; by: string }
+  | { kind: "current" }
+  | { kind: "revertible" };
+
+export function historyRowMark(
+  entry: HistoryEntry,
+  head: HistoryEntry | undefined,
+): HistoryRowMark {
+  if (head === undefined) {
+    return { kind: "revertible" };
+  }
+  if (entry.commit === head.commit) {
+    return { kind: "head" };
+  }
+  if (entry.reverted_by !== null) {
+    return { kind: "undone", by: entry.reverted_by };
+  }
+  if (entry.tree === head.tree) {
+    return { kind: "current" };
+  }
+  return { kind: "revertible" };
+}
+
+/** The DOM id of a history row, which an `undone by` link scrolls to. */
+export function historyRowId(commit: string): string {
+  return `git-history-${commit}`;
 }
 
 /**

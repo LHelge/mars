@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { HistoryEntry, HistoryTask, TaskState } from "../../types";
 import {
   HISTORY_PAGE_SIZE,
+  historyRowId,
+  historyRowMark,
   nextHistoryCursor,
   parseRequestedBy,
   rangeTasks,
@@ -23,10 +25,12 @@ function entry(commit: string, tasks: HistoryTask[] = []): HistoryEntry {
   return {
     commit,
     parents: [],
+    tree: `tree-${commit}`,
     subject: `commit ${commit}`,
     author_name: "Mars",
     committed_at: "2026-09-25T12:00:00Z",
     requested_by: null,
+    reverted_by: null,
     tasks,
     sessions: [],
   };
@@ -102,6 +106,66 @@ describe("nextHistoryCursor", () => {
     expect(nextHistoryCursor(full)).toBe(`c${String(HISTORY_PAGE_SIZE - 1)}`);
     expect(nextHistoryCursor(full.slice(1))).toBeUndefined();
     expect(nextHistoryCursor([])).toBeUndefined();
+  });
+});
+
+describe("historyRowMark", () => {
+  /**
+   * The shape found on a real project: `688925d — 83e2ac5 — b12f812 —
+   * 37d5af8 (merge) — a692eea "Revert main to 83e2ac5b77af" — f558d5f
+   * "Revert main to 688925dd1284" — 4ea2e05 (merge)`, as the server marks it:
+   * f558d5f undid everything down to 688925d, the earlier revert included.
+   */
+  function marked(
+    commit: string,
+    tree: string,
+    revertedBy: string | null = null,
+  ): HistoryEntry {
+    return { ...entry(commit), tree, reverted_by: revertedBy };
+  }
+  const line = [
+    marked("4ea2e05", "t-head"),
+    marked("f558d5f", "t-688"),
+    marked("a692eea", "t-83e", "f558d5f"),
+    marked("37d5af8", "t-37d", "f558d5f"),
+    marked("b12f812", "t-b12", "f558d5f"),
+    marked("83e2ac5", "t-83e", "f558d5f"),
+    marked("688925d", "t-688"),
+  ];
+
+  it("marks the head, the undone rows and the rest", () => {
+    expect(line.map((row) => historyRowMark(row, line[0]))).toEqual([
+      { kind: "head" },
+      { kind: "revertible" },
+      { kind: "undone", by: "f558d5f" },
+      { kind: "undone", by: "f558d5f" },
+      { kind: "undone", by: "f558d5f" },
+      { kind: "undone", by: "f558d5f" },
+      { kind: "revertible" },
+    ]);
+  });
+
+  it("offers no revert on a row whose tree is the head's", () => {
+    // Before 4ea2e05 landed: f558d5f is the head and holds 688925d's tree.
+    const before = line.slice(1);
+    expect(before.map((row) => historyRowMark(row, before[0]).kind)).toEqual([
+      "head",
+      "undone",
+      "undone",
+      "undone",
+      "undone",
+      "current",
+    ]);
+  });
+
+  it("is revertible for every row without a loaded head", () => {
+    expect(historyRowMark(entry("x"), undefined)).toEqual({
+      kind: "revertible",
+    });
+  });
+
+  it("names a row by its commit", () => {
+    expect(historyRowId("abc")).toBe("git-history-abc");
   });
 });
 

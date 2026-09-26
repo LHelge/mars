@@ -46,6 +46,9 @@ const isCI = Boolean(process.env.CI);
 
 export default defineConfig({
   testDir: "./tests",
+  // Clears the login throttle, so runs against one stack never accumulate
+  // failed logins (tests/README.md, "Running it").
+  globalSetup: "./tests/global-setup.ts",
   fullyParallel: false,
   workers: 1,
   retries: isCI ? 1 : 0,

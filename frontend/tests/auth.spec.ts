@@ -11,13 +11,15 @@
 //
 // Every scenario but the first makes its own users through `createTestUser`.
 // The first is the only one allowed near `admin`/`changeme`, and it consumes
-// that account: a second `npm run test:e2e` against the same stack finds the
+// that account: a later `npm run test:e2e` against the same stack finds the
 // seeded password already changed and skips it (see its own comment).
 //
 // Login throttling (429 after 10 failures in 15 minutes) is deliberately not
 // exercised: the limit is per client address, so tripping it here would poison
 // every later scenario in the run. It is covered by the backend integration
-// tests.
+// tests. The failures this file does make — and the seeded-account probe on a
+// rerun — stay below the limit because `global-setup.ts` clears the throttle
+// before every run.
 
 import type { Browser, Page } from "@playwright/test";
 

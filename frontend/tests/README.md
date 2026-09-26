@@ -24,32 +24,30 @@ npm run test:e2e:status      # what is up right now
 `posttest:e2e` verifies that the run skipped nothing the table does not
 document. Both are `node tests/coverage-check.mjs`.
 
-**A full run wants a fresh stack.** Two things accumulate on a stack the suite
-has already run against, and both are deliberate product behaviour rather than
-anything the suite can arrange around:
+**Any number of runs can share one stack.** Two things accumulate on a stack
+the suite has already run against, and the suite handles both:
 
 - The seeded `admin`/`changeme` account is spent by the seeded-administrator
-  scenario, so that scenario skips on the second run against the same stack.
+  scenario, so that scenario skips on every later run against the same stack —
+  a documented skip (see the table below); `npm run test:e2e:up` starts from an
+  empty database and brings the account back.
 - The login throttle blocks the client address after 10 failed attempts in 15
   minutes (`SPEC.md`, "User-facing features" → "Login and invites"). A run
   makes three deliberate failures — a wrong password, a deleted user, and the
-  replaced password after a reset — and a *re*run makes a fourth, because the
-  probe that decides whether the seeded account is still fresh is a failed
-  login too. At about seven minutes a run, the third consecutive run against
-  one stack crosses the limit and every login in it, right or wrong, is
-  answered 429.
+  replaced password after a reset — and a *re*run a fourth, because the probe
+  that decides whether the seeded account is still fresh is a failed login too.
+  Left alone, the third consecutive run would cross the limit and every login
+  in it would be answered 429, so `tests/global-setup.ts`, Playwright's
+  `globalSetup`, clears the throttle through `POST /api/test/throttle/reset`
+  (`SPEC.md`, "Test-only routes") before every run, a single spec file or
+  scenario included.
 
-So: two consecutive runs against one stack are fine, three are not. Bring the
-stack down and up between full runs — the throttle lives in the orchestrator's
-memory, so restarting it clears every counter — and a rerun without that is
-still useful for one spec file or one scenario:
+Nothing else in the suite cares: every other scenario makes its own user,
+project and repository. One spec file:
 
 ```bash
 npx playwright test tests/tasks.spec.ts
 ```
-
-Nothing else in the suite cares: every other scenario makes its own user,
-project and repository.
 
 A single scenario, by title:
 

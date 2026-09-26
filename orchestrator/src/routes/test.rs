@@ -1,7 +1,7 @@
 //! Test-only routes, compiled only with the `integration-tests` feature and
 //! never into a release build (`SPEC.md`, "Test-only routes").
 //!
-//! Three routes. `POST /test/users` is the way Playwright and the backend
+//! Four routes. `POST /test/users` is the way Playwright and the backend
 //! integration tests get a signed-in user without the invite flow. `GET
 //! /test/stream-whoami` is the probe the stream-authentication tests drive
 //! [`crate::routes::stream_auth`] through, because the real `?token=` endpoints
@@ -9,7 +9,10 @@
 //! asserted on a plain request. `POST /test/scheduler-tick` runs the
 //! scheduled-agent job once with the two instants the caller chose, because a
 //! cron expression cannot come due sooner than the next minute boundary and no
-//! suite here waits a minute. They are the fixture endpoints the
+//! suite here waits a minute. `POST /test/throttle/reset` clears the login
+//! throttle, so the Playwright suite — whose deliberate wrong-password
+//! scenarios count against one client address — can run any number of times
+//! against one stack instead of reaching the limit on its third run. They are the fixture endpoints the
 //! specification lists, and nothing else belongs here — a test that needs a
 //! row the API cannot produce writes it through a repository from the test
 //! process, which reaches the same database.
@@ -46,6 +49,7 @@ pub fn routes() -> Router<AppState> {
         .route("/users", post(create_user))
         .route("/stream-whoami", get(stream_whoami))
         .route("/scheduler-tick", post(scheduler_tick))
+        .route("/throttle/reset", post(reset_throttle))
 }
 
 /// `POST /test/users` (`{ username, email, password, admin? }`).
@@ -174,4 +178,18 @@ async fn scheduler_tick(
         skipped: report.skipped,
         failures: report.failures,
     }))
+}
+
+/// `POST /test/throttle/reset` → 204.
+///
+/// Forgets every username and client address the login throttle is counting
+/// or blocking ([`crate::routes::throttle::LoginThrottle::reset`]), exactly as
+/// an orchestrator restart would. The Playwright suite calls it once at the
+/// start of a run (`frontend/tests/global-setup.ts`): its deliberate failed
+/// logins all come from one address, and without this a third consecutive run
+/// against one stack crosses the limit and every login is answered 429. The
+/// password-reset rate limit is left alone; nothing in the suite comes near it.
+async fn reset_throttle(State(state): State<AppState>) -> StatusCode {
+    state.login_throttle.reset();
+    StatusCode::NO_CONTENT
 }

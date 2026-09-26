@@ -1,5 +1,5 @@
-//! `POST /api/test/users` through the real router (`SPEC.md`, "Test-only
-//! routes").
+//! `POST /api/test/users` and `POST /api/test/throttle/reset` through the real
+//! router (`SPEC.md`, "Test-only routes").
 //!
 //! The fixture endpoint Playwright and every later epic's tests create their
 //! users with, so what is asserted here is that a user it made is an ordinary
@@ -24,6 +24,11 @@ use mars_orchestrator::prelude::*;
 use serde_json::{Value, json};
 
 const CREATE: &str = "/api/test/users";
+const THROTTLE_RESET: &str = "/api/test/throttle/reset";
+const LOGIN: &str = "/api/auth/login";
+
+/// The client address the throttle scenario fails from (RFC 5737).
+const CLIENT: &str = "203.0.113.7";
 
 /// Obviously fake, and inside the documented 10–128 range.
 const PASSWORD: &str = "correct-horse-battery-staple";
@@ -342,4 +347,65 @@ async fn the_gated_arrangement_helper_produces_a_gated_user() {
         response.json::<Value>(),
         json!({ "status": 403, "error": "password change required" })
     );
+}
+
+/// `POST /api/test/throttle/reset` (`SPEC.md`, "Test-only routes"): a client
+/// address the login throttle has blocked signs in again after it, which is
+/// what lets the Playwright suite run any number of times against one stack.
+/// Its absence from a release build is the feature gate's, asserted in
+/// `routes::tests`.
+#[tokio::test]
+async fn resetting_the_throttle_lifts_a_block_on_the_client_address() {
+    let app = TestApp::spawn().await;
+    app.server
+        .post(CREATE)
+        .json(&json!({
+            "username": "ada",
+            "email": "ada@example.test",
+            "password": PASSWORD,
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    // Ten failures spread over ten other usernames block the address, as the
+    // suite's deliberate failures do; documentation addresses only (RFC 5737).
+    for nth in 0..10 {
+        app.server
+            .post(LOGIN)
+            .add_header("X-Forwarded-For", CLIENT)
+            .json(&json!({ "username": format!("user{nth}"), "password": "wrong-password-here" }))
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    let ada = json!({ "username": "ada", "password": PASSWORD });
+    app.server
+        .post(LOGIN)
+        .add_header("X-Forwarded-For", CLIENT)
+        .json(&ada)
+        .await
+        .assert_status(StatusCode::TOO_MANY_REQUESTS);
+
+    let response = app.server.post(THROTTLE_RESET).await;
+    response.assert_status(StatusCode::NO_CONTENT);
+    assert!(response.text().is_empty());
+
+    app.server
+        .post(LOGIN)
+        .add_header("X-Forwarded-For", CLIENT)
+        .json(&ada)
+        .await
+        .assert_status(StatusCode::OK);
+}
+
+/// Resetting a throttle that counts nothing is not an error: the suite calls it
+/// at the start of every run, the first one included.
+#[tokio::test]
+async fn resetting_an_empty_throttle_is_204() {
+    let app = TestApp::spawn().await;
+
+    app.server
+        .post(THROTTLE_RESET)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
 }

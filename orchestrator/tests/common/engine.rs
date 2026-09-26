@@ -8,6 +8,16 @@
 //! names and labels that let two runs share an engine, and the cleanup that
 //! runs whether the scenario passed or panicked.
 //!
+//! **Two runs on one engine.** Two runs of the suite may share an engine
+//! socket — two worktrees, or a coordinator beside a task-implementer — and
+//! neither may disturb the other. Every container carries [`LABEL_TEST`] with
+//! a value naming the process that created it ([`run_id`]), and the sweep at
+//! the start of a run removes only the containers of processes that are no
+//! longer running, so a crashed run's leftovers still go and a live run's
+//! containers stay. The two scenarios whose assertions no label can scope —
+//! the startup probe's and the image pull's — take a [`host_lock`], a `flock`
+//! every run on the host shares.
+//!
 //! Nothing in this module talks to the database, so it compiles without the
 //! `integration-tests` feature like `common::db` does.
 //!
@@ -53,14 +63,138 @@ pub const TEST_NETWORK: &str = "bridge";
 /// How long any single `wait` in the suite may take.
 pub const WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// The value of the [`LABEL_TEST`] label for this process.
+/// The value of the [`LABEL_TEST`] label for this process:
+/// `<host>:<boot id>:<pid>:<start time>:<uuid>`.
 ///
-/// Random per run, so the stale-container sweep below can remove every
-/// `mars.test` container that is *not* this run's without touching a suite
-/// running beside it.
+/// The first four fields name the process that created the container, so the
+/// stale-container sweep below can tell a crashed run's leftovers from the
+/// containers of a run that is still going on the same engine socket — a
+/// second worktree, or the coordinator beside a task-implementer. The start
+/// time is the process's start in clock ticks since boot (`/proc/<pid>/stat`,
+/// field 22), which is what makes a reused pid read as a different process;
+/// the boot id makes a pid from before a reboot read as dead. The uuid keeps
+/// the value unique whatever the rest reads.
 pub fn run_id() -> &'static str {
     static RUN_ID: OnceLock<String> = OnceLock::new();
-    RUN_ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
+    RUN_ID.get_or_init(|| {
+        let pid = std::process::id();
+        let start = start_time(pid).unwrap_or(0);
+        format!(
+            "{}:{}:{pid}:{start}:{}",
+            this_host(),
+            this_boot(),
+            uuid::Uuid::new_v4()
+        )
+    })
+}
+
+/// How old a container must be before the sweep removes it when it cannot ask
+/// whether its run is alive: one created from another host sharing this
+/// engine, or one labelled before the label named its process. No run of the
+/// suite lasts an hour.
+const UNCHECKABLE_AFTER: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+
+/// A `/proc/sys/kernel` value with no `:` in it, or `unknown`.
+fn kernel_value(path: &str) -> String {
+    std::fs::read_to_string(path)
+        .map(|value| value.trim().to_string())
+        .ok()
+        .filter(|value| !value.is_empty() && !value.contains(':'))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// This host's name, as the kernel has it.
+pub fn this_host() -> String {
+    kernel_value("/proc/sys/kernel/hostname")
+}
+
+/// This boot's id, which changes on every reboot.
+pub fn this_boot() -> String {
+    kernel_value("/proc/sys/kernel/random/boot_id")
+}
+
+/// The start time of a process in clock ticks since boot, or `None` when
+/// `/proc` does not say.
+pub fn start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_start_time(&stat)
+}
+
+/// Field 22 of a `/proc/<pid>/stat` line. The command name in field 2 is in
+/// parentheses and may itself hold spaces or parentheses, so the fields are
+/// counted from the last `)`: what follows it starts at field 3.
+pub fn parse_start_time(stat: &str) -> Option<u64> {
+    let (_, rest) = stat.rsplit_once(')')?;
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// What the sweep makes of one container's [`LABEL_TEST`] value.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Owner {
+    /// This process: a scenario of this run created it.
+    ThisRun,
+    /// A process on this host that is still running.
+    Alive,
+    /// A process on this host that is gone, or one from an earlier boot.
+    Dead,
+    /// A value this host cannot check: another host's run, or a label from
+    /// before the label named its process.
+    Unknown,
+}
+
+/// Decide whose container a [`LABEL_TEST`] value names.
+///
+/// `alive` answers for a pid and start time on this host.
+pub fn owner_of(label: &str, alive: impl Fn(u32, u64) -> bool) -> Owner {
+    if label == run_id() {
+        return Owner::ThisRun;
+    }
+    let fields: Vec<&str> = label.splitn(5, ':').collect();
+    let [host, boot, pid, start, _uuid] = fields.as_slice() else {
+        return Owner::Unknown;
+    };
+    let (Ok(pid), Ok(start)) = (pid.parse::<u32>(), start.parse::<u64>()) else {
+        return Owner::Unknown;
+    };
+    if *host != this_host() {
+        return Owner::Unknown;
+    }
+    if *boot != this_boot() {
+        return Owner::Dead;
+    }
+    if alive(pid, start) {
+        Owner::Alive
+    } else {
+        Owner::Dead
+    }
+}
+
+/// Whether the process `pid`, started at `start`, is still running here.
+///
+/// The test processes run on this host even when the engine is rootless, so
+/// the pid in the label is one of this host's. A start time of 0 is a run that
+/// could not read its own, and falls back to the pid alone, as `common::db`
+/// does. A `/proc` entry that exists but cannot be read counts as alive:
+/// removing a live run's containers is the failure this exists to prevent,
+/// and a leftover is only a leftover.
+pub fn process_alive(pid: u32, start: u64) -> bool {
+    if start != 0 {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => return parse_start_time(&stat) == Some(start),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+            Err(_) => {}
+        }
+    }
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal 0 is the documented existence check and sends nothing.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    // `EPERM` is another user's process, which is alive; only `ESRCH` says the
+    // pid is free.
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 /// `DOCKER_HOST`, if it names anything.
@@ -116,12 +250,17 @@ pub fn raw_docker() -> Docker {
     .expect("a client for DOCKER_HOST")
 }
 
-/// Remove every container labelled [`LABEL_TEST`] with a value other than this
-/// run's: the leftovers of a crashed earlier run.
+/// Remove the leftovers of runs that are over: every container labelled
+/// [`LABEL_TEST`] whose creating process is no longer running — a crashed or
+/// killed earlier run — and one whose process cannot be checked once it is
+/// older than [`UNCHECKABLE_AFTER`].
 ///
 /// Containers of the *current* run are left alone, because scenarios run in
-/// parallel threads and one of them may have created its container already.
-async fn cleanup_stale_test_containers(engine: &BollardEngine) {
+/// parallel threads and one of them may have created its container already;
+/// so are those of every other run still alive on this host, because two runs
+/// of `tests/engine.rs` may share one engine socket and must not remove each
+/// other's containers mid-scenario (Bears 4q3t2).
+pub async fn cleanup_stale_test_containers(engine: &BollardEngine) {
     let stale = match engine.list_by_label(LABEL_TEST).await {
         Ok(containers) => containers,
         Err(error) => {
@@ -130,8 +269,15 @@ async fn cleanup_stale_test_containers(engine: &BollardEngine) {
         }
     };
 
+    let now = chrono::Utc::now();
     for container in stale {
-        if container.labels.get(LABEL_TEST).map(String::as_str) == Some(run_id()) {
+        let label = container.labels.get(LABEL_TEST).map_or("", String::as_str);
+        let remove = match owner_of(label, process_alive) {
+            Owner::ThisRun | Owner::Alive => false,
+            Owner::Dead => true,
+            Owner::Unknown => now - container.created > UNCHECKABLE_AFTER,
+        };
+        if !remove {
             continue;
         }
         if let Err(error) = engine.remove(&container.id, true).await {
@@ -177,13 +323,46 @@ pub async fn remove_image_if_present(image: &str) {
     }
 }
 
-/// The bootstrap scenario asserts that no container carries the probe's own
-/// `mars.probe` label once it is done, which no label can separate from a
-/// probe running beside it. It takes this lock so only one probe is ever in
-/// flight.
-pub fn probe_lock() -> &'static Mutex<()> {
-    static PROBE: Mutex<()> = Mutex::const_new(());
-    &PROBE
+/// Hold an engine-wide fact still across every run of the suite on this host.
+///
+/// Two scenarios assert something no label can scope to their own run:
+/// `bootstrap_engine_end_to_end` that no container carries the probe's
+/// `mars.probe` label once it is done, and `pull_absent_image` that an image
+/// it removed is absent. A second run on the same engine — another worktree —
+/// would break either from outside the process, so the lock is an exclusive
+/// `flock` on a file of the temporary directory named after `name` and the
+/// user, not a mutex: every call opens its own file description, so it
+/// serialises the threads of this process and every other process alike. It is
+/// released when the returned file is dropped, and by the kernel when a run is
+/// killed holding it.
+pub async fn host_lock(name: &str) -> std::fs::File {
+    // SAFETY: `getuid` cannot fail and has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let path = std::env::temp_dir().join(format!("mars-engine-test-{name}-{uid}.lock"));
+
+    tokio::task::spawn_blocking(move || {
+        use std::os::fd::AsRawFd;
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .expect("the engine test lock file opens");
+        // SAFETY: the descriptor is open for as long as `file` lives, and
+        // `flock` touches nothing but its lock.
+        let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        assert_eq!(
+            locked,
+            0,
+            "the engine test lock {} was not taken: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+        file
+    })
+    .await
+    .expect("the lock task does not panic")
 }
 
 /// `mars-test-<scenario>-<random>`: a container or network name no other run,

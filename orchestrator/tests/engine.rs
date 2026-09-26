@@ -60,10 +60,11 @@ use std::time::Duration;
 
 use bollard::query_parameters::InspectContainerOptions;
 use common::engine::{
-    PULL_TEST_IMAGE, TEST_IMAGE, WAIT_TIMEOUT, absolute, await_terminal_closed,
-    collect_terminal_output, connect_or_skip, ensure_test_image, plain_text, probe_lock,
-    raw_docker, remove_image_if_present, rw_bind, test_spec, try_collect_terminal_output, uid_of,
-    unique_name, with_cleanup, writable_tempdir,
+    LABEL_TEST, Owner, PULL_TEST_IMAGE, TEST_IMAGE, WAIT_TIMEOUT, absolute, await_terminal_closed,
+    cleanup_stale_test_containers, collect_terminal_output, connect_or_skip, ensure_test_image,
+    host_lock, owner_of, parse_start_time, plain_text, process_alive, raw_docker,
+    remove_image_if_present, run_id, rw_bind, start_time, test_spec, this_boot, this_host,
+    try_collect_terminal_output, uid_of, unique_name, with_cleanup, writable_tempdir,
 };
 use common::engine_contract::{ContractEnv, assert_engine_contract};
 use futures_util::future::join_all;
@@ -209,6 +210,10 @@ async fn pull_absent_image() {
     // without moving the engine the cleanup still needs.
     let engine = &engine;
 
+    // A second run of the suite on the same engine would pull the image back
+    // between the removal and the assertion that it is gone.
+    let _pull = host_lock("pull").await;
+
     remove_image_if_present(PULL_TEST_IMAGE).await;
     assert!(
         !engine
@@ -230,6 +235,135 @@ async fn pull_absent_image() {
             .expect("the engine answers"),
         "the image is absent after a successful pull"
     );
+}
+
+/// How the stale-container sweep reads a [`LABEL_TEST`] value (Bears 4q3t2):
+/// the process that created the container, checked by pid *and* start time so
+/// a reused pid reads as a different process. Needs no engine.
+#[test]
+fn the_sweep_reads_the_label_as_the_process_that_created_it() {
+    // Field 22 is counted from the last `)`, whatever the command name holds.
+    let stat = "4242 (a (weird) name) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987654 0 0";
+    assert_eq!(parse_start_time(stat), Some(987_654));
+    assert_eq!(parse_start_time("4242 (truncated) S 1 2"), None);
+
+    let host = this_host();
+    let boot = this_boot();
+    let label = |host: &str, boot: &str, pid: &str, start: &str| {
+        format!("{host}:{boot}:{pid}:{start}:{}", uuid::Uuid::new_v4())
+    };
+    let alive_only_7_at_70 = |pid: u32, start: u64| pid == 7 && start == 70;
+
+    assert_eq!(owner_of(run_id(), |_, _| false), Owner::ThisRun);
+    assert_eq!(
+        owner_of(&label(&host, &boot, "7", "70"), alive_only_7_at_70),
+        Owner::Alive
+    );
+    // The same pid started at another time is another process.
+    assert_eq!(
+        owner_of(&label(&host, &boot, "7", "71"), alive_only_7_at_70),
+        Owner::Dead
+    );
+    // A pid from before a reboot is gone whatever runs under it now.
+    assert_eq!(
+        owner_of(
+            &label(&host, "an-earlier-boot", "7", "70"),
+            alive_only_7_at_70
+        ),
+        Owner::Dead
+    );
+    // Another host's run, and a label from before the label named its
+    // process, cannot be checked from here.
+    assert_eq!(
+        owner_of(&label("another-host", &boot, "7", "70"), alive_only_7_at_70),
+        Owner::Unknown
+    );
+    assert_eq!(
+        owner_of(&uuid::Uuid::new_v4().to_string(), alive_only_7_at_70),
+        Owner::Unknown
+    );
+    assert_eq!(owner_of("", alive_only_7_at_70), Owner::Unknown);
+}
+
+/// [`process_alive`] against real processes: this one is alive at its own start
+/// time and not at any other, and a child that has exited and been reaped is
+/// dead.
+#[test]
+fn process_liveness_is_pid_and_start_time() {
+    let pid = std::process::id();
+    let start = start_time(pid).expect("this process reads its own start time");
+    assert!(process_alive(pid, start));
+    assert!(!process_alive(pid, start + 1), "a reused pid read as alive");
+
+    let exited = std::process::Command::new("true")
+        .spawn()
+        .expect("`true` spawns");
+    let exited_pid = exited.id();
+    let mut exited = exited;
+    exited.wait().expect("`true` is reaped");
+    assert!(
+        !process_alive(exited_pid, 1),
+        "a reaped child read as alive"
+    );
+}
+
+/// The sweep removes what a dead run left behind and keeps what a live run on
+/// the same engine is still using (Bears 4q3t2): a container labelled with a
+/// reaped child's pid goes, one labelled with this test's parent process —
+/// alive, and not this run — stays.
+#[tokio::test]
+async fn the_sweep_removes_a_dead_runs_containers_and_keeps_a_live_runs() {
+    let Some(engine) = connect_or_skip().await else {
+        return;
+    };
+    let engine = &engine;
+    ensure_test_image(engine).await;
+
+    with_cleanup(engine, |cleanup| async move {
+        let host = this_host();
+        let boot = this_boot();
+
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("`true` spawns");
+        let dead_pid = child.id();
+        child.wait().expect("`true` is reaped");
+        let dead_label = format!("{host}:{boot}:{dead_pid}:1:{}", uuid::Uuid::new_v4());
+
+        let parent = std::os::unix::process::parent_id();
+        let parent_start = start_time(parent).expect("the parent's start time reads");
+        let live_label = format!(
+            "{host}:{boot}:{parent}:{parent_start}:{}",
+            uuid::Uuid::new_v4()
+        );
+
+        let mut created = Vec::new();
+        for (scenario, label) in [("sweep-dead", dead_label), ("sweep-live", live_label)] {
+            let mut spec = test_spec(&unique_name(scenario), &["true"]);
+            spec.labels.insert(LABEL_TEST.to_string(), label);
+            let id = engine
+                .create(&spec)
+                .await
+                .expect("the container is created");
+            cleanup.container(&id);
+            created.push(id);
+        }
+        let [dead, live] = created.as_slice() else {
+            unreachable!("two containers were created");
+        };
+
+        cleanup_stale_test_containers(engine).await;
+
+        assert!(
+            matches!(engine.inspect(dead).await, Err(EngineError::NotFound(_))),
+            "the dead run's container survived the sweep"
+        );
+        engine
+            .inspect(live)
+            .await
+            .expect("the live run's container survived the sweep");
+    })
+    .await;
 }
 
 /// What a session image's entrypoint does for stdin, for a test command: make
@@ -1112,7 +1246,7 @@ async fn bootstrap_engine_end_to_end() {
     let engine = &engine;
     ensure_test_image(engine).await;
 
-    let _probe = probe_lock().lock().await;
+    let _probe = host_lock("probe").await;
 
     with_cleanup(engine, |cleanup| async move {
         let data = writable_tempdir();

@@ -784,6 +784,14 @@ async fn slow_client_does_not_block_others() {
         .ws(fixture.session_id, &fixture.user.access_token, 0)
         .await;
     expect_session_frame(&mut reader).await;
+    // Read by a task of its own from here on, and that is the whole point of
+    // the scenario, not a convenience: this is the socket that *does* answer
+    // its pings. Read only inside the waits below, it would answer none while
+    // the scenario waits for the subscriptions and commits two hundred rows —
+    // on a loaded runner more than the 600 ms two unanswered pings take — and
+    // the server would rightly close it with 1001, the close this scenario
+    // asserts only for the other socket.
+    let mut reader = PolledSocket::spawn(reader);
 
     tokio::time::timeout(WITHIN, async {
         while app.state.fanout.session_subscribers(fixture.session_id) < 2 {
@@ -796,38 +804,37 @@ async fn slow_client_does_not_block_others() {
     append_session_events(&app.pool, fixture.session_id, EVENTS as usize).await;
 
     assert_eq!(
-        collect_ws_events(&mut reader, EVENTS, WITHIN).await,
+        reader.events_until(EVENTS, WITHIN).await,
         (1..=EVENTS).collect::<Vec<i64>>(),
         "the reading socket receives every event, in order, within five seconds",
     );
 
     // The server ends the socket that answers nothing, and the handler drops
-    // its fan-out receiver as it goes. Two ping ticks close it (400 ms with
-    // the test timings) and the receiver is dropped before the close linger,
-    // so five seconds is a wide margin around a sub-second event.
-    //
-    // The reading socket is polled throughout the wait, because *not* reading
-    // is precisely what ends the other one: a bare sleep here would close both
-    // and prove nothing.
+    // its fan-out receiver as it goes. Two unanswered pings close it (600 ms
+    // with the test timings: a ping on the first two ticks, the close on the
+    // third) and the receiver is dropped before the close linger, so five
+    // seconds is a wide margin around a sub-second event. The reading socket
+    // keeps answering throughout, from its own task.
     tokio::time::timeout(WITHIN, async {
         while app.state.fanout.session_subscribers(fixture.session_id) != 1 {
-            if let Ok(message) =
-                tokio::time::timeout(Duration::from_millis(20), reader.receive_message()).await
-            {
-                match message {
-                    WsMessage::Ping(_) | WsMessage::Pong(_) => {}
-                    other => panic!("the reading socket received {other:?}"),
-                }
-            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .expect("the server ends the socket that never reads");
 
+    // Nothing reached the reading socket meanwhile — no close, no error: a
+    // close would have been forwarded, and would be what `events_until`
+    // panics on below.
+    match reader.messages.try_recv() {
+        Err(mpsc::error::TryRecvError::Empty) => {}
+        other => panic!("the reading socket received {other:?}"),
+    }
+
     // And the socket that did read is still there and still live.
     append_session_events(&app.pool, fixture.session_id, 1).await;
     assert_eq!(
-        collect_ws_events(&mut reader, EVENTS + 1, WITHIN).await,
+        reader.events_until(EVENTS + 1, WITHIN).await,
         vec![EVENTS + 1],
         "the reading socket is unaffected by the one the server ended",
     );

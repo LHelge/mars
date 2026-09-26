@@ -42,7 +42,7 @@ The implementer and the reviewer are ephemeral: each run takes one task and ends
 
 The fourth queue, `merge`, needs no agent. It is an **auto-merge** state: Mars itself merges each approved task that arrives there into the default branch and closes the task. A merge that conflicts sends the task back to `ready` with the conflicting paths. So once that credential is stored, a task you put in `ready` travels to `done` by itself, and the merged work waits on the default branch until someone pushes it ([Branches and merging](help:branches)).
 
-Each profile is an ordinary profile with a system prompt written for its role. That copy belongs to your project, so you can change it freely. Every starter profile is also offered under **Start from** when you add a profile, which is how a project created before one of them existed gets it. So is a **merger** profile, for a project that turns auto-merge off and wants an agent in that seat. [Agent profiles](help:profiles) covers what a profile decides, and [Task flow](help:task-flow) shows how a task moves between these roles.
+Each profile is an ordinary profile with a system prompt written for its role. That copy belongs to your project, so you can change it freely. Every starter profile is also offered under **Start from** when you add a profile, which is how a project created before one of them existed gets it. So is a **merger** profile, for a project that turns auto-merge off and wants an agent in that seat, and a **resolver**, for resolving a merge that conflicted. [Agent profiles](help:profiles) covers what a profile decides, and [Task flow](help:task-flow) shows how a task moves between these roles.
 
 ### Working with others
 

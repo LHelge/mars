@@ -4,6 +4,8 @@ A new project starts with four profiles. `claude`, the default, is a conversatio
 
 Two fields decide an agent's role: its **served states** and its **system prompt**. A planner serves `backlog` and hands tasks on to `ready`. A reviewer serves `review` and sends each task either on to be merged or back to `ready`. A state doesn't need a profile at all when Mars does its work: in a new project nobody serves `merge`, because it is an auto-merge state ([Task flow](help:task-flow)).
 
+Three more templates are offered under **Start from** when you add a profile, and a new project doesn't get them. `merger` serves `merge`, for a project that turns auto-merge off. `tech-debt-scanner` runs on a schedule ([Automation](help:automation)). `resolver` is for a merge that conflicted. It is conversational, serves no state and has no git tools. Launch it from the branch the merge was going into, and name the branch or hand-off to bring in, its commit and the conflicting paths in the first message. It fetches that work, merges it into its own branch, resolves the conflicts, runs the project's checks and commits. It never merges into the target and never pushes: it tells you its session branch is ready, and you merge that branch yourself ([Branches and merging](help:branches)). When a conflict needs a decision it can't make from the code, it asks you.
+
 ### Kind: conversational or ephemeral
 
 | | Conversational | Ephemeral |

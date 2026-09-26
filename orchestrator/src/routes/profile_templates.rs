@@ -5,7 +5,8 @@
 //! editor can pre-fill a new profile from a role: the way the seeded roles
 //! reach a project that predates their seeding (ADR 0038, 0051), the way a
 //! deleted one comes back, and the only way the roles project creation does
-//! *not* seed — the scheduled `tech-debt-scanner` — reach a project at all.
+//! *not* seed — the `merger`, the scheduled `tech-debt-scanner` and the
+//! `resolver` — reach a project at all.
 //! Creating the profile is the ordinary `POST /projects/{pid}/profiles`; there
 //! is no endpoint that instantiates a template, and the frontend is what
 //! checks that a template's served states exist in the target project — an

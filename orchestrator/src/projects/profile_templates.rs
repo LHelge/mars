@@ -22,8 +22,7 @@
 //! **Seeded is not the same as offered.** [`profile_templates`] is what
 //! `GET /profile-templates` serves, and [`seeded_profile_templates`] — the
 //! ones carrying [`ProfileTemplate::seeded`] — is what project creation
-//! writes. Two templates are offered and not seeded, for two different
-//! reasons. The `merger` would serve a state no task waits in for an agent:
+//! writes. Three templates are offered and not seeded. The `merger` would serve a state no task waits in for an agent:
 //! the seeded `merge` state merges by itself, and a project that turns
 //! `auto_merge` off and wants an agent there creates one from the template
 //! (ADR 0045). The `tech-debt-scanner` is the first scheduled template
@@ -31,7 +30,10 @@
 //! cadence nobody asked for — it runs whether or not there is any work — so
 //! turning one on is a person's decision and not a side effect of creating a
 //! project (ADR 0038). Auto-launch is different in kind: it only ever starts
-//! work somebody queued (ADR 0051).
+//! work somebody queued (ADR 0051). The `resolver` is a conversational helper
+//! a person launches from the target of a merge that conflicted; it serves no
+//! queue and takes no task, so a copy in every project would only be a row
+//! nobody asked for.
 //!
 //! **Copied, not referenced.** [`create_project`](super::create::create_project)
 //! writes each prompt into the project's own `agent_profiles` row. From that
@@ -52,8 +54,8 @@
 //! else: no product name of any task tracker, because the tracker an agent is
 //! told to use is the one its session is connected to.
 //!
-//! The three roles that build or check code — implementer, reviewer, merger —
-//! also carry one paragraph about the session container: it is disposable and
+//! The four roles that build or check code — implementer, reviewer, merger,
+//! resolver — also carry one paragraph about the session container: it is disposable and
 //! the agent's own, a missing toolchain is installed rather than reported as a
 //! blocker, and there is no root, so an install is user-level and anything
 //! needing root belongs in the image (`ARCHITECTURE.md`, "Session container
@@ -144,7 +146,8 @@ impl ProfileTemplate {
 
 /// Every template, in the order of the table of `SPEC.md`, "Role profile
 /// templates": `claude`, the default, first; then the four queue roles, in the
-/// order a task travels through them; then the scheduled role. That is also
+/// order a task travels through them; then the scheduled role; then the
+/// resolver, a person's helper for one conflicting merge. That is also
 /// the order the seeded ones are written in, so `claude` is the first row
 /// `GET /projects/{pid}/profiles` of a new project returns.
 ///
@@ -242,6 +245,24 @@ pub fn profile_templates() -> &'static [ProfileTemplate] {
             system_prompt: include_str!("templates/tech-debt-scanner.md"),
             schedule_cron: Some("0 4 * * *"),
             schedule_prompt: Some(include_str!("templates/tech-debt-scanner.schedule.md")),
+        },
+        // A person's helper for one conflicting merge, launched from the
+        // merge's target with a message naming the source. Conversational
+        // because what it cannot decide is asked in the conversation; no
+        // served state, since it takes no task; no git tool, because it
+        // fetches and merges inside its own clone and a person merges its
+        // branch into the target.
+        ProfileTemplate {
+            name: "resolver",
+            kind: ProfileKind::Conversational,
+            serves_states: &[],
+            mcp_tools: &[],
+            is_default: false,
+            auto_launch: false,
+            seeded: false,
+            system_prompt: include_str!("templates/resolver.md"),
+            schedule_cron: None,
+            schedule_prompt: None,
         },
     ];
 
@@ -388,6 +409,22 @@ mod tests {
     }
 
     #[test]
+    fn the_resolver_talks_to_a_person_and_asks_for_nothing() {
+        let resolver = profile_templates()
+            .iter()
+            .find(|t| t.name == "resolver")
+            .expect("the resolver is offered");
+
+        assert_eq!(resolver.kind, ProfileKind::Conversational);
+        assert!(resolver.serves_states.is_empty());
+        assert!(resolver.mcp_tools.is_empty());
+        assert!(!resolver.is_default);
+        assert!(!resolver.auto_launch);
+        assert!(!resolver.seeded);
+        assert_eq!(resolver.schedule_cron, None);
+    }
+
+    #[test]
     fn exactly_one_template_is_the_default() {
         let defaults: Vec<&str> = profile_templates()
             .iter()
@@ -399,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn the_templates_are_the_default_the_four_roles_in_board_order_and_the_scanner() {
+    fn the_templates_are_the_default_the_four_roles_in_board_order_the_scanner_and_the_resolver() {
         let roles: Vec<(&str, &[&str])> = profile_templates()
             .iter()
             .map(|t| (t.name, t.serves_states))
@@ -414,6 +451,7 @@ mod tests {
                 ("reviewer", &["review"][..]),
                 ("merger", &["merge"][..]),
                 ("tech-debt-scanner", &["ready"][..]),
+                ("resolver", &[][..]),
             ]
         );
     }

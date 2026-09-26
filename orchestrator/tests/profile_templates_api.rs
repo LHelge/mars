@@ -46,15 +46,20 @@ const TEMPLATE_FIELDS: [&str; 10] = [
 /// Every role in the order of the table of `SPEC.md`, "Role profile
 /// templates", which is the order they are served in: `claude`, the default,
 /// then the four queue roles — the first three of them seeded — then the
-/// offered-only scanner.
-const ROLES: [&str; 6] = [
+/// offered-only scanner and resolver.
+const ROLES: [&str; 7] = [
     "claude",
     "planner",
     "implementer",
     "reviewer",
     "merger",
     "tech-debt-scanner",
+    "resolver",
 ];
+
+/// The conversational helper for one conflicting merge, which serves no
+/// queue and which project creation does not seed.
+const RESOLVER: &str = "resolver";
 
 /// The scheduled template, which project creation does not seed.
 const SCANNER: &str = "tech-debt-scanner";
@@ -148,13 +153,14 @@ async fn the_templates_are_served_in_the_documented_shape_and_order() {
         );
 
         // Every role serves a queue; the default serves none, so it never
-        // sees another role's work (ADR 0051).
+        // sees another role's work (ADR 0051), and neither does the resolver,
+        // which is launched for one merge and takes no task.
         assert_eq!(
             template["serves_states"]
                 .as_array()
                 .expect("serves_states is an array")
                 .is_empty(),
-            name == "claude",
+            name == "claude" || name == RESOLVER,
             "`{name}`: served states",
         );
 
@@ -182,7 +188,7 @@ async fn the_templates_are_served_in_the_documented_shape_and_order() {
 
     // The schedule pair: null on every role that is not scheduled, both set
     // on the scanner, whose expression fires once a day.
-    for template in &templates[..5] {
+    for template in templates.iter().filter(|t| t["name"] != json!(SCANNER)) {
         assert_eq!(template["schedule_cron"], json!(null));
         assert_eq!(template["schedule_prompt"], json!(null));
     }
@@ -198,6 +204,16 @@ async fn the_templates_are_served_in_the_documented_shape_and_order() {
     // Filing a task needs no git tool; the task tools are served to every
     // session (`SPEC.md`, "MCP tool contracts").
     assert_eq!(scanner["mcp_tools"], json!([]));
+
+    // The resolver fetches and merges inside its own clone and a person
+    // merges its branch, so it asks for no git tool and serves no queue; it
+    // talks to that person about what it cannot decide.
+    let resolver = &templates[6];
+    assert_eq!(resolver["name"], json!(RESOLVER));
+    assert_eq!(resolver["kind"], json!("conversational"));
+    assert_eq!(resolver["serves_states"], json!([]));
+    assert_eq!(resolver["mcp_tools"], json!([]));
+    assert_eq!(resolver["auto_launch"], json!(false));
 
     // Informational, and exactly one of them (`SPEC.md`, "Agent profiles").
     let defaults: Vec<&str> = templates
@@ -375,8 +391,53 @@ async fn an_auto_launched_template_needs_the_credential_the_endpoint_asks_for() 
     assert_eq!(created["serves_states"], json!(["ready"]));
 }
 
+/// The resolver is offered only, so a project creates it under its template
+/// name, and needs no credential: it is conversational and launches nothing
+/// by itself.
 #[tokio::test]
-async fn the_merger_and_the_scheduled_template_are_not_seeded_into_a_new_project() {
+async fn the_resolver_template_is_a_body_the_profiles_endpoint_accepts() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "barbara").await;
+
+    let response = app
+        .post_as(&user, "/api/projects")
+        .json(&json!({ "name": "mars", "remote_url": TEST_REMOTE }))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    let pid: Uuid = response.json::<Value>()["id"]
+        .as_str()
+        .expect("a project carries an id")
+        .parse()
+        .expect("the id is a uuid");
+
+    let resolver = templates(&app, &user)
+        .await
+        .into_iter()
+        .find(|t| t["name"] == json!(RESOLVER))
+        .expect("the resolver is offered");
+
+    let mut body = resolver.clone();
+    body.as_object_mut()
+        .expect("a template is an object")
+        .remove("is_default");
+
+    let created = app
+        .post_as(&user, &format!("/api/projects/{pid}/profiles"))
+        .json(&body)
+        .await;
+
+    created.assert_status(StatusCode::CREATED);
+    let created = created.json::<Value>();
+    assert_eq!(created["name"], json!(RESOLVER));
+    assert_eq!(created["kind"], json!("conversational"));
+    assert_eq!(created["serves_states"], json!([]));
+    assert_eq!(created["mcp_tools"], json!([]));
+    assert_eq!(created["system_prompt"], resolver["system_prompt"]);
+    assert_eq!(created["is_default"], json!(false));
+}
+
+#[tokio::test]
+async fn the_merger_the_scheduled_template_and_the_resolver_are_not_seeded_into_a_new_project() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "katherine").await;
 
@@ -408,7 +469,8 @@ async fn the_merger_and_the_scheduled_template_are_not_seeded_into_a_new_project
         .collect();
 
     // A schedule spends money on a cadence nobody asked for (ADR 0038), and
-    // the seeded `merge` state is merged by the orchestrator (ADR 0045), so
+    // the seeded `merge` state is merged by the orchestrator (ADR 0045), and
+    // the resolver is launched by a person for one conflicting merge, so
     // creation seeds the default and the three roles of the board and
     // nothing else (ADR 0051).
     assert_eq!(names, SEEDED);

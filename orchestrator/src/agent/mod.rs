@@ -89,7 +89,11 @@ pub enum LaunchMode {
 ///
 /// The launcher fills it from the agent profile (`model`, `system_prompt`,
 /// `partial_messages`; `docs/data-model.md`, `agent_profiles`) and the session
-/// (the mode and, on a resume, the `cli_session_id`). Credentials are not here:
+/// (the mode and, on a resume, the `cli_session_id`). `system_prompt` is the
+/// session's standing instructions already composed: Mars's session preamble
+/// followed by the profile's own prompt
+/// ([`crate::session::session_system_prompt`]), so a backend passes it on as
+/// it is and never adds to it. Credentials are not here:
 /// they are injected into the container's environment like any other secret
 /// and never reach a command line (rule 3).
 #[derive(Debug, Clone, PartialEq, Eq)]

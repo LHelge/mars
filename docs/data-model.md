@@ -188,7 +188,7 @@ Per-project configuration of one kind of agent. Every project gets four profiles
 | `kind` | `profile_kind` | NOT NULL DEFAULT `'conversational'` | |
 | `backend` | `agent_backend` | NOT NULL DEFAULT `'claude'` | |
 | `model` | `TEXT` | NULL | Passed to the CLI as `--model` when set; CLI default otherwise. |
-| `system_prompt` | `TEXT` | NULL | Appended on every launch, including resumes. |
+| `system_prompt` | `TEXT` | NULL | Appended on every launch, including resumes, after the Mars session preamble (`SPEC.md`, "Session preamble"), which is not stored. |
 | `permission_mode` | `TEXT` | NOT NULL DEFAULT `'bypass'` | Adapter-specific string. v1 accepts only `bypass`. |
 | `image` | `TEXT` | NOT NULL | Container image reference for sessions of this profile. |
 | `runtime` | `TEXT` | NULL | Container runtime name (`runsc`, `kata`), passed as `HostConfig.Runtime`. NULL means engine default. |

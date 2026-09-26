@@ -46,7 +46,7 @@ use mars_orchestrator::repositories::{
 use mars_orchestrator::secrets::{SealedSecret, SecretIdentity};
 use mars_orchestrator::session::{
     LaunchMode, Launcher, McpToken, Phase, SessionDirs, initial_token, no_agent_credential_warning,
-    write_mcp_json,
+    session_preamble, write_mcp_json,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -276,6 +276,13 @@ async fn warnings(app: &TestApp, session_id: Uuid) -> Vec<String> {
 
 /// The container specification the engine was asked for, which must be exactly
 /// one.
+/// The value the launch command passes with `--append-system-prompt`, if any.
+fn appended_system_prompt(cmd: &[String]) -> Option<&str> {
+    cmd.windows(2)
+        .find(|pair| pair[0] == "--append-system-prompt")
+        .map(|pair| pair[1].as_str())
+}
+
 fn recorded_spec(app: &TestApp) -> ContainerSpec {
     let mut specs = app.engine().specs();
     assert_eq!(specs.len(), 1, "one launch creates one container");
@@ -429,6 +436,12 @@ async fn the_recorded_spec_is_the_documented_table() {
         !spec.cmd.iter().any(|arg| arg == "--resume"),
         "a fresh launch does not resume: {:?}",
         spec.cmd,
+    );
+    // The fixture's profile has no prompt, so the session preamble is sent
+    // alone (`SPEC.md`, "Session preamble").
+    assert_eq!(
+        appended_system_prompt(&spec.cmd),
+        Some(session_preamble(session_id).as_str()),
     );
 
     // The fixed environment, in the documented order, with no `MARS_TASK_ID`
@@ -883,6 +896,48 @@ async fn a_resume_rotates_the_token_skips_git_and_resumes_the_cli() {
             .any(|pair| pair == ["--resume".to_string(), "fake-cli-session-id".to_string()]),
         "{:?}",
         spec.cmd,
+    );
+    // A resume is told what a fresh launch is: the preamble is composed on
+    // every start, not only the first.
+    assert_eq!(
+        appended_system_prompt(&spec.cmd),
+        Some(session_preamble(fixture.session.id).as_str()),
+    );
+}
+
+#[tokio::test]
+async fn an_ephemeral_launch_sends_the_preamble_before_the_profiles_prompt() {
+    let app = TestApp::spawn().await;
+    let mut fixture = Fixture::with(&app, ProfileKind::Ephemeral, &[], None).await;
+    // The profile's prompt, which the fixture leaves unset; no interface sets
+    // one on an existing row short of a full profile update.
+    sqlx::query("UPDATE agent_profiles SET system_prompt = $2 WHERE id = $1")
+        .bind(fixture.profile.id)
+        .bind("You are the planner of this project.\n")
+        .execute(&app.pool)
+        .await
+        .expect("the profile's prompt is set");
+    let token = fixture.token.take().expect("the launch token is used once");
+
+    launch(
+        &app,
+        fixture.session.id,
+        LaunchMode::Fresh {
+            token,
+            prompt: Some("Do the thing.".to_string()),
+        },
+    )
+    .await;
+
+    let spec = recorded_spec(&app);
+    let expected = format!(
+        "{}\n\nYou are the planner of this project.\n",
+        session_preamble(fixture.session.id),
+    );
+    assert_eq!(appended_system_prompt(&spec.cmd), Some(expected.as_str()),);
+    assert!(
+        expected.contains(&format!("`{}`", fixture.branch())),
+        "the preamble names the session's own branch",
     );
 }
 

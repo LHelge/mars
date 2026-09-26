@@ -60,3 +60,4 @@ Format: `NNNN-short-title.md`, status one of `accepted`, `superseded`.
 | [0052](0052-dispatcher-waits-for-a-task-author-s-work.md) | The dispatcher waits for a task's author session to land its commits on the default branch; not a prompt at session end, and not holding auto-merge | accepted |
 | [0053](0053-revert-integration-heads-never-reset-users-only.md) | Roll an integration head back by a revert commit, never a reset, and only for users; not over MCP, and no general git editor | accepted |
 | [0054](0054-session-clones-borrow-through-shared-not-reference.md) | A session clone borrows through `--shared` alone, recording the mirror as `DATA_DIR` spells it; not canonicalised paths, and not a test that tolerates a resolved second line | accepted |
+| [0055](0055-a-mars-owned-session-preamble-states-the-git-flow.md) | A Mars-owned session preamble states the git flow at every launch; not a paragraph in every template, and not both | accepted |

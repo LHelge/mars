@@ -94,7 +94,7 @@ use crate::repositories::{ProjectRepository, SessionRepository, Transition, User
 use crate::secrets::{LaunchScope, ResolvedSecrets, resolve_for_launch};
 use crate::session::{
     LaunchGuard, McpToken, OwnerContext, OwnerRx, Phase, SessionDirs, SessionOwner, SubmitResult,
-    rotate_token, write_mcp_json,
+    rotate_token, session_system_prompt, write_mcp_json,
 };
 
 /// How recent a mirror fetch has to be for a fresh launch to skip its own
@@ -834,7 +834,13 @@ fn launch_command(
     let ctx = LaunchContext {
         mode,
         model: profile.model.clone(),
-        system_prompt: profile.system_prompt.clone(),
+        // The one place a launch's system prompt is composed, for every backend
+        // and every launch path: Mars's git preamble, then the profile's own
+        // prompt (`SPEC.md`, "Session preamble"; ADR 0055).
+        system_prompt: Some(session_system_prompt(
+            session.id,
+            profile.system_prompt.as_deref(),
+        )),
         partial_messages: profile.partial_messages,
         mcp_config_path: DEFAULT_MCP_CONFIG_PATH.to_string(),
     };

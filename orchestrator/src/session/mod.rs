@@ -45,6 +45,10 @@
 //! text as the first queued input or as the head of the `-p` prompt
 //! (`SPEC.md`, "Sessions").
 //!
+//! [`preamble`] is the fixed, Mars-owned paragraph on the session's git flow
+//! that [`launcher`] puts in front of the profile's system prompt on every
+//! launch (`SPEC.md`, "Session preamble"; ADR 0055).
+//!
 //! [`recovery`] is what runs once at startup, before anything serves: it adopts
 //! the containers a restart left running, parks the sessions whose container is
 //! gone and fails the ones the restart caught mid-creation
@@ -55,6 +59,7 @@ pub mod create;
 pub mod idle_reaper;
 pub mod launcher;
 pub mod owner;
+pub mod preamble;
 pub mod prepare;
 pub mod recovery;
 pub mod registry;
@@ -75,6 +80,7 @@ pub use owner::{
     COST_ACCOUNTING, CostAccounting, MARS_MCP_SERVER, OwnerContext, ResultSummary, SessionOwner,
     StopReason, TAIL_POLL_INTERVAL,
 };
+pub use preamble::{SESSION_PREAMBLE, session_preamble, session_system_prompt};
 pub use prepare::{SessionDirs, initial_token, rotate_token, write_mcp_json};
 pub use recovery::{CREATING_REASON, MISSING_CONTAINER_REASON, RecoveryReport, recover};
 pub use registry::{

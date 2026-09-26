@@ -785,7 +785,7 @@ export function ProfileEditor({
           <FieldShell
             label="System prompt"
             name="profile-system-prompt"
-            hint="Appended to the CLI's own system prompt on every launch, a parked session's resume included. Describe this agent's job here: repository conventions come from its CLAUDE.md, and skills from .claude/skills."
+            hint="Appended to the CLI's own system prompt on every launch, a parked session's resume included, after a fixed note from Mars on the session's git setup. Describe this agent's job here: repository conventions come from its CLAUDE.md, and skills from .claude/skills."
             help="instructions"
           >
             {(control) => (

@@ -5,9 +5,10 @@ An agent starts every session with two kinds of instruction. **Standing instruct
 These are loaded every time the agent CLI starts, in a new session and whenever a parked session resumes:
 
 1. **The CLI's own system prompt**, which Mars doesn't change.
-2. **The profile's system prompt**, appended to it. It is read again on every start, so editing a profile also changes its parked sessions the next time they wake. A session that is running keeps the prompt it started with.
-3. **The repository's own instructions**, from the session's checkout: its `CLAUDE.md`, its `.mcp.json` and its [skills](help:skills). Each session sees them as they are on the branch it started from. What earlier sessions of the project saved to the CLI's memory is loaded too.
-4. **Mars's tool instructions**. They tell the agent that Mars is the task tracker for this session. If the repository's instructions name another tracker, the agent follows that workflow with Mars's tools instead and never writes task files into the repository.
+2. **A fixed note from Mars on the session's git setup**, appended to it. It tells the agent that its working tree is a clone on its own `session/<id>` branch, that committing there is all it has to do because Mars fetches the branch back by itself, that there is no push from the container, and that getting work onto `main` or upstream is Mars's job, done through the [task flow](help:task-flow), a git tool or you. It is the same for every profile and can't be edited.
+3. **The profile's system prompt**, after that note. It is read again on every start, so editing a profile also changes its parked sessions the next time they wake. A session that is running keeps the prompt it started with.
+4. **The repository's own instructions**, from the session's checkout: its `CLAUDE.md`, its `.mcp.json` and its [skills](help:skills). Each session sees them as they are on the branch it started from. What earlier sessions of the project saved to the CLI's memory is loaded too.
+5. **Mars's tool instructions**. They tell the agent that Mars is the task tracker for this session. If the repository's instructions name another tracker, the agent follows that workflow with Mars's tools instead and never writes task files into the repository.
 
 ### The first message
 

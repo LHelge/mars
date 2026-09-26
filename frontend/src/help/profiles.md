@@ -61,7 +61,7 @@ These are the names of any [secrets](help:secrets) the agent's job needs as envi
 
 ### System prompt
 
-The system prompt is added to the agent CLI's own system prompt on every launch. Use it to describe the agent's job: its role, which tools to use and how to hand work on. How work is done in this repository comes from the repository itself: its `CLAUDE.md`, its `.mcp.json` and its [skills](help:skills). Keep conventions, test commands and style rules there, where every profile picks them up. [How a session is instructed](help:instructions) shows how the system prompt, the launch message and a task combine.
+The system prompt is added to the agent CLI's own system prompt on every launch, after a fixed note from Mars on the session's git setup that every profile gets and nobody edits. Use it to describe the agent's job: its role, which tools to use and how to hand work on. How work is done in this repository comes from the repository itself: its `CLAUDE.md`, its `.mcp.json` and its [skills](help:skills). Keep conventions, test commands and style rules there, where every profile picks them up. [How a session is instructed](help:instructions) shows how the system prompt, the launch message and a task combine.
 
 A starter profile's prompt is your project's own copy, so editing it changes no other project. The starter prompts name the project's states, such as `ready` and `review`, by name. If you rename one of those states, the profile still serves it, but edit the prompt to use the new name.
 

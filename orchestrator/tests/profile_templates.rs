@@ -15,10 +15,16 @@
 //! agent to use the task tools of its own session, and a product name in it
 //! would send the agent looking for something else.
 //!
+//! The session preamble every launch puts in front of a profile's prompt
+//! (`SPEC.md`, "Session preamble") lives beside the templates and is held to
+//! the same two rules: its file is the document's block byte for byte, and it
+//! names no tracker product.
+//!
 //! No database, no container engine: it reads a file and compares strings.
 
 use mars_orchestrator::models::ProfileKind;
 use mars_orchestrator::projects::profile_templates;
+use mars_orchestrator::session::SESSION_PREAMBLE;
 
 // The one deny-list, shared with `tests/mcp_descriptions.rs`: the MCP
 // instructions, the tool descriptions and these prompts are all agent-facing
@@ -246,6 +252,55 @@ fn the_table_says_what_the_templates_say() {
             if template.seeded { "yes" } else { "no" },
             "`{}`: whether project creation seeds it",
             template.name,
+        );
+    }
+}
+
+/// The heading the session preamble lives under.
+const PREAMBLE_SECTION: &str = "## Session preamble";
+
+/// The one fenced block of `SPEC.md`, "Session preamble", as the text its file
+/// is supposed to hold — read the way [`documented_blocks`] reads a template's.
+fn documented_preamble() -> String {
+    let body = SPEC
+        .split_once(PREAMBLE_SECTION)
+        .expect("SPEC.md has a \"Session preamble\" section")
+        .1;
+    let body = body.split_once("\n## ").map_or(body, |(before, _)| before);
+    let lines: Vec<&str> = body.lines().collect();
+
+    let open = lines
+        .iter()
+        .position(|line| *line == "```text")
+        .expect("the preamble has a ```text block");
+    let close = open
+        + 1
+        + lines[open + 1..]
+            .iter()
+            .position(|line| *line == "```")
+            .expect("the preamble's block is closed");
+
+    let mut text = lines[open + 1..close].join("\n");
+    text.push('\n');
+
+    text
+}
+
+#[test]
+fn the_session_preamble_matches_the_document_byte_for_byte() {
+    assert_eq!(
+        SESSION_PREAMBLE,
+        documented_preamble(),
+        "the preamble file and SPEC.md disagree; the document wins",
+    );
+}
+
+#[test]
+fn the_session_preamble_names_no_task_tracker_product() {
+    if let Some(product) = names_a_tracker_product(SESSION_PREAMBLE) {
+        panic!(
+            "the session preamble names {product}; it is about git and is sent \
+             to every session of every project",
         );
     }
 }

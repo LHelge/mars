@@ -39,7 +39,11 @@
 //! writes each prompt into the project's own `agent_profiles` row. From that
 //! moment the text is the project's: editing a profile edits nothing else, and
 //! upgrading Mars changes no existing project's agents. The templates here are
-//! only what a *new* project starts from.
+//! only what a *new* project starts from. That is why the one thing every
+//! session must be told whatever its profile — how its git works — is not in
+//! any template: it is the session preamble, `templates/preamble.md`, which the
+//! launcher puts in front of the profile's prompt on every launch
+//! ([`crate::session::preamble`]; ADR 0055).
 //!
 //! The prompts live beside this file as `templates/<name>.md` — and a
 //! scheduled template's run prompt as `templates/<name>.schedule.md` — and are
@@ -101,7 +105,8 @@ pub struct ProfileTemplate {
     /// the orchestrator serves, and a scheduled role are offered only (ADR
     /// 0038, 0045, 0051).
     pub seeded: bool,
-    /// The system prompt, appended to every launch of the profile.
+    /// The system prompt, sent after the session preamble on every launch of
+    /// the profile ([`crate::session::session_system_prompt`]).
     pub system_prompt: &'static str,
     /// The UTC 5-field cron expression a scheduled role runs on, or `None` for
     /// a role a person launches.

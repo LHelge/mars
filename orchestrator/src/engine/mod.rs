@@ -184,6 +184,8 @@ pub trait ContainerEngine: Send + Sync {
     ///
     /// A missing container is [`EngineError::NotFound`], which is the answer
     /// recovery reads as "the container is gone" and parks the session on.
+    /// No state name the engine reports can fail it, and a container in its
+    /// stop grace period is [`ContainerState::Running`].
     async fn inspect(&self, id: &ContainerId) -> Result<ContainerInfo, EngineError>;
 
     /// Wait for the container to exit and report how it ended.
@@ -197,7 +199,11 @@ pub trait ContainerEngine: Send + Sync {
     /// Every container carrying the label, running or not. Recovery lists
     /// [`LABEL_SESSION_ID`] to find the containers it owns.
     ///
-    /// A key nothing carries is an empty list, not an error.
+    /// A key nothing carries is an empty list, not an error. No state name any
+    /// container on the engine is in can fail the listing — Podman 4 reports
+    /// `stopping` for a whole stop grace period — and a container in its grace
+    /// period is listed as running (`ARCHITECTURE.md`, "Engine adapter", the
+    /// list row).
     async fn list_by_label(&self, label_key: &str) -> Result<Vec<ContainerSummary>, EngineError>;
 
     /// A writer to the stdin of the container's main process.

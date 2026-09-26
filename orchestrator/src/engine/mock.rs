@@ -33,8 +33,12 @@
 //! semantics") — unless the container's command traps the signal, in which case
 //! the mock exits it on the trap's code, because the contract's own
 //! signal-delivery scenario is a command that traps `INT` and exits on a code
-//! only a delivered signal could have produced. A session's command
-//! (`claude`) traps nothing, so nothing a session test drives changes.
+//! only a delivered signal could have produced. A command that ignores `TERM`
+//! (`trap "" TERM`) is stopped the way an engine stops it: the stop lasts the
+//! whole grace period, the container running throughout, and ends in the hard
+//! kill's [`KILL_EXIT_CODE`] — the one wait in the mock that takes real time,
+//! because the contract's grace-period scenario lists during it. A session's
+//! command (`claude`) traps nothing, so nothing a session test drives changes.
 //!
 //! **Locking.** One `Mutex` guards the whole table and is never held across an
 //! await: every operation takes what it needs, drops the guard, and only then
@@ -81,6 +85,10 @@ use crate::prelude::*;
 /// `SIGTERM`, which the CLI exits 143 on. The mock uses the same code, so a
 /// test that stops a container sees what production would record.
 pub const STOP_EXIT_CODE: i64 = 143;
+
+/// The exit code [`ContainerEngine::stop`] leaves behind for a command that
+/// ignores `TERM`: the engine's `SIGKILL` once the grace period is over.
+pub const KILL_EXIT_CODE: i64 = 137;
 
 /// The exit code [`MockExecSession::close`] reports.
 ///
@@ -130,10 +138,10 @@ struct MockContainer {
     /// The networks [`ContainerEngine::connect_network`] attached, beyond the
     /// one the container was created on.
     connections: Vec<String>,
-    /// The exit codes the container's command traps, by signal name, read off
-    /// the spec's `cmd` by [`trap_exit_codes`]. Empty for a command that traps
+    /// What the container's command does with a signal, by signal name, read
+    /// off the spec's `cmd` by [`traps_of`]. Empty for a command that traps
     /// nothing, which is every session's.
-    traps: BTreeMap<String, i64>,
+    traps: BTreeMap<String, Trap>,
     /// Everyone parked in [`ContainerEngine::wait`].
     exit_waiters: Vec<oneshot::Sender<Result<ExitStatus, EngineError>>>,
 }
@@ -171,21 +179,31 @@ fn takes_stdin(state: &ContainerState) -> bool {
     matches!(state, ContainerState::Created | ContainerState::Running)
 }
 
-/// The exit codes a command traps, by signal name, as a shell `trap "exit
-/// <code>" <SIGNAL>` in its own argument list declares them.
+/// What a command's `trap` does with a signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trap {
+    /// `trap "exit <code>" <SIGNAL>`: the command exits on that code.
+    Exit(i64),
+    /// `trap "" <SIGNAL>`: the command ignores the signal and keeps running.
+    Ignore,
+}
+
+/// What a command does with each signal, by signal name, as a shell `trap
+/// "exit <code>" <SIGNAL>` or `trap "" <SIGNAL>` in its own argument list
+/// declares it.
 ///
 /// The mock runs nothing, so the command line is the only thing it knows about
 /// the process, and a `trap` in it is the command saying what a delivered
 /// signal does to it. That is what lets the conformance suite assert signal
 /// delivery through an exit code the engine could not have produced by tearing
-/// the container down, without the suite reaching for anything but
-/// `ContainerEngine`.
+/// the container down, and a stop that lasts its grace period, without the
+/// suite reaching for anything but `ContainerEngine`.
 ///
-/// Anything it does not recognise — a handler that is not an `exit`, a signal
-/// name that is not one of [`Signal`]'s, `KILL`, which no shell can trap — is
-/// left out, and a signal with no entry is one the mock records and nothing
-/// more.
-fn trap_exit_codes(cmd: &[String]) -> BTreeMap<String, i64> {
+/// Anything it does not recognise — a handler that is neither an `exit` nor
+/// empty, a signal name that is not one of [`Signal`]'s, `KILL`, which no
+/// shell can trap — is left out, and a signal with no entry is one the mock
+/// records and nothing more.
+fn traps_of(cmd: &[String]) -> BTreeMap<String, Trap> {
     let mut traps = BTreeMap::new();
 
     for statement in cmd
@@ -199,17 +217,22 @@ fn trap_exit_codes(cmd: &[String]) -> BTreeMap<String, i64> {
         let Some((handler, signals)) = quoted(rest.trim_start()) else {
             continue;
         };
-        let Some(code) = handler
-            .trim()
-            .strip_prefix("exit ")
-            .and_then(|code| code.trim().parse::<i64>().ok())
-        else {
-            continue;
+        let handler = handler.trim();
+        let trap = if handler.is_empty() {
+            Trap::Ignore
+        } else {
+            let Some(code) = handler
+                .strip_prefix("exit ")
+                .and_then(|code| code.trim().parse::<i64>().ok())
+            else {
+                continue;
+            };
+            Trap::Exit(code)
         };
 
         for name in signals.split_whitespace() {
             if let Some(signal) = trappable_signal(name) {
-                traps.insert(signal.to_string(), code);
+                traps.insert(signal.to_string(), trap);
             }
         }
     }
@@ -725,7 +748,7 @@ impl ContainerEngine for MockEngine {
                 stop_grace: Vec::new(),
                 stdin: Vec::new(),
                 connections: Vec::new(),
-                traps: trap_exit_codes(&spec.cmd),
+                traps: traps_of(&spec.cmd),
                 exit_waiters: Vec::new(),
             },
         );
@@ -764,13 +787,16 @@ impl ContainerEngine for MockEngine {
 
     /// Records the grace period and ends the container on the code its command's
     /// `TERM` trap names, or [`STOP_EXIT_CODE`] when it traps nothing, the way
-    /// the engine's own stop does.
+    /// the engine's own stop does. A command that ignores `TERM` is what an
+    /// engine hard-kills once the grace period is over: the stop takes that
+    /// long, the container running all the while, and it ends on
+    /// [`KILL_EXIT_CODE`].
     ///
     /// A container that is not running is `Ok` and is left exactly as it ended:
     /// being stopped is what the caller asked for and it already is, which is
     /// the 304 both engines answer.
     async fn stop(&self, id: &ContainerId, grace_secs: u32) -> Result<(), EngineError> {
-        let (code, waiters) = {
+        let term = {
             let mut state = self.lock();
             let container = container(&mut state, id)?;
 
@@ -782,12 +808,28 @@ impl ContainerEngine for MockEngine {
                 return Ok(());
             }
 
-            let code = container
-                .traps
-                .get(&Signal::Sigterm.to_string())
-                .copied()
-                .unwrap_or(STOP_EXIT_CODE);
-            (code, container.end(code))
+            container.traps.get(&Signal::Sigterm.to_string()).copied()
+        };
+
+        let code = match term {
+            Some(Trap::Exit(code)) => code,
+            None => STOP_EXIT_CODE,
+            Some(Trap::Ignore) => {
+                // The grace period, with the lock dropped, so a listing or an
+                // inspect in the meantime sees the container still running.
+                tokio::time::sleep(std::time::Duration::from_secs(grace_secs.into())).await;
+                KILL_EXIT_CODE
+            }
+        };
+
+        let waiters = {
+            let mut state = self.lock();
+            match state.containers.get_mut(&id.0) {
+                // Whatever ended it during the grace period — a kill, a test's
+                // `exit`, a forced removal — already answered its waiters.
+                Some(container) if container.state.is_running() => container.end(code),
+                _ => return Ok(()),
+            }
         };
 
         wake(waiters, code);
@@ -815,11 +857,11 @@ impl ContainerEngine for MockEngine {
 
             container.signals.push(signal);
 
-            container
-                .traps
-                .get(&signal.to_string())
-                .copied()
-                .map(|code| (code, container.end(code)))
+            // An ignored signal is one the command records and nothing more.
+            match container.traps.get(&signal.to_string()).copied() {
+                Some(Trap::Exit(code)) => Some((code, container.end(code))),
+                Some(Trap::Ignore) | None => None,
+            }
         };
 
         if let Some((code, waiters)) = ended {
@@ -1527,6 +1569,58 @@ mod tests {
             engine.state_of(&trapping),
             Some(ContainerState::Exited { code: 143 }),
             "a stop is the command's own TERM"
+        );
+    }
+
+    /// A command that ignores `TERM` is stopped the way an engine stops it: it
+    /// keeps running, and listed as running, for the whole grace period, and
+    /// then ends on the hard kill's code.
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_of_a_command_that_ignores_term_lasts_its_grace_period() {
+        let engine = Arc::new(MockEngine::default());
+        let mut spec = session_spec(SESSION_ID);
+        spec.cmd = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            r#"trap "" TERM; while true; do sleep 1; done"#.to_string(),
+        ];
+        let id = engine.create(&spec).await.expect("the mock creates");
+        engine.start(&id).await.expect("the mock starts");
+
+        // An ignored signal is recorded and nothing more.
+        engine
+            .kill(&id, Signal::Sigterm)
+            .await
+            .expect("the mock signals");
+        assert_eq!(engine.state_of(&id), Some(ContainerState::Running));
+
+        let stop = tokio::spawn({
+            let engine = Arc::clone(&engine);
+            let id = id.clone();
+            async move { engine.stop(&id, 10).await }
+        });
+        tokio::time::sleep(Duration::from_secs(9)).await;
+        assert!(
+            !stop.is_finished(),
+            "the stop ended inside its grace period"
+        );
+        let listed = engine
+            .list_by_label(LABEL_SESSION_ID)
+            .await
+            .expect("the mock lists");
+        assert!(
+            listed.iter().all(|row| row.running),
+            "a container in its grace period is running"
+        );
+
+        stop.await
+            .expect("the stop task joins")
+            .expect("the mock stops");
+        assert_eq!(
+            engine.state_of(&id),
+            Some(ContainerState::Exited {
+                code: KILL_EXIT_CODE
+            })
         );
     }
 

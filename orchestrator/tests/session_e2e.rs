@@ -712,28 +712,29 @@ async fn reload(app: &TestApp, id: Uuid) -> Session {
 /// about the *specification* go through a raw client, as
 /// `tests/common/engine.rs` does for the operations Mars never performs.
 ///
-/// Asked again for a short while when the answer cannot be decoded: the Podman
-/// 4 series reports a container between running and exited as `stopped`, which
-/// the typed response refuses, and an ephemeral session's container is in that
-/// window for a moment (the adapter's own listing retries for the same reason).
+/// Read without its `State` when the typed answer refuses it: Podman reports a
+/// container in its stop grace period as `stopping` and one between running
+/// and exited as `stopped`, neither of which the typed response names, and the
+/// scenarios here read only the command and the binds (the adapter reads every
+/// answer leniently for the same reason, `ARCHITECTURE.md`, "Engine adapter").
 async fn inspect(id: Uuid) -> bollard::models::ContainerInspectResponse {
     let docker = common::engine::raw_docker();
     let name = format!("mars-session-{id}");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
 
-    loop {
-        match docker
-            .inspect_container(&name, None::<InspectContainerOptions>)
-            .await
-        {
-            Ok(container) => return container,
-            Err(bollard::errors::Error::JsonDataError { .. })
-                if tokio::time::Instant::now() < deadline =>
-            {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+    match docker
+        .inspect_container(&name, None::<InspectContainerOptions>)
+        .await
+    {
+        Ok(container) => container,
+        Err(bollard::errors::Error::JsonDataError { contents, .. }) => {
+            let mut answer: Value =
+                serde_json::from_str(&contents).expect("the inspect answer is JSON");
+            if let Some(answer) = answer.as_object_mut() {
+                answer.remove("State");
             }
-            Err(err) => panic!("the session container of {id} is inspectable: {err}"),
+            serde_json::from_value(answer).expect("the inspect answer decodes without its state")
         }
+        Err(err) => panic!("the session container of {id} is inspectable: {err}"),
     }
 }
 

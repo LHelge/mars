@@ -70,6 +70,33 @@ const TRAPPING_CMD: [&str; 3] = [
     r#"mkfifo /tmp/mars-stdin; exec 0<>/tmp/mars-stdin; trap "exit 143" TERM; trap "exit 42" INT; : > /tmp/mars-traps-ready; while true; do sleep 1; done"#,
 ];
 
+/// The command of the grace-period scenario: [`TRAPPING_CMD`] with `TERM`
+/// ignored, so a stop runs its whole grace period and ends in the engine's
+/// hard kill. It creates [`TRAPS_READY_FILE`] once the trap is installed, for
+/// the same reason [`TRAPPING_CMD`] does: a `TERM` that lands before an empty
+/// trap is ignored by PID 1 anyway, but the scenario's point is a command that
+/// says so.
+const TERM_IGNORING_CMD: [&str; 3] = [
+    "sh",
+    "-c",
+    r#"trap "" TERM; : > /tmp/mars-traps-ready; while true; do sleep 1; done"#,
+];
+
+/// The exit code of a container whose stop ran out its grace period: the
+/// engine's `SIGKILL`.
+const KILL_EXIT_CODE: i64 = 137;
+
+/// The grace period the grace-period scenario stops its container with, in
+/// seconds: long enough that the listing inside it cannot miss it on a loaded
+/// runner, short enough that the hard kill it ends in costs little.
+const LONG_GRACE_SECS: u32 = 10;
+
+/// How long the grace-period scenario gives its stop to reach the engine
+/// before it lists. The stop is asserted still in progress on both sides of
+/// the listing, so this only has to be long enough for the engine to have
+/// begun the stop, and it is a fifth of [`LONG_GRACE_SECS`].
+const STOP_REACHES_ENGINE: Duration = Duration::from_secs(2);
+
 /// The file [`TRAPPING_CMD`] creates once its traps are installed. The same
 /// path as in the command, which cannot name the constant.
 const TRAPS_READY_FILE: &str = "/tmp/mars-traps-ready";
@@ -205,6 +232,8 @@ impl EngineContract {
         self.every_other_operation_on_a_missing_container_is_not_found()
             .await;
         self.list_by_label_reports_running_and_exited_containers()
+            .await;
+        self.a_container_in_its_stop_grace_period_is_listed_as_running()
             .await;
         self.a_signal_reaches_the_containers_main_process().await;
         self.a_dropped_stdin_writer_leaves_the_container_running()
@@ -605,6 +634,92 @@ impl EngineContract {
         for id in [running_id, exited_id, unlabelled_id] {
             self.engine.remove(&id, true).await.expect("removed");
         }
+    }
+
+    /// A container in its stop grace period — its command ignores `TERM`, so
+    /// the engine waits the grace period out before its hard kill — is listed
+    /// and inspected as running, and the listing succeeds: Podman names that
+    /// state `stopping`, which a typed decode of the whole listing once refused
+    /// for the full grace period, failing startup recovery and orphan cleanup
+    /// with it (`ARCHITECTURE.md`, "Engine adapter", the list row). Once the
+    /// stop returns the container has exited on the hard kill's code and is
+    /// listed as not running.
+    pub async fn a_container_in_its_stop_grace_period_is_listed_as_running(&self) {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut spec = self.spec("contract-grace");
+        spec.cmd = TERM_IGNORING_CMD
+            .iter()
+            .map(|part| (*part).to_string())
+            .collect();
+        spec.labels
+            .insert(LABEL_SESSION_ID.to_string(), session_id.clone());
+        let id = self.create(&spec).await;
+        self.engine.start(&id).await.expect("the container starts");
+        self.traps_installed(&id).await;
+
+        let stop = tokio::spawn({
+            let engine = Arc::clone(&self.engine);
+            let id = id.clone();
+            async move { engine.stop(&id, LONG_GRACE_SECS).await }
+        });
+        tokio::time::sleep(STOP_REACHES_ENGINE).await;
+        assert!(
+            !stop.is_finished(),
+            "the stop returned before its grace period was over: {:?}",
+            stop.await
+        );
+
+        let listed = self
+            .engine
+            .list_by_label(LABEL_SESSION_ID)
+            .await
+            .expect("a listing succeeds while a container is being stopped");
+        let row = listed
+            .iter()
+            .find(|row| row.labels.get(LABEL_SESSION_ID) == Some(&session_id))
+            .unwrap_or_else(|| panic!("the stopping container is not listed: {listed:?}"));
+        assert!(
+            row.running,
+            "a container in its grace period is not listed running"
+        );
+        let info = self
+            .engine
+            .inspect(&id)
+            .await
+            .expect("an inspect succeeds while the container is being stopped");
+        assert_eq!(
+            info.state,
+            ContainerState::Running,
+            "a container in its grace period is not inspected running"
+        );
+        assert!(
+            !stop.is_finished(),
+            "the grace period was over before the listing had answered; the listing proves nothing"
+        );
+
+        tokio::time::timeout(WAIT_TIMEOUT, stop)
+            .await
+            .expect("the stop returns once the grace period is over")
+            .expect("the stop task joins")
+            .expect("the container stops");
+        let status = self.wait_within(&id).await;
+        assert_eq!(
+            status.code, KILL_EXIT_CODE,
+            "a command that ignores TERM ends in the hard kill"
+        );
+
+        let listed = self
+            .engine
+            .list_by_label(LABEL_SESSION_ID)
+            .await
+            .expect("the engine lists by label");
+        let row = listed
+            .iter()
+            .find(|row| row.labels.get(LABEL_SESSION_ID) == Some(&session_id))
+            .unwrap_or_else(|| panic!("the stopped container is not listed: {listed:?}"));
+        assert!(!row.running, "the stopped container is listed running");
+
+        self.engine.remove(&id, true).await.expect("removed");
     }
 
     /// A named signal reaches the container's main process, which the exit code

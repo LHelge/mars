@@ -127,6 +127,17 @@ async fn list_by_label_reports_running_and_exited_containers() {
         .await;
 }
 
+/// `ARCHITECTURE.md`: a listing succeeds while a container is in its stop grace
+/// period and reports it running. The mock holds a stop of a command that
+/// ignores `TERM` for the whole grace period, as an engine does, so this is the
+/// one scenario of the mock half that takes real time.
+#[tokio::test]
+async fn a_container_in_its_stop_grace_period_is_listed_as_running() {
+    contract()
+        .a_container_in_its_stop_grace_period_is_listed_as_running()
+        .await;
+}
+
 /// `ARCHITECTURE.md`: a named signal reaches the container's main process. The
 /// mock records every signal and delivers it to the command, which exits on its
 /// own `trap`; a command that traps nothing — every session's — is left running

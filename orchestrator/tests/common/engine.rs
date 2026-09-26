@@ -260,14 +260,17 @@ pub fn raw_docker() -> Docker {
 /// so are those of every other run still alive on this host, because two runs
 /// of `tests/engine.rs` may share one engine socket and must not remove each
 /// other's containers mid-scenario (Bears 4q3t2).
+///
+/// A listing that fails is a failure of the run, not a line on stderr: it is
+/// the adapter's own `list_by_label` failing, which is a bug worth seeing as
+/// itself rather than later as a container that survived the sweep (Bears
+/// ca2va, where a Podman state name failed every listing for a whole stop grace
+/// period).
 pub async fn cleanup_stale_test_containers(engine: &BollardEngine) {
-    let stale = match engine.list_by_label(LABEL_TEST).await {
-        Ok(containers) => containers,
-        Err(error) => {
-            eprintln!("could not list stale test containers: {error}");
-            return;
-        }
-    };
+    let stale = engine
+        .list_by_label(LABEL_TEST)
+        .await
+        .unwrap_or_else(|error| panic!("the stale test containers could not be listed: {error}"));
 
     let now = chrono::Utc::now();
     for container in stale {

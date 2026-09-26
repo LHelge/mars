@@ -53,9 +53,7 @@ use chrono::DateTime;
 use bollard::container::LogOutput;
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::models::{
-    ContainerInspectResponse, ContainerState as BollardContainerState,
-    ContainerSummary as BollardContainerSummary, ContainerSummaryStateEnum, CreateImageInfo,
-    NetworkConnectRequest, NetworkCreateRequest, SystemVersion,
+    CreateImageInfo, NetworkConnectRequest, NetworkCreateRequest, SystemVersion,
 };
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectContainerOptions,
@@ -65,6 +63,8 @@ use bollard::query_parameters::{
 };
 use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::StreamExt;
+use serde::Deserialize;
+use serde::de::{DeserializeOwned, IgnoredAny};
 use tokio::sync::Mutex;
 
 use super::spec::to_bollard;
@@ -176,18 +176,19 @@ impl BollardEngine {
         &self.version
     }
 
-    /// One inspect, still in `bollard`'s own shape.
+    /// One inspect, in the adapter's own lenient shape ([`lenient`]).
     ///
     /// [`ContainerEngine::inspect`] maps it to a [`ContainerInfo`], which does
     /// not carry the OOM flag; [`ContainerEngine::wait`] needs that flag, so
     /// both go through this rather than one through the other.
-    async fn inspect_raw(&self, id: &ContainerId) -> Result<ContainerInspectResponse, EngineError> {
+    async fn inspect_raw(&self, id: &ContainerId) -> Result<InspectBody, EngineError> {
         // A 404 becomes `NotFound` through the single conversion, which is
         // what recovery reads as "the container is gone".
-        Ok(self
-            .docker
-            .inspect_container(&id.0, None::<InspectContainerOptions>)
-            .await?)
+        lenient(
+            self.docker
+                .inspect_container(&id.0, None::<InspectContainerOptions>)
+                .await,
+        )
     }
 
     /// Create the network, treating a concurrent creation as success.
@@ -508,12 +509,6 @@ fn says_needs_force(message: &str) -> bool {
     message.contains("without force") || message.contains("force remove")
 }
 
-/// How many times a listing that could not be decoded is asked for again, and
-/// how long between two attempts: two seconds in all, far longer than a
-/// container spends between `running` and `exited`.
-const LIST_RETRIES: u32 = 20;
-const LIST_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
-
 /// Whether an engine's refusal of a create says the container name is taken.
 ///
 /// The fourth message the adapter reads rather than only reports, for the
@@ -547,15 +542,22 @@ fn pull_error_of(info: &CreateImageInfo) -> Option<String> {
 
 /// The engine's state string and exit code as a [`ContainerState`].
 ///
-/// `restarting`, the engine's empty string and anything a later API version
-/// adds arrive as [`ContainerState::Unknown`] with the string kept verbatim,
-/// so a log line can say what the engine actually reported.
+/// The one reading of a state string, for an inspect and a list row alike.
+/// Podman's own names for three of the states are read as the API's:
+/// `configured` is `created`, `stopping` — a container in its stop grace
+/// period, whose process is still alive, which Docker and later Podman
+/// releases report as `running` — is running, and `stopped` — a process that
+/// has ended whose clean-up has not — is `exited` (`ARCHITECTURE.md`, "Engine
+/// adapter", Normalised semantics). `restarting`, the engine's empty string and
+/// anything a later API version adds arrive as [`ContainerState::Unknown`] with
+/// the string kept verbatim, so a log line can say what the engine actually
+/// reported.
 fn container_state_of(status: &str, exit_code: i64) -> ContainerState {
     match status {
-        "created" => ContainerState::Created,
-        "running" => ContainerState::Running,
+        "created" | "configured" => ContainerState::Created,
+        "running" | "stopping" => ContainerState::Running,
         "paused" => ContainerState::Paused,
-        "exited" => ContainerState::Exited { code: exit_code },
+        "exited" | "stopped" => ContainerState::Exited { code: exit_code },
         "removing" => ContainerState::Removing,
         "dead" => ContainerState::Dead,
         other => ContainerState::Unknown(other.to_string()),
@@ -563,22 +565,16 @@ fn container_state_of(status: &str, exit_code: i64) -> ContainerState {
 }
 
 /// The exit code of a state that is an exit, for the wait that had to ask.
-fn exited_code(state: Option<&BollardContainerState>) -> Option<i64> {
+fn exited_code(state: Option<&InspectState>) -> Option<i64> {
     let state = state?;
 
-    match container_state_of(&status_string(state), state.exit_code.unwrap_or_default()) {
+    match container_state_of(
+        state.status.as_deref().unwrap_or_default(),
+        state.exit_code.unwrap_or_default(),
+    ) {
         ContainerState::Exited { code } => Some(code),
         _ => None,
     }
-}
-
-/// The engine's state string, which the enum's [`Display`](fmt::Display)
-/// yields in the lower case the API sends.
-fn status_string(state: &BollardContainerState) -> String {
-    state
-        .status
-        .map(|status| status.to_string())
-        .unwrap_or_default()
 }
 
 /// The engine's name for a container, without the leading slash it prefixes
@@ -592,14 +588,103 @@ fn labels_of(labels: Option<HashMap<String, String>>) -> BTreeMap<String, String
     labels.unwrap_or_default().into_iter().collect()
 }
 
-/// One inspect response as a [`ContainerInfo`].
+/// An engine answer in the adapter's own shape, whatever state names it holds.
+///
+/// `bollard`'s typed responses spell every state as a closed enum, and one
+/// value the enum does not name — Podman's `stopping`, which a container holds
+/// for its whole stop grace period, or its `stopped` — fails the decode of the
+/// whole answer: a listing of every container on the engine fails because one
+/// of them is being stopped. The adapter therefore reads each answer it maps
+/// into the lenient types below, which carry only the fields a plain type needs
+/// and every state as the engine's own string. A typed answer `bollard` could
+/// decode is re-read into them; one it could not is read from the payload its
+/// `JsonDataError` carries (the crate's `json_data_content` feature), so no
+/// state name can fail a listing or an inspect (`ARCHITECTURE.md`, "Engine
+/// adapter", Normalised semantics). Any other failure goes through the single
+/// [`From`] conversion.
+///
+/// The payload never reaches a log or an error: an inspect's carries the
+/// container's environment, and only the decode error's own message — a
+/// position and what was expected there — is kept (CLAUDE.md rule 3).
+fn lenient<T, R>(answer: Result<T, bollard::errors::Error>) -> Result<R, EngineError>
+where
+    T: serde::Serialize,
+    R: DeserializeOwned,
+{
+    let decoded = match answer {
+        Ok(typed) => serde_json::to_value(typed).and_then(serde_json::from_value),
+        Err(bollard::errors::Error::JsonDataError { contents, .. }) => {
+            serde_json::from_str(&contents)
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    decoded.map_err(|error| {
+        EngineError::Connection(format!("the engine's answer could not be decoded: {error}"))
+    })
+}
+
+/// One `/containers/json` row, with only what a [`ContainerSummary`] reads.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ListRow {
+    id: Option<String>,
+    names: Option<Vec<String>>,
+    labels: Option<HashMap<String, String>>,
+    /// The engine's state string, whatever it is.
+    state: Option<String>,
+    created: Option<i64>,
+}
+
+/// One `/containers/{id}/json` answer, with only what a [`ContainerInfo`] and
+/// a wait read. The configuration's environment is deliberately not a field:
+/// the adapter never holds a container's secrets after the create.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct InspectBody {
+    id: Option<String>,
+    name: Option<String>,
+    config: Option<InspectConfig>,
+    state: Option<InspectState>,
+    network_settings: Option<InspectNetworkSettings>,
+}
+
+/// The part of an inspect's `Config` the adapter reads.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct InspectConfig {
+    labels: Option<HashMap<String, String>>,
+}
+
+/// An inspect's `State`.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct InspectState {
+    /// The engine's state string, whatever it is.
+    status: Option<String>,
+    exit_code: Option<i64>,
+    pid: Option<i64>,
+    #[serde(rename = "OOMKilled")]
+    oom_killed: Option<bool>,
+}
+
+/// An inspect's `NetworkSettings`, of which only the network names are read.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct InspectNetworkSettings {
+    networks: Option<HashMap<String, IgnoredAny>>,
+}
+
+/// One inspect answer as a [`ContainerInfo`].
 ///
 /// The networks come back sorted rather than in the engine's hash order, so
 /// two inspects of the same container compare equal and a log line reads the
 /// same twice.
-fn to_container_info(response: ContainerInspectResponse) -> ContainerInfo {
+fn to_container_info(response: InspectBody) -> ContainerInfo {
     let state = response.state.as_ref();
-    let status = state.map(status_string).unwrap_or_default();
+    let status = state
+        .and_then(|state| state.status.as_deref())
+        .unwrap_or_default();
     let exit_code = state.and_then(|state| state.exit_code).unwrap_or_default();
 
     let mut networks: Vec<String> = response
@@ -619,7 +704,7 @@ fn to_container_info(response: ContainerInspectResponse) -> ContainerInfo {
             .unwrap_or_default()
             .to_string(),
         labels: labels_of(response.config.and_then(|config| config.labels)),
-        state: container_state_of(&status, exit_code),
+        state: container_state_of(status, exit_code),
         networks,
         // The engine reports 0 for a container that is not running, which is
         // not a pid; `None` is what the field means there.
@@ -628,7 +713,10 @@ fn to_container_info(response: ContainerInspectResponse) -> ContainerInfo {
 }
 
 /// One list row as a [`ContainerSummary`].
-fn to_container_summary(summary: BollardContainerSummary) -> ContainerSummary {
+///
+/// `running` is the same reading of the state string an inspect makes, so a
+/// container in its stop grace period is running in both, on every engine.
+fn to_container_summary(summary: ListRow) -> ContainerSummary {
     ContainerSummary {
         id: ContainerId(summary.id.unwrap_or_default()),
         name: summary
@@ -637,7 +725,7 @@ fn to_container_summary(summary: BollardContainerSummary) -> ContainerSummary {
             .and_then(|names| names.first())
             .map(|name| strip_leading_slash(name).to_string())
             .unwrap_or_default(),
-        running: summary.state == Some(ContainerSummaryStateEnum::RUNNING),
+        running: container_state_of(summary.state.as_deref().unwrap_or_default(), 0).is_running(),
         labels: labels_of(summary.labels),
         // Both engines report `Created` as whole Unix seconds. A row without
         // one reads as the epoch rather than as "just now": the only caller,
@@ -1037,33 +1125,12 @@ impl ContainerEngine for BollardEngine {
             .filters(&filters)
             .build();
 
-        // A listing can catch a container between two states the engine API
-        // has no name for: the Podman 4 series reports `stopped` for a
-        // container whose process has ended and whose clean-up has not
-        // finished, and the typed response refuses the unknown variant, which
-        // fails the whole listing and not only that row. The state is over in
-        // milliseconds — the container becomes `exited` — so the listing is
-        // asked for again rather than reported as an engine that is down:
-        // startup recovery treats a failed listing as fatal
-        // (`ARCHITECTURE.md`, "Restart procedure").
-        let mut attempt = 0;
-        let containers = loop {
-            match self.docker.list_containers(Some(options.clone())).await {
-                Ok(containers) => break containers,
-                Err(bollard::errors::Error::JsonDataError { message, .. })
-                    if attempt < LIST_RETRIES =>
-                {
-                    attempt += 1;
-                    debug!(
-                        attempt,
-                        error = %message,
-                        "the container listing held a state in transition; asking again"
-                    );
-                    tokio::time::sleep(LIST_RETRY_DELAY).await;
-                }
-                Err(err) => return Err(err.into()),
-            }
-        };
+        // Read leniently ([`lenient`]): a container in a state the typed
+        // response has no name for — Podman's `stopping`, held for a whole stop
+        // grace period — must not fail the listing of every other one, because
+        // startup recovery treats a failed listing as fatal (`ARCHITECTURE.md`,
+        // "Restart procedure").
+        let containers: Vec<ListRow> = lenient(self.docker.list_containers(Some(options)).await)?;
 
         Ok(containers.into_iter().map(to_container_summary).collect())
     }
@@ -1207,9 +1274,11 @@ impl fmt::Display for BollardEngine {
 #[cfg(test)]
 mod tests {
     use bollard::models::{
-        ContainerConfig, ContainerStateStatusEnum, EndpointSettings, ErrorDetail, NetworkSettings,
-        SystemVersionComponents, SystemVersionPlatform,
+        ContainerInspectResponse, ContainerState as BollardContainerState,
+        ContainerStateStatusEnum, ContainerSummary as BollardContainerSummary,
+        ContainerSummaryStateEnum, ErrorDetail, SystemVersionComponents, SystemVersionPlatform,
     };
+    use serde_json::json;
 
     use super::*;
     use crate::engine::{LABEL_PROJECT_ID, LABEL_SESSION_ID};
@@ -1236,41 +1305,54 @@ mod tests {
     }
 
     /// An inspect answer with the state, networks and labels a session
-    /// container carries.
-    fn inspect_response(
-        status: ContainerStateStatusEnum,
-        exit_code: i64,
-        pid: i64,
-    ) -> ContainerInspectResponse {
-        ContainerInspectResponse {
-            id: Some("c0ffee".to_string()),
+    /// container carries, as the engine sends it.
+    fn inspect_response(status: &str, exit_code: i64, pid: i64) -> InspectBody {
+        serde_json::from_value(json!({
+            "Id": "c0ffee",
             // The engine prefixes the name with a slash.
-            name: Some("/mars-session-00000000-0000-4000-8000-00000000abcd".to_string()),
-            config: Some(ContainerConfig {
-                labels: Some(HashMap::from([
-                    (
-                        LABEL_SESSION_ID.to_string(),
-                        "00000000-0000-4000-8000-00000000abcd".to_string(),
-                    ),
-                    (LABEL_PROJECT_ID.to_string(), "p1".to_string()),
-                ])),
-                ..Default::default()
-            }),
-            state: Some(BollardContainerState {
-                status: Some(status),
-                exit_code: Some(exit_code),
-                pid: Some(pid),
-                oom_killed: Some(false),
-                ..Default::default()
-            }),
-            network_settings: Some(NetworkSettings {
-                networks: Some(HashMap::from([
-                    ("mars-sessions".to_string(), EndpointSettings::default()),
-                    ("mars-egress".to_string(), EndpointSettings::default()),
-                ])),
-                ..Default::default()
-            }),
-            ..Default::default()
+            "Name": "/mars-session-00000000-0000-4000-8000-00000000abcd",
+            "Config": {
+                "Labels": {
+                    LABEL_SESSION_ID: "00000000-0000-4000-8000-00000000abcd",
+                    LABEL_PROJECT_ID: "p1",
+                },
+                "Env": ["FAKE_TOKEN=not-a-real-token"],
+            },
+            "State": {
+                "Status": status,
+                "ExitCode": exit_code,
+                "Pid": pid,
+                "OOMKilled": false,
+            },
+            "NetworkSettings": {
+                "Networks": {
+                    "mars-sessions": { "NetworkID": "n1" },
+                    "mars-egress": { "NetworkID": "n2" },
+                },
+            },
+        }))
+        .expect("an inspect answer decodes")
+    }
+
+    /// One list row as the engine sends it.
+    fn list_row(state: Option<&str>) -> ListRow {
+        serde_json::from_value(json!({
+            "Id": "c0ffee",
+            "Names": ["/mars-session-1"],
+            "Labels": { LABEL_SESSION_ID: "s1" },
+            "State": state,
+            "Created": 1_700_000_000,
+        }))
+        .expect("a list row decodes")
+    }
+
+    /// What `bollard` hands back for an answer its typed response refused,
+    /// carrying the whole payload.
+    fn refused(payload: &str) -> bollard::errors::Error {
+        bollard::errors::Error::JsonDataError {
+            message: "unknown variant `stopping`".to_string(),
+            contents: payload.to_string(),
+            column: 0,
         }
     }
 
@@ -1285,6 +1367,18 @@ mod tests {
         );
         assert_eq!(container_state_of("removing", 0), ContainerState::Removing);
         assert_eq!(container_state_of("dead", 0), ContainerState::Dead);
+    }
+
+    #[test]
+    fn podmans_own_state_names_are_read_as_the_apis() {
+        assert_eq!(container_state_of("configured", 0), ContainerState::Created);
+        // A container in its stop grace period: its process is still alive,
+        // which is what Docker and later Podman releases say with `running`.
+        assert_eq!(container_state_of("stopping", 0), ContainerState::Running);
+        assert_eq!(
+            container_state_of("stopped", 137),
+            ContainerState::Exited { code: 137 }
+        );
     }
 
     #[test]
@@ -1306,31 +1400,147 @@ mod tests {
     }
 
     #[test]
-    fn the_enums_string_is_the_one_the_mapping_matches_on() {
+    fn a_typed_answer_is_reread_with_the_strings_the_mapping_matches_on() {
         // The mapping is written against the API's lower-case strings, so the
-        // enum has to yield exactly those.
+        // typed answer re-read into the lenient shape has to yield exactly
+        // those.
         for (status, expected) in [
             (ContainerStateStatusEnum::CREATED, ContainerState::Created),
             (ContainerStateStatusEnum::RUNNING, ContainerState::Running),
             (ContainerStateStatusEnum::PAUSED, ContainerState::Paused),
             (
                 ContainerStateStatusEnum::EXITED,
-                ContainerState::Exited { code: 0 },
+                ContainerState::Exited { code: 3 },
             ),
             (ContainerStateStatusEnum::REMOVING, ContainerState::Removing),
             (ContainerStateStatusEnum::DEAD, ContainerState::Dead),
         ] {
-            let state = BollardContainerState {
-                status: Some(status),
+            let typed = ContainerInspectResponse {
+                id: Some("c0ffee".to_string()),
+                state: Some(BollardContainerState {
+                    status: Some(status),
+                    exit_code: Some(3),
+                    oom_killed: Some(true),
+                    ..Default::default()
+                }),
                 ..Default::default()
             };
-            assert_eq!(container_state_of(&status_string(&state), 0), expected);
+            let body: InspectBody = lenient(Ok(typed)).expect("a typed answer re-reads");
+            assert_eq!(
+                body.state.as_ref().and_then(|state| state.oom_killed),
+                Some(true)
+            );
+            assert_eq!(to_container_info(body).state, expected);
         }
+
+        let typed = vec![BollardContainerSummary {
+            id: Some("c0ffee".to_string()),
+            names: Some(vec!["/mars-session-1".to_string()]),
+            state: Some(ContainerSummaryStateEnum::RUNNING),
+            created: Some(1_700_000_000),
+            ..Default::default()
+        }];
+        let rows: Vec<ListRow> = lenient(Ok(typed)).expect("a typed listing re-reads");
+        let [row] = rows.as_slice() else {
+            panic!("one row in, one row out");
+        };
+        assert_eq!(row.state.as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn a_listing_the_typed_response_refuses_is_read_from_its_payload() {
+        // Podman holds `stopping` for a container's whole stop grace period,
+        // and the typed response has no such variant: the premise of the
+        // lenient read, pinned so a `bollard` that learns the name shows here.
+        let payload = json!([
+            {
+                "Id": "c0ffee",
+                "Names": ["/mars-session-1"],
+                "Labels": { LABEL_SESSION_ID: "s1" },
+                "State": "stopping",
+                "Created": 1_700_000_000,
+            },
+            {
+                "Id": "beef",
+                "Names": ["/mars-session-2"],
+                "Labels": { LABEL_SESSION_ID: "s2" },
+                "State": "hibernating",
+                "Created": 1_700_000_001,
+            },
+        ])
+        .to_string();
+        assert!(
+            serde_json::from_str::<Vec<BollardContainerSummary>>(&payload).is_err(),
+            "the typed list row now accepts these states"
+        );
+
+        let rows: Vec<ListRow> = lenient::<Vec<BollardContainerSummary>, _>(Err(refused(&payload)))
+            .expect("the listing is read from the payload");
+        let summaries: Vec<ContainerSummary> = rows.into_iter().map(to_container_summary).collect();
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].id, ContainerId("c0ffee".to_string()));
+        assert_eq!(summaries[0].name, "mars-session-1");
+        assert!(summaries[0].running, "a stopping container is running");
+        assert!(!summaries[1].running, "an unknown state is not running");
+    }
+
+    #[test]
+    fn an_inspect_the_typed_response_refuses_is_read_from_its_payload() {
+        let payload = json!({
+            "Id": "c0ffee",
+            "Name": "/mars-session-1",
+            "State": { "Status": "stopping", "ExitCode": 0, "Pid": 4711, "OOMKilled": false },
+        })
+        .to_string();
+        assert!(
+            serde_json::from_str::<ContainerInspectResponse>(&payload).is_err(),
+            "the typed inspect now accepts `stopping`"
+        );
+
+        let body: InspectBody = lenient::<ContainerInspectResponse, _>(Err(refused(&payload)))
+            .expect("the inspect is read from the payload");
+        let info = to_container_info(body);
+
+        assert_eq!(info.state, ContainerState::Running);
+        assert_eq!(info.pid, Some(4711));
+    }
+
+    #[test]
+    fn an_answer_that_is_not_json_is_a_connection_failure_without_the_payload() {
+        let payload = r#"{"Config":{"Env":["FAKE_TOKEN=not-a-real-token"]"#;
+
+        let error = match lenient::<ContainerInspectResponse, InspectBody>(Err(refused(payload))) {
+            Err(error) => error,
+            Ok(_) => panic!("a truncated answer decoded"),
+        };
+
+        let EngineError::Connection(message) = &error else {
+            panic!("unexpected: {error}");
+        };
+        assert!(
+            !message.contains("not-a-real-token"),
+            "the payload reached the error: {message}"
+        );
+    }
+
+    #[test]
+    fn a_failure_that_is_not_a_decode_goes_through_the_single_conversion() {
+        let answer: Result<ContainerInspectResponse, _> =
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                message: "no such container".to_string(),
+            });
+
+        assert!(matches!(
+            lenient::<_, InspectBody>(answer),
+            Err(EngineError::NotFound(_))
+        ));
     }
 
     #[test]
     fn an_inspect_answer_becomes_the_plain_container_info() {
-        let info = to_container_info(inspect_response(ContainerStateStatusEnum::EXITED, 143, 0));
+        let info = to_container_info(inspect_response("exited", 143, 0));
 
         assert_eq!(info.id, ContainerId("c0ffee".to_string()));
         // The leading slash is the engine's, not the container's name.
@@ -1352,7 +1562,7 @@ mod tests {
 
     #[test]
     fn a_running_container_reports_its_pid() {
-        let info = to_container_info(inspect_response(ContainerStateStatusEnum::RUNNING, 0, 4711));
+        let info = to_container_info(inspect_response("running", 0, 4711));
 
         assert_eq!(info.state, ContainerState::Running);
         assert!(info.state.is_running());
@@ -1361,7 +1571,7 @@ mod tests {
 
     #[test]
     fn an_inspect_answer_that_says_almost_nothing_still_maps() {
-        let info = to_container_info(ContainerInspectResponse::default());
+        let info = to_container_info(InspectBody::default());
 
         assert_eq!(info.id, ContainerId(String::new()));
         assert_eq!(info.name, "");
@@ -1373,15 +1583,15 @@ mod tests {
 
     #[test]
     fn only_an_exited_state_yields_the_code_a_silent_wait_falls_back_to() {
-        let exited = BollardContainerState {
-            status: Some(ContainerStateStatusEnum::EXITED),
+        let exited = InspectState {
+            status: Some("exited".to_string()),
             exit_code: Some(130),
             ..Default::default()
         };
         assert_eq!(exited_code(Some(&exited)), Some(130));
 
-        let running = BollardContainerState {
-            status: Some(ContainerStateStatusEnum::RUNNING),
+        let running = InspectState {
+            status: Some("running".to_string()),
             exit_code: Some(0),
             ..Default::default()
         };
@@ -1390,20 +1600,8 @@ mod tests {
     }
 
     #[test]
-    fn a_list_row_is_running_only_when_the_engine_says_running() {
-        let row = |state: Option<ContainerSummaryStateEnum>| BollardContainerSummary {
-            id: Some("c0ffee".to_string()),
-            names: Some(vec!["/mars-session-1".to_string()]),
-            labels: Some(HashMap::from([(
-                LABEL_SESSION_ID.to_string(),
-                "s1".to_string(),
-            )])),
-            state,
-            created: Some(1_700_000_000),
-            ..Default::default()
-        };
-
-        let running = to_container_summary(row(Some(ContainerSummaryStateEnum::RUNNING)));
+    fn a_list_row_is_running_only_when_the_engine_says_its_process_is() {
+        let running = to_container_summary(list_row(Some("running")));
         assert!(running.running);
         assert_eq!(
             running.created,
@@ -1415,19 +1613,23 @@ mod tests {
             running.labels.get(LABEL_SESSION_ID).map(String::as_str),
             Some("s1")
         );
+        assert!(to_container_summary(list_row(Some("stopping"))).running);
 
         for state in [
-            Some(ContainerSummaryStateEnum::CREATED),
-            Some(ContainerSummaryStateEnum::EXITED),
-            Some(ContainerSummaryStateEnum::PAUSED),
-            Some(ContainerSummaryStateEnum::RESTARTING),
-            Some(ContainerSummaryStateEnum::REMOVING),
-            Some(ContainerSummaryStateEnum::DEAD),
-            Some(ContainerSummaryStateEnum::EMPTY),
+            Some("created"),
+            Some("configured"),
+            Some("exited"),
+            Some("stopped"),
+            Some("paused"),
+            Some("restarting"),
+            Some("removing"),
+            Some("dead"),
+            Some(""),
+            Some("hibernating"),
             None,
         ] {
             assert!(
-                !to_container_summary(row(state)).running,
+                !to_container_summary(list_row(state)).running,
                 "unexpectedly running: {state:?}"
             );
         }
@@ -1435,7 +1637,7 @@ mod tests {
 
     #[test]
     fn a_list_row_without_a_name_is_still_a_row() {
-        let summary = to_container_summary(BollardContainerSummary::default());
+        let summary = to_container_summary(ListRow::default());
 
         assert_eq!(summary.name, "");
         assert!(summary.labels.is_empty());

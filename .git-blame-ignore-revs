@@ -1,0 +1,6 @@
+# Commits `git blame` skips: pure reformats that change no behaviour.
+# Enable once per clone with `git config blame.ignoreRevsFile .git-blame-ignore-revs`
+# (README.md, "Development"). GitHub reads this file by itself.
+
+# style(frontend): format the tree with prettier (s6n49)
+ea6973668a0f5e66aafe5912afa2edce06ad210e

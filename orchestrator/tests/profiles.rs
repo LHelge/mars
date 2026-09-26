@@ -25,12 +25,10 @@ mod common;
 
 use axum::http::StatusCode;
 use axum_test::TestResponse;
+use common::projects::{id_of, password_change_required, project, signed_in, unauthorized};
 use common::{AuthenticatedUser, TestApp};
 use serde_json::{Value, json};
 use uuid::Uuid;
-
-/// Not a real remote: `.invalid` can never resolve (rule 3).
-const TEST_REMOTE: &str = "https://example.invalid/org/repo.git";
 
 /// The image `SESSION_IMAGE_DEFAULT` carries in a test app, which is the image
 /// a profile that names none is stored with.
@@ -66,49 +64,9 @@ const PROFILE_FIELDS: [&str; 24] = [
 
 // ---- helpers ----
 //
-// The project-side helpers are the ones `tests/projects.rs` uses, copied
-// rather than shared: a later task consolidates the common ones into
-// `tests/common/`.
-
-/// An obviously fake password of the length `POST /api/test/users` requires
-/// (rule 3).
-fn password(name: &str) -> String {
-    format!("fake-password-{name}")
-}
-
-/// A signed-in ordinary user to make requests as.
-async fn signed_in(app: &TestApp, name: &str) -> AuthenticatedUser {
-    app.create_user(name, &format!("{name}@example.test"), &password(name))
-        .await
-}
-
-/// The documented 401 body (`SPEC.md`, "Authentication").
-fn unauthorized() -> Value {
-    json!({ "status": 401, "error": "authentication required" })
-}
-
-/// The documented body of the password-change gate (`SPEC.md`,
-/// "Authentication").
-fn password_change_required() -> Value {
-    json!({ "status": 403, "error": "password change required" })
-}
-
-/// A project to hang profiles on, created through its own endpoint so it is
-/// seeded exactly as a real one is: the seven default states and the four
-/// seeded profiles of `SPEC.md`, "Role profile templates".
-async fn project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> Uuid {
-    let response = app
-        .post_as(user, "/api/projects")
-        .json(&json!({ "name": name, "remote_url": TEST_REMOTE }))
-        .await;
-
-    response.assert_status(StatusCode::CREATED);
-    response.json::<Value>()["id"]
-        .as_str()
-        .expect("a project carries an id")
-        .parse()
-        .expect("the id is a uuid")
-}
+// Signing in, the documented refusals and the project the profiles hang on
+// are `tests/common/projects.rs`'s, shared with the other project route
+// suites.
 
 /// `/api/projects/{pid}/profiles`.
 fn profiles_path(pid: Uuid) -> String {
@@ -155,15 +113,6 @@ async fn list(app: &TestApp, user: &AuthenticatedUser, pid: Uuid) -> Vec<Value> 
         .as_array()
         .expect("the listing is an array")
         .clone()
-}
-
-/// The id of a profile the API answered with.
-fn id_of(profile: &Value) -> Uuid {
-    profile["id"]
-        .as_str()
-        .expect("a profile carries an id")
-        .parse()
-        .expect("the id is a uuid")
 }
 
 /// The names of the profiles in a listing, in the order they came back.

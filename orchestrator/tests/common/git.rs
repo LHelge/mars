@@ -64,6 +64,17 @@ impl BareFixture {
         fixture
     }
 
+    /// A bare repository with no commit at all: a remote that exists and has
+    /// no branches to clone. [`BareFixture::add_commit`] gives it its first.
+    pub fn empty() -> BareFixture {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join(BARE);
+        let fixture = BareFixture { dir, path };
+
+        fixture.init_bare();
+        fixture
+    }
+
     /// The `file://` URL of the bare repository, absolute because the
     /// temporary directory is.
     ///
@@ -154,6 +165,12 @@ impl BareFixture {
 
     /// `git init --bare` plus the first commit on `main`.
     fn init(&self) {
+        self.init_bare();
+        self.add_commit(INITIAL_BRANCH, "README.md");
+    }
+
+    /// `git init --bare` with `HEAD` naming `main`, and no commit.
+    fn init_bare(&self) {
         let root = self.dir.path();
 
         self.git(
@@ -165,8 +182,6 @@ impl BareFixture {
         // git version decides to default to.
         let full = format!("refs/heads/{INITIAL_BRANCH}");
         self.git(&self.path, &["symbolic-ref", "HEAD", &full]);
-
-        self.add_commit(INITIAL_BRANCH, "README.md");
     }
 
     /// A clone of the bare repository at `work`, replacing any earlier one.

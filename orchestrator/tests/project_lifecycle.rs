@@ -30,34 +30,29 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use axum::http::StatusCode;
-use chrono::{DateTime, FixedOffset};
 use common::git::BareFixture;
+use common::projects::{
+    CLONE_TIMEOUT, Owned, assert_every_table_empty, assert_every_table_seeded, created,
+    credentialled_project, fetched_at, head_of, id_of, project_path, ready, rows_left, session_in,
+    signed_in,
+};
 use common::{AuthenticatedUser, TestApp};
 use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::git::DataPaths;
 use mars_orchestrator::models::{
-    NewEvent, NewSession, NewTask, NewTaskComment, ProfileKind, Project, ProjectStatus,
-    SecretUsePurpose, SessionState, StateChange, TaskDependencyKind,
+    NewTask, NewTaskComment, NewTaskHandoff, ProjectStatus, SecretUsePurpose, SessionState,
+    StateChange, TaskDependencyKind,
 };
 use mars_orchestrator::projects::clone_job;
-use mars_orchestrator::repositories::{
-    ProjectRepository, SecretRepository, SessionRepository, TaskRepository,
-};
+use mars_orchestrator::repositories::{SecretRepository, SessionRepository, TaskRepository};
 use mars_orchestrator::tracker::TrackerMutation;
 use serde_json::{Value, json};
-use sqlx::PgPool;
 use uuid::Uuid;
 
-/// How long a clone of a one-commit local repository may take before the test
-/// calls it stuck. Generous: a loaded CI machine runs a dozen git processes
-/// for it.
-const CLONE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Not a real credential: an obviously fake stand-in (rule 3).
-const FAKE_CREDENTIAL: &str = "fake-git-credential-for-tests";
+/// An obviously fake but well-formed SHA-1 object id (rule 3).
+const FAKE_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
 /// An obviously fake second project secret, and the name it is stored under
 /// (rule 3).
@@ -65,57 +60,9 @@ const EXTRA_SECRET_NAME: &str = "FAKE_DEPLOY_TOKEN";
 const EXTRA_SECRET_VALUE: &str = "fake-deploy-token-for-tests";
 
 // ---- helpers ----
-
-/// A signed-in ordinary user to make requests as. The password is an obviously
-/// fake stand-in of the length `POST /api/test/users` requires (rule 3).
-async fn signed_in(app: &TestApp, name: &str) -> AuthenticatedUser {
-    app.create_user(
-        name,
-        &format!("{name}@example.test"),
-        &format!("fake-pw-{name}"),
-    )
-    .await
-}
-
-/// `/api/projects/{id}`.
-fn project_path(id: Uuid) -> String {
-    format!("/api/projects/{id}")
-}
-
-/// The id of a project the API answered with.
-fn id_of(project: &Value) -> Uuid {
-    project["id"]
-        .as_str()
-        .expect("a project carries an id")
-        .parse()
-        .expect("the id is a uuid")
-}
-
-/// `POST /api/projects` with `body`, asserting the documented 201 and the
-/// `cloning` status every create starts in.
-async fn create(app: &TestApp, user: &AuthenticatedUser, body: &Value) -> Value {
-    let response = app.post_as(user, "/api/projects").json(body).await;
-
-    response.assert_status(StatusCode::CREATED);
-    let project = response.json::<Value>();
-    assert_eq!(project["status"], json!("cloning"), "{project}");
-
-    project
-}
-
-/// Wait for the clone job and assert it ended in `ready`, naming the status
-/// message if it did not.
-async fn ready(app: &TestApp, id: Uuid) -> Project {
-    let project = clone_job::wait_for_clone(&app.state, id, CLONE_TIMEOUT).await;
-    assert_eq!(
-        project.status,
-        ProjectStatus::Ready,
-        "{:?}",
-        project.status_message
-    );
-
-    project
-}
+//
+// What every project route suite shares is in `tests/common/projects.rs`;
+// what is here is this file's own.
 
 /// A `ready` project cloned from `fixture`, and its id.
 async fn ready_project(
@@ -125,7 +72,7 @@ async fn ready_project(
     fixture: &BareFixture,
 ) -> Uuid {
     let id = id_of(
-        &create(
+        &created(
             app,
             user,
             &json!({ "name": name, "remote_url": fixture.url() }),
@@ -169,35 +116,6 @@ async fn read(app: &TestApp, user: &AuthenticatedUser, id: Uuid) -> Value {
     response.json::<Value>()
 }
 
-/// A project's `last_fetched_at`, which every `ready` project has.
-fn fetched_at(project: &Value) -> DateTime<FixedOffset> {
-    let raw = project["last_fetched_at"]
-        .as_str()
-        .expect("a fetched project carries a timestamp");
-
-    DateTime::parse_from_rfc3339(raw).expect("the timestamp is RFC 3339")
-}
-
-/// The branch the project repository's bare `HEAD` names.
-fn head_of(app: &TestApp, id: Uuid) -> String {
-    let repo = DataPaths::from_config(&app.state.config).project_repo(id);
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo)
-        .args(["symbolic-ref", "--end-of-options", "HEAD"])
-        .output()
-        .expect("git runs");
-
-    assert!(
-        output.status.success(),
-        "git symbolic-ref failed in {repo:?}"
-    );
-    String::from_utf8(output.stdout)
-        .expect("git wrote utf-8")
-        .trim()
-        .to_string()
-}
-
 // ---- create to ready ----
 
 #[tokio::test]
@@ -207,7 +125,7 @@ async fn creates_project_and_reaches_ready_with_discovered_branch() {
     let fixture = BareFixture::new();
 
     // Only a name and a remote: the branch is the remote's to tell us.
-    let created = create(
+    let created = created(
         &app,
         &user,
         &json!({ "name": "mars", "remote_url": fixture.url() }),
@@ -258,7 +176,7 @@ async fn unreachable_remote_reaches_error_and_retry_recovers() {
     fixture.remove();
 
     let id = id_of(
-        &create(
+        &created(
             &app,
             &user,
             &json!({ "name": "mars", "remote_url": fixture.url() }),
@@ -319,7 +237,7 @@ async fn supplied_default_branch_is_validated() {
     // A branch the remote has: it becomes the project's head, and the bare
     // repository's `HEAD` names it rather than the remote's own default.
     let chosen = id_of(
-        &create(
+        &created(
             &app,
             &user,
             &json!({
@@ -338,7 +256,7 @@ async fn supplied_default_branch_is_validated() {
     // A branch it does not have: the clone job is what validates the name, and
     // it says which one it could not find (`src/projects/clone_job.rs`).
     let missing = id_of(
-        &create(
+        &created(
             &app,
             &user,
             &json!({
@@ -394,142 +312,13 @@ async fn fetch_refreshes_upstream_without_moving_heads() {
 
 // ---- delete ----
 
-/// The ids a deleted project's rows are found by afterwards.
-///
-/// The tables reached from the project id alone can be counted directly; the
-/// rest hang off a session, a profile, a task or a secret, all of which are
-/// gone once the project is. Counting those through a join would report zero
-/// whether or not the child rows survived, so the ids are captured while the
-/// project is still there and the counts are taken against them.
-struct Owned {
-    project: Uuid,
-    sessions: Vec<Uuid>,
-    profiles: Vec<Uuid>,
-    tasks: Vec<Uuid>,
-    secrets: Vec<Uuid>,
-}
-
-/// How many rows every table still holds for this project.
-///
-/// Runtime `query_scalar` rather than the macro: the table and the column are
-/// what varies, and both are this file's own constants, never anything a
-/// request carried.
-async fn rows_left(pool: &PgPool, owned: &Owned) -> Vec<(&'static str, i64)> {
-    let project = std::slice::from_ref(&owned.project);
-    let tables: [(&'static str, &'static str, &[Uuid]); 13] = [
-        ("projects", "id", project),
-        ("agent_profiles", "project_id", project),
-        ("project_shared_dirs", "project_id", project),
-        ("sessions", "project_id", project),
-        ("task_states", "project_id", project),
-        ("tasks", "project_id", project),
-        ("secrets", "scope_id", project),
-        ("events", "session_id", &owned.sessions),
-        ("profile_states", "profile_id", &owned.profiles),
-        ("task_dependencies", "task_id", &owned.tasks),
-        ("task_comments", "task_id", &owned.tasks),
-        ("secret_uses", "secret_id", &owned.secrets),
-        ("task_events", "project_id", project),
-    ];
-
-    let mut counts = Vec::with_capacity(tables.len());
-    for (table, column, ids) in tables {
-        // `AssertSqlSafe` is the audit sqlx asks for: both halves of the
-        // statement come from the table above and never from a request.
-        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "SELECT COUNT(*) FROM {table} WHERE {column} = ANY($1)"
-        )))
-        .bind(ids)
-        .fetch_one(pool)
-        .await
-        .expect("the count reads");
-
-        counts.push((table, count));
-    }
-
-    counts
-}
-
-/// Not one row is left anywhere.
-fn assert_every_table_empty(counts: &[(&'static str, i64)]) {
-    for (table, count) in counts {
-        assert_eq!(*count, 0, "{table} still holds rows of the deleted project");
-    }
-}
-
-/// A session of `project_id` in `state`, with an event and a populated work
-/// directory.
-///
-/// A session starts `creating`; anything further is reached through the
-/// repository's own transitions, so the row is one the lifecycle could really
-/// have produced.
-async fn session_in(app: &TestApp, project_id: Uuid, state: SessionState) -> Uuid {
-    let profile = ProjectRepository::new(&app.state.pool)
-        .find_default_profile(project_id)
-        .await
-        .expect("the profile reads")
-        .expect("a created project has a default profile");
-
-    let sessions = SessionRepository::new(&app.state.pool);
-    let new_session = NewSession::new(
-        project_id,
-        profile.id,
-        ProfileKind::Conversational,
-        "main",
-        // Not a credential: a fake stand-in for the hashed MCP token (rule 3).
-        format!("fake-mcp-token-hash-{}", Uuid::new_v4()),
-    );
-
-    let mut tx = app.state.pool.begin().await.expect("a transaction begins");
-    let session = sessions
-        .insert(&mut tx, &new_session)
-        .await
-        .expect("the session inserts");
-    if state != SessionState::Creating {
-        sessions
-            .set_state(
-                &mut tx,
-                session.id,
-                SessionState::Running,
-                &StateChange::plain(),
-            )
-            .await
-            .expect("a created session may start running");
-
-        if state != SessionState::Running {
-            sessions
-                .set_state(&mut tx, session.id, state, &StateChange::plain())
-                .await
-                .expect("the transition is a legal one");
-        }
-    }
-    sessions
-        .append_events(
-            &mut tx,
-            session.id,
-            &[NewEvent::now("status", json!({ "state": "seeded" }))],
-        )
-        .await
-        .expect("the event appends");
-    tx.commit().await.expect("the transaction commits");
-
-    let work = DataPaths::from_config(&app.state.config).session_work(session.id);
-    tokio::fs::create_dir_all(&work)
-        .await
-        .expect("the session work directory is created");
-    tokio::fs::write(work.join("build.log"), "a session left something behind\n")
-        .await
-        .expect("the work directory is populated");
-
-    session.id
-}
-
 /// Everything a `ready` project can own, through the documented endpoints
 /// where they exist and the repositories where they do not.
 ///
 /// A second agent profile, a shared directory with a file in it, a second
-/// project secret with an audit row, two tasks with a dependency and a
-/// comment, and a `parked` session with an event and a populated directory.
+/// project secret with an audit row, two tasks with a dependency, a comment
+/// and a hand-off, and a `parked` session with an event and a populated
+/// directory.
 async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uuid) -> Owned {
     let pool = &app.state.pool;
 
@@ -600,14 +389,23 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
         )
         .await
         .expect("the dependency inserts");
+    let comment = NewTaskComment::from_user(blocker.id, user.user.id, "implemented and pushed");
     tasks
-        .insert_comment(
-            mutation.conn(),
-            project_id,
-            &NewTaskComment::from_user(blocker.id, user.user.id, "implemented and pushed"),
-        )
+        .insert_comment(mutation.conn(), project_id, &comment)
         .await
         .expect("the comment inserts");
+    let mut handoff = NewTaskHandoff::new(
+        blocker.id,
+        format!("session/{session_id}"),
+        FAKE_COMMIT,
+        comment.id,
+    );
+    handoff.source_session_id = Some(session_id);
+    handoff.created_by_session_id = Some(session_id);
+    tasks
+        .insert_handoff(mutation.conn(), project_id, &handoff)
+        .await
+        .expect("the hand-off inserts");
     // The board's own notification rows, which hang off the project rather
     // than off any task (`SPEC.md`, "TaskEvent").
     mutation
@@ -655,31 +453,6 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
     }
 }
 
-/// A `ready` project created with a credential, so it starts with the
-/// project-scoped orchestrator-only `GIT_CREDENTIAL` secret.
-async fn credentialled_project(
-    app: &TestApp,
-    user: &AuthenticatedUser,
-    fixture: &BareFixture,
-) -> Uuid {
-    let created = create(
-        app,
-        user,
-        &json!({
-            "name": "mars",
-            "remote_url": fixture.url(),
-            "credential": FAKE_CREDENTIAL,
-        }),
-    )
-    .await;
-    assert_eq!(created["has_credential"], json!(true));
-
-    let id = id_of(&created);
-    ready(app, id).await;
-
-    id
-}
-
 #[tokio::test]
 async fn delete_removes_rows_and_disk() {
     let app = TestApp::spawn().await;
@@ -688,9 +461,7 @@ async fn delete_removes_rows_and_disk() {
     let id = credentialled_project(&app, &user, &fixture).await;
 
     let owned = seed_everything(&app, &user, id).await;
-    for (table, count) in rows_left(&app.state.pool, &owned).await {
-        assert!(count > 0, "{table} was not seeded");
-    }
+    assert_every_table_seeded(&rows_left(&app.state.pool, &owned).await);
 
     let paths = DataPaths::from_config(&app.state.config);
     let project_dir = paths.project_dir(id);

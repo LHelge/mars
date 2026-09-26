@@ -28,7 +28,8 @@ pub mod engine;
 /// `common::engine`.
 pub mod engine_contract;
 
-/// Bare upstream repositories a lifecycle test can also remove and recreate.
+/// Bare upstream repositories a lifecycle test can also empty, remove and
+/// recreate.
 /// Plain `std::process::Command` and the `git` binary, so it needs no mock and
 /// stays ungated like `common::db`.
 pub mod git;
@@ -82,6 +83,12 @@ pub mod tracker;
 /// needs. Built on `TestApp`, so it is gated the same way.
 #[cfg(feature = "integration-tests")]
 pub mod handoffs;
+
+/// The project route suites' shared helpers: signing in, creating a project
+/// and waiting for its clone, a session in a chosen state and the per-table
+/// row counts of a deletion. Built on `TestApp`, so it is gated the same way.
+#[cfg(feature = "integration-tests")]
+pub mod projects;
 
 /// `use common::TestApp;` for the binaries that want it; the ones that only
 /// use `common::db` leave the re-export unused, which is the same situation

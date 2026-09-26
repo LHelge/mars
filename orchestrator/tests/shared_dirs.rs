@@ -32,56 +32,17 @@ use std::path::{Path, PathBuf};
 
 use axum::http::StatusCode;
 use axum_test::TestResponse;
+use common::projects::{password_change_required, project, session_in, signed_in, unauthorized};
 use common::{AuthenticatedUser, TestApp};
-use mars_orchestrator::models::{
-    NewSession, ProfileKind, SessionState, SharedDirError, StateChange,
-};
-use mars_orchestrator::repositories::{ProjectRepository, SessionRepository};
+use mars_orchestrator::models::{SessionState, SharedDirError};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-/// Not a real remote: `.invalid` can never resolve (rule 3).
-const TEST_REMOTE: &str = "https://example.invalid/org/repo.git";
-
 // ---- helpers ----
-
-/// An obviously fake password of the length `POST /api/test/users` requires
-/// (rule 3).
-fn password(name: &str) -> String {
-    format!("fake-password-{name}")
-}
-
-/// A signed-in ordinary user to make requests as.
-async fn signed_in(app: &TestApp, name: &str) -> AuthenticatedUser {
-    app.create_user(name, &format!("{name}@example.test"), &password(name))
-        .await
-}
-
-/// The documented 401 body (`SPEC.md`, "Authentication").
-fn unauthorized() -> Value {
-    json!({ "status": 401, "error": "authentication required" })
-}
-
-/// The documented body of the password-change gate (`SPEC.md`,
-/// "Authentication").
-fn password_change_required() -> Value {
-    json!({ "status": 403, "error": "password change required" })
-}
-
-/// A project of this test's own, through the documented create endpoint.
-async fn project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> Uuid {
-    let response = app
-        .post_as(user, "/api/projects")
-        .json(&json!({ "name": name, "remote_url": TEST_REMOTE }))
-        .await;
-    response.assert_status(StatusCode::CREATED);
-
-    response.json::<Value>()["id"]
-        .as_str()
-        .expect("a project carries an id")
-        .parse()
-        .expect("the id is a uuid")
-}
+//
+// Signing in, the documented refusals, the project and the sessions the
+// refusal counts are `tests/common/projects.rs`'s, shared with the other
+// project route suites.
 
 /// `/api/projects/{pid}/shared-dirs`.
 fn dirs_path(pid: Uuid) -> String {
@@ -161,53 +122,6 @@ async fn is_empty(directory: &Path) -> bool {
         .await
         .expect("the directory reads")
         .is_none()
-}
-
-/// A session of `pid` in `state`, inserted directly.
-///
-/// The session lifecycle is another epic's; what this test file needs is only
-/// a row in one of the states the refusal counts, so the session is inserted
-/// through its repository and moved along the documented transitions
-/// (`creating → running → parked`). The MCP token hash is an obviously fake
-/// stand-in (rule 3).
-async fn session_in(app: &TestApp, pid: Uuid, state: SessionState) -> Uuid {
-    let profile = ProjectRepository::new(&app.pool)
-        .find_default_profile(pid)
-        .await
-        .expect("the default profile reads")
-        .expect("a created project has a default profile");
-
-    let new = NewSession::new(
-        pid,
-        profile.id,
-        ProfileKind::Conversational,
-        "main",
-        format!("fake-mcp-token-hash-{}", Uuid::new_v4()),
-    );
-
-    let sessions = SessionRepository::new(&app.pool);
-    let mut tx = app.pool.begin().await.expect("a transaction begins");
-    let session = sessions.insert(&mut tx, &new).await.expect("it inserts");
-    tx.commit().await.expect("the transaction commits");
-
-    // `creating` is the column default the insert leaves behind; the other two
-    // are reached by the transitions the lifecycle allows.
-    let path: &[SessionState] = match state {
-        SessionState::Creating => &[],
-        SessionState::Running => &[SessionState::Running],
-        SessionState::Parked => &[SessionState::Running, SessionState::Parked],
-        other => panic!("{other} is not a state these tests need"),
-    };
-    for step in path {
-        let mut tx = app.pool.begin().await.expect("a transaction begins");
-        sessions
-            .set_state(&mut tx, session.id, *step, &StateChange::plain())
-            .await
-            .expect("the transition is legal");
-        tx.commit().await.expect("the transaction commits");
-    }
-
-    session.id
 }
 
 /// The 409 both destructive endpoints answer while a session is live.

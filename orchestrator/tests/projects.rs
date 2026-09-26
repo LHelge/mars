@@ -12,9 +12,10 @@
 //!
 //! Git is never mocked (`CLAUDE.md`, "Testing expectations"), so the tests that
 //! need a `ready` project point it at a real bare repository in a `tempfile`
-//! directory through the `file://` form [`RemoteUrl`] accepts under the
-//! `integration-tests` feature, and wait for the real clone job through
-//! [`clone_job::wait_for_clone`]. Nothing here sleeps for a fixed time.
+//! directory, a [`BareFixture`], through the `file://` form [`RemoteUrl`]
+//! accepts under the `integration-tests` feature, and wait for the real clone
+//! job through [`clone_job::wait_for_clone`]. Nothing here sleeps for a fixed
+//! time.
 //!
 //! Every credential is an obviously fake stand-in (rule 3), and no response is
 //! ever allowed to carry one back.
@@ -25,190 +26,49 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::PathBuf;
 
 use axum::http::StatusCode;
-use axum_test::TestResponse;
-use chrono::{DateTime, FixedOffset};
+use common::git::BareFixture;
+use common::projects::{
+    CLONE_TIMEOUT, FAKE_CREDENTIAL, Owned, TEST_REMOTE, UNREACHABLE_REMOTE,
+    assert_every_table_empty, assert_every_table_seeded, cloned_project, create, created,
+    credentialled_project, fetched_at, head_of, id_of, new_project, password_change_required,
+    project_path, rows_left, session_in, signed_in, unauthorized,
+};
 use common::{AuthenticatedUser, TestApp};
-use mars_orchestrator::git::testutil::{TestUpstream, run_git};
+use mars_orchestrator::git::testutil::run_git;
 use mars_orchestrator::git::{DataPaths, GitActor};
-use mars_orchestrator::models::{Project, ProjectStatus};
+use mars_orchestrator::models::ProjectStatus;
 use mars_orchestrator::projects::{NewProjectRequest, clone_job, create_project};
 use serde_json::{Value, json};
 use uuid::Uuid;
-
-/// How long a clone of a two-commit local repository may take before the test
-/// calls it stuck. Generous: a loaded CI machine runs a dozen git processes for
-/// it.
-const CLONE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Not a real remote: `.invalid` can never resolve (rule 3).
-const TEST_REMOTE: &str = "https://example.invalid/org/repo.git";
-
-/// A remote nothing listens on, so the clone job fails at once. The tests that
-/// need a project in `error` use it.
-const UNREACHABLE_REMOTE: &str = "https://127.0.0.1:1/x.git";
-
-/// Not a real credential: an obviously fake stand-in (rule 3).
-const FAKE_CREDENTIAL: &str = "fake-git-credential-for-tests";
 
 /// The fixed name a project's git credential is stored under.
 const GIT_CREDENTIAL: &str = "GIT_CREDENTIAL";
 
 // ---- helpers ----
-
-/// An obviously fake password of the length `POST /api/test/users` requires
-/// (rule 3).
-fn password(name: &str) -> String {
-    format!("fake-password-{name}")
-}
-
-/// A signed-in ordinary user to make requests as.
-async fn signed_in(app: &TestApp, name: &str) -> AuthenticatedUser {
-    app.create_user(name, &format!("{name}@example.test"), &password(name))
-        .await
-}
-
-/// The documented 401 body (`SPEC.md`, "Authentication").
-fn unauthorized() -> Value {
-    json!({ "status": 401, "error": "authentication required" })
-}
-
-/// The documented body of the password-change gate (`SPEC.md`,
-/// "Authentication").
-fn password_change_required() -> Value {
-    json!({ "status": 403, "error": "password change required" })
-}
-
-/// `POST /api/projects` with `body`, as `user`.
-///
-/// The raw response, because half of what these tests assert is the status and
-/// the message of a *rejection*; [`created`] is the success form.
-async fn create(app: &TestApp, user: &AuthenticatedUser, body: &Value) -> TestResponse {
-    app.post_as(user, "/api/projects").json(body).await
-}
-
-/// `POST /api/projects` for a project that must be created, asserting 201.
-///
-/// The arrangement step of every test that is about what happens *after* a
-/// create.
-async fn created(app: &TestApp, user: &AuthenticatedUser, body: &Value) -> Value {
-    let response = create(app, user, body).await;
-
-    response.assert_status(StatusCode::CREATED);
-    response.json::<Value>()
-}
-
-/// The minimal create body: a name and a remote.
-fn new_project(name: &str, remote_url: &str) -> Value {
-    json!({ "name": name, "remote_url": remote_url })
-}
-
-/// The id of a project the API answered with.
-fn id_of(project: &Value) -> Uuid {
-    project["id"]
-        .as_str()
-        .expect("a project carries an id")
-        .parse()
-        .expect("the id is a uuid")
-}
-
-/// `/api/projects/{id}`.
-fn project_path(id: Uuid) -> String {
-    format!("/api/projects/{id}")
-}
+//
+// What every project route suite shares is in `tests/common/projects.rs`;
+// what is here is this file's own.
 
 /// `/api/projects/{id}/retry-clone`.
 fn retry_path(id: Uuid) -> String {
     format!("/api/projects/{id}/retry-clone")
 }
 
-/// The `file://` URL of a local bare repository, which is the remote form
-/// `RemoteUrl::parse` accepts under the `integration-tests` feature.
-fn file_url(path: &Path) -> String {
-    format!("file://{}", path.display())
-}
-
-/// A bare upstream with one commit on `main` at exactly `path`.
-///
-/// [`TestUpstream`] owns its own temporary directory, and the concurrency test
-/// below needs a remote that does *not* exist when the project is created and
-/// appears afterwards, so the path has to be one the test chose.
-async fn bare_upstream_at(path: &Path) {
-    let parent = path.parent().expect("the upstream path has a parent");
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .expect("the upstream directory is named");
-
-    run_git(
-        parent,
-        &["init", "--bare", "--quiet", "--initial-branch=main", name],
-    )
-    .await;
-    run_git(parent, &["clone", "--quiet", name, "work"]).await;
-
-    let work = parent.join("work");
-    run_git(&work, &["symbolic-ref", "HEAD", "refs/heads/main"]).await;
-    std::fs::write(work.join("README.md"), "# fixture\n").expect("the fixture file is written");
-    run_git(&work, &["add", "--", "README.md"]).await;
-    run_git(&work, &["commit", "--quiet", "-m", "chore: add a readme"]).await;
-    run_git(
-        &work,
-        &["push", "--quiet", "origin", "HEAD:refs/heads/main"],
-    )
-    .await;
-
-    std::fs::remove_dir_all(&work).expect("the throwaway work clone is removed");
-}
-
 /// A bare upstream with `main` and one extra branch per name in `extra`.
 ///
-/// [`TestUpstream::create`] gives `main` with two commits and a symbolic `HEAD`
-/// naming it; each extra branch is one more commit pushed to the same bare
-/// repository, which is what makes it an integration head after the clone.
-async fn upstream_with(extra: &[&str]) -> TestUpstream {
-    let upstream = TestUpstream::create().await;
+/// Each extra branch is one more commit pushed to the same bare repository,
+/// which is what makes it an integration head after the clone.
+fn upstream_with(extra: &[&str]) -> BareFixture {
+    let upstream = BareFixture::new();
 
-    for (index, branch) in extra.iter().enumerate() {
-        upstream
-            .commit_file(
-                branch,
-                &format!("extra-{index}.txt"),
-                "an extra branch\n",
-                "feat: another branch",
-            )
-            .await;
+    for branch in extra {
+        upstream.add_branch(branch);
     }
 
     upstream
-}
-
-/// Create a project over HTTP against `upstream` and wait for its clone.
-///
-/// Returns the created project's id and the row the job left behind, asserting
-/// that it really did become `ready`: every test that needs a project with a
-/// repository on disk starts here.
-async fn cloned_project(
-    app: &TestApp,
-    user: &AuthenticatedUser,
-    name: &str,
-    upstream: &TestUpstream,
-) -> (Uuid, Project) {
-    let created = created(app, user, &new_project(name, &file_url(&upstream.path))).await;
-    let id = id_of(&created);
-
-    let project = clone_job::wait_for_clone(&app.state, id, CLONE_TIMEOUT).await;
-    assert_eq!(
-        project.status,
-        ProjectStatus::Ready,
-        "{:?}",
-        project.status_message
-    );
-
-    (id, project)
 }
 
 /// Create a project whose clone is bound to fail, and wait for it to.
@@ -223,16 +83,6 @@ async fn failed_project(app: &TestApp, user: &AuthenticatedUser, name: &str) -> 
     assert_eq!(project.status, ProjectStatus::Error);
 
     id
-}
-
-/// The branch the project repository's symbolic `HEAD` names.
-async fn head_branch(app: &TestApp, id: Uuid) -> String {
-    let repo = DataPaths::from_config(&app.state.config).project_repo(id);
-
-    run_git(&repo, &["symbolic-ref", "--end-of-options", "HEAD"])
-        .await
-        .trim()
-        .to_string()
 }
 
 // ---- authentication ----
@@ -673,11 +523,11 @@ async fn updating_an_unknown_project_is_404() {
 async fn changing_the_default_branch_of_a_ready_project_moves_head() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&["release/2.0"]).await;
+    let upstream = upstream_with(&["release/2.0"]);
     let (id, cloned) = cloned_project(&app, &user, "mars", &upstream).await;
 
     assert_eq!(cloned.default_branch.as_deref(), Some("main"));
-    assert_eq!(head_branch(&app, id).await, "refs/heads/main");
+    assert_eq!(head_of(&app, id), "refs/heads/main");
 
     let response = app
         .put_as(&user, &project_path(id))
@@ -689,14 +539,14 @@ async fn changing_the_default_branch_of_a_ready_project_moves_head() {
         response.json::<Value>()["default_branch"],
         json!("release/2.0")
     );
-    assert_eq!(head_branch(&app, id).await, "refs/heads/release/2.0");
+    assert_eq!(head_of(&app, id), "refs/heads/release/2.0");
 }
 
 #[tokio::test]
 async fn a_default_branch_that_is_not_an_integration_head_is_a_bad_request() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&[]).await;
+    let upstream = BareFixture::new();
     let (id, _) = cloned_project(&app, &user, "mars", &upstream).await;
 
     let response = app
@@ -713,14 +563,14 @@ async fn a_default_branch_that_is_not_an_integration_head_is_a_bad_request() {
     // Neither the row nor `HEAD` moved.
     let read = app.get_as(&user, &project_path(id)).await;
     assert_eq!(read.json::<Value>()["default_branch"], json!("main"));
-    assert_eq!(head_branch(&app, id).await, "refs/heads/main");
+    assert_eq!(head_of(&app, id), "refs/heads/main");
 }
 
 #[tokio::test]
 async fn setting_the_default_branch_a_ready_project_already_has_changes_nothing() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&[]).await;
+    let upstream = BareFixture::new();
     let (id, _) = cloned_project(&app, &user, "mars", &upstream).await;
 
     let response = app
@@ -732,7 +582,7 @@ async fn setting_the_default_branch_a_ready_project_already_has_changes_nothing(
     let updated = response.json::<Value>();
     assert_eq!(updated["default_branch"], json!("main"));
     assert_eq!(updated["max_attempts"], json!(5));
-    assert_eq!(head_branch(&app, id).await, "refs/heads/main");
+    assert_eq!(head_of(&app, id), "refs/heads/main");
 }
 
 #[tokio::test]
@@ -759,7 +609,7 @@ async fn a_default_branch_on_a_project_without_a_repository_is_stored_unchecked(
 async fn a_default_branch_move_whose_row_write_conflicts_leaves_head_alone() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&["release/2.0"]).await;
+    let upstream = upstream_with(&["release/2.0"]);
     let (id, _) = cloned_project(&app, &user, "mars", &upstream).await;
     // The name the update below collides with.
     created(&app, &user, &new_project("phobos", UNREACHABLE_REMOTE)).await;
@@ -773,7 +623,7 @@ async fn a_default_branch_move_whose_row_write_conflicts_leaves_head_alone() {
     response.assert_json(&json!({ "status": 409, "error": "project name already taken" }));
 
     // The row write failed, so the repository must not have moved either.
-    assert_eq!(head_branch(&app, id).await, "refs/heads/main");
+    assert_eq!(head_of(&app, id), "refs/heads/main");
     let read = app.get_as(&user, &project_path(id)).await.json::<Value>();
     assert_eq!(read["name"], json!("mars"));
     assert_eq!(read["default_branch"], json!("main"));
@@ -804,7 +654,7 @@ async fn retrying_a_failed_clone_answers_cloning_again() {
 async fn retrying_a_project_that_is_not_in_error_is_a_conflict() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&[]).await;
+    let upstream = BareFixture::new();
     let (id, _) = cloned_project(&app, &user, "mars", &upstream).await;
 
     let response = app.post_as(&user, &retry_path(id)).await;
@@ -817,12 +667,12 @@ async fn retrying_a_project_that_is_not_in_error_is_a_conflict() {
 async fn only_one_of_two_concurrent_retries_starts_a_clone() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    let upstream = dir.path().join("upstream.git");
+    let upstream = BareFixture::new();
+    upstream.remove();
 
     // The remote does not exist yet, which is the ordinary mistyped-URL case:
     // the first clone fails and leaves the project in `error`.
-    let id = id_of(&created(&app, &user, &new_project("mars", &file_url(&upstream))).await);
+    let id = id_of(&created(&app, &user, &new_project("mars", &upstream.url())).await);
     let failed = clone_job::wait_for_clone(&app.state, id, CLONE_TIMEOUT).await;
     assert_eq!(failed.status, ProjectStatus::Error);
 
@@ -831,7 +681,7 @@ async fn only_one_of_two_concurrent_retries_starts_a_clone() {
     // `ready` and matches no row, whichever order the two requests interleave
     // in. That is what makes this assertion about the guard rather than about
     // timing.
-    bare_upstream_at(&upstream).await;
+    upstream.recreate();
 
     let (first, second) = tokio::join!(
         app.post_as(&user, &retry_path(id)),
@@ -929,15 +779,6 @@ async fn commit_of(app: &TestApp, id: Uuid, rev: &str) -> String {
         .to_string()
 }
 
-/// A project's `last_fetched_at`, which every project in these tests has.
-fn fetched_at(project: &Value) -> DateTime<FixedOffset> {
-    let raw = project["last_fetched_at"]
-        .as_str()
-        .expect("a fetched project carries a timestamp");
-
-    DateTime::parse_from_rfc3339(raw).expect("the timestamp is RFC 3339")
-}
-
 /// The listing as `(name, kind)` pairs, in the order it came back in.
 fn listed(branches: &Value) -> Vec<(String, String)> {
     branches
@@ -990,7 +831,7 @@ async fn the_fetch_and_the_branch_listing_are_refused_while_a_password_change_is
 async fn fetching_a_ready_project_advances_its_fetch_time_as_the_requesting_user() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&[]).await;
+    let upstream = BareFixture::new();
     let (id, cloned) = cloned_project(&app, &user, "mars", &upstream).await;
 
     let before = cloned
@@ -1024,19 +865,15 @@ async fn fetching_a_ready_project_advances_its_fetch_time_as_the_requesting_user
 async fn a_fetch_moves_the_upstream_refs_and_leaves_the_integration_heads_alone() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&[]).await;
+    let upstream = BareFixture::new();
     let (id, _) = cloned_project(&app, &user, "mars", &upstream).await;
 
     let head_before = commit_of(&app, id, "refs/heads/main").await;
 
     // Upstream advances `main` and grows a branch with a slash in its name,
     // which only a prefix ref pattern reaches.
-    let moved = upstream
-        .commit_file("main", "next.txt", "next\n", "feat: move main on")
-        .await;
-    upstream
-        .commit_file("feature/x", "x.txt", "x\n", "feat: start x")
-        .await;
+    let moved = upstream.add_commit("main", "next.txt");
+    upstream.add_commit("feature/x", "x.txt");
 
     app.post_as(&user, &fetch_path(id)).await.assert_status_ok();
 
@@ -1068,7 +905,7 @@ async fn a_fetch_moves_the_upstream_refs_and_leaves_the_integration_heads_alone(
 async fn the_branch_listing_is_the_three_kinds_and_leaves_the_other_refs_out() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&["feature/x"]).await;
+    let upstream = upstream_with(&["feature/x"]);
     let (id, _) = cloned_project(&app, &user, "mars", &upstream).await;
 
     // A session ref, as a fetch-back would leave it, and the two kinds of ref
@@ -1158,13 +995,13 @@ async fn listing_the_branches_of_a_failed_project_is_a_conflict() {
 async fn a_fetch_whose_remote_is_gone_answers_the_git_status_and_changes_nothing() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&[]).await;
+    let upstream = BareFixture::new();
     let (id, cloned) = cloned_project(&app, &user, "mars", &upstream).await;
 
     // The remote directory disappears under the mirror, which git reports as a
     // failed command: an internal error rather than a state the caller named
     // (`GitError::status`).
-    std::fs::remove_dir_all(&upstream.path).expect("the upstream is removed");
+    upstream.remove();
 
     let response = app.post_as(&user, &fetch_path(id)).await;
 
@@ -1202,19 +1039,19 @@ async fn fetching_and_listing_an_unknown_project_is_404() {
 
 // --- DELETE /projects/{id}
 
-// The deletion tests' own imports and helpers, kept together down here rather
-// than in the shared blocks at the top of the file.
+// The deletion tests' own imports and constants, kept together down here
+// rather than in the shared blocks at the top of the file. The row counts,
+// the credentialled project and the session they seed are
+// `tests/common/projects.rs`'s, shared with `tests/project_lifecycle.rs`.
 use mars_orchestrator::events::TaskActor;
 use mars_orchestrator::models::{
-    NewEvent, NewSession, NewSharedDir, NewTask, NewTaskComment, NewTaskHandoff, ProfileKind,
-    SecretUsePurpose, SessionState, StateChange, TaskDependencyKind,
+    NewSharedDir, NewTask, NewTaskComment, NewTaskHandoff, SecretUsePurpose, SessionState,
+    StateChange, TaskDependencyKind,
 };
-use mars_orchestrator::projects::session_dir;
 use mars_orchestrator::repositories::{
     ProjectRepository, SecretRepository, SessionRepository, TaskRepository,
 };
 use mars_orchestrator::tracker::TrackerMutation;
-use sqlx::PgPool;
 
 /// An obviously fake but well-formed SHA-1 object id (rule 3).
 const FAKE_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -1223,177 +1060,6 @@ const FAKE_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 /// (rule 3).
 const EXTRA_SECRET_NAME: &str = "FAKE_DEPLOY_TOKEN";
 const EXTRA_SECRET_VALUE: &str = "fake-deploy-token-for-tests";
-
-/// The ids a deleted project's rows are found by afterwards.
-///
-/// Seven tables are reached from the project id alone; the rest hang off a
-/// session, a profile, a task or a secret, all of which are gone once the
-/// project is. Counting those through a join would report zero whether or not
-/// the child rows survived, so the ids are captured while the project is still
-/// there and the counts are taken against them.
-struct Owned {
-    project: Uuid,
-    sessions: Vec<Uuid>,
-    profiles: Vec<Uuid>,
-    tasks: Vec<Uuid>,
-    secrets: Vec<Uuid>,
-}
-
-/// How many rows every table still holds for this project.
-///
-/// Runtime `query_scalar` rather than the macro: the table and the column are
-/// what varies, and both are this file's own constants, never anything a
-/// request carried.
-async fn rows_left(pool: &PgPool, owned: &Owned) -> Vec<(&'static str, i64)> {
-    let project = std::slice::from_ref(&owned.project);
-    let tables: [(&'static str, &'static str, &[Uuid]); 14] = [
-        ("projects", "id", project),
-        ("agent_profiles", "project_id", project),
-        ("project_shared_dirs", "project_id", project),
-        ("sessions", "project_id", project),
-        ("task_states", "project_id", project),
-        ("tasks", "project_id", project),
-        ("task_events", "project_id", project),
-        ("secrets", "scope_id", project),
-        ("events", "session_id", &owned.sessions),
-        ("profile_states", "profile_id", &owned.profiles),
-        ("task_dependencies", "task_id", &owned.tasks),
-        ("task_comments", "task_id", &owned.tasks),
-        ("task_handoffs", "task_id", &owned.tasks),
-        ("secret_uses", "secret_id", &owned.secrets),
-    ];
-
-    let mut counts = Vec::with_capacity(tables.len());
-    for (table, column, ids) in tables {
-        // `AssertSqlSafe` is the audit sqlx asks for: both halves of the
-        // statement come from the table above and never from a request.
-        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "SELECT COUNT(*) FROM {table} WHERE {column} = ANY($1)"
-        )))
-        .bind(ids)
-        .fetch_one(pool)
-        .await
-        .expect("the count reads");
-
-        counts.push((table, count));
-    }
-
-    counts
-}
-
-/// Every table named above holds something, which is what makes the assertion
-/// after the deletion mean anything.
-fn assert_every_table_seeded(counts: &[(&'static str, i64)]) {
-    for (table, count) in counts {
-        assert!(*count > 0, "{table} was not seeded");
-    }
-}
-
-/// Not one row is left anywhere.
-fn assert_every_table_empty(counts: &[(&'static str, i64)]) {
-    for (table, count) in counts {
-        assert_eq!(*count, 0, "{table} still holds rows of the deleted project");
-    }
-}
-
-/// A `ready` project created with a credential, so it starts with the
-/// project-scoped `GIT_CREDENTIAL` secret.
-///
-/// The mock credential provider is what the clone actually uses, so storing one
-/// changes nothing about the clone; it is here because deleting the secret is
-/// part of what these tests assert.
-async fn credentialled_project(
-    app: &TestApp,
-    user: &AuthenticatedUser,
-    upstream: &TestUpstream,
-) -> Uuid {
-    let created = created(
-        app,
-        user,
-        &json!({
-            "name": "mars",
-            "remote_url": file_url(&upstream.path),
-            "credential": FAKE_CREDENTIAL,
-        }),
-    )
-    .await;
-    assert_eq!(created["has_credential"], json!(true));
-
-    let id = id_of(&created);
-    let project = clone_job::wait_for_clone(&app.state, id, CLONE_TIMEOUT).await;
-    assert_eq!(
-        project.status,
-        ProjectStatus::Ready,
-        "{:?}",
-        project.status_message
-    );
-
-    id
-}
-
-/// A session of this project in `state`, with an event and its directory.
-///
-/// A session starts `creating`; anything further is reached through the
-/// repository's own transitions, so the row is one the lifecycle could really
-/// have produced.
-async fn session_in(app: &TestApp, project_id: Uuid, state: SessionState) -> Uuid {
-    let profile = ProjectRepository::new(&app.state.pool)
-        .find_default_profile(project_id)
-        .await
-        .expect("the profile reads")
-        .expect("a created project has a default profile");
-
-    let sessions = SessionRepository::new(&app.state.pool);
-    let new_session = NewSession::new(
-        project_id,
-        profile.id,
-        ProfileKind::Conversational,
-        "main",
-        // Not a credential: a fake stand-in for the hashed MCP token (rule 3).
-        format!("fake-mcp-token-hash-{}", Uuid::new_v4()),
-    );
-
-    let mut tx = app.state.pool.begin().await.expect("a transaction begins");
-    let session = sessions
-        .insert(&mut tx, &new_session)
-        .await
-        .expect("the session inserts");
-    // Everything but `creating` is reached through `running`, which is the
-    // only edge out of the state a session is inserted in.
-    if state != SessionState::Creating {
-        sessions
-            .set_state(
-                &mut tx,
-                session.id,
-                SessionState::Running,
-                &StateChange::plain(),
-            )
-            .await
-            .expect("a created session may start running");
-
-        if state != SessionState::Running {
-            sessions
-                .set_state(&mut tx, session.id, state, &StateChange::plain())
-                .await
-                .expect("the transition is a legal one");
-        }
-    }
-    sessions
-        .append_events(
-            &mut tx,
-            session.id,
-            &[NewEvent::now("status", json!({ "state": "seeded" }))],
-        )
-        .await
-        .expect("the event appends");
-    tx.commit().await.expect("the transaction commits");
-
-    tokio::fs::create_dir_all(session_dir(&app.state.config.data_dir, session.id))
-        .await
-        .expect("the session directory is created");
-
-    session.id
-}
 
 /// Everything a project can own, written through the repositories that own it.
 ///
@@ -1539,7 +1205,7 @@ async fn seed_everything(app: &TestApp, user: &AuthenticatedUser, project_id: Uu
 async fn deleting_a_project_removes_every_row_and_every_directory_it_owned() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&[]).await;
+    let upstream = BareFixture::new();
     let id = credentialled_project(&app, &user, &upstream).await;
 
     let owned = seed_everything(&app, &user, id).await;
@@ -1575,7 +1241,7 @@ async fn deleting_a_project_removes_every_row_and_every_directory_it_owned() {
 async fn a_live_session_refuses_the_deletion_until_it_has_ended() {
     let app = TestApp::spawn().await;
     let user = signed_in(&app, "ada").await;
-    let upstream = upstream_with(&[]).await;
+    let upstream = BareFixture::new();
     let id = credentialled_project(&app, &user, &upstream).await;
 
     let owned = seed_everything(&app, &user, id).await;

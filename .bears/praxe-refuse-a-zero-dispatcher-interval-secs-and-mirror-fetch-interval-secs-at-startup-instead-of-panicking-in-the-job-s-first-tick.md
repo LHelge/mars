@@ -1,13 +1,14 @@
 ---
 id: praxe
 title: Refuse a zero DISPATCHER_INTERVAL_SECS and MIRROR_FETCH_INTERVAL_SECS at startup instead of panicking in the job's first tick
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-26T18:13:53.031575752Z"
-updated: "2026-09-26T18:13:53.031575752Z"
+updated: "2026-09-26T19:46:16.761768943Z"
 tags:
   - orchestrator
   - config
+attempts: 1
 ---
 
 ## Summary

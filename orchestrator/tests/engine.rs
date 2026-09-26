@@ -114,21 +114,25 @@ async fn wait_within(engine: &BollardEngine, id: &ContainerId, budget: Duration)
 /// like, so a single read is not enough to see a whole line.
 async fn read_until(exec: &mut Box<dyn ExecSession>, needle: &str) -> String {
     let budget = Duration::from_secs(20);
+    let mut seen = String::new();
 
-    tokio::time::timeout(budget, async {
-        let mut seen = String::new();
+    let found = tokio::time::timeout(budget, async {
         loop {
             match exec.read().await.expect("the pty reads") {
                 Some(chunk) => seen.push_str(&String::from_utf8_lossy(&chunk)),
                 None => panic!("the pty ended before {needle:?} arrived; saw: {seen:?}"),
             }
             if seen.contains(needle) {
-                return seen;
+                return;
             }
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("{needle:?} did not arrive within {budget:?}"))
+    .await;
+
+    match found {
+        Ok(()) => seen,
+        Err(_) => panic!("{needle:?} did not arrive within {budget:?}; saw: {seen:?}"),
+    }
 }
 
 /// The conformance suite against [`BollardEngine`]: every line of the
@@ -401,12 +405,16 @@ async fn exec_pty_echo_and_resize() {
         cleanup.container(&id);
         engine.start(&id).await.expect("the container starts");
 
-        // The second waits for the resize. `exec_pty` starts the exec and then
-        // resizes it, because there is no PTY to resize before the process has
-        // one, and that resize is a request of its own: a shell that printed
-        // its size the instant it started would print the engine's default and
-        // race the request rather than observe it.
-        let cmd: Vec<String> = ["sh", "-c", "sleep 1; stty size; cat"]
+        // The shell prints its size only once the test has written a line, and
+        // the test writes it only after `exec_pty` has returned. `exec_pty`
+        // starts the exec and then resizes it, because there is no PTY to
+        // resize before the process has one, and it returns once the engine
+        // has answered that resize: a shell that printed its size on a timer
+        // would race the request rather than observe it. Under load a second's
+        // head start was not always enough (Bears 4rwdc): `stty size` ran on
+        // the engine's unsized PTY, printed no size, and `cat` then held the
+        // exec open until the read gave up.
+        let cmd: Vec<String> = ["sh", "-c", "read _; stty size; cat"]
             .iter()
             .map(|part| (*part).to_string())
             .collect();
@@ -417,6 +425,7 @@ async fn exec_pty_echo_and_resize() {
 
         // `stty size` prints rows then columns, which is the exec's own PTY at
         // the size `exec_pty` set after starting it.
+        exec.write(b"size\n").await.expect("the pty takes input");
         read_until(&mut exec, "40 100").await;
 
         exec.write(b"ping\n").await.expect("the pty takes input");
@@ -426,7 +435,8 @@ async fn exec_pty_echo_and_resize() {
 
         // Each exec has a PTY of its own, so the resize above is not visible
         // here: this one reports the size it was started with.
-        let second_cmd: Vec<String> = ["sh", "-c", "sleep 1; stty size"]
+        // It is gated on a line of input for the same reason as the first.
+        let second_cmd: Vec<String> = ["sh", "-c", "read _; stty size"]
             .iter()
             .map(|part| (*part).to_string())
             .collect();
@@ -434,6 +444,7 @@ async fn exec_pty_echo_and_resize() {
             .exec_pty(&id, &second_cmd, "0:0", 120, 50)
             .await
             .expect("the second exec starts");
+        second.write(b"size\n").await.expect("the pty takes input");
         read_until(&mut second, "50 120").await;
         second.close().await.expect("the second exec closes");
 

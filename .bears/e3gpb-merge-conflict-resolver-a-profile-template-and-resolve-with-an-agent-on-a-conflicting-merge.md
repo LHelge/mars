@@ -2,10 +2,10 @@
 id: e3gpb
 title: "Merge conflict resolver: a profile template and \"Resolve with an agent\" on a conflicting merge"
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-09-26T08:44:06.273256614Z"
-updated: "2026-09-26T08:44:06.273256614Z"
+updated: "2026-09-26T09:40:59.538671977Z"
 tags:
   - orchestrator
   - frontend

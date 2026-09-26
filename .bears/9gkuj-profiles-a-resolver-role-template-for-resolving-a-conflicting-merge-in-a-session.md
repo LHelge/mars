@@ -1,15 +1,16 @@
 ---
 id: "9gkuj"
 title: "Profiles: a `resolver` role template for resolving a conflicting merge in a session"
-status: open
+status: done
 priority: P2
 created: "2026-09-26T08:44:27.817657012Z"
-updated: "2026-09-26T08:44:27.817657012Z"
+updated: "2026-09-26T09:40:59.512336881Z"
 tags:
   - orchestrator
   - profiles
   - docs
 parent: e3gpb
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: nfsnz
 title: History marks what a later revert undid, and a revert that changes nothing is refused
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-26T08:41:05.210645999Z"
-updated: "2026-09-26T08:41:24.576926043Z"
+updated: "2026-09-26T09:40:59.482074573Z"
 tags:
   - orchestrator
   - frontend

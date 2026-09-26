@@ -1,16 +1,17 @@
 ---
 id: huepg
 title: "Frontend: \"Resolve with an agent\" on a conflicting merge"
-status: open
+status: done
 priority: P2
 created: "2026-09-26T08:44:27.857677911Z"
-updated: "2026-09-26T08:44:27.857677911Z"
+updated: "2026-09-26T09:40:59.538245158Z"
 tags:
   - frontend
   - git
   - sessions
   - docs
 parent: e3gpb
+attempts: 1
 ---
 
 ## Summary

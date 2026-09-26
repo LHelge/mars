@@ -1,10 +1,10 @@
 ---
 id: s6n49
 title: Add a frontend formatter (Prettier) with a CI check, and reformat the tree once in its own commit
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-20T22:48:22.761832688Z"
-updated: "2026-09-26T18:59:44.022140038Z"
+updated: "2026-09-26T19:22:33.815426753Z"
 tags:
   - frontend
   - ci

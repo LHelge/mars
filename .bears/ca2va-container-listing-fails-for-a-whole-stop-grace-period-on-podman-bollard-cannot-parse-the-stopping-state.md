@@ -1,10 +1,10 @@
 ---
 id: ca2va
 title: "Container listing fails for a whole stop grace period on Podman: bollard cannot parse the `stopping` state"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-26T21:27:20.733978195Z"
-updated: "2026-09-26T21:27:25.243223773Z"
+updated: "2026-09-26T21:58:57.865579186Z"
 tags:
   - orchestrator
   - engine

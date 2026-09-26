@@ -57,11 +57,22 @@ use super::engine::{LABEL_TEST, run_id, unique_name};
 /// [`STDIN_FIFO`](mars_orchestrator::engine::STDIN_FIFO), held open read-write
 /// — because that is what `attach_stdin` relays into on a real engine (ADR
 /// 0034); the mock needs none of it and ignores the command.
+///
+/// Once both traps are installed it creates [`TRAPS_READY_FILE`], which is
+/// what [`EngineContract::traps_installed`] execs for before any scenario
+/// signals the container. A start returns before the command has run a line,
+/// and a `SIGTERM` that lands before the trap is ignored by PID 1 and turns
+/// into the engine's hard kill once the grace period runs out: exit 137, not
+/// the trap's 143, which is how the Docker Engine job once failed.
 const TRAPPING_CMD: [&str; 3] = [
     "sh",
     "-c",
-    r#"mkfifo /tmp/mars-stdin; exec 0<>/tmp/mars-stdin; trap "exit 143" TERM; trap "exit 42" INT; while true; do sleep 1; done"#,
+    r#"mkfifo /tmp/mars-stdin; exec 0<>/tmp/mars-stdin; trap "exit 143" TERM; trap "exit 42" INT; : > /tmp/mars-traps-ready; while true; do sleep 1; done"#,
 ];
+
+/// The file [`TRAPPING_CMD`] creates once its traps are installed. The same
+/// path as in the command, which cannot name the constant.
+const TRAPS_READY_FILE: &str = "/tmp/mars-traps-ready";
 
 /// The exit code [`TRAPPING_CMD`] leaves on a `SIGTERM`, which is what
 /// [`ContainerEngine::stop`] sends: the code the stop sequence's hard stop
@@ -75,11 +86,22 @@ const TERM_EXIT_CODE: i64 = 143;
 /// by tearing the container down.
 const INT_EXIT_CODE: i64 = 42;
 
-/// How long the suite gives the container's command to install its traps.
-const TRAP_DELAY: Duration = Duration::from_secs(1);
+/// How long a container's command may take to install its traps, measured
+/// from its start. Generous, because a loaded CI runner is where it matters;
+/// a container that makes it in time costs only the few polls it took.
+const TRAPS_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long any single `wait` in the suite may take.
-const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often [`EngineContract::traps_installed`] execs for [`TRAPS_READY_FILE`].
+const TRAPS_READY_POLL: Duration = Duration::from_millis(100);
+
+/// How long a terminal exec's shell is given to get its PTY before the
+/// scenario closes it.
+const SHELL_SETTLE: Duration = Duration::from_secs(1);
+
+/// How long any single `wait` in the suite may take. Longer than
+/// [`STOP_GRACE_SECS`], so a stop whose trap never ran fails on its exit code
+/// rather than on this bound.
+const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long a stopped container's stdin attachment may take to close.
 ///
@@ -94,9 +116,12 @@ const ATTACH_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 const EXEC_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The grace period the suite stops containers with, in seconds. Long enough
-/// for the `TERM` trap to run, so the exit code is the trap's and not the
-/// engine's hard kill.
-const STOP_GRACE_SECS: u32 = 10;
+/// for the `TERM` trap to run on a loaded CI runner, so the exit code is the
+/// trap's and not the engine's hard kill. The trap runs only once the loop's
+/// current `sleep 1` has returned, so up to a second of it is spent before the
+/// runner's load counts at all. A stop that works costs that second, not the
+/// whole grace period.
+const STOP_GRACE_SECS: u32 = 30;
 
 /// What a scenario needs besides the engine itself.
 ///
@@ -265,6 +290,7 @@ impl EngineContract {
             .await
             .expect("the second network connects before the start");
         self.engine.start(&id).await.expect("the container starts");
+        self.traps_installed(&id).await;
 
         let info = self
             .engine
@@ -511,6 +537,7 @@ impl EngineContract {
             .start(&exited_id)
             .await
             .expect("the container starts");
+        self.traps_installed(&exited_id).await;
         self.engine
             .stop(&exited_id, STOP_GRACE_SECS)
             .await
@@ -584,9 +611,9 @@ impl EngineContract {
     /// is the evidence for: the command's `INT` trap exits on a code the engine
     /// could not have produced by tearing the container down.
     pub async fn a_signal_reaches_the_containers_main_process(&self) {
+        // `running` waits for the traps, which have to be installed before
+        // the signal arrives.
         let (_spec, id) = self.running("contract-signal").await;
-        // The trap has to be installed before the signal arrives.
-        tokio::time::sleep(TRAP_DELAY).await;
 
         self.engine
             .kill(&id, Signal::Sigint)
@@ -704,7 +731,7 @@ impl EngineContract {
             .expect("a running container takes an exec");
 
         // The shell needs its PTY before the end of input reaches it.
-        tokio::time::sleep(TRAP_DELAY).await;
+        tokio::time::sleep(SHELL_SETTLE).await;
 
         let code = tokio::time::timeout(EXEC_CLOSE_TIMEOUT, exec.close())
             .await
@@ -786,11 +813,58 @@ impl EngineContract {
         (spec, id)
     }
 
-    /// A started container.
+    /// A started container whose command has installed its traps, so a
+    /// signal or a stop from here on reaches them.
     async fn running(&self, scenario: &str) -> (ContainerSpec, ContainerId) {
         let (spec, id) = self.created(scenario).await;
         self.engine.start(&id).await.expect("the container starts");
+        self.traps_installed(&id).await;
         (spec, id)
+    }
+
+    /// Wait until a started container's command has installed its traps, by
+    /// execing `test -e` for the [`TRAPS_READY_FILE`] it creates after them
+    /// until the exec answers 0.
+    ///
+    /// The exec reads a line before it tests, so it is still alive when
+    /// `exec_pty` resizes its PTY — an engine can refuse to resize an exec
+    /// that has already ended — and it ends on the end of input `close` sends,
+    /// answering with the test's code.
+    ///
+    /// Through the trait, so it holds for every adapter: an adapter that runs
+    /// nothing, as the mock, answers the exec cleanly at once, which is right
+    /// for a container whose signals need no trap to land. Any other code —
+    /// the file not there yet, or an exec whose code the engine had not
+    /// recorded — is another poll, inside [`TRAPS_READY_TIMEOUT`].
+    async fn traps_installed(&self, id: &ContainerId) {
+        let cmd = [
+            "sh".to_string(),
+            "-c".to_string(),
+            format!("read -r _; test -e {TRAPS_READY_FILE}"),
+        ];
+        let deadline = tokio::time::Instant::now() + TRAPS_READY_TIMEOUT;
+
+        loop {
+            let exec = match self.engine.exec_pty(id, &cmd, "0:0", 80, 24).await {
+                Ok(exec) => exec,
+                Err(error) => {
+                    panic!("container {id} took no exec while its traps were awaited: {error}")
+                }
+            };
+            let code = exec
+                .close()
+                .await
+                .expect("the readiness exec reports a code");
+            if code == 0 {
+                return;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "container {id} did not install its traps within {TRAPS_READY_TIMEOUT:?}"
+            );
+            tokio::time::sleep(TRAPS_READY_POLL).await;
+        }
     }
 
     /// A container that has run and exited, through the only route the trait

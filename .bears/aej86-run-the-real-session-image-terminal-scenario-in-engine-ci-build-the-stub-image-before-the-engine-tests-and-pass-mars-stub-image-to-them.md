@@ -1,10 +1,10 @@
 ---
 id: aej86
 title: "Run the real-session-image terminal scenario in Engine CI: build the stub image before the engine tests and pass MARS_STUB_IMAGE to them"
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-20T00:20:51.796665843Z"
-updated: "2026-09-26T17:16:41.024672217Z"
+updated: "2026-09-26T18:59:43.845994962Z"
 tags:
   - infra
   - ci

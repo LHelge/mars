@@ -1,10 +1,10 @@
 ---
 id: d6vuy
 title: "git_session: alternates assertion fails on macOS, where /var resolves to /private/var and git 2.55 writes both paths"
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-25T10:08:20.641391Z"
-updated: "2026-09-26T17:16:41.159163282Z"
+updated: "2026-09-26T18:59:43.981131085Z"
 tags:
   - orchestrator
   - tests

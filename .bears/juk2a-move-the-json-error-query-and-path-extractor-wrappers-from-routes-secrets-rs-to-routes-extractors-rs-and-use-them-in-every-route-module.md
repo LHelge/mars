@@ -1,10 +1,10 @@
 ---
 id: juk2a
 title: Move the JSON-error Query and Path extractor wrappers from routes/secrets.rs to routes/extractors.rs and use them in every route module
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-17T14:33:24.941354444Z"
-updated: "2026-09-26T17:16:40.857960137Z"
+updated: "2026-09-26T18:59:43.679000875Z"
 tags:
   - orchestrator
   - api

@@ -1,10 +1,10 @@
 ---
 id: mrgmh
 title: "Flaky: realtime_acceptance::slow_client_does_not_block_others closes with Away before the last sequence"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-23T14:44:08.145669072Z"
-updated: "2026-09-26T17:16:40.813185154Z"
+updated: "2026-09-26T18:59:43.636119117Z"
 tags:
   - orchestrator
   - realtime

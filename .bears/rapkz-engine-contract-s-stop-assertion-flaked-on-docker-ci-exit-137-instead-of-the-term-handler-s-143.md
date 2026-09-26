@@ -1,10 +1,10 @@
 ---
 id: rapkz
 title: "engine_contract's stop assertion flaked on Docker CI: exit 137 instead of the TERM handler's 143"
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-21T21:20:58.427499212Z"
-updated: "2026-09-26T17:16:41.116876968Z"
+updated: "2026-09-26T18:59:43.944168571Z"
 tags:
   - orchestrator
   - test

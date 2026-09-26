@@ -1,10 +1,10 @@
 ---
 id: "4rwdc"
 title: "tests/engine.rs exec_pty_echo_and_resize is flaky on rootless Podman: \"40 100\" did not arrive within 20s"
-status: in_progress
+status: done
 priority: P3
 created: "2026-09-21T17:35:14.148056438Z"
-updated: "2026-09-26T17:16:41.073499846Z"
+updated: "2026-09-26T18:59:43.893653055Z"
 tags:
   - orchestrator
   - engine

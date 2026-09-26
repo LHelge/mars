@@ -180,6 +180,7 @@ export function GitActionsPanel({
             branches={branches.data ?? []}
             source={row.session_id}
             sourceLabel={label}
+            sourceCommit={row.commit}
             defaultTarget={project.default_branch ?? undefined}
             formId={formId}
             disabled={disabledFor(formId)}

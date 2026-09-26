@@ -20,6 +20,7 @@
 import {
   Activity,
   ArrowUpFromLine,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -81,6 +82,8 @@ export const Icon = {
   rebase: GitGraph,
   push: ArrowUpFromLine,
   revert: Undo2,
+  /** Hand a conflicting merge to an agent session. */
+  resolve: Bot,
 
   // Session controls.
   launch: Play,

@@ -34,6 +34,14 @@ export function branchesPath(projectId: string): string {
 }
 
 /**
+ * The project's Profiles tab, where a profile is created — what a launch with
+ * no profile to offer links to.
+ */
+export function profilesPath(projectId: string): string {
+  return `/projects/${projectId}?tab=profiles`;
+}
+
+/**
  * The `:number` of the route as a task number. Task numbers start at 1 and are
  * plain integers, so anything else — a name, `#12`, `0`, a decimal — names no
  * task and is answered without asking the server.

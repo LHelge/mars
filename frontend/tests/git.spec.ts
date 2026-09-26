@@ -44,7 +44,7 @@ import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
-import type { Project, SyncResult } from "../src/types";
+import type { Project, Session, SyncResult } from "../src/types";
 import type { Api } from "./utils/test-helpers";
 import { expect, test } from "./utils/fixtures";
 import type { SessionTracker } from "./utils/fixtures";
@@ -64,6 +64,8 @@ import {
   mirrorPath,
   moveUpstreamInto,
   publishRevision,
+  RESOLVE_WITH_AGENT,
+  reveal,
   sessionWorkPath,
   taskCardTestId,
   transcript,
@@ -774,6 +776,94 @@ test("a merge conflict lists the conflicting paths and leaves main alone", async
 
   // The 422 is a stop, not a partial write (`SPEC.md`, "Git").
   expect(gitRevParse(mirror, "main")).toBe(before);
+});
+
+test("a conflicting merge launches a resolver session from its target", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  // Two sessions rewrite the same file from the same `main`; the first one's
+  // work is merged, so the second one's merge conflicts with it.
+  const first = await stage(sessions, api, project);
+  const second = await stage(sessions, api, project);
+  commitInSessionWorkClone(
+    first.sessionId,
+    { "src/app.txt": "first\n" },
+    "feat: the first rewrite",
+  );
+  const secondCommit = commitInSessionWorkClone(
+    second.sessionId,
+    { "src/app.txt": "second\n" },
+    "feat: the second rewrite",
+  );
+  await syncSession(api, first.sessionId);
+  await syncSession(api, second.sessionId);
+  await api.post(`/projects/${project.id}/git/merge`, {
+    source: first.sessionId,
+    target: "main",
+  });
+
+  await page.goto(`/projects/${project.id}?tab=branches`);
+  const form = await openRowForm(page, second.sessionId, "merge");
+  await form.getByRole("button", { name: "Merge" }).click();
+  const conflicts = form
+    .getByRole("alert")
+    .filter({ hasText: "Conflicts in:" });
+  await expect(conflicts).toBeVisible({ timeout: 60_000 });
+  await expect(
+    conflicts.getByText("src/app.txt", { exact: true }),
+  ).toBeVisible();
+
+  await branches(page)
+    .getByRole("button", { name: "Resolve with an agent" })
+    .click();
+  const resolve = page.getByTestId(RESOLVE_WITH_AGENT);
+  await expect(resolve).toBeVisible();
+  // A fresh project has no `resolver` profile, so the default one is chosen.
+  const profile = resolve.getByLabel("Agent profile");
+  await expect(profile.locator("option:checked")).toHaveText(
+    "claude (default)",
+  );
+  const sourceRef = `refs/sessions/${second.sessionId}`;
+  const message = resolve.getByLabel("First message");
+  await expect(message).toHaveValue(
+    new RegExp(`^Merge ${sourceRef} \\(${secondCommit}\\) into your branch`),
+  );
+  await expect(message).toHaveValue(/\n- src\/app\.txt\n/);
+  await expect(message).toHaveValue(
+    new RegExp(`git fetch origin ${sourceRef}\\n`),
+  );
+
+  await resolve
+    .getByRole("button", { name: "Launch resolver session" })
+    .click();
+  await page.waitForURL(/\/sessions\/[0-9a-f-]{36}$/, { timeout: 60_000 });
+  const resolverId = new URL(page.url()).pathname.split("/").pop() ?? "";
+  sessions.track(api, resolverId);
+
+  // The session starts from the merge's target, with no task.
+  const launched = await api.get<Session>(`/sessions/${resolverId}`);
+  expect(launched.base_ref).toBe("main");
+  expect(launched.task_id).toBeNull();
+
+  // Its first user message is the generated one.
+  await reveal(
+    page,
+    transcript(page)
+      .getByText(new RegExp(`Merge ${sourceRef}`))
+      .first(),
+  );
+  await reveal(
+    page,
+    transcript(page)
+      .getByText(/src\/app\.txt/)
+      .first(),
+  );
 });
 
 test("an upstream-tracking ref cannot be a mutation target", async ({

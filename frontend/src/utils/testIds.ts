@@ -67,3 +67,11 @@ export const AUTHOR_BRANCH_WAIT = "author-branch-wait";
  * has a current hand-off is asked of this hook.
  */
 export const CURRENT_HANDOFF = "current-handoff";
+
+/**
+ * The "Resolve with an agent" form under a conflicting merge
+ * (`src/components/git/ResolveWithAgent.tsx`). The git panel's forms carry no
+ * accessible name of their own, and the page can show the generic merge form
+ * beside a row's, so the launch form is addressed by this hook.
+ */
+export const RESOLVE_WITH_AGENT = "resolve-with-agent";

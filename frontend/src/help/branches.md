@@ -24,7 +24,13 @@ A session's agent commits in its own clone. **Sync** copies the session's commit
 - **Rebase onto…**: replay the session's commits onto an integration head or an upstream-tracking branch.
 - **Push…**: publish the session branch to a branch on your remote.
 
-A rebase rewrites the session branch in the mirror. A running session's checkout follows it only if it has no uncommitted changes. Otherwise the checkout is left alone, and the session's git event reports that it needs reconciling, which is the agent's job. Merges and rebases stop at a conflict and leave the branch they would have written untouched. Mars never resolves a conflict for you.
+A rebase rewrites the session branch in the mirror. A running session's checkout follows it only if it has no uncommitted changes. Otherwise the checkout is left alone, and the session's git event reports that it needs reconciling, which is the agent's job. Merges and rebases stop at a conflict and leave the branch they would have written untouched. Mars never resolves a conflict by itself, but it can hand one to an agent.
+
+### Resolving a conflict
+
+When a merge from the **Branches** tab or a session's **branch** panel conflicts, the conflicting paths are listed under the form with **Resolve with an agent** beneath them. It opens a small launch form: a conversational profile, preselected as the one named `resolver` if the project has one ([Agent profiles](help:profiles) offers it as a template) and otherwise the default profile, and a first message Mars writes for you, naming the branch you tried to merge, its commit, the conflicting paths and how to fetch it. Edit the message if the agent needs more to go on, then launch.
+
+The session starts from the branch you were merging into. The agent fetches the other branch, merges it into its own, resolves the conflicts, runs the project's checks and commits. It never merges into your branch itself: when it says it is ready, its session branch holds both sides and the resolution, and you merge that branch with **Merge into…** like any other.
 
 ### Deleting a session
 

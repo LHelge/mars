@@ -38,6 +38,7 @@ import { queryKeys } from "../services/queryKeys";
 import { createSession } from "../services/sessions";
 import type { Session, SessionCreateInput } from "../types";
 import { useRefetchTask, useSettleTask } from "../tasks/taskWrites";
+import { sessionPath } from "../utils/sessionLink";
 
 /**
  * Launch a session in `projectId` and go to it.
@@ -87,7 +88,7 @@ export function useLaunchSession(
       });
 
       if (live.current) {
-        void navigate(`/sessions/${session.id}`);
+        void navigate(sessionPath(session.id));
       }
       return session;
     },

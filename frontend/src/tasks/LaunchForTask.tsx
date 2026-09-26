@@ -54,6 +54,7 @@ import type {
 } from "../types";
 import { useDrawerEscape } from "./drawerEscape";
 import { defaultProfile, launchDisabledReason } from "./launchRules";
+import { profilesPath } from "./taskLink";
 import { useTaskStore } from "./taskStore";
 
 export interface LaunchForTaskProps {
@@ -206,7 +207,7 @@ export function LaunchForTask({ projectId, task }: LaunchForTaskProps) {
             <p className="text-console-muted text-sm">
               No {kind} profile in this project —{" "}
               <Link
-                to={`/projects/${projectId}?tab=profiles`}
+                to={profilesPath(projectId)}
                 className="text-console-accent underline"
               >
                 add one

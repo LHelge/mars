@@ -169,7 +169,7 @@ pub struct Config {
     pub mcp_port: u16,
     /// Seconds between SIGINT and SIGTERM when stopping a session.
     pub stop_grace_secs: u64,
-    /// How often project mirrors are fetched.
+    /// How often project mirrors are fetched; at least 1.
     pub mirror_fetch_interval_secs: u64,
     /// How often the dispatcher sweeps for claimable work.
     ///
@@ -178,7 +178,8 @@ pub struct Config {
     /// no event arrived for — a lease that expired with its session, a task
     /// state edited straight in the board, a wake-up lost to a restart. It is
     /// configurable because it is the one knob that trades how promptly a
-    /// queue is picked up against how often an idle instance asks.
+    /// queue is picked up against how often an idle instance asks. At least 1,
+    /// defaulting to [`DISPATCHER_INTERVAL_SECS_DEFAULT`].
     pub dispatcher_interval_secs: u64,
     /// How often the idle reaper and the stuck-task reaper run, defaulting to
     /// [`REAPER_INTERVAL_SECS_DEFAULT`] and at least 1.
@@ -372,24 +373,15 @@ impl Config {
         let session_extra_hosts = parse_extra_hosts(value(&vars, "SESSION_EXTRA_HOSTS"))?;
 
         let stop_grace_secs: u64 = optional_parsed(&vars, "STOP_GRACE_SECS", 20)?;
-        let mirror_fetch_interval_secs: u64 =
-            optional_parsed(&vars, "MIRROR_FETCH_INTERVAL_SECS", 600)?;
-        let dispatcher_interval_secs: u64 = optional_parsed(
+        let mirror_fetch_interval_secs =
+            optional_interval_secs(&vars, "MIRROR_FETCH_INTERVAL_SECS", 600)?;
+        let dispatcher_interval_secs = optional_interval_secs(
             &vars,
             "DISPATCHER_INTERVAL_SECS",
             DISPATCHER_INTERVAL_SECS_DEFAULT,
         )?;
-        // Bounded below at 1 because a zero period is not "as often as
-        // possible" but a panic in the tick (`tokio::time::interval`), which
-        // would take the job down at its first run instead of here.
-        let reaper_interval_secs: u64 =
-            optional_parsed(&vars, "REAPER_INTERVAL_SECS", REAPER_INTERVAL_SECS_DEFAULT)?;
-        if reaper_interval_secs == 0 {
-            return Err(ConfigError::invalid(
-                "REAPER_INTERVAL_SECS",
-                "must be at least 1",
-            ));
-        }
+        let reaper_interval_secs =
+            optional_interval_secs(&vars, "REAPER_INTERVAL_SECS", REAPER_INTERVAL_SECS_DEFAULT)?;
 
         // Optional so a default installation needs no image name: the value
         // below is the tag the documented build command produces, and both the
@@ -550,6 +542,26 @@ where
             .parse::<T>()
             .map_err(|err| ConfigError::invalid(name, err.to_string())),
     }
+}
+
+/// Read a job period in seconds (`JobName::period`), refusing zero by name.
+///
+/// Bounded below at 1 because a zero period is not "as often as possible" but
+/// a panic in the tick (`tokio::time::interval`), which would take the job
+/// down at its first run instead of failing fast here.
+fn optional_interval_secs<F>(
+    vars: &F,
+    name: &str,
+    default: u64,
+) -> std::result::Result<u64, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let secs: u64 = optional_parsed(vars, name, default)?;
+    if secs == 0 {
+        return Err(ConfigError::invalid(name, "must be at least 1"));
+    }
+    Ok(secs)
 }
 
 /// Validate the scheme and strip trailing slashes so the auth epic can append
@@ -792,20 +804,49 @@ mod tests {
         assert_eq!(config.rust_log, "info");
     }
 
-    /// The dispatcher's timer is optional and overridable; it is a fallback
-    /// interval, so no value of it is refused (`ARCHITECTURE.md`,
+    /// Assert that `name` loads `1` and refuses zero, a negative and a
+    /// non-numeric value by name.
+    fn assert_interval_at_least_one(name: &str, read: fn(&Config) -> u64) {
+        let mut vars = required_only();
+        vars.insert(name.to_string(), "1".to_string());
+        assert_eq!(read(&load(&vars).expect("loads")), 1);
+
+        for refused in ["0", "-1", "often"] {
+            vars.insert(name.to_string(), refused.to_string());
+            let error = load(&vars).expect_err("the interval is refused");
+            assert!(
+                matches!(error, ConfigError::Invalid { name: ref refused_name, .. } if refused_name == name),
+                "{name}={refused} should be refused by name, got {error}",
+            );
+        }
+    }
+
+    /// The dispatcher's timer is optional, overridable and at least one
+    /// second: a zero period would panic the job's tick (`ARCHITECTURE.md`,
     /// "Dispatcher").
     #[test]
-    fn the_dispatcher_interval_is_optional_and_overridable() {
+    fn the_dispatcher_interval_is_optional_overridable_and_at_least_one() {
         let mut vars = required_only();
         vars.insert("DISPATCHER_INTERVAL_SECS".to_string(), "5".to_string());
         assert_eq!(load(&vars).expect("loads").dispatcher_interval_secs, 5);
 
-        vars.insert("DISPATCHER_INTERVAL_SECS".to_string(), "often".to_string());
-        assert!(matches!(
-            load(&vars).expect_err("a non-numeric interval fails"),
-            ConfigError::Invalid { ref name, .. } if name == "DISPATCHER_INTERVAL_SECS"
-        ));
+        assert_interval_at_least_one("DISPATCHER_INTERVAL_SECS", |config| {
+            config.dispatcher_interval_secs
+        });
+    }
+
+    /// The mirror fetch period is optional, overridable and at least one
+    /// second, for the same reason as the other job periods.
+    #[test]
+    fn the_mirror_fetch_interval_is_optional_overridable_and_at_least_one() {
+        let mut vars = required_only();
+        assert_eq!(load(&vars).expect("loads").mirror_fetch_interval_secs, 600);
+        vars.insert("MIRROR_FETCH_INTERVAL_SECS".to_string(), "30".to_string());
+        assert_eq!(load(&vars).expect("loads").mirror_fetch_interval_secs, 30);
+
+        assert_interval_at_least_one("MIRROR_FETCH_INTERVAL_SECS", |config| {
+            config.mirror_fetch_interval_secs
+        });
     }
 
     /// The reapers' period is optional, overridable and at least one second: a
@@ -816,14 +857,7 @@ mod tests {
         vars.insert("REAPER_INTERVAL_SECS".to_string(), "2".to_string());
         assert_eq!(load(&vars).expect("loads").reaper_interval_secs, 2);
 
-        for refused in ["0", "-1", "often"] {
-            vars.insert("REAPER_INTERVAL_SECS".to_string(), refused.to_string());
-            let error = load(&vars).expect_err("the interval is refused");
-            assert!(
-                matches!(error, ConfigError::Invalid { ref name, .. } if name == "REAPER_INTERVAL_SECS"),
-                "{refused} should be refused by name, got {error}",
-            );
-        }
+        assert_interval_at_least_one("REAPER_INTERVAL_SECS", |config| config.reaper_interval_secs);
     }
 
     /// The instance cap is optional, overridable and bounded below by 1: zero

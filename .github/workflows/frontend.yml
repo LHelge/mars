@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   check:
-    name: Lint, typecheck, unit tests, build
+    name: Format, lint, typecheck, unit tests, build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -36,6 +36,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Format
+        run: npm run format:check
 
       - name: Lint
         run: npm run lint

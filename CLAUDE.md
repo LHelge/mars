@@ -25,7 +25,7 @@ Mars runs coding-agent sessions (Claude Code in v1, behind a pluggable `AgentBac
 
 ## Frontend conventions
 
-**Stack**: Vite, React 19, TypeScript (strict), Tailwind CSS 4, React Router 7, TanStack Query, Zustand, `@tanstack/react-virtual`, `react-markdown` with `remark-gfm`, `lowlight` (lazy chunk), `xterm.js`, Lucide (`lucide-react`, through `components/icons.ts` only), ESLint, Vitest, Playwright.
+**Stack**: Vite, React 19, TypeScript (strict), Tailwind CSS 4, React Router 7, TanStack Query, Zustand, `@tanstack/react-virtual`, `react-markdown` with `remark-gfm`, `lowlight` (lazy chunk), `xterm.js`, Lucide (`lucide-react`, through `components/icons.ts` only), Prettier (with `prettier-plugin-tailwindcss`), ESLint, Vitest, Playwright.
 
 - Functional components with hooks only; named exports.
 - All API calls go through `src/services/`; components never call `fetch`. Use `apiGet`/`apiPost`/`apiPut`/`apiPatch`/`apiDelete` from `services/apiClient.ts`, which attaches the access token and refreshes once on 401. A service never builds a URL by hand: a path part is encoded with `seg()` and a query string is the `query` option, which serialises defined values through `URLSearchParams` and omits `undefined` ones, alongside `signal` in the same `init` (`ARCHITECTURE.md`, "Frontend architecture", One way to build a request).
@@ -63,10 +63,12 @@ cd orchestrator && cargo fmt && cargo clippy --all-targets -- -D warnings && car
 After every frontend change:
 
 ```bash
-cd frontend && npm run lint && npx tsc -b && npm run build && npm run test:unit && npm run test:e2e:up && npm run test:e2e; npm run test:e2e:down
+cd frontend && npm run format:check && npm run lint && npx tsc -b && npm run build && npm run test:unit && npm run test:e2e:up && npm run test:e2e; npm run test:e2e:down
 ```
 
 `test:e2e` runs against the stack `test:e2e:up` brings up (`README.md`, "Development", "End-to-end tests"): Postgres, the stub image and an orchestrator built with `--features integration-tests`, so it needs a container engine and one orchestrator build. The `E2E_*` port knobs keep it off a developer's own orchestrator on the same machine.
+
+`format:check` is the frontend's `cargo fmt`: Prettier over everything in `frontend/` but Markdown, recorded fixtures and build output (`frontend/.prettierignore`), with `frontend/.prettierrc.json` as the one configuration; `npm run format` writes what it reports. Layout is Prettier's alone — `eslint-config-prettier` comes last in `eslint.config.js`, so no lint rule has an opinion on it, and there is no `eslint-plugin-prettier` — and Tailwind class order is the plugin's.
 
 The two clippy invocations are what the Orchestrator CI workflow runs, so a lint in a test file or behind the `integration-tests` feature is caught locally.
 

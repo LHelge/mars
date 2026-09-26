@@ -561,6 +561,13 @@ With Docker, run either command with `docker build`. `compose build` builds both
 cd frontend
 npm install
 npm run dev                  # proxies /api and /ws to the orchestrator
+npm run format               # Prettier over frontend/; the chain runs format:check
+```
+
+The frontend's formatter is Prettier with `prettier-plugin-tailwindcss`, configured by `frontend/.prettierrc.json` and scoped by `frontend/.prettierignore` (Markdown, recorded fixtures and build output are left alone); an editor that formats on save should use the workspace's own Prettier from `frontend/node_modules`. The one commit that reformatted the tree is listed in `.git-blame-ignore-revs` at the repository root, which `git blame` skips once a clone is told about it:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
 The proxy targets `http://localhost:7000` (the `API_PORT` default); set `VITE_API_TARGET` to point the dev server at a different orchestrator.
@@ -615,7 +622,7 @@ The path filters below apply to pull requests. On `main` the six suites are not 
 | --- | --- | --- |
 | Orchestrator CI | `orchestrator/**` | fmt, clippy (plain and with `integration-tests`), tests under `cargo nextest` plus the doctests, with `SQLX_OFFLINE=true`; a second job reruns the git tests that need no database or engine inside two older gits rather than the runner's — `rust:1.98.1-trixie`, the Dockerfile's builder base and so the git the orchestrator image ships, and `rust:1.98.1-bookworm`, which carries the documented minimum, git 2.39.5; a third job checks `orchestrator/.sqlx/` for staleness with `cargo sqlx prepare --check` against a `postgres:18` service |
 | Engine | `orchestrator/**` or `images/**` | the stub session image built with the runner's Docker daemon and with rootless Podman via its compatible socket; then `tests/engine.rs` against that engine with `MARS_STUB_IMAGE` naming the image, so its real-session-image terminal scenario runs rather than skipping, and `tests/session_e2e.rs` runs the session lifecycle on real containers, with a `postgres:18` service container as its database through `MARS_TEST_POSTGRES_URL` (on Docker the runner's uid is not 1000, so that binary reports the uid contract and returns) |
-| Frontend CI | `frontend/**` | lint, typecheck, unit tests, build; `npm run build` ends in `scripts/check-entry-chunk.mjs`, which fails if the chunks a first paint fetches carry feature UI or exceed the first-paint byte budget (`SPEC.md`, "Frontend", "Code splitting") |
+| Frontend CI | `frontend/**` | Prettier format check, lint, typecheck, unit tests, build; `npm run build` ends in `scripts/check-entry-chunk.mjs`, which fails if the chunks a first paint fetches carry feature UI or exceed the first-paint byte budget (`SPEC.md`, "Frontend", "Code splitting") |
 | E2E | `orchestrator/**`, `frontend/**` or `images/**` | Playwright against a real orchestrator, Postgres and the stub session image on rootless Podman, all brought up by `frontend/tests/e2e-stack.sh`; the report, traces and orchestrator log are uploaded on failure |
 | Images | `images/**` | Lint the entrypoint, Dockerfiles and stub; build all three session images — base, dev and stub — on Docker and Podman; run `images/smoke-test.sh` over them |
 | Deploy | Dockerfiles, `nginx/`, compose files | Build orchestrator and nginx images on Docker and Podman; `nginx -t`; the Content-Security-Policy on real responses from the nginx image; compose config for both overrides; `release-scripts` shellchecks `scripts/release/` and runs `scripts/release/test.sh` (promotion decision, bundle assembly with a podman-compose render, manifest validation) and `scripts/release/test-backup.sh`; `transitions`, with linger and the Podman user socket set up as on a server, builds the orchestrator and nginx images from the commit (the `images` job's cache, read only) and runs `scripts/release/test-transitions.sh`, releases applied one after another by the real `mars-deploy` on rootless Podman: first install, no-op, update with PostgreSQL and data kept, older and paused, rollback and pin, two runs at once, a failed pull, backup and health, every held rule, a run killed mid-replacement, stop and start, a failed release that added a migration left in place, and the user units (boot, deploy, backup, failure notification). Its filter also covers `scripts/release/**`, `deploy/**` and `release.yml` |

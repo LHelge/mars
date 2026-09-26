@@ -1,0 +1,11 @@
+# Prettier formats the frontend's code and configuration. Markdown keeps its
+# long unwrapped lines, recorded fixtures stay byte-for-byte as recorded, and
+# build and test output is not source.
+dist/
+coverage/
+playwright-report/
+test-results/
+.e2e/
+package-lock.json
+*.md
+src/**/fixtures/

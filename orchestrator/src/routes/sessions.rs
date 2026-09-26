@@ -50,8 +50,8 @@ use crate::events::{MAX_TEXT_BYTES, SessionEvent, SessionInput, validate_client_
 use crate::models::{Session, SessionState, SessionTitle, SyncOutcome, TaskRef};
 use crate::prelude::*;
 use crate::repositories::{MAX_EVENT_PAGE, ProjectRepository, SessionRepository, TaskRepository};
+use crate::routes::CurrentUser;
 use crate::routes::tasks::task_ref;
-use crate::routes::{CurrentUser, Path, Query};
 use crate::session::{LaunchActor, LaunchRequest, SessionService, create_session};
 use crate::tracker::TaskDto;
 

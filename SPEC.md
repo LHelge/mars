@@ -53,7 +53,7 @@ All routes are under `/api`. Responses are bare JSON: arrays for lists, objects 
 
 | Status | Used for |
 | --- | --- |
-| 400 | Validation failures and malformed input. |
+| 400 | Validation failures and malformed input, including a body, path segment or query string that does not parse (an id that is not a UUID), which answers in the same JSON error shape. |
 | 401 | Missing or invalid token. |
 | 403 | Authenticated but not permitted (non-admin on admin routes, tool not allowed for profile). |
 | 404 | Unknown resource. |

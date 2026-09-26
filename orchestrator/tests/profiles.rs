@@ -1476,3 +1476,36 @@ async fn a_bad_expression_or_a_missing_prompt_is_refused() {
     // Nothing was written by any of them.
     assert_eq!(names(&list(&app, &user, pid).await), seeded_and(&[]));
 }
+
+/// `SPEC.md`, "REST API": every error is `{ "status", "error" }`, extractor
+/// rejections included, so a project or profile id that is not a UUID answers 400 in that shape through the
+/// prelude's `Path` wrapper rather than axum's plain-text rejection. Each
+/// route is driven with a method it has, so a 405 cannot be what is observed.
+#[tokio::test]
+async fn a_path_segment_that_is_not_a_uuid_is_400_in_the_documented_shape() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+    let pid = Uuid::new_v4();
+    let profile = format!("/api/projects/{pid}/profiles/not-a-uuid");
+
+    let requests = [
+        app.get_as(&user, "/api/projects/not-a-uuid/profiles"),
+        app.post_as(&user, "/api/projects/not-a-uuid/profiles")
+            .json(&json!({})),
+        app.get_as(&user, &profile),
+        app.put_as(&user, &profile).json(&json!({})),
+        app.delete_as(&user, &profile),
+    ];
+
+    for request in requests {
+        let response = request.await;
+
+        response.assert_status(StatusCode::BAD_REQUEST);
+        let body = response.json::<Value>();
+        assert_eq!(body["status"], json!(400), "unexpected body: {body}");
+        assert!(
+            body["error"].as_str().is_some_and(|text| !text.is_empty()),
+            "the rejection carried no message: {body}"
+        );
+    }
+}

@@ -71,7 +71,7 @@ use crate::models::{
 };
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskFilter, TaskRepository};
-use crate::routes::{CurrentUser, Path, Query};
+use crate::routes::CurrentUser;
 use crate::tracker::handoffs::delete_task_with_refs;
 use crate::tracker::state::resolve_state_in_pool;
 use crate::tracker::tasks::{

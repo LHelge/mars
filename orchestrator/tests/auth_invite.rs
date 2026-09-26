@@ -452,3 +452,23 @@ async fn the_accepted_user_can_log_in_with_the_password_they_chose() {
     let (pair, _cookie) = app.login("ada", PASSWORD).await;
     assert_eq!(pair.user["username"], json!("ada"));
 }
+
+/// `SPEC.md`, "REST API": every error is `{ "status", "error" }`, extractor
+/// rejections included. The invite token is a string rather than a UUID, so
+/// the one way its path segment fails to parse is a percent-encoding that is
+/// not UTF-8; that answers 400 in the documented shape through the prelude's
+/// `Path` wrapper rather than axum's plain-text rejection.
+#[tokio::test]
+async fn a_path_segment_that_is_not_utf8_is_400_in_the_documented_shape() {
+    let app = TestApp::spawn().await;
+
+    let response = app.lookup_invite("%FF%FE").await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let body = response.json::<Value>();
+    assert_eq!(body["status"], json!(400), "unexpected body: {body}");
+    assert!(
+        body["error"].as_str().is_some_and(|text| !text.is_empty()),
+        "the rejection carried no message: {body}"
+    );
+}

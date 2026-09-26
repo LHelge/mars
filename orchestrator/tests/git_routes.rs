@@ -950,3 +950,41 @@ async fn a_push_refuses_an_upstream_ref_and_a_qualified_remote_branch() {
         "a refused push sent nothing"
     );
 }
+
+/// `SPEC.md`, "REST API": every error is `{ "status", "error" }`, extractor
+/// rejections included, so a project id that is not a UUID answers 400 in that shape through the
+/// prelude's `Path` wrapper rather than axum's plain-text rejection. Each
+/// route is driven with a method it has, so a 405 cannot be what is observed.
+#[tokio::test]
+async fn a_path_segment_that_is_not_a_uuid_is_400_in_the_documented_shape() {
+    let app = TestApp::spawn().await;
+    let user = app
+        .create_user("ada", "ada@example.test", &password("ada"))
+        .await;
+
+    let requests = [
+        app.get_as(&user, "/api/projects/not-a-uuid/git/session-branches"),
+        app.get_as(&user, "/api/projects/not-a-uuid/git/history"),
+        app.get_as(&user, "/api/projects/not-a-uuid/git/diff"),
+        app.post_as(&user, "/api/projects/not-a-uuid/git/merge")
+            .json(&json!({})),
+        app.post_as(&user, "/api/projects/not-a-uuid/git/rebase")
+            .json(&json!({})),
+        app.post_as(&user, "/api/projects/not-a-uuid/git/push")
+            .json(&json!({})),
+        app.post_as(&user, "/api/projects/not-a-uuid/git/revert")
+            .json(&json!({})),
+    ];
+
+    for request in requests {
+        let response = request.await;
+
+        response.assert_status(StatusCode::BAD_REQUEST);
+        let body = response.json::<Value>();
+        assert_eq!(body["status"], json!(400), "unexpected body: {body}");
+        assert!(
+            body["error"].as_str().is_some_and(|text| !text.is_empty()),
+            "the rejection carried no message: {body}"
+        );
+    }
+}

@@ -46,7 +46,7 @@ use uuid::Uuid;
 use crate::git::{DiffSelector, GitActor, GitService};
 use crate::models::{Diff, HistoryEntry, SessionBranch};
 use crate::prelude::*;
-use crate::routes::{CurrentUser, Path, Query};
+use crate::routes::CurrentUser;
 use crate::tracker::{Reopen, RevertRequest, TaskDto, revert_and_reopen};
 
 /// The longest merge commit message a caller may supply.

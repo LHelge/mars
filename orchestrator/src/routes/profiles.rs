@@ -70,7 +70,7 @@ use crate::events::TaskActor;
 use crate::models::{AgentBackend, AgentProfile, ProfileInput};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
-use crate::routes::{CurrentUser, Path};
+use crate::routes::CurrentUser;
 use crate::secrets::{
     NO_UNATTENDED_CREDENTIAL, NO_UNATTENDED_CREDENTIAL_FOR_SCHEDULE,
     require_unattended_credential_saying,

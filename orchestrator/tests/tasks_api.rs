@@ -1985,3 +1985,38 @@ async fn a_hand_off_keeps_its_branch_commit_and_review_when_its_actors_are_delet
     assert_eq!(after["handoffs"].as_array().expect("a list").len(), 1);
     assert_eq!(after["handoffs"][0]["id"], json!(handoff_id));
 }
+
+/// `SPEC.md`, "REST API": every error is `{ "status", "error" }`, extractor
+/// rejections included, so a project id that is not a UUID answers 400 in that shape through the
+/// prelude's `Path` wrapper rather than axum's plain-text rejection. Each
+/// route is driven with a method it has, so a 405 cannot be what is observed.
+#[tokio::test]
+async fn a_path_segment_that_is_not_a_uuid_is_400_in_the_documented_shape() {
+    let app = TestApp::spawn().await;
+    let user = signed_in(&app, "ada").await;
+
+    let requests = [
+        app.get_as(&user, "/api/projects/not-a-uuid/tasks"),
+        app.post_as(&user, "/api/projects/not-a-uuid/tasks")
+            .json(&json!({})),
+        app.get_as(&user, "/api/projects/not-a-uuid/tasks/1"),
+        app.put_as(&user, "/api/projects/not-a-uuid/tasks/1")
+            .json(&json!({})),
+        app.delete_as(&user, "/api/projects/not-a-uuid/tasks/1"),
+        app.post_as(&user, "/api/projects/not-a-uuid/tasks/1/comments")
+            .json(&json!({})),
+        app.post_as(&user, "/api/projects/not-a-uuid/tasks/1/release"),
+    ];
+
+    for request in requests {
+        let response = request.await;
+
+        response.assert_status(StatusCode::BAD_REQUEST);
+        let body = response.json::<Value>();
+        assert_eq!(body["status"], json!(400), "unexpected body: {body}");
+        assert!(
+            body["error"].as_str().is_some_and(|text| !text.is_empty()),
+            "the rejection carried no message: {body}"
+        );
+    }
+}

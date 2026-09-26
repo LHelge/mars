@@ -62,7 +62,7 @@ use crate::models::{
 use crate::prelude::*;
 use crate::projects::{NewProjectRequest, clone_job, create_project, delete_project};
 use crate::repositories::ProjectRepository;
-use crate::routes::{CurrentUser, Path};
+use crate::routes::CurrentUser;
 
 /// What a `retry-clone` on a project that is not in `error` is told (409).
 const NOT_IN_ERROR: &str = "project is not in error state";

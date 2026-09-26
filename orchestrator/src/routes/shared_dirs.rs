@@ -53,7 +53,7 @@ use crate::models::{NewSharedDir, SharedDir, SharedDirName};
 use crate::prelude::*;
 use crate::projects::ProjectLayout;
 use crate::repositories::{ProjectRepository, SessionRepository};
-use crate::routes::{CurrentUser, Path};
+use crate::routes::CurrentUser;
 
 /// What a clear or a delete on a project with a live session is told (409).
 ///

@@ -49,7 +49,7 @@ use crate::events::TaskActor;
 use crate::models::{AutoMergeInput, TaskState, TaskStateKind, TaskStateName};
 use crate::prelude::*;
 use crate::repositories::{ProjectRepository, TaskRepository};
-use crate::routes::{CurrentUser, Path};
+use crate::routes::CurrentUser;
 use crate::tracker::states::{
     NewStateInput, StateUpdate, create_state, delete_state, update_state,
 };

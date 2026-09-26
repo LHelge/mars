@@ -4,11 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import {
-  clearAuth,
-  installSession,
-  TOKEN_STORAGE_KEY,
-} from "../services/auth";
+import { clearAuth, installSession, TOKEN_STORAGE_KEY } from "../services/auth";
 import type { AgentEvent, Session, User } from "../types";
 import {
   clearSessionStores,
@@ -278,9 +274,11 @@ describe("subagent fixture", () => {
   });
 
   it("produces one tool message when subagent_start precedes the tool_call", () => {
-    const reordered = [ev(subagent, 1), ev(subagent, 0), ...subagent.slice(2)].map(
-      (event, index) => ({ ...event, seq: index + 1 }),
-    );
+    const reordered = [
+      ev(subagent, 1),
+      ev(subagent, 0),
+      ...subagent.slice(2),
+    ].map((event, index) => ({ ...event, seq: index + 1 }));
     const state = folded(reordered);
 
     expect(state.order).toHaveLength(1);
@@ -393,7 +391,9 @@ describe("raw_and_unknown fixture", () => {
       "e5",
       "tool:toolu_ghost_fake",
     ]);
-    expect(state.pendingTools).toEqual({ toolu_ghost_fake: "tool:toolu_ghost_fake" });
+    expect(state.pendingTools).toEqual({
+      toolu_ghost_fake: "tool:toolu_ghost_fake",
+    });
   });
 });
 
@@ -439,7 +439,13 @@ describe("prependHistory", () => {
       user_id: null,
     },
     { seq: 2, ts: "2026-01-02T17:00:01Z", kind: "text", text: "Looking." },
-    { seq: 3, ts: "2026-01-02T17:00:02Z", kind: "thinking", text: "hm", redacted: false },
+    {
+      seq: 3,
+      ts: "2026-01-02T17:00:02Z",
+      kind: "thinking",
+      text: "hm",
+      redacted: false,
+    },
     { seq: 4, ts: "2026-01-02T17:00:03Z", kind: "text", text: "Found it." },
     {
       seq: 5,
@@ -471,7 +477,13 @@ describe("prependHistory", () => {
       duration_ms: 900,
       permission_denials: [],
     },
-    { seq: 9, ts: "2026-01-02T17:00:08Z", kind: "raw", backend: "claude", native: 1 },
+    {
+      seq: 9,
+      ts: "2026-01-02T17:00:08Z",
+      kind: "raw",
+      backend: "claude",
+      native: 1,
+    },
     {
       seq: 10,
       ts: "2026-01-02T17:00:09Z",
@@ -490,7 +502,17 @@ describe("prependHistory", () => {
     const state = store.getState();
 
     // The split tool is one message, kept at the position of its `tool_call`.
-    expect(state.order).toEqual(["e1", "e2", "e3", "e4", "e5", "e7", "e8", "e9", "e10"]);
+    expect(state.order).toEqual([
+      "e1",
+      "e2",
+      "e3",
+      "e4",
+      "e5",
+      "e7",
+      "e8",
+      "e9",
+      "e10",
+    ]);
     expect(state.messages.e6).toBeUndefined();
     const merged = tool(state, "e5");
     expect(merged.name).toBe("Bash");
@@ -627,9 +649,10 @@ describe("a streamed block with other rows in the middle", () => {
   it("keeps one assistant message across the optimistic interject", () => {
     const store = createSessionStore();
     applyAll(store, interjectMidStream.slice(0, 3));
-    store
-      .getState()
-      .addOptimisticUser("c-2", { kind: "message", text: "also update the docs" });
+    store.getState().addOptimisticUser("c-2", {
+      kind: "message",
+      text: "also update the docs",
+    });
     applyAll(store, interjectMidStream.slice(4, 6));
     const state = store.getState();
 
@@ -676,8 +699,12 @@ describe("a streamed block with other rows in the middle", () => {
       { ...ev(gitMidStream, 4), seq: 3 },
     ]);
     expect(withTool.order).toEqual(["e1", "e2", "e3"]);
-    expect((withTool.messages.e1 as AssistantTextMessage).text).toBe("Committing");
-    expect((withTool.messages.e3 as AssistantTextMessage).text).toBe(" the change");
+    expect((withTool.messages.e1 as AssistantTextMessage).text).toBe(
+      "Committing",
+    );
+    expect((withTool.messages.e3 as AssistantTextMessage).text).toBe(
+      " the change",
+    );
 
     const withThinking = folded([
       ev(gitMidStream, 0),
@@ -892,7 +919,9 @@ describe("a history page cut inside a delta run", () => {
 describe("optimistic input", () => {
   it("replaces the optimistic message in place when its event arrives", () => {
     const store = createSessionStore();
-    store.getState().addOptimisticUser("c-9", { kind: "message", text: "Hello" });
+    store
+      .getState()
+      .addOptimisticUser("c-9", { kind: "message", text: "Hello" });
     store.getState().inputAccepted("c-9", 3);
     expect(store.getState().order).toEqual([optimisticId("c-9")]);
     // Accepted at the `seq` the echo will carry, and still on its way: the
@@ -923,7 +952,9 @@ describe("optimistic input", () => {
 
   it("keeps a rejected message visible so it can be resent", () => {
     const store = createSessionStore();
-    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    store
+      .getState()
+      .addOptimisticUser("c-x", { kind: "message", text: "Nope" });
     store.getState().inputRejected("c-x", "session is done");
     const message = store.getState().messages[optimisticId("c-x")];
 
@@ -969,7 +1000,9 @@ describe("optimistic input", () => {
     const store = createSessionStore();
     expect(store.getState().lastRejection).toBeNull();
 
-    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    store
+      .getState()
+      .addOptimisticUser("c-x", { kind: "message", text: "Nope" });
     store.getState().inputRejected("c-x", "session is done");
 
     expect(store.getState().lastRejection).toEqual({
@@ -991,9 +1024,13 @@ describe("optimistic input", () => {
 
   it("clears the last rejection on the next attempt", () => {
     const store = createSessionStore();
-    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    store
+      .getState()
+      .addOptimisticUser("c-x", { kind: "message", text: "Nope" });
     store.getState().inputRejected("c-x", "session is done");
-    store.getState().addOptimisticUser("c-y", { kind: "message", text: "Again" });
+    store
+      .getState()
+      .addOptimisticUser("c-y", { kind: "message", text: "Again" });
 
     expect(store.getState().lastRejection).toBeNull();
     // The rejected message keeps its own marking; only the banner is cleared.
@@ -1004,7 +1041,9 @@ describe("optimistic input", () => {
 
   it("restores the previous turnActive when the send is rejected", () => {
     const store = createSessionStore();
-    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    store
+      .getState()
+      .addOptimisticUser("c-x", { kind: "message", text: "Nope" });
     expect(store.getState().turnActive).toBe(true);
 
     store.getState().inputRejected("c-x", "session is done");
@@ -1016,14 +1055,18 @@ describe("optimistic input", () => {
     applyAll(store, simpleTurn.slice(0, 3));
     expect(store.getState().turnActive).toBe(true);
 
-    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    store
+      .getState()
+      .addOptimisticUser("c-x", { kind: "message", text: "Nope" });
     store.getState().inputRejected("c-x", "input queue is full");
     expect(store.getState().turnActive).toBe(true);
   });
 
   it("keeps turnActive when an event arrived after the rejected send", () => {
     const store = createSessionStore();
-    store.getState().addOptimisticUser("c-x", { kind: "message", text: "Nope" });
+    store
+      .getState()
+      .addOptimisticUser("c-x", { kind: "message", text: "Nope" });
     applyAll(store, simpleTurn.slice(0, 3));
     store.getState().inputRejected("c-x", "session is done");
 
@@ -1096,7 +1139,8 @@ describe("the store registry", () => {
   }
 
   beforeEach(() => {
-    for (const sessionId of retainedSessionIds()) disposeSessionStore(sessionId);
+    for (const sessionId of retainedSessionIds())
+      disposeSessionStore(sessionId);
   });
 
   it("keeps a released store, so a return visit resumes from it", () => {
@@ -1134,7 +1178,8 @@ describe("the store registry", () => {
   it("never evicts a store that is in use", () => {
     const held = retainSessionStore(id(1));
     applyAll(held, simpleTurn);
-    for (let n = 2; n <= MAX_RETAINED_SESSIONS + 3; n += 1) getSessionStore(id(n));
+    for (let n = 2; n <= MAX_RETAINED_SESSIONS + 3; n += 1)
+      getSessionStore(id(n));
 
     expect(retainedSessionIds()).toContain(id(1));
     expect(getSessionStore(id(1))).toBe(held);
@@ -1145,12 +1190,14 @@ describe("the store registry", () => {
     retainSessionStore(id(1));
     retainSessionStore(id(1));
     releaseSessionStore(id(1));
-    for (let n = 2; n <= MAX_RETAINED_SESSIONS + 3; n += 1) getSessionStore(id(n));
+    for (let n = 2; n <= MAX_RETAINED_SESSIONS + 3; n += 1)
+      getSessionStore(id(n));
 
     expect(retainedSessionIds()).toContain(id(1));
 
     releaseSessionStore(id(1));
-    for (let n = 2; n <= MAX_RETAINED_SESSIONS + 3; n += 1) getSessionStore(id(n));
+    for (let n = 2; n <= MAX_RETAINED_SESSIONS + 3; n += 1)
+      getSessionStore(id(n));
 
     expect(retainedSessionIds()).not.toContain(id(1));
   });

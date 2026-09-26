@@ -37,7 +37,9 @@ vi.mock("../services/projects", async (original) => ({
 
 const PROJECT = "22222222-2222-4222-8222-222222222222";
 
-function event(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function event(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
     seq: 1,
     ts: "2026-09-21T10:00:00Z",

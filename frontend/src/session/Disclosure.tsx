@@ -49,10 +49,7 @@ export function Disclosure({
   bodyTestId,
   children,
 }: DisclosureProps) {
-  const [open, toggle] = useDisclosure(
-    disclosureKey(rowId, slot),
-    defaultOpen,
-  );
+  const [open, toggle] = useDisclosure(disclosureKey(rowId, slot), defaultOpen);
 
   return (
     <>

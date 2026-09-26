@@ -63,9 +63,7 @@ export function createSharedDir(
 
 /** Empties the directory; 409 while any session of the project is live. */
 export function clearSharedDir(id: string, name: string): Promise<void> {
-  return apiPost<void>(
-    `/projects/${seg(id)}/shared-dirs/${seg(name)}/clear`,
-  );
+  return apiPost<void>(`/projects/${seg(id)}/shared-dirs/${seg(name)}/clear`);
 }
 
 /** Removes the directory and its contents; 409 while any session is live. */

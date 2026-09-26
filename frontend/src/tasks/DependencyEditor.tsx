@@ -22,10 +22,7 @@ import { Alert } from "../components/Alert";
 import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { errorMessage } from "../services/errorMessage";
-import {
-  parseTaskDependencyKind,
-  TASK_DEPENDENCY_KINDS,
-} from "../types";
+import { parseTaskDependencyKind, TASK_DEPENDENCY_KINDS } from "../types";
 import type { TaskDependencyKind, TaskDetail } from "../types";
 import { DependencyList } from "./DependencyList";
 import { filterTasks } from "./search";
@@ -39,7 +36,6 @@ const KIND_LABEL: Record<TaskDependencyKind, string> = {
   discovered_from: "discovered from — where this came from",
   related: "related — for context only",
 };
-
 
 /** Long enough to choose from, short enough to keep the drawer scannable. */
 const MAX_MATCHES = 8;
@@ -113,7 +109,10 @@ export function DependencyEditor({ projectId, task }: DependencyEditorProps) {
       >
         <div className="grid gap-2 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
-            <label htmlFor={`${fieldId}-search`} className="text-console-muted text-xs">
+            <label
+              htmlFor={`${fieldId}-search`}
+              className="text-console-muted text-xs"
+            >
               Find a task
             </label>
             <input
@@ -130,7 +129,10 @@ export function DependencyEditor({ projectId, task }: DependencyEditorProps) {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <label htmlFor={`${fieldId}-kind`} className="text-console-muted text-xs">
+            <label
+              htmlFor={`${fieldId}-kind`}
+              className="text-console-muted text-xs"
+            >
               Kind
             </label>
             <select

@@ -80,7 +80,9 @@ function checkTable() {
   }
 
   if (referenced.size === 0) {
-    problems.push("the table references no scenario at all: has its shape changed?");
+    problems.push(
+      "the table references no scenario at all: has its shape changed?",
+    );
   }
 
   // A skipped scenario is an exclusion, and an exclusion belongs in the table.
@@ -117,7 +119,9 @@ function checkSkips() {
         const status = test.status ?? "";
         if (status !== "skipped") continue;
         if (DOCUMENTED_SKIPS.has(spec.title)) continue;
-        problems.push(`"${spec.title}" was skipped and is not a documented skip`);
+        problems.push(
+          `"${spec.title}" was skipped and is not a documented skip`,
+        );
       }
     }
     for (const child of suite.suites ?? []) walk(child);

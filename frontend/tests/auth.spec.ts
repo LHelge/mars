@@ -111,10 +111,10 @@ test.describe("the seeded administrator", () => {
   // `auth.spec.ts` first, and serial mode keeps the block itself in order.
   test.describe.configure({ mode: "serial" });
 
-  test("must change password before anything else", async (
-    { page, request },
-    testInfo,
-  ) => {
+  test("must change password before anything else", async ({
+    page,
+    request,
+  }, testInfo) => {
     // A rerun against a stack that is already up finds the seeded password
     // spent, because this very test changed it. `npm run test:e2e:up` starts
     // from an empty database and brings it back.
@@ -186,7 +186,6 @@ test.describe("the seeded administrator", () => {
 });
 
 test("login rejects a wrong password", async ({ page, user }) => {
-
   await page.goto("/login");
   await submitLogin(page, user.username, "not-the-password");
 
@@ -198,7 +197,6 @@ test("login rejects a wrong password", async ({ page, user }) => {
 });
 
 test("login and logout", async ({ page, user }) => {
-
   await login(page, user.username, user.password);
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
 
@@ -211,7 +209,6 @@ test("login and logout", async ({ page, user }) => {
 });
 
 test("a deep link is preserved through login", async ({ page, user }) => {
-
   // `ProtectedRoute` stashes the blocked destination in router state
   // (`SPEC.md`, "Frontend", Copy links).
   await page.goto("/secrets");
@@ -331,7 +328,6 @@ test("a password reset through the logged link replaces the password", async ({
   page,
   user,
 }) => {
-
   await page.goto("/forgot-password");
   await page.getByLabel("Username or email").fill(user.username);
 
@@ -378,7 +374,6 @@ test("the settings page changes the password and keeps only this session", async
   browser,
   user,
 }) => {
-
   // A second browser holding the pair `POST /test/users` issued, signed in
   // before the change and left open across it.
   const other = await newLoggedInPage(browser, user);

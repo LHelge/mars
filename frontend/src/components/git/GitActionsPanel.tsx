@@ -392,9 +392,9 @@ export function GitActionsPanel({
           <>
             Integrating upstream is a merge like any other:{" "}
             <span className="font-mono">origin/{defaultBranch}</span> into{" "}
-            <span className="font-mono">{defaultBranch}</span>. Fetch first,
-            so <span className="font-mono">origin/{defaultBranch}</span> is
-            what the remote has now.
+            <span className="font-mono">{defaultBranch}</span>. Fetch first, so{" "}
+            <span className="font-mono">origin/{defaultBranch}</span> is what
+            the remote has now.
           </>
         }
       >

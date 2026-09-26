@@ -78,9 +78,7 @@ describe("MarkdownBody", () => {
   });
 
   it("leaves intraword underscores and asterisks literal", () => {
-    const container = markdown(
-      "a snake_case_name and 2 * 3 * 4 and a_b_c\n",
-    );
+    const container = markdown("a snake_case_name and 2 * 3 * 4 and a_b_c\n");
 
     expect(container.querySelectorAll("em")).toHaveLength(0);
     expect(container.querySelectorAll("strong")).toHaveLength(0);

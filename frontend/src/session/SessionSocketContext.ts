@@ -10,7 +10,9 @@ import { createContext, useContext } from "react";
 
 import type { SessionSocketApi } from "./useSessionSocket";
 
-export const SessionSocketContext = createContext<SessionSocketApi | null>(null);
+export const SessionSocketContext = createContext<SessionSocketApi | null>(
+  null,
+);
 
 /**
  * The session socket of the enclosing page. Throws outside the provider, which

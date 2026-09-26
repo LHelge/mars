@@ -62,14 +62,16 @@ function mount(shown: Session = session) {
 /** A `git` event as the socket would deliver it. */
 function gitEvent(seq: number, ok: boolean) {
   act(() => {
-    getSessionStore(SESSION_ID).getState().applyEvent({
-      kind: "git",
-      seq,
-      ts: "2026-03-01T12:00:00Z",
-      op: "sync",
-      ok,
-      detail: { ref: `refs/sessions/${SESSION_ID}` },
-    });
+    getSessionStore(SESSION_ID)
+      .getState()
+      .applyEvent({
+        kind: "git",
+        seq,
+        ts: "2026-03-01T12:00:00Z",
+        op: "sync",
+        ok,
+        detail: { ref: `refs/sessions/${SESSION_ID}` },
+      });
   });
 }
 

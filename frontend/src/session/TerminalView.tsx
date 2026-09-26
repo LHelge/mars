@@ -118,7 +118,9 @@ export function TerminalView({ session }: SessionPanelProps) {
         term.write(frame);
         return;
       }
-      term.write(`\r\n[process exited with code ${String(frame.exit_code)}]\r\n`);
+      term.write(
+        `\r\n[process exited with code ${String(frame.exit_code)}]\r\n`,
+      );
       setExitCode(frame.exit_code);
     });
     const onData = term.onData((data) => {

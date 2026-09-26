@@ -63,7 +63,9 @@ describe("AgentCredentialNotice", () => {
     mount();
 
     expect(
-      await screen.findByText("Authenticates with your Claude subscription token"),
+      await screen.findByText(
+        "Authenticates with your Claude subscription token",
+      ),
     ).toBeDefined();
   });
 
@@ -105,9 +107,9 @@ describe("AgentCredentialNotice", () => {
     expect(
       await screen.findByText(/No agent credential: sessions of this profile/),
     ).toBeDefined();
-    expect(screen.getByRole("link", { name: "Add one" }).getAttribute("href")).toBe(
-      "/secrets",
-    );
+    expect(
+      screen.getByRole("link", { name: "Add one" }).getAttribute("href"),
+    ).toBe("/secrets");
   });
 
   it("says nothing about a backend the answer has no entry for", async () => {

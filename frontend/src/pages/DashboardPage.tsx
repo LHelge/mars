@@ -176,7 +176,7 @@ function SessionRows({
               {session.branch ?? PLACEHOLDER}
             </td>
             <td
-              className={`${CELL} text-console-muted hidden font-mono text-xs sm:table-cell whitespace-nowrap`}
+              className={`${CELL} text-console-muted hidden font-mono text-xs whitespace-nowrap sm:table-cell`}
             >
               {formatRelative(session.last_activity_at)}
             </td>

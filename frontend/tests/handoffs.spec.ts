@@ -55,12 +55,7 @@ import type {
   Page,
 } from "@playwright/test";
 
-import type {
-  Project,
-  Session,
-  SyncResult,
-  TaskDetail,
-} from "../src/types";
+import type { Project, Session, SyncResult, TaskDetail } from "../src/types";
 import type { Api } from "./utils/test-helpers";
 import { apiClient, expect, test } from "./utils/fixtures";
 import type { SessionTracker } from "./utils/fixtures";
@@ -244,7 +239,9 @@ function mergeButton(panel: Locator): Locator {
 
 /** The task drawer's launch form, opened on its `Open in session` button. */
 async function openLaunchForm(panel: Locator): Promise<Locator> {
-  await panel.getByRole("button", { name: "Open in session", exact: true }).click();
+  await panel
+    .getByRole("button", { name: "Open in session", exact: true })
+    .click();
   const form = panel.getByRole("form", { name: "Open in session" });
   await expect(form).toBeVisible();
   return form;
@@ -257,7 +254,9 @@ async function submitLaunch(
   tracker: SessionTracker,
   client: Api,
 ): Promise<string> {
-  await form.getByRole("button", { name: "Open in session", exact: true }).click();
+  await form
+    .getByRole("button", { name: "Open in session", exact: true })
+    .click();
   await page.waitForURL(/\/sessions\/[0-9a-f-]{8}-/);
   const id = page.url().slice(page.url().lastIndexOf("/") + 1);
   return tracker.track(client, id);
@@ -303,7 +302,9 @@ test("publishing a revision pins the commit and moves the task to review", async
   );
 
   const panel = await openTask(page, project);
-  await expect(handoffSection(panel).getByText("No code hand-off")).toBeVisible();
+  await expect(
+    handoffSection(panel).getByText("No code hand-off"),
+  ).toBeVisible();
 
   const form = await openRevisionForm(panel);
   // Nothing is preselected but the one session that could be meant
@@ -338,7 +339,9 @@ test("publishing a revision pins the commit and moves the task to review", async
   await expect(current.getByText(commit.slice(0, 7)).first()).toBeVisible();
   await expect(current.getByTitle(commit).first()).toBeVisible();
   await expect(current.getByText("Unreviewed").first()).toBeVisible();
-  await expect(current.getByRole("link", { name: session.slice(0, 8) }).first()).toBeVisible();
+  await expect(
+    current.getByRole("link", { name: session.slice(0, 8) }).first(),
+  ).toBeVisible();
   // The comment is written with the hand-off and shows on the thread.
   await expect(panel.getByText("Ready for review").first()).toBeVisible();
 
@@ -354,9 +357,9 @@ test("publishing a revision pins the commit and moves the task to review", async
 
   // `ARCHITECTURE.md`, "Git model": the commit is retained under an immutable
   // ref of its own, so it survives whatever the branch does next.
-  expect(gitRevParse(fixture.mirror, `refs/handoffs/${task.handoff?.id ?? ""}`)).toBe(
-    commit,
-  );
+  expect(
+    gitRevParse(fixture.mirror, `refs/handoffs/${task.handoff?.id ?? ""}`),
+  ).toBe(commit);
   // And the publication's own sync left the session ref at the same commit.
   expect(gitRevParse(fixture.mirror, `refs/sessions/${session}`)).toBe(commit);
 
@@ -435,13 +438,22 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
   ).toBeVisible();
   await expect(form.getByText(/Base overridden/)).toHaveCount(0);
 
-  const reviewSession = await submitLaunch(second.page, form, sessions, second.client);
+  const reviewSession = await submitLaunch(
+    second.page,
+    form,
+    sessions,
+    second.client,
+  );
 
   // The session records the commit, not the branch (`SPEC.md`, "Sessions").
-  const started = await second.client.get<Session>(`/sessions/${reviewSession}`);
+  const started = await second.client.get<Session>(
+    `/sessions/${reviewSession}`,
+  );
   expect(started.base_ref).toBe(commit);
   expect(started.handoff_id).toBe(handoff.id);
-  await expect(second.page.getByText(commit, { exact: true }).first()).toBeVisible({
+  await expect(
+    second.page.getByText(commit, { exact: true }).first(),
+  ).toBeVisible({
     timeout: 60_000,
   });
 
@@ -485,7 +497,12 @@ test("a reviewer's session starts from the hand-off commit and is told about it"
     ),
   ).toBeVisible();
 
-  const overridden = await submitLaunch(second.page, form, sessions, second.client);
+  const overridden = await submitLaunch(
+    second.page,
+    form,
+    sessions,
+    second.client,
+  );
   const third = await second.client.get<Session>(`/sessions/${overridden}`);
   expect(third.base_ref).toBe("main");
   // An explicit base is not a hand-off selection, so the session records none
@@ -520,7 +537,9 @@ test("approving forwards the hand-off to merge and unlocks the task merge", asyn
 
   const second = await reviewer(browser, request);
   const panel = await openTask(second.page, project);
-  await expect(handoffSection(panel).getByText("No code hand-off")).toBeVisible();
+  await expect(
+    handoffSection(panel).getByText("No code hand-off"),
+  ).toBeVisible();
 
   // The board's live refresh reaches the open drawer: the hand-off U1 publishes
   // appears without a reload (ADR 0022; `SPEC.md`, "Board refresh ordering").
@@ -544,12 +563,16 @@ test("approving forwards the hand-off to merge and unlocks the task merge", asyn
   // An approval with an empty comment is refused by the form, as the API
   // requires one.
   await form.getByLabel("Move to").selectOption("merge");
-  await expect(form.getByRole("button", { name: "Approve", exact: true })).toBeDisabled();
+  await expect(
+    form.getByRole("button", { name: "Approve", exact: true }),
+  ).toBeDisabled();
 
   await submitReview(form, "Approve", "merge", "LGTM");
 
   await expect(
-    handoffSection(panel).getByText(`Approved · ${commit.slice(0, 7)}`).first(),
+    handoffSection(panel)
+      .getByText(`Approved · ${commit.slice(0, 7)}`)
+      .first(),
   ).toBeVisible({ timeout: LIVE_TIMEOUT });
   // The reviewer is named, by username (`GET /users/{id}`).
   await expect(
@@ -595,12 +618,17 @@ test("the task merge lands the pinned commit even after the branch advanced", as
     comment: "Ready for review",
     state: "review",
   });
-  const forwarded = await forwardHandoff(fixture.client, fixture.project.id, 1, {
-    handoffId: handoff.id,
-    comment: "LGTM",
-    state: "merge",
-    review: "approved",
-  });
+  const forwarded = await forwardHandoff(
+    fixture.client,
+    fixture.project.id,
+    1,
+    {
+      handoffId: handoff.id,
+      comment: "LGTM",
+      state: "merge",
+      review: "approved",
+    },
+  );
 
   // The branch moves on after the approval, which is the normal case and
   // exactly what must not be merged (`SPEC.md`, "Code hand-offs and review").
@@ -669,12 +697,17 @@ test("the merge control is shut without an approval and a superseded review is r
     { "greeting.txt": "hello\n" },
     "feat: greeting",
   );
-  const original = await publishRevision(fixture.client, fixture.project.id, 1, {
-    source: session,
-    commit: first,
-    comment: "Ready for review",
-    state: "review",
-  });
+  const original = await publishRevision(
+    fixture.client,
+    fixture.project.id,
+    1,
+    {
+      source: session,
+      commit: first,
+      comment: "Ready for review",
+      state: "review",
+    },
+  );
 
   const panel = await openTask(page, project);
   // `tasks/mergeRules.ts`: an unreviewed hand-off is not mergeable, and the
@@ -701,7 +734,9 @@ test("the merge control is shut without an approval and a superseded review is r
   await expect(
     handoffSection(panel).getByText(second.slice(0, 7)).first(),
   ).toBeVisible({ timeout: LIVE_TIMEOUT });
-  await expect(handoffSection(panel).getByText("Unreviewed").first()).toBeVisible();
+  await expect(
+    handoffSection(panel).getByText("Unreviewed").first(),
+  ).toBeVisible();
   // Both revisions are in the history, and only the newer one is current.
   await expect(
     handoffSection(panel).getByRole("listitem").filter({ hasText: "current" }),
@@ -726,7 +761,9 @@ test("the merge control is shut without an approval and a superseded review is r
     { allow: [409] },
   );
   expect(refused.status).toBe(409);
-  expect(refused.text).toContain("handoff_id is not the task's current hand-off");
+  expect(refused.text).toContain(
+    "handoff_id is not the task's current hand-off",
+  );
 
   const untouched = await getTask(fixture.client, fixture.project.id, 1);
   expect(untouched.state).toBe("ready");
@@ -736,7 +773,9 @@ test("the merge control is shut without an approval and a superseded review is r
   const review = await openReviewForm(panel, "Approve");
   await submitReview(review, "Approve", "merge", "Looks right now");
   await expect(
-    handoffSection(panel).getByText(`Approved · ${second.slice(0, 7)}`).first(),
+    handoffSection(panel)
+      .getByText(`Approved · ${second.slice(0, 7)}`)
+      .first(),
   ).toBeVisible({ timeout: LIVE_TIMEOUT });
   await expect(mergeButton(panel)).toBeEnabled();
 });
@@ -814,7 +853,9 @@ test("requesting changes sends the task back and a new revision resets the revie
   await expect(
     handoffSection(panel).getByText(fixed.slice(0, 7)).first(),
   ).toBeVisible({ timeout: LIVE_TIMEOUT });
-  await expect(handoffSection(panel).getByText("Unreviewed").first()).toBeVisible();
+  await expect(
+    handoffSection(panel).getByText("Unreviewed").first(),
+  ).toBeVisible();
   expect(after.handoff?.commit).toBe(fixed);
   expect(after.handoff?.review_status).toBe("unreviewed");
   // The old decision is still in the history, on the commit it covered.
@@ -866,7 +907,9 @@ test("the revision diff is read by hand-off id without syncing anything", async 
   // without fetch-back, and the publication's own sync was silent — so the
   // implementer's transcript holds no git outcome at all.
   await page.goto(`/sessions/${session}`);
-  await expect(transcript(page).getByText("Session started (stub)")).toBeVisible({
+  await expect(
+    transcript(page).getByText("Session started (stub)"),
+  ).toBeVisible({
     timeout: 30_000,
   });
   await expect(transcript(page).getByText(/^Git .* succeeded$/)).toHaveCount(0);
@@ -945,12 +988,17 @@ test("a review of a superseded revision says the hand-off changed", async ({
     { "greeting.txt": "hello\n" },
     "feat: greeting",
   );
-  const original = await publishRevision(fixture.client, fixture.project.id, 1, {
-    source: session,
-    commit: first,
-    comment: "Ready for review",
-    state: "review",
-  });
+  const original = await publishRevision(
+    fixture.client,
+    fixture.project.id,
+    1,
+    {
+      source: session,
+      commit: first,
+      comment: "Ready for review",
+      state: "review",
+    },
+  );
 
   // The drawer refetches the task on every task event, so a second revision
   // published while the review form is open would normally reach that form
@@ -988,12 +1036,17 @@ test("a review of a superseded revision says the hand-off changed", async ({
   // Back to `ready`: a hand-off has to move the task somewhere it is not
   // (`SPEC.md`, "Code hand-offs and review": 400 `handoff requires a different
   // target state`).
-  const superseding = await publishRevision(fixture.client, fixture.project.id, 1, {
-    source: session,
-    commit: second,
-    comment: "Second attempt",
-    state: "ready",
-  });
+  const superseding = await publishRevision(
+    fixture.client,
+    fixture.project.id,
+    1,
+    {
+      source: session,
+      commit: second,
+      comment: "Second attempt",
+      state: "ready",
+    },
+  );
   expect(superseding.id).not.toBe(original.id);
 
   await submitReview(form, "Approve", "merge", "Looks right");
@@ -1091,17 +1144,23 @@ test("dropping the hand-off clears it from the drawer and keeps it in the histor
   const section = handoffSection(panel);
   await expect(section.getByTestId(CURRENT_HANDOFF)).toBeVisible();
 
-  await section.getByRole("button", { name: "Drop hand-off", exact: true }).click();
+  await section
+    .getByRole("button", { name: "Drop hand-off", exact: true })
+    .click();
   // The confirmation says what the drop does and what it keeps, and names its
   // target on the button (`SPEC.md`, "Frontend", Confirmations).
   await expect(
-    section.getByText(/next launch for this task starts from the default branch/),
+    section.getByText(
+      /next launch for this task starts from the default branch/,
+    ),
   ).toBeVisible();
   const confirm = section.getByRole("button", { name: "Drop hand-off of #1" });
 
   // The comment is required, and refused before any request is made.
   await confirm.click();
-  await expect(section.getByText("Say why the hand-off is dropped.")).toBeVisible();
+  await expect(
+    section.getByText("Say why the hand-off is dropped."),
+  ).toBeVisible();
   await expect(section.getByTestId(CURRENT_HANDOFF)).toBeVisible();
 
   await section
@@ -1128,7 +1187,9 @@ test("dropping the hand-off clears it from the drawer and keeps it in the histor
   expect(task.handoff).toBeNull();
   expect(task.state).toBe("review");
   expect(task.handoffs.map((one) => one.id)).toEqual([handoff.id]);
-  expect(gitRevParse(fixture.mirror, `refs/handoffs/${handoff.id}`)).toBe(commit);
+  expect(gitRevParse(fixture.mirror, `refs/handoffs/${handoff.id}`)).toBe(
+    commit,
+  );
 
   // With nothing left to drop, the API refuses a second drop.
   const again = await fixture.client.send(

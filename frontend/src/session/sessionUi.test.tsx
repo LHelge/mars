@@ -31,8 +31,9 @@ function tool(): ToolMessage {
 /** Whether the tool row's body is showing. */
 function frameOpen(): boolean {
   return (
-    screen.getByRole("button", { name: /Bash/ }).getAttribute("aria-expanded") ===
-    "true"
+    screen
+      .getByRole("button", { name: /Bash/ })
+      .getAttribute("aria-expanded") === "true"
   );
 }
 

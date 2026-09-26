@@ -66,7 +66,8 @@ export function SecretsPage() {
   // arrives on that URL — a pasted link, a stale bookmark — would otherwise
   // get a scope no radio is offered for, no picker, and a 403 list; they are
   // shown their own secrets instead.
-  const forbidden = scope === "user" && linked !== null && !selfSelected && !isAdmin;
+  const forbidden =
+    scope === "user" && linked !== null && !selfSelected && !isAdmin;
 
   // The normalisation is done here and not only in the effect below: an effect
   // runs after a render, and that render would already have read the URL's

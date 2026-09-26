@@ -8,12 +8,7 @@ import {
   onPasswordChangeRequired,
   seg,
 } from "./apiClient";
-import {
-  clearAuth,
-  getAccessToken,
-  installSession,
-  onSignOut,
-} from "./auth";
+import { clearAuth, getAccessToken, installSession, onSignOut } from "./auth";
 import type { AuthResponse, User } from "../types";
 
 const user: User = {
@@ -53,7 +48,11 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 function errorResponse(status: number, error: string, conflicts?: string[]) {
-  return jsonResponse(status, { status, error, ...(conflicts && { conflicts }) });
+  return jsonResponse(status, {
+    status,
+    error,
+    ...(conflicts && { conflicts }),
+  });
 }
 
 /** `apiClient` always passes a string URL; this keeps the assertions honest. */
@@ -205,11 +204,15 @@ describe("apiClient requests", () => {
     )) as ApiError;
     expect(conflict.conflicts).toEqual(["src/main.rs"]);
 
-    const gateway = (await apiGet("/projects").catch((e: unknown) => e)) as ApiError;
+    const gateway = (await apiGet("/projects").catch(
+      (e: unknown) => e,
+    )) as ApiError;
     expect(gateway.status).toBe(502);
     expect(gateway.error).toBe("Orchestrator unreachable");
 
-    const odd = (await apiGet("/projects").catch((e: unknown) => e)) as ApiError;
+    const odd = (await apiGet("/projects").catch(
+      (e: unknown) => e,
+    )) as ApiError;
     expect(odd.error).toBe("HTTP 418");
   });
 
@@ -294,7 +297,9 @@ describe("apiClient 401 handling", () => {
       apiGet<User>("/sessions"),
     ]);
 
-    const refreshes = requestUrls().filter((url) => url === "/api/auth/refresh");
+    const refreshes = requestUrls().filter(
+      (url) => url === "/api/auth/refresh",
+    );
     expect(refreshes).toHaveLength(1);
   });
 

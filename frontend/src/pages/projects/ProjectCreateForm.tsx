@@ -34,10 +34,7 @@ interface FieldErrors {
  * obvious mistakes never cost a round trip. Uniqueness is the server's answer
  * and arrives as a 409.
  */
-function validateProjectForm(
-  name: string,
-  remoteUrl: string,
-): FieldErrors {
+function validateProjectForm(name: string, remoteUrl: string): FieldErrors {
   const errors: FieldErrors = {};
 
   const trimmedName = name.trim();

@@ -149,9 +149,9 @@ describe("parseUnifiedPatch", () => {
   });
 
   it("marks a text file as not binary", () => {
-    expect(parseUnifiedPatch(TWO_FILE_PATCH).map((file) => file?.binary)).toEqual(
-      [false, false],
-    );
+    expect(
+      parseUnifiedPatch(TWO_FILE_PATCH).map((file) => file?.binary),
+    ).toEqual([false, false]);
   });
 
   it("marks a file git refused to diff as binary, with no hunks", () => {
@@ -215,7 +215,12 @@ index 1111111..2222222 100644
     );
     expect(file?.path).toBe("migrations/0001_init.sql");
     expect(file?.hunks[0]?.lines).toEqual([
-      { type: "context", text: "CREATE TABLE t (id uuid);", oldNo: 1, newNo: 1 },
+      {
+        type: "context",
+        text: "CREATE TABLE t (id uuid);",
+        oldNo: 1,
+        newNo: 1,
+      },
       { type: "del", text: "-- old comment", oldNo: 2 },
       { type: "add", text: "-- new comment", newNo: 2 },
       // The old side kept counting: the deletion was not swallowed.

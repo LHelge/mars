@@ -197,7 +197,10 @@ describe("SessionSocket across a token rotation", () => {
       }
       return Promise.resolve(
         fetchMock.mock.calls.length === 1
-          ? fakeResponse(401, JSON.stringify({ status: 401, error: "authentication required" }))
+          ? fakeResponse(
+              401,
+              JSON.stringify({ status: 401, error: "authentication required" }),
+            )
           : fakeResponse(200, JSON.stringify(session("running"))),
       );
     });

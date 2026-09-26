@@ -161,9 +161,7 @@ export function lineDiff(oldText: string, newText: string): DiffLine[] {
       });
       i += 1;
       j += 1;
-    } else if (
-      cell(lcs, (i + 1) * width + j) >= cell(lcs, i * width + j + 1)
-    ) {
+    } else if (cell(lcs, (i + 1) * width + j) >= cell(lcs, i * width + j + 1)) {
       lines.push({
         type: "del",
         text: lineAt(a, start + i),

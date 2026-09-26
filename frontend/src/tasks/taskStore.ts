@@ -37,10 +37,7 @@ export interface TaskStoreDeps {
  * board").
  */
 export type TaskStreamStatus =
-  | "connecting"
-  | "live"
-  | "reconnecting"
-  | "offline";
+  "connecting" | "live" | "reconnecting" | "offline";
 
 export interface TaskBoardState {
   /** The project the snapshot belongs to; `null` before the first bind. */
@@ -190,8 +187,7 @@ export function createTaskStore(deps: TaskStoreDeps): TaskStoreHook {
     setStream: (status, error) =>
       set({
         stream: status,
-        streamError:
-          status === "offline" ? (error ?? "Disconnected") : null,
+        streamError: status === "offline" ? (error ?? "Disconnected") : null,
       }),
 
     setStreamRetry: (reconnect) => set({ reconnectStream: reconnect }),

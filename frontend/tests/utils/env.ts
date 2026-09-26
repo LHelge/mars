@@ -93,7 +93,8 @@ export interface WaitForOptions {
  * silent, and the timeout carries the description instead.
  */
 export async function waitFor<T>(
-  fn: () => Promise<T | null | undefined | false> | T | null | undefined | false,
+  fn: () =>
+    Promise<T | null | undefined | false> | T | null | undefined | false,
   opts: WaitForOptions = {},
 ): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 30_000;

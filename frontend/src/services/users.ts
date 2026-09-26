@@ -32,10 +32,7 @@ export function getUser(id: string): Promise<User> {
 }
 
 /** Admin only; 409 when the change would remove the last administrator. */
-export function updateUser(
-  id: string,
-  body: UpdateUserRequest,
-): Promise<User> {
+export function updateUser(id: string, body: UpdateUserRequest): Promise<User> {
   return apiPut<User>(`/users/${seg(id)}`, body);
 }
 
@@ -53,10 +50,7 @@ export function changePassword(
   id: string,
   body: PasswordChangeRequest,
 ): Promise<AuthResponse | undefined> {
-  return apiPost<AuthResponse | undefined>(
-    `/users/${seg(id)}/password`,
-    body,
-  );
+  return apiPost<AuthResponse | undefined>(`/users/${seg(id)}/password`, body);
 }
 
 /** Admin only; open invites. The token is never part of the response. */

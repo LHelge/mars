@@ -8,8 +8,7 @@
 // pattern below would otherwise leave the payload behind as plain text.
 /* eslint-disable no-control-regex -- the control characters are the subject
    of these two patterns, not an accident. */
-const OSC =
-  /[\u001B\u009B]\][^\u0007\u001B\u009C]*(?:\u0007|\u001B\\|\u009C)/g;
+const OSC = /[\u001B\u009B]\][^\u0007\u001B\u009C]*(?:\u0007|\u001B\\|\u009C)/g;
 
 // CSI and the single-character escapes: colour, cursor movement, mode
 // switches. This is the long-standing `ansi-regex` pattern, written with

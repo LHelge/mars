@@ -59,8 +59,7 @@ const DUPLICATE_SECRET_BODY = "secret already exists";
  * 403 on a user-scoped read or mutation (`SPEC.md`, "Secrets": user-scoped
  * secrets are the owner's or an administrator's).
  */
-export const FORBIDDEN_SECRET_MESSAGE =
-  "You can only manage your own secrets.";
+export const FORBIDDEN_SECRET_MESSAGE = "You can only manage your own secrets.";
 
 /**
  * The two cases this manager words itself; everything else — including the
@@ -70,7 +69,10 @@ export const FORBIDDEN_SECRET_MESSAGE =
  */
 export function secretErrorMessage(caught: unknown): string {
   if (caught instanceof ApiError) {
-    if (caught.status === 409 && caught.error.trim() === DUPLICATE_SECRET_BODY) {
+    if (
+      caught.status === 409 &&
+      caught.error.trim() === DUPLICATE_SECRET_BODY
+    ) {
       return DUPLICATE_SECRET_MESSAGE;
     }
     if (caught.status === 403) {

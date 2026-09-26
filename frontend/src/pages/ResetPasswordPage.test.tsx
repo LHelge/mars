@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { ResetPasswordPage } from "./ResetPasswordPage";
@@ -61,7 +67,9 @@ describe("ResetPasswordPage", () => {
       "correct horse battery",
     );
     expect(
-      screen.getByRole("link", { name: "Back to sign in" }).getAttribute("href"),
+      screen
+        .getByRole("link", { name: "Back to sign in" })
+        .getAttribute("href"),
     ).toBe("/login");
   });
 
@@ -70,7 +78,9 @@ describe("ResetPasswordPage", () => {
     fill("123456789");
 
     expect(resetMock).not.toHaveBeenCalled();
-    expect(screen.getByText("Password must be 10–128 characters")).toBeDefined();
+    expect(
+      screen.getByText("Password must be 10–128 characters"),
+    ).toBeDefined();
   });
 
   it("rejects a mismatched confirmation without a request", () => {
@@ -110,7 +120,9 @@ describe("ResetPasswordPage", () => {
         "password must be 10-128 characters",
       );
     });
-    expect(screen.queryByRole("link", { name: "Request a new link" })).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: "Request a new link" }),
+    ).toBeNull();
   });
 
   it("shows the invalid-link alert immediately without a token", () => {

@@ -1,5 +1,15 @@
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from "@tanstack/react-query";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAuth, installSession } from "../services/auth";
@@ -13,8 +23,7 @@ import { DASHBOARD_REFETCH_MS, DashboardPage } from "./DashboardPage";
 // `useQuery` is wrapped so a test can read back the options the page passed it
 // (the 30-second poll of `SPEC.md`, "Frontend", Dashboard).
 vi.mock("@tanstack/react-query", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@tanstack/react-query")>();
+  const actual = await importOriginal<typeof import("@tanstack/react-query")>();
   return { ...actual, useQuery: vi.fn(actual.useQuery) };
 });
 
@@ -256,7 +265,9 @@ describe("DashboardPage", () => {
     ).toBeDefined();
 
     const parked = await sectionTable("Parked sessions");
-    expect(within(parked).getByRole("link", { name: "Parked one" })).toBeDefined();
+    expect(
+      within(parked).getByRole("link", { name: "Parked one" }),
+    ).toBeDefined();
   });
 
   it("does not call a failed section empty", async () => {

@@ -89,11 +89,7 @@ export const MessageRow = memo(function MessageRow({
           {message.subagent && (
             <SubagentGroup message={message}>
               {(childIds ?? []).map((childId) => (
-                <MessageRow
-                  key={childId}
-                  sessionId={sessionId}
-                  id={childId}
-                />
+                <MessageRow key={childId} sessionId={sessionId} id={childId} />
               ))}
             </SubagentGroup>
           )}

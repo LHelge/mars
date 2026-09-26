@@ -375,7 +375,9 @@ describe("SecretsManager", () => {
     expect(vi.mocked(deleteSecret)).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("button", { name: "Delete MY_TOKEN" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Delete MY_TOKEN" }),
+    ).toBeNull();
     expect(vi.mocked(deleteSecret)).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));

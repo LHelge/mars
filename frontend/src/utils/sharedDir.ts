@@ -26,11 +26,13 @@ export const CONTAINER_PATH_MESSAGES = {
   trailingSlash: "Container path must not end in a slash",
   repeatedSlash: "Container path must not contain repeated slashes",
   dotSegment: "Container path must not contain . or .. segments",
-  whitespace: "Container path must not contain whitespace or control characters",
+  whitespace:
+    "Container path must not contain whitespace or control characters",
   data: "Container path must not be /data or below it",
   reserved:
     "Container path must not be, or contain, /session/work, /session/home, /session/log or /session/mcp.json",
-  belowFile: "Container path must not be below /session/mcp.json, which is a file",
+  belowFile:
+    "Container path must not be below /session/mcp.json, which is a file",
 } as const;
 
 /** The session's own machinery: a mount may sit below these, never over them. */
@@ -78,8 +80,16 @@ export const SHARED_DIR_PRESETS: readonly SharedDirPreset[] = [
     // default home would use `/session/home/.cargo/registry` instead.
     container_path: "/opt/cargo/registry",
   },
-  { ecosystem: "Node", name: "npm-cache", container_path: "/session/home/.npm" },
-  { ecosystem: "Go", name: "go-mod", container_path: "/session/home/go/pkg/mod" },
+  {
+    ecosystem: "Node",
+    name: "npm-cache",
+    container_path: "/session/home/.npm",
+  },
+  {
+    ecosystem: "Go",
+    name: "go-mod",
+    container_path: "/session/home/go/pkg/mod",
+  },
   {
     ecosystem: "Go",
     name: "go-build",

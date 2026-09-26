@@ -111,7 +111,10 @@ export function ProjectHeader({
             tracker" → "Unattended launches"). */}
         {project.automation_paused && (
           <span className="border-state-parked/60 text-state-parked bg-console-surface inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 font-mono text-xs whitespace-nowrap">
-            <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
+            <span
+              aria-hidden="true"
+              className="size-1.5 rounded-full bg-current"
+            />
             automation paused
           </span>
         )}

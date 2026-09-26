@@ -63,7 +63,11 @@ export interface Api {
     body?: unknown,
     opts?: CallOptions,
   ): Promise<T>;
-  put<T = unknown>(path: string, body?: unknown, opts?: CallOptions): Promise<T>;
+  put<T = unknown>(
+    path: string,
+    body?: unknown,
+    opts?: CallOptions,
+  ): Promise<T>;
   patch<T = unknown>(
     path: string,
     body?: unknown,

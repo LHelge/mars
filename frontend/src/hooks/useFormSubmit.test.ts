@@ -36,7 +36,8 @@ describe("useFormSubmit", () => {
   });
 
   it("surfaces the error text of an ApiError", async () => {
-    const action = () => Promise.reject(new ApiError(409, "session is running"));
+    const action = () =>
+      Promise.reject(new ApiError(409, "session is running"));
 
     const { result } = renderHook(() => useFormSubmit(action));
     await act(async () => {
@@ -131,7 +132,9 @@ describe("useFormSubmit", () => {
   it("says a submission succeeded until the next one, or a reset", async () => {
     let fail = false;
     const action = () =>
-      fail ? Promise.reject(new ApiError(409, "already there")) : Promise.resolve();
+      fail
+        ? Promise.reject(new ApiError(409, "already there"))
+        : Promise.resolve();
 
     const { result } = renderHook(() => useFormSubmit(action));
     expect(result.current.succeeded).toBe(false);
@@ -163,7 +166,9 @@ describe("useFormSubmit", () => {
   it("clears the error on request and on the next submit", async () => {
     let fail = true;
     const action = () =>
-      fail ? Promise.reject(new ApiError(400, "username is taken")) : Promise.resolve();
+      fail
+        ? Promise.reject(new ApiError(400, "username is taken"))
+        : Promise.resolve();
 
     const { result } = renderHook(() => useFormSubmit(action));
     await act(async () => {

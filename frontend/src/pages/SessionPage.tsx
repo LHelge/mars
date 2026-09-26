@@ -108,7 +108,8 @@ function SessionLive({ id, loaded }: { id: string; loaded: Session }) {
   // old — and the socket's first `session` frame may be seconds away or never
   // arrive, so the fresher of the two is what the header shows and what the
   // store is seeded with.
-  const session = stored === null || isNewerSession(loaded, stored) ? loaded : stored;
+  const session =
+    stored === null || isNewerSession(loaded, stored) ? loaded : stored;
 
   useEffect(() => {
     const store = getSessionStore(id).getState();

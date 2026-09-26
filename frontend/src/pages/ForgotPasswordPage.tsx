@@ -53,7 +53,10 @@ export function ForgotPasswordPage() {
           <Alert kind="success">
             If that account exists, a reset link has been sent.
           </Alert>
-          <Link to="/login" className="text-console-accent text-sm hover:underline">
+          <Link
+            to="/login"
+            className="text-console-accent text-sm hover:underline"
+          >
             Back to sign in
           </Link>
         </div>

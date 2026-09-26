@@ -35,8 +35,8 @@ describe("integrationHeads", () => {
   });
 
   it("marks nothing when the project has no default branch", () => {
-    expect(integrationHeads(BRANCHES, null).some((head) => head.isDefault)).toBe(
-      false,
-    );
+    expect(
+      integrationHeads(BRANCHES, null).some((head) => head.isDefault),
+    ).toBe(false);
   });
 });

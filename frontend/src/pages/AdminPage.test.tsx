@@ -376,9 +376,7 @@ describe("AdminPage", () => {
     renderAdmin();
 
     const invites = await sectionTable("Invitations");
-    fireEvent.click(
-      within(invites).getByRole("button", { name: "Revoke" }),
-    );
+    fireEvent.click(within(invites).getByRole("button", { name: "Revoke" }));
     confirm("Revoke the invitation for newcomer@example.invalid");
 
     await waitFor(() => {

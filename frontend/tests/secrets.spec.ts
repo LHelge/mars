@@ -557,7 +557,10 @@ test("the launch form warns without a credential, launches anyway, and names the
     .getByRole("button", { name: "Add agent credential" })
     .click();
   await expect(secretRow(page, "Claude subscription token")).toBeVisible();
-  trackSecret(api, await readSecret(api, "?scope=user", "CLAUDE_CODE_OAUTH_TOKEN"));
+  trackSecret(
+    api,
+    await readSecret(api, "?scope=user", "CLAUDE_CODE_OAUTH_TOKEN"),
+  );
 
   // --- and the form says whose credential it is -----------------------------
 

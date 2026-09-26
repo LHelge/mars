@@ -1,7 +1,18 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Session, SessionInput, SessionKind, SessionState } from "../types";
+import type {
+  Session,
+  SessionInput,
+  SessionKind,
+  SessionState,
+} from "../types";
 import { Composer } from "./Composer";
 import { SessionSocketContext } from "./SessionSocketContext";
 import {
@@ -190,7 +201,10 @@ describe("Composer sending", () => {
     type("  hello  ");
     fireEvent.keyDown(area(), { key: "Enter" });
 
-    expect(socket.send).toHaveBeenCalledWith({ kind: "message", text: "hello" });
+    expect(socket.send).toHaveBeenCalledWith({
+      kind: "message",
+      text: "hello",
+    });
     expect(area().value).toBe("");
     expect(document.activeElement).toBe(area());
   });
@@ -261,7 +275,9 @@ describe("Composer sending", () => {
     const huge = "x".repeat(100 * 1024 + 1);
     type(huge);
     expect(
-      screen.getByText("That is a lot of text. It will be sent as one message."),
+      screen.getByText(
+        "That is a lot of text. It will be sent as one message.",
+      ),
     ).toBeTruthy();
 
     fireEvent.keyDown(area(), { key: "Enter" });

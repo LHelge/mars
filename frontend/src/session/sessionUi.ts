@@ -126,7 +126,10 @@ export function requestResend(sessionId: string, text: string): void {
 
 /** The latest `Resend` of this session, or `null` when there has been none. */
 export function useResendRequest(sessionId: string): ResendRequest | null {
-  return useStore(uiStore, (state) => state.sessions[sessionId]?.resend ?? null);
+  return useStore(
+    uiStore,
+    (state) => state.sessions[sessionId]?.resend ?? null,
+  );
 }
 
 /** Test-only: what is held for one session, if anything. */

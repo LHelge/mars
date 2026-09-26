@@ -55,7 +55,10 @@ export function SecretsManager({
   const secrets = useQuery({
     queryKey: queryKeys.secrets.list(scope, scopeId),
     queryFn: () =>
-      listSecrets({ scope, ...(scopeId === undefined ? {} : { scope_id: scopeId }) }),
+      listSecrets({
+        scope,
+        ...(scopeId === undefined ? {} : { scope_id: scopeId }),
+      }),
   });
 
   // `GET /users` is admin only; without it a `created_by` that is not the

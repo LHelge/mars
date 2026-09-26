@@ -98,11 +98,7 @@ const Diff = memo(function Diff({ path, oldText, newText }: DiffPair) {
   );
 
   return (
-    <DiffView
-      path={path}
-      lines={lines}
-      notice={capped ? CAPPED : undefined}
-    />
+    <DiffView path={path} lines={lines} notice={capped ? CAPPED : undefined} />
   );
 });
 

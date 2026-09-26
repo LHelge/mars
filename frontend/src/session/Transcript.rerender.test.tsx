@@ -34,8 +34,9 @@ const ROW_PX = 24;
 // jsdom lays nothing out; the virtualizer reads these three, and with them
 // every seeded row is inside the viewport and really rendered.
 beforeAll(() => {
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-    true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
   const box = function (this: HTMLElement) {
     return this.dataset.testid === "transcript-scroll" ? SCROLLER_PX : ROW_PX;
   };
@@ -58,7 +59,12 @@ beforeAll(() => {
 });
 
 function textEvent(seq: number, text: string): AgentEvent {
-  return { seq, ts: "2026-01-02T10:00:00Z", kind: "text", text } as unknown as AgentEvent;
+  return {
+    seq,
+    ts: "2026-01-02T10:00:00Z",
+    kind: "text",
+    text,
+  } as unknown as AgentEvent;
 }
 
 function deltaEvent(seq: number, text: string): AgentEvent {

@@ -66,15 +66,12 @@ describe("AuthBootstrap", () => {
 
     vi.resetModules();
     const { createElement } = await import("react");
-    const { render, screen, waitFor, cleanup } = await import(
-      "@testing-library/react"
-    );
-    const { MemoryRouter, Route, Routes, useLocation } = await import(
-      "react-router"
-    );
-    const { QueryClient, QueryClientProvider } = await import(
-      "@tanstack/react-query"
-    );
+    const { render, screen, waitFor, cleanup } =
+      await import("@testing-library/react");
+    const { MemoryRouter, Route, Routes, useLocation } =
+      await import("react-router");
+    const { QueryClient, QueryClientProvider } =
+      await import("@tanstack/react-query");
     const { AuthBootstrap } = await import("./AuthBootstrap");
     teardown = cleanup;
 
@@ -99,7 +96,10 @@ describe("AuthBootstrap", () => {
             createElement(
               Routes,
               null,
-              createElement(Route, { path: "/", element: createElement(Probe) }),
+              createElement(Route, {
+                path: "/",
+                element: createElement(Probe),
+              }),
               createElement(Route, {
                 path: "/login",
                 element: createElement(Probe),
@@ -127,13 +127,11 @@ describe("AuthBootstrap", () => {
 
     vi.resetModules();
     const { createElement } = await import("react");
-    const { render, screen, waitFor, cleanup } = await import(
-      "@testing-library/react"
-    );
+    const { render, screen, waitFor, cleanup } =
+      await import("@testing-library/react");
     const { MemoryRouter } = await import("react-router");
-    const { QueryClient, QueryClientProvider } = await import(
-      "@tanstack/react-query"
-    );
+    const { QueryClient, QueryClientProvider } =
+      await import("@tanstack/react-query");
     const { AuthBootstrap } = await import("./AuthBootstrap");
     teardown = cleanup;
 
@@ -160,7 +158,9 @@ describe("AuthBootstrap", () => {
     });
     expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
     // Only a 401 signs out; the token survives an outage.
-    expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBe("fake-access-token");
+    expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBe(
+      "fake-access-token",
+    );
   });
 
   it("offers a retry instead of rendering without a user when the orchestrator answers 500", async () => {
@@ -179,13 +179,11 @@ describe("AuthBootstrap", () => {
 
     vi.resetModules();
     const { createElement } = await import("react");
-    const { render, screen, waitFor, cleanup } = await import(
-      "@testing-library/react"
-    );
+    const { render, screen, waitFor, cleanup } =
+      await import("@testing-library/react");
     const { MemoryRouter } = await import("react-router");
-    const { QueryClient, QueryClientProvider } = await import(
-      "@tanstack/react-query"
-    );
+    const { QueryClient, QueryClientProvider } =
+      await import("@tanstack/react-query");
     const { AuthBootstrap } = await import("./AuthBootstrap");
     teardown = cleanup;
 
@@ -211,7 +209,9 @@ describe("AuthBootstrap", () => {
       );
     });
     expect(screen.queryByText("application")).toBeNull();
-    expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBe("fake-access-token");
+    expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBe(
+      "fake-access-token",
+    );
   });
 });
 
@@ -229,15 +229,12 @@ describe("AuthBootstrap sign-out destination", () => {
   async function mountAt(entry: string) {
     vi.resetModules();
     const { createElement } = await import("react");
-    const { act, cleanup, render, screen } = await import(
-      "@testing-library/react"
-    );
-    const { MemoryRouter, Route, Routes, useLocation } = await import(
-      "react-router"
-    );
-    const { QueryClient, QueryClientProvider } = await import(
-      "@tanstack/react-query"
-    );
+    const { act, cleanup, render, screen } =
+      await import("@testing-library/react");
+    const { MemoryRouter, Route, Routes, useLocation } =
+      await import("react-router");
+    const { QueryClient, QueryClientProvider } =
+      await import("@tanstack/react-query");
     const auth = await import("./services/auth");
     const { AuthBootstrap } = await import("./AuthBootstrap");
     teardown = cleanup;
@@ -315,13 +312,11 @@ describe("AuthBootstrap sign-out destination", () => {
     const { createElement } = await import("react");
     const { act, cleanup, render } = await import("@testing-library/react");
     const { MemoryRouter } = await import("react-router");
-    const { QueryClient, QueryClientProvider } = await import(
-      "@tanstack/react-query"
-    );
+    const { QueryClient, QueryClientProvider } =
+      await import("@tanstack/react-query");
     const auth = await import("./services/auth");
-    const { getSessionStore, retainedSessionIds } = await import(
-      "./session/sessionStore"
-    );
+    const { getSessionStore, retainedSessionIds } =
+      await import("./session/sessionStore");
     const { AuthBootstrap } = await import("./AuthBootstrap");
     teardown = cleanup;
 
@@ -386,13 +381,11 @@ describe("AuthBootstrap sign-out destination", () => {
     vi.resetModules();
     vi.doMock("./services/users", () => ({ getMe }));
     const { createElement } = await import("react");
-    const { act, cleanup, render, screen, waitFor } = await import(
-      "@testing-library/react"
-    );
+    const { act, cleanup, render, screen, waitFor } =
+      await import("@testing-library/react");
     const { MemoryRouter } = await import("react-router");
-    const { QueryClient, QueryClientProvider } = await import(
-      "@tanstack/react-query"
-    );
+    const { QueryClient, QueryClientProvider } =
+      await import("@tanstack/react-query");
     const auth = await import("./services/auth");
     const { AuthBootstrap } = await import("./AuthBootstrap");
     teardown = () => {

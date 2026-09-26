@@ -55,9 +55,7 @@ export interface GitMergeDetail {
 
 /** What a rebase left the session's checkout as (`ARCHITECTURE.md`, "Git model"). */
 export type WorkTreeOutcome =
-  | "updated"
-  | "reconciliation_required"
-  | "not_applicable";
+  "updated" | "reconciliation_required" | "not_applicable";
 
 export interface GitRebaseDetail {
   branch: string;
@@ -80,10 +78,7 @@ export interface GitPushDetail {
 }
 
 export type GitDetail =
-  | GitSyncDetail
-  | GitMergeDetail
-  | GitRebaseDetail
-  | GitPushDetail;
+  GitSyncDetail | GitMergeDetail | GitRebaseDetail | GitPushDetail;
 
 export type GitOp = "sync" | "merge" | "rebase" | "push";
 

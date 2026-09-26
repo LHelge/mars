@@ -7,7 +7,11 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { createEscapeRegistry, escapeAction, hasDraftText } from "./drawerEscape";
+import {
+  createEscapeRegistry,
+  escapeAction,
+  hasDraftText,
+} from "./drawerEscape";
 
 describe("escapeAction", () => {
   const clean = {

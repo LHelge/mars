@@ -117,7 +117,9 @@ export function AddStateForm({
                   key={option}
                   value={option}
                   disabled={option === "human" && hasHuman}
-                  title={option === "human" && hasHuman ? HUMAN_TAKEN : undefined}
+                  title={
+                    option === "human" && hasHuman ? HUMAN_TAKEN : undefined
+                  }
                 >
                   {option}
                   {option === "human" && hasHuman ? ` — ${HUMAN_TAKEN}` : ""}

@@ -196,9 +196,7 @@ test("an edit and a comment made in the drawer survive a reload", async ({
   await form.getByLabel("Description").fill("Two steps, both reversible.");
   await form.getByRole("button", { name: "Save changes" }).click();
 
-  await expect(
-    panel.getByText("Two steps, both reversible."),
-  ).toBeVisible();
+  await expect(panel.getByText("Two steps, both reversible.")).toBeVisible();
 
   await panel.getByLabel("Add a comment").fill("Starting on this tomorrow.");
   await panel.getByRole("button", { name: "Comment" }).click();
@@ -358,7 +356,9 @@ test("Escape asks before discarding a draft and shuts an open form first", async
   await comment.fill("Half a thought, and the other half coming.");
   await page.keyboard.press("Escape");
   await expect(discardQuestion(panel)).toBeVisible();
-  await expect(comment).toHaveValue("Half a thought, and the other half coming.");
+  await expect(comment).toHaveValue(
+    "Half a thought, and the other half coming.",
+  );
 
   // Carrying on withdraws the question; it is asked again from scratch.
   await comment.pressSequentially(" More.");
@@ -485,12 +485,16 @@ test("the drawer moves a card across columns and closes and reopens it", async (
   const panel = await openCard(page, 1);
 
   await moveFromDrawer(panel, "ready");
-  await expect(column(page, "ready").getByTestId(taskCardTestId(1))).toBeVisible();
+  await expect(
+    column(page, "ready").getByTestId(taskCardTestId(1)),
+  ).toBeVisible();
   await expect(panel.getByText("Closed", { exact: true })).toHaveCount(0);
 
   // A terminal state sets `closed_at`, which the drawer shows as `Closed`.
   await moveFromDrawer(panel, "done");
-  await expect(column(page, "done").getByTestId(taskCardTestId(1))).toBeVisible();
+  await expect(
+    column(page, "done").getByTestId(taskCardTestId(1)),
+  ).toBeVisible();
   await expect(panel.getByText("Closed", { exact: true })).toBeVisible();
 
   await moveFromDrawer(panel, "backlog");
@@ -516,7 +520,9 @@ test("a blocks dependency blocks a card, clears when it closes, and refuses a cy
   const beta = await openCard(page, 2);
   const add = beta.getByRole("form", { name: "Add dependency" });
   await add.getByLabel("Find a task").fill("#1");
-  await add.getByLabel("Task", { exact: true }).selectOption({ label: "#1 Alpha" });
+  await add
+    .getByLabel("Task", { exact: true })
+    .selectOption({ label: "#1 Alpha" });
   await add.getByRole("button", { name: "Add dependency" }).click();
 
   await expect(beta.getByRole("heading", { name: "Blocks on" })).toBeVisible();
@@ -541,7 +547,9 @@ test("a blocks dependency blocks a card, clears when it closes, and refuses a cy
   await addOnAlpha.getByRole("button", { name: "Add dependency" }).click();
 
   await expect(alpha.getByText(/cycle/)).toBeVisible();
-  await expect(alpha.getByRole("heading", { name: "Blocks on" })).toHaveCount(0);
+  await expect(alpha.getByRole("heading", { name: "Blocks on" })).toHaveCount(
+    0,
+  );
   const detail = await getTask(api, project.id, 1);
   expect(detail.depends_on).toEqual([]);
 });
@@ -577,9 +585,11 @@ test("a parent closes by itself when its last child closes", async ({
   // `ARCHITECTURE.md`, "Task tracker": the last closing child closes the
   // parent, as a `state_changed` carrying actor `system`. The tracker writes
   // no comment for it, so the drawer has none to render.
-  await expect(column(page, "done").getByTestId(taskCardTestId(1))).toBeVisible({
-    timeout: LIVE_TIMEOUT,
-  });
+  await expect(column(page, "done").getByTestId(taskCardTestId(1))).toBeVisible(
+    {
+      timeout: LIVE_TIMEOUT,
+    },
+  );
   await expect(panel.getByText("Closed", { exact: true })).toBeVisible({
     timeout: LIVE_TIMEOUT,
   });
@@ -612,7 +622,10 @@ test("board search matches titles and exact numbers, and resets on a project cha
   await expect(card(page, 12)).toBeVisible();
 
   const search = page.getByLabel("Search tasks");
-  await expect(search).toHaveAttribute("placeholder", "Search title or #number");
+  await expect(search).toHaveAttribute(
+    "placeholder",
+    "Search title or #number",
+  );
 
   // A case-insensitive substring of the title.
   await search.fill("login");
@@ -669,7 +682,9 @@ test("a task link opens the drawer directly and Copy link writes the canonical U
   await expect(card(page, 1)).toBeVisible();
 
   await panel.getByRole("button", { name: "Copy link" }).click();
-  await expect(panel.getByRole("button", { name: "Link copied" })).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "Link copied" }),
+  ).toBeVisible();
 
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied).toBe(`${baseUrl()}/projects/${project.id}/tasks/2`);
@@ -728,7 +743,9 @@ test("the states editor adds, renames and removes a column, and says why it cann
   await expect(row("verify")).toBeVisible();
 
   await openBoard(page, project);
-  await expect(column(page, "verify").getByTestId(taskCardTestId(1))).toBeVisible();
+  await expect(
+    column(page, "verify").getByTestId(taskCardTestId(1)),
+  ).toBeVisible();
   await expect(column(page, "qa")).toHaveCount(0);
 
   // The three refusals `SPEC.md` answers 409 with, each shown beside a
@@ -761,7 +778,9 @@ test("the states editor adds, renames and removes a column, and says why it cann
   await expect(
     row("verify").getByRole("button", { name: "Remove" }),
   ).toBeEnabled();
-  await row("verify").getByRole("button", { name: "Remove", exact: true }).click();
+  await row("verify")
+    .getByRole("button", { name: "Remove", exact: true })
+    .click();
   await page
     .getByRole("button", { name: "Remove verify", exact: true })
     .click();
@@ -769,7 +788,9 @@ test("the states editor adds, renames and removes a column, and says why it cann
 
   await openBoard(page, project);
   await expect(column(page, "verify")).toHaveCount(0);
-  await expect(column(page, "backlog").getByTestId(taskCardTestId(1))).toBeVisible();
+  await expect(
+    column(page, "backlog").getByTestId(taskCardTestId(1)),
+  ).toBeVisible();
 });
 
 test("a second browser context follows the first without reloading", async ({
@@ -790,9 +811,7 @@ test("a second browser context follows the first without reloading", async ({
 
   const second = await newLoggedInPage(browser, watcher);
   await second.goto(boardPath(project));
-  await expect(
-    second.getByTestId(taskColumnTestId("backlog")),
-  ).toBeVisible();
+  await expect(second.getByTestId(taskColumnTestId("backlog"))).toBeVisible();
 
   // Installed after the arrival navigation: from here on, every change the
   // second context shows must have come down the stream (ADR 0022).
@@ -809,9 +828,9 @@ test("a second browser context follows the first without reloading", async ({
   await form.getByRole("button", { name: "Create task" }).click();
   await expect(card(page, 2)).toBeVisible();
 
-  await expect(column(second, "backlog").getByTestId(taskCardTestId(2))).toBeVisible(
-    { timeout: LIVE_TIMEOUT },
-  );
+  await expect(
+    column(second, "backlog").getByTestId(taskCardTestId(2)),
+  ).toBeVisible({ timeout: LIVE_TIMEOUT });
   await expect(card(second, 2)).toContainText("Seen from over there");
 
   // Moved in the first browser, from the drawer.
@@ -862,5 +881,7 @@ test("release is disabled while no session holds the task", async ({
   const panel = await openCard(page, 1);
 
   await expect(panel.getByRole("button", { name: "Release" })).toBeDisabled();
-  await expect(panel.getByText("No session has touched this task.")).toBeVisible();
+  await expect(
+    panel.getByText("No session has touched this task."),
+  ).toBeVisible();
 });

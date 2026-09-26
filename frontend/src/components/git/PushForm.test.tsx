@@ -37,16 +37,16 @@ function mount(remoteUrl = REMOTE) {
   render(
     <MemoryRouter>
       <PushForm
-      projectId={PROJECT_ID}
-      gitRef={SESSION_ID}
-      isSession
-      refLabel="Fix the login redirect"
-      remoteUrl={remoteUrl}
-      compareTarget="main"
-      formId="push-test"
-      disabled={false}
-      onBusy={vi.fn()}
-      onPushed={onPushed}
+        projectId={PROJECT_ID}
+        gitRef={SESSION_ID}
+        isSession
+        refLabel="Fix the login redirect"
+        remoteUrl={remoteUrl}
+        compareTarget="main"
+        formId="push-test"
+        disabled={false}
+        onBusy={vi.fn()}
+        onPushed={onPushed}
       />
     </MemoryRouter>,
   );

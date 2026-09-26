@@ -287,7 +287,9 @@ describe("JsonToolRenderer", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "100 more characters" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "100 more characters" }),
+    );
     expect(screen.getByText(`"${long}"`)).toBeDefined();
   });
 });

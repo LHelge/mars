@@ -9,7 +9,12 @@
 import { Link } from "react-router";
 
 import type { Handoff, TaskComment, TaskDetail } from "../types";
-import { formatDateTime, formatRelative, shortId, shortSha } from "../utils/format";
+import {
+  formatDateTime,
+  formatRelative,
+  shortId,
+  shortSha,
+} from "../utils/format";
 import { commentExcerpt, handoffComment, reviewLabel } from "./handoffRules";
 import { CHIP } from "./taskChrome";
 import { useUsername } from "./useUsername";

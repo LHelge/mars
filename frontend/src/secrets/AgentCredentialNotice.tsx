@@ -28,7 +28,8 @@ export interface AgentCredentialNoticeProps {
 }
 
 /** The warning wording of `SPEC.md`, "Frontend", verbatim. */
-const MISSING = "No agent credential: sessions of this profile will fail to authenticate";
+const MISSING =
+  "No agent credential: sessions of this profile will fail to authenticate";
 
 export function AgentCredentialNotice({
   projectId,
@@ -39,7 +40,11 @@ export function AgentCredentialNotice({
   if (credential === undefined) {
     // Loading, failed, or a backend with no entry: one blank line of the same
     // height, so the form below it does not move when the answer arrives.
-    return <p className="text-xs" aria-hidden="true">&nbsp;</p>;
+    return (
+      <p className="text-xs" aria-hidden="true">
+        &nbsp;
+      </p>
+    );
   }
 
   if (credential === null) {
@@ -57,9 +62,7 @@ export function AgentCredentialNotice({
   }
 
   return (
-    <p className="text-console-muted text-xs">
-      {sentenceFor(credential)}
-    </p>
+    <p className="text-console-muted text-xs">{sentenceFor(credential)}</p>
   );
 }
 

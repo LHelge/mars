@@ -3,7 +3,13 @@
 // two cases where colouring is skipped — an unknown tag and a block the size
 // of a log — stay plain for good.
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CodeBlock } from "./CodeBlock";

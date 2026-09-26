@@ -31,7 +31,11 @@ const KIND_HEADING: Record<TaskDependencyKind, string> = {
 };
 
 /** Kinds in the order they matter: what holds this task up comes first. */
-const KIND_ORDER: TaskDependencyKind[] = ["blocks", "discovered_from", "related"];
+const KIND_ORDER: TaskDependencyKind[] = [
+  "blocks",
+  "discovered_from",
+  "related",
+];
 
 export interface DependencyListProps {
   projectId: string;
@@ -56,9 +60,7 @@ export function DependencyList({
   removing = false,
 }: DependencyListProps) {
   if (dependsOn.length === 0 && blocks.length === 0) {
-    return (
-      <p className="text-console-muted text-sm">No dependencies.</p>
-    );
+    return <p className="text-console-muted text-sm">No dependencies.</p>;
   }
 
   return (

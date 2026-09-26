@@ -41,7 +41,10 @@ describe("installSession", () => {
   it("refuses a token that is not a non-empty string", () => {
     for (const token of [null, 42, ""]) {
       expect(() => {
-        installSession({ user, access_token: token } as unknown as AuthResponse);
+        installSession({
+          user,
+          access_token: token,
+        } as unknown as AuthResponse);
       }).toThrow(MessageError);
     }
     expect(globalThis.localStorage.getItem(TOKEN_KEY)).toBeNull();

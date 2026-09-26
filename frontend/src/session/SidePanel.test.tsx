@@ -39,7 +39,11 @@ beforeEach(() => {
   // A wide screen, so the panel starts open rather than as a rail.
   vi.stubGlobal(
     "matchMedia",
-    vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+    vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
   );
 });
 

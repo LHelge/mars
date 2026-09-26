@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  BACKOFF_MAX_MS,
-  backoffDelay,
-  BACKOFF_BASE_MS,
-} from "./backoff";
+import { BACKOFF_MAX_MS, backoffDelay, BACKOFF_BASE_MS } from "./backoff";
 
 afterEach(() => {
   vi.restoreAllMocks();

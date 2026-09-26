@@ -20,8 +20,10 @@ import { Spinner } from "./Spinner";
 
 export type SubmitButtonVariant = "primary" | "danger" | "ghost";
 
-export interface SubmitButtonProps
-  extends Omit<ComponentProps<"button">, "className"> {
+export interface SubmitButtonProps extends Omit<
+  ComponentProps<"button">,
+  "className"
+> {
   /** Disables the button and replaces its label with a spinner. */
   loading?: boolean;
   children: ReactNode;

@@ -39,9 +39,7 @@ const FORCED_NOTICE = "You must change your password before continuing.";
 function renderPage(state?: { from: string }) {
   render(
     <QueryClientProvider client={createQueryClient()}>
-      <MemoryRouter
-        initialEntries={[{ pathname: "/change-password", state }]}
-      >
+      <MemoryRouter initialEntries={[{ pathname: "/change-password", state }]}>
         <Routes>
           <Route path="/change-password" element={<ChangePasswordPage />} />
           <Route path="/" element={<p>dashboard</p>} />

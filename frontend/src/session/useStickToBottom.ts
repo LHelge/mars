@@ -22,7 +22,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 
-
 /** How close to the bottom still counts as following the tail. */
 export const NEAR_BOTTOM_PX = 48;
 

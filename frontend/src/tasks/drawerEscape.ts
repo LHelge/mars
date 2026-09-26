@@ -81,9 +81,9 @@ const DRAFT_CONTROLS = [
  * `input` events that bubble out of it.
  */
 export function hasDraftText(root: ParentNode): boolean {
-  const controls = root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-    DRAFT_CONTROLS,
-  );
+  const controls = root.querySelectorAll<
+    HTMLInputElement | HTMLTextAreaElement
+  >(DRAFT_CONTROLS);
   for (const control of controls) {
     if (control.disabled || control.readOnly) continue;
     if (control.value.trim() !== "") return true;

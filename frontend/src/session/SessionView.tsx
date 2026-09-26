@@ -37,11 +37,7 @@ export function SessionView({ session, socket }: SessionViewProps) {
       {/* The console frame above this view is fixed height; the rest of the
           viewport is the session. */}
       <div className="border-console-border bg-console-bg flex h-[calc(100dvh-6rem)] min-h-[28rem] flex-col overflow-hidden rounded border">
-        <SessionHeader
-          session={session}
-          status={socket.status}
-          onStop={stop}
-        />
+        <SessionHeader session={session} status={socket.status} onStop={stop} />
 
         {socket.status === "offline" && (
           <div className="border-console-border border-b px-4 py-2">

@@ -257,9 +257,7 @@ function MdInput({ checked, type }: Props<"input">) {
 }
 
 function MdP(props: Props<"p">) {
-  return (
-    <p {...attrs(props)} className={cx("my-1", PROSE, props.className)} />
-  );
+  return <p {...attrs(props)} className={cx("my-1", PROSE, props.className)} />;
 }
 
 // A compact heading scale: this is a console, not an article, so h1 and h2 are

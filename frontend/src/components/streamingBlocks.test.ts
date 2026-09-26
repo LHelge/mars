@@ -87,9 +87,9 @@ describe("splitTopLevelBlocks", () => {
     ]);
     // The blank line before an indented block is not a boundary, so the
     // paragraph is frozen late, with the code: a late split is only slower.
-    expect(split("para\n\n    indented code\n\n    more code\n\nafter")).toEqual(
-      ["para\n\n    indented code\n\n    more code\n\n", "after"],
-    );
+    expect(
+      split("para\n\n    indented code\n\n    more code\n\nafter"),
+    ).toEqual(["para\n\n    indented code\n\n    more code\n\n", "after"]);
   });
 
   it("does not split a fence that sits inside a quote or a list item", () => {
@@ -152,9 +152,9 @@ describe("splitTopLevelBlocks", () => {
 describe("hasReferenceDefinitions", () => {
   it("finds footnote and link reference definitions", () => {
     expect(hasReferenceDefinitions("a[^n]\n\n[^n]: the note\n")).toBe(true);
-    expect(hasReferenceDefinitions("a [b][ref]\n\n[ref]: https://x.invalid\n")).toBe(
-      true,
-    );
+    expect(
+      hasReferenceDefinitions("a [b][ref]\n\n[ref]: https://x.invalid\n"),
+    ).toBe(true);
     expect(hasReferenceDefinitions(KITCHEN_SINK)).toBe(true);
   });
 

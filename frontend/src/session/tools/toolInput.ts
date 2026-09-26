@@ -54,7 +54,11 @@ export function isEditInput(input: unknown): input is EditInput {
 
 export function isMultiEditInput(input: unknown): input is MultiEditInput {
   const fields = record(input);
-  if (fields === null || !str(fields.file_path) || !Array.isArray(fields.edits)) {
+  if (
+    fields === null ||
+    !str(fields.file_path) ||
+    !Array.isArray(fields.edits)
+  ) {
     return false;
   }
   return fields.edits.every((edit) => {
@@ -173,7 +177,7 @@ export function summaryLine(name: string, input: unknown): string {
 export function headerSummary(name: string, input: unknown): string {
   if (isShellInput(input)) {
     // `split` with a limit of 1 always yields one element, even for "".
-    return input.description ?? (input.command.split("\n", 1)[0] ?? "");
+    return input.description ?? input.command.split("\n", 1)[0] ?? "";
   }
   const path =
     inputString(input, "file_path") ?? inputString(input, "notebook_path");

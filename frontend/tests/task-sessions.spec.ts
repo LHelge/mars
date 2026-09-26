@@ -201,7 +201,13 @@ test("open in session claims the task and the card shows its session", async ({
     form.getByLabel("Agent profile").locator(`option[value="${profile.id}"]`),
   ).toHaveText(`${profile.name} — serves ready`);
 
-  const sessionId = await submitLaunch(page, form, sessions, api, "Open in session");
+  const sessionId = await submitLaunch(
+    page,
+    form,
+    sessions,
+    api,
+    "Open in session",
+  );
 
   // The title defaults to the task's own (`SPEC.md`, "Sessions").
   await expect(
@@ -223,7 +229,9 @@ test("open in session claims the task and the card shows its session", async ({
   // Once, not twice: a claim writes the session link, so the launched task is
   // in the touched list the panel reads, and it is shown from there.
   await expect(
-    page.getByRole("tabpanel").getByRole("link", { name: /Implement greeting/ }),
+    page
+      .getByRole("tabpanel")
+      .getByRole("link", { name: /Implement greeting/ }),
   ).toHaveCount(1);
 
   // The claim itself: the lease, the count and the card's link back.
@@ -390,10 +398,11 @@ test("run once runs an ephemeral profile on the task and gives it back", async (
   });
   // The scenario's own ephemeral profile, rather than the seeded `implementer`
   // that also serves `ready` (ADR 0051): what runs here is arranged here.
-  const oneshot = await api.post<Profile>(
-    `/projects/${project.id}/profiles`,
-    { name: "oneshot", kind: "ephemeral", serves_states: ["ready"] },
-  );
+  const oneshot = await api.post<Profile>(`/projects/${project.id}/profiles`, {
+    name: "oneshot",
+    kind: "ephemeral",
+    serves_states: ["ready"],
+  });
 
   const panel = await openTask(page, project, 1);
   const form = await openLaunchForm(panel, "Run once");

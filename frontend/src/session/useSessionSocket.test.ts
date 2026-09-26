@@ -87,7 +87,9 @@ class FakeSocket implements SocketLike {
   }
 
   text(message: unknown): void {
-    this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(message) }));
+    this.onmessage?.(
+      new MessageEvent("message", { data: JSON.stringify(message) }),
+    );
   }
 
   binary(bytes: Uint8Array): void {
@@ -628,7 +630,9 @@ describe("SessionSocket", () => {
   it("delivers binary frames to terminal subscribers", async () => {
     const socket = track(await startLive());
     const frames: unknown[] = [];
-    const unsubscribe = socket.terminal.subscribe((frame) => frames.push(frame));
+    const unsubscribe = socket.terminal.subscribe((frame) =>
+      frames.push(frame),
+    );
 
     last().binary(new Uint8Array([1, 2, 3]));
     last().text({ type: "terminal_closed", exit_code: 0 });
@@ -640,9 +644,14 @@ describe("SessionSocket", () => {
 
   it("pages older history once and stops at seq 1", async () => {
     track(await startLive([textEvent(5, "five")]));
-    getSessionStore(SESSION_ID).getState().prependHistory([textEvent(5, "five")], true);
+    getSessionStore(SESSION_ID)
+      .getState()
+      .prependHistory([textEvent(5, "five")], true);
 
-    listEvents.mockResolvedValueOnce({ events: [textEvent(1, "one")], has_more: false });
+    listEvents.mockResolvedValueOnce({
+      events: [textEvent(1, "one")],
+      has_more: false,
+    });
     const socket = new SessionSocket(SESSION_ID, factory);
     await socket.loadOlder();
     expect(listEvents).toHaveBeenLastCalledWith(SESSION_ID, {
@@ -694,7 +703,10 @@ describe("SessionSocket", () => {
     });
     const socket = track(new SessionSocket(SESSION_ID, factory));
     // A scroll gesture and the transcript's fill effect in the same commit.
-    const outcomes = await Promise.all([socket.loadOlder(), socket.loadOlder()]);
+    const outcomes = await Promise.all([
+      socket.loadOlder(),
+      socket.loadOlder(),
+    ]);
 
     expect(outcomes).toEqual([true, true]);
     expect(listEvents).toHaveBeenCalledTimes(1);
@@ -716,7 +728,9 @@ describe("SessionSocket", () => {
     const opened = last();
     socket.dispose();
 
-    expect(opened.frames.at(-1)).toBe(JSON.stringify({ type: "terminal_close" }));
+    expect(opened.frames.at(-1)).toBe(
+      JSON.stringify({ type: "terminal_close" }),
+    );
     expect(opened.closed).toEqual([1000]);
   });
 

@@ -71,7 +71,9 @@ export function CollapsibleLines({
           type="button"
           onClick={toggle}
           aria-label={
-            collapsed ? `Show all ${total} lines of ${label}` : `Collapse ${label}`
+            collapsed
+              ? `Show all ${total} lines of ${label}`
+              : `Collapse ${label}`
           }
           className="text-console-accent pt-1 text-xs underline underline-offset-2"
         >

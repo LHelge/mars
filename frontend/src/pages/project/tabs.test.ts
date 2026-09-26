@@ -16,9 +16,9 @@ describe("project tabs", () => {
   });
 
   it("labels the branches tab as the git panel's header does", () => {
-    expect(PROJECT_TABS.find((entry) => entry.value === "branches")?.label).toBe(
-      "Branches",
-    );
+    expect(
+      PROJECT_TABS.find((entry) => entry.value === "branches")?.label,
+    ).toBe("Branches");
   });
 
   it("parses every tab value, branches included", () => {

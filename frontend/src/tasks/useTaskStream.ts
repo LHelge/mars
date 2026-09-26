@@ -121,7 +121,10 @@ export class TaskStream {
     });
   });
 
-  constructor(projectId: string, factory: EventSourceFactory = browserEventSource) {
+  constructor(
+    projectId: string,
+    factory: EventSourceFactory = browserEventSource,
+  ) {
     this.projectId = projectId;
     this.factory = factory;
   }

@@ -186,7 +186,10 @@ interface UpdateTaskFields {
  * no hand-off, or carries one and the state it moves the task into.
  */
 export type UpdateTaskInput = UpdateTaskFields &
-  ({ state?: string; handoff?: never } | { state: string; handoff: HandoffInput });
+  (
+    | { state?: string; handoff?: never }
+    | { state: string; handoff: HandoffInput }
+  );
 
 // `SPEC.md`, "TaskEvent": the SSE payload of the project's task stream. The
 // board deduplicates by `seq` and treats an event as a refresh signal, never

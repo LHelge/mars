@@ -72,9 +72,6 @@ export function getAgentCredentials(
 }
 
 /** The audit trail, newest first. The server caps `limit` at 500. */
-export function listSecretUses(
-  id: string,
-  limit = 20,
-): Promise<SecretUse[]> {
+export function listSecretUses(id: string, limit = 20): Promise<SecretUse[]> {
   return apiGet<SecretUse[]>(`/secrets/${seg(id)}/uses`, { query: { limit } });
 }

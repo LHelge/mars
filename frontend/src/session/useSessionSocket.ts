@@ -20,7 +20,12 @@ import {
   onSignOut,
   refreshAccessToken,
 } from "../services/auth";
-import { getSession, listEvents, sendInput, stopSession } from "../services/sessions";
+import {
+  getSession,
+  listEvents,
+  sendInput,
+  stopSession,
+} from "../services/sessions";
 import type { ClientMessage, ServerMessage, SessionInput } from "../types";
 import { backoffDelay } from "../utils/backoff";
 import type { ConnectionStatus, SessionStore } from "./sessionStore";
@@ -258,7 +263,9 @@ export class SessionSocket {
     this.store.getState().setStatus("connecting");
     if (this.store.getState().lastSeq === 0) {
       try {
-        const page = await listEvents(this.sessionId, { limit: HISTORY_PAGE_SIZE });
+        const page = await listEvents(this.sessionId, {
+          limit: HISTORY_PAGE_SIZE,
+        });
         if (this.dead) return;
         this.store.getState().prependHistory(page.events, page.has_more);
       } catch (error) {
@@ -282,7 +289,9 @@ export class SessionSocket {
     }
 
     const after = this.store.getState().lastSeq;
-    const socket = this.factory(buildSessionSocketUrl(this.sessionId, after, token));
+    const socket = this.factory(
+      buildSessionSocketUrl(this.sessionId, after, token),
+    );
     socket.binaryType = "arraybuffer";
     this.socket = socket;
     this.wasOpen = false;
@@ -754,7 +763,10 @@ export class SessionSocket {
     }
     state.setHistoryStatus("loading");
     try {
-      const page = await listEvents(this.sessionId, { before, limit: HISTORY_PAGE_SIZE });
+      const page = await listEvents(this.sessionId, {
+        before,
+        limit: HISTORY_PAGE_SIZE,
+      });
       // A page of one login's transcript, arriving after that login ended, is
       // exactly what must never be prepended: the store it was asked for has
       // been cleared, and whoever holds the tab now would be reading somebody
@@ -794,7 +806,11 @@ export class SessionSocket {
     },
     write: (bytes) => {
       const socket = this.socket;
-      if (!this.terminalRunning || socket === null || socket.readyState !== OPEN) {
+      if (
+        !this.terminalRunning ||
+        socket === null ||
+        socket.readyState !== OPEN
+      ) {
         return;
       }
       // A copy, so the frame never carries more of the caller's buffer than
@@ -900,7 +916,8 @@ export function useSessionSocket(
       close: () => {
         socketFor(sessionId).terminal.close();
       },
-      subscribe: (listener) => socketFor(sessionId).terminal.subscribe(listener),
+      subscribe: (listener) =>
+        socketFor(sessionId).terminal.subscribe(listener),
     }),
     [sessionId, socketFor],
   );

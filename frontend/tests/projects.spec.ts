@@ -224,9 +224,9 @@ test("a clone that fails shows its message and the retry succeeds", async ({
   await expect(header.getByText("main", { exact: true })).toBeVisible();
 
   const branches = await listBranches(api, project.id);
-  expect(
-    branches.find((branch) => branch.name === "main")?.commit,
-  ).toBe(repo.initialCommit);
+  expect(branches.find((branch) => branch.name === "main")?.commit).toBe(
+    repo.initialCommit,
+  );
 });
 
 test("fetch now moves the upstream ref and leaves the integration head", async ({
@@ -323,7 +323,9 @@ test("the default profile is edited and an ephemeral one is created beside it", 
   // A reload is the real check that the PUT replaced the stored profile
   // rather than only the screen.
   await page.reload();
-  await expect(architectRow.getByText("backlog", { exact: true })).toBeVisible();
+  await expect(
+    architectRow.getByText("backlog", { exact: true }),
+  ).toBeVisible();
   await expect(architectRow.getByText("300s", { exact: true })).toBeVisible();
   const stored = await defaultProfile(api, project.id);
   expect(stored.name).toBe("architect");
@@ -342,7 +344,9 @@ test("the default profile is edited and an ephemeral one is created beside it", 
     .getByRole("row")
     .filter({ has: page.getByText("oneshot", { exact: true }) });
   await expect(oneshotRow).toBeVisible();
-  await expect(oneshotRow.getByText("ephemeral", { exact: true })).toBeVisible();
+  await expect(
+    oneshotRow.getByText("ephemeral", { exact: true }),
+  ).toBeVisible();
   await expect(architectRow).toBeVisible();
 
   // A project always keeps one default profile. The API answers 409
@@ -430,9 +434,9 @@ test("a profile started from the reviewer template is saved as reviewer-2", asyn
   ).toBeVisible();
   await expect(autoLaunch).toBeChecked();
   expect(
-    (
-      await api.get<Profile[]>(`/projects/${project.id}/profiles`)
-    ).some((candidate) => candidate.name === "reviewer-2"),
+    (await api.get<Profile[]>(`/projects/${project.id}/profiles`)).some(
+      (candidate) => candidate.name === "reviewer-2",
+    ),
   ).toBe(false);
 
   // Unticked, the same template saves as a reviewer a person launches.

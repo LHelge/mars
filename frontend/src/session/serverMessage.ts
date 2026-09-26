@@ -131,7 +131,8 @@ export function validateAgentEvent(value: unknown): AgentEvent | null {
   // Keyed by `AgentEventKind`, so a kind added to the union without a check
   // here is a compile error; the annotation is what an unknown `kind` — the
   // whole point of the lookup — reads as at runtime.
-  const fields: FieldCheck | undefined = EVENT_FIELDS[value.kind as AgentEventKind];
+  const fields: FieldCheck | undefined =
+    EVENT_FIELDS[value.kind as AgentEventKind];
   if (fields !== undefined && !fields(value)) return null;
   return value as unknown as AgentEvent;
 }

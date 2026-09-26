@@ -275,7 +275,9 @@ test("full history after reload and in a second tab", async ({
   // The same rows, each exactly once. A replayed event folded twice would
   // double the row it belongs to, and its neighbour would be mounted with it.
   for (const text of [TURN_COST_TEXT[0], TURN_COST_TEXT[1]]) {
-    await expect((await reveal(page, rows.getByText(text))).first()).toBeVisible();
+    await expect(
+      (await reveal(page, rows.getByText(text))).first(),
+    ).toBeVisible();
     await expect(rows.getByText(text)).toHaveCount(1);
   }
   await reveal(page, rows.getByText("hello stub", { exact: true }));
@@ -570,9 +572,7 @@ test("ephemeral run once from the project page", async ({
   await expect(editor.getByLabel("Stream partial messages")).not.toBeChecked();
   await editor.getByRole("button", { name: "Create profile" }).click();
 
-  const profiles = await api.get<Profile[]>(
-    `/projects/${project.id}/profiles`,
-  );
+  const profiles = await api.get<Profile[]>(`/projects/${project.id}/profiles`);
   const oneshot = profiles.find((profile) => profile.name === "oneshot");
   expect(oneshot).toBeDefined();
   if (oneshot === undefined) return;
@@ -586,7 +586,9 @@ test("ephemeral run once from the project page", async ({
   await launch.getByLabel("Agent profile").selectOption(oneshot.id);
   const run = page.getByRole("form", { name: "Run with a message" });
   await expect(run.getByRole("button", { name: "Run" })).toBeDisabled();
-  await expect(run.getByText("Give this run a message or a task.")).toBeVisible();
+  await expect(
+    run.getByText("Give this run a message or a task."),
+  ).toBeVisible();
 
   // The form never sends the request the server would answer 400, so the
   // refusal itself is asserted where it lives (`SPEC.md`, "Sessions").

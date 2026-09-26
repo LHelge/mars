@@ -129,7 +129,7 @@ export function SidePanel({ session, panels }: SidePanelProps) {
               className={`border-b-2 px-3 py-2 font-mono text-xs ${
                 entry.id === active.id
                   ? "border-console-accent text-console-text"
-                  : "border-transparent text-console-muted hover:text-console-text"
+                  : "text-console-muted hover:text-console-text border-transparent"
               }`}
             >
               {entry.label}

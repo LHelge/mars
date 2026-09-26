@@ -22,7 +22,7 @@ const goneBarrels = [
   name,
   message:
     "This directory barrel was deleted: import the module itself " +
-    "(ARCHITECTURE.md, \"Frontend architecture\").",
+    '(ARCHITECTURE.md, "Frontend architecture").',
 }));
 
 // The files a first paint evaluates: the entry, the shell, the guards and the
@@ -52,8 +52,8 @@ const lazyBarrels = ["session", "launch", "project", "secrets", "tasks"]
     name,
     message:
       "A first paint evaluates this file, and this barrel reaches feature UI: " +
-      "import the module itself, or lazily (ARCHITECTURE.md, \"Frontend " +
-      "architecture\"; scripts/check-entry-chunk.mjs enforces the result).",
+      'import the module itself, or lazily (ARCHITECTURE.md, "Frontend ' +
+      'architecture"; scripts/check-entry-chunk.mjs enforces the result).',
   }));
 
 // Icons come from the one map of `src/components/icons.ts` (ADR 0047), which is

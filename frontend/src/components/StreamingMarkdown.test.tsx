@@ -151,7 +151,9 @@ describe("StreamingMarkdown", () => {
 
   it("ends a character-by-character stream in the same DOM as one render", () => {
     const { container, rerender } = render(
-      <StreamingMarkdown streaming>{KITCHEN_SINK.slice(0, 1)}</StreamingMarkdown>,
+      <StreamingMarkdown streaming>
+        {KITCHEN_SINK.slice(0, 1)}
+      </StreamingMarkdown>,
     );
     for (let i = 2; i <= KITCHEN_SINK.length; i += 1) {
       act(() => {

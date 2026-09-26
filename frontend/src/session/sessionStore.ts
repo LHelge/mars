@@ -155,10 +155,7 @@ export type Message =
  * "Session state").
  */
 export type ConnectionStatus =
-  | "connecting"
-  | "live"
-  | "reconnecting"
-  | "offline";
+  "connecting" | "live" | "reconnecting" | "offline";
 
 /**
  * Where the older-history request stands. `loading` is an actual request in
@@ -393,7 +390,10 @@ function updateMessage(
  * hang its output, so an `Agent` placeholder is created at the top level and
  * merged into by the `tool_call` if one arrives later.
  */
-function ensureParentTool(state: SessionState, toolUseId: string): SessionState {
+function ensureParentTool(
+  state: SessionState,
+  toolUseId: string,
+): SessionState {
   if (findToolMessageId(state, toolUseId) !== undefined) return state;
   const id = placeholderId(toolUseId);
   const message: ToolMessage = {
@@ -410,7 +410,10 @@ function ensureParentTool(state: SessionState, toolUseId: string): SessionState 
     ...state,
     messages: { ...state.messages, [id]: message },
     order: [...state.order, id],
-    subagents: { ...state.subagents, [toolUseId]: state.subagents[toolUseId] ?? [] },
+    subagents: {
+      ...state.subagents,
+      [toolUseId]: state.subagents[toolUseId] ?? [],
+    },
     pendingTools: { ...state.pendingTools, [toolUseId]: id },
     toolIndex: indexTool(state.toolIndex, message),
   };
@@ -501,7 +504,11 @@ function endStreaming(state: SessionState, seq: number): SessionState {
   for (const message of Object.values(state.messages)) {
     if (message.kind === "assistant_text" && message.streaming) {
       messages ??= { ...state.messages };
-      messages[message.id] = { ...message, streaming: false, interrupted: true };
+      messages[message.id] = {
+        ...message,
+        streaming: false,
+        interrupted: true,
+      };
     }
   }
   return {
@@ -564,7 +571,10 @@ const TURN_STARTING: ReadonlySet<AgentEvent["kind"]> = new Set([
  * Folds one event into the state. Pure: `applyEvent` and `prependHistory`
  * share it, and `lastSeq`/`oldestSeq` bookkeeping stays with the callers.
  */
-export function foldEvent(state: SessionState, event: AgentEvent): SessionState {
+export function foldEvent(
+  state: SessionState,
+  event: AgentEvent,
+): SessionState {
   const parent = event.parent_tool_use_id;
   const id = eventId(event.seq);
   let next = state;
@@ -646,7 +656,11 @@ export function foldEvent(state: SessionState, event: AgentEvent): SessionState 
     case "tool_call": {
       const existingId = findToolMessageId(next, event.tool_use_id);
       const existing = existingId ? next.messages[existingId] : undefined;
-      if (existingId && existing?.kind === "tool" && isPlaceholderTool(existing)) {
+      if (
+        existingId &&
+        existing?.kind === "tool" &&
+        isPlaceholderTool(existing)
+      ) {
         // A placeholder from `subagent_start` or from an early `tool_result`:
         // one tool message, whichever order the two arrived in.
         const merged: ToolMessage = {
@@ -772,7 +786,11 @@ export function foldEvent(state: SessionState, event: AgentEvent): SessionState 
         cost_usd: event.cost_usd,
         usage: event.usage,
       };
-      const placed = placeMessage(endStreaming(next, event.seq), message, parent);
+      const placed = placeMessage(
+        endStreaming(next, event.seq),
+        message,
+        parent,
+      );
       return { ...placed, turnActive: false };
     }
 
@@ -849,7 +867,11 @@ export function foldEvent(state: SessionState, event: AgentEvent): SessionState 
     }
 
     case "raw":
-      return placeMessage(next, { id, kind: "raw", native: event.native }, parent);
+      return placeMessage(
+        next,
+        { id, kind: "raw", native: event.native },
+        parent,
+      );
 
     default: {
       // Forward compatibility (`SPEC.md`, "AgentEvent"). Event kinds are only
@@ -909,7 +931,8 @@ function mergeSubagentInfo(
  * placeholder, and the completing half contributes the result.
  */
 function mergeToolMessages(older: ToolMessage, live: ToolMessage): ToolMessage {
-  const call = isPlaceholderTool(older) && !isPlaceholderTool(live) ? live : older;
+  const call =
+    isPlaceholderTool(older) && !isPlaceholderTool(live) ? live : older;
   const completed = !older.running ? older : !live.running ? live : undefined;
   const children =
     older.children || live.children
@@ -1006,7 +1029,11 @@ function mergeStreamingFragments(
   dropped: Set<string>,
 ): void {
   const interrupt = (fragment: AssistantTextMessage) => {
-    messages[fragment.id] = { ...fragment, streaming: false, interrupted: true };
+    messages[fragment.id] = {
+      ...fragment,
+      streaming: false,
+      interrupted: true,
+    };
   };
 
   for (const parent of mergedScopes(older, live)) {
@@ -1048,7 +1075,10 @@ function mergeStreamingFragments(
  * dropped in favour of the live half of the same block.
  */
 function mergeHistory(older: SessionState, live: SessionState): SessionState {
-  const messages: Record<string, Message> = { ...older.messages, ...live.messages };
+  const messages: Record<string, Message> = {
+    ...older.messages,
+    ...live.messages,
+  };
   const subagents: Record<string, string[]> = { ...older.subagents };
   for (const [key, ids] of Object.entries(live.subagents)) {
     subagents[key] = [...(subagents[key] ?? []), ...ids];
@@ -1058,7 +1088,8 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
   const dropped = new Set<string>();
 
   for (const liveMessage of Object.values(live.messages)) {
-    if (liveMessage.kind !== "tool" || !isPlaceholderTool(liveMessage)) continue;
+    if (liveMessage.kind !== "tool" || !isPlaceholderTool(liveMessage))
+      continue;
     const olderId = findToolMessageId(older, liveMessage.tool_use_id);
     if (olderId === undefined) continue;
     const olderMessage = older.messages[olderId];
@@ -1091,7 +1122,10 @@ function mergeHistory(older: SessionState, live: SessionState): SessionState {
   }
   for (const message of Object.values(messages)) {
     if (message.kind !== "tool" || !message.children) continue;
-    messages[message.id] = { ...message, children: compact(message.children, dropped) };
+    messages[message.id] = {
+      ...message,
+      children: compact(message.children, dropped),
+    };
   }
   for (const [toolUseId, id] of Object.entries(pendingTools)) {
     if (dropped.has(id)) delete pendingTools[toolUseId];
@@ -1144,7 +1178,8 @@ export function createSessionStore(): StoreApi<SessionStore> {
     setStatus: (status, error) => {
       set({
         status,
-        connectionError: status === "offline" ? (error ?? "Disconnected") : null,
+        connectionError:
+          status === "offline" ? (error ?? "Disconnected") : null,
       });
     },
 
@@ -1195,7 +1230,13 @@ export function createSessionStore(): StoreApi<SessionStore> {
       set((state) => {
         local += 1;
         const id = `local:${local}`;
-        const message: SystemMessage = { id, kind: "system", text, level, detail };
+        const message: SystemMessage = {
+          id,
+          kind: "system",
+          text,
+          level,
+          detail,
+        };
         return {
           messages: { ...state.messages, [id]: message },
           order: [...state.order, id],
@@ -1267,7 +1308,9 @@ export function createSessionStore(): StoreApi<SessionStore> {
             other.id !== id,
         );
         const restore =
-          before !== undefined && !othersPending && before.seq === state.lastSeq;
+          before !== undefined &&
+          !othersPending &&
+          before.seq === state.lastSeq;
         return {
           messages: {
             ...state.messages,
@@ -1385,7 +1428,10 @@ function prune(): void {
   const unused = [...stores.entries()].filter(([, entry]) => entry.refs === 0);
   if (unused.length <= MAX_RETAINED_SESSIONS) return;
   unused.sort(([, a], [, b]) => a.touched - b.touched);
-  for (const [sessionId] of unused.slice(0, unused.length - MAX_RETAINED_SESSIONS)) {
+  for (const [sessionId] of unused.slice(
+    0,
+    unused.length - MAX_RETAINED_SESSIONS,
+  )) {
     stores.delete(sessionId);
     announceCleared(sessionId);
   }

@@ -22,10 +22,7 @@ import type { Project } from "../types";
  * A write that answered with the project: take that answer as the new truth
  * for the detail entry, and re-read the table, whose row for it has changed.
  */
-export function adoptProject(
-  queryClient: QueryClient,
-  updated: Project,
-): void {
+export function adoptProject(queryClient: QueryClient, updated: Project): void {
   queryClient.setQueryData(queryKeys.projects.detail(updated.id), updated);
   void queryClient.invalidateQueries({ queryKey: queryKeys.projects.list() });
 }

@@ -4,7 +4,8 @@
 
 import type { AgentEvent } from "./agentEvent";
 
-export type SessionState = "creating" | "running" | "parked" | "done" | "failed";
+export type SessionState =
+  "creating" | "running" | "parked" | "done" | "failed";
 
 /** The profile's kind at launch, not a separate enum. */
 export type SessionKind = "conversational" | "ephemeral";

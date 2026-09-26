@@ -288,7 +288,9 @@ describe("auth endpoints", () => {
 
     const lookup = await lookupInvite("a b/c");
 
-    expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe("/api/auth/invite/a%20b%2Fc");
+    expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe(
+      "/api/auth/invite/a%20b%2Fc",
+    );
     expect(lookup.email).toBe("invitee@example.invalid");
   });
 
@@ -337,7 +339,9 @@ describe("auth endpoints", () => {
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
       JSON.stringify({ identifier: "tester" }),
     );
-    expect(urlOf(fetchMock.mock.calls[1]?.[0])).toBe("/api/auth/reset-password");
+    expect(urlOf(fetchMock.mock.calls[1]?.[0])).toBe(
+      "/api/auth/reset-password",
+    );
     expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(
       JSON.stringify({ token: "reset-token", password: "not-a-real-password" }),
     );

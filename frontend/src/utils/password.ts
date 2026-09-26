@@ -14,7 +14,10 @@ export const PASSWORD_LENGTH_MESSAGE = "Password must be 10–128 characters";
 
 /** Returns the field error for `value`, or `null` when it is acceptable. */
 export function validatePassword(value: string): string | null {
-  if (value.length < PASSWORD_MIN_LENGTH || value.length > PASSWORD_MAX_LENGTH) {
+  if (
+    value.length < PASSWORD_MIN_LENGTH ||
+    value.length > PASSWORD_MAX_LENGTH
+  ) {
     return PASSWORD_LENGTH_MESSAGE;
   }
   return null;

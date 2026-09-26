@@ -259,7 +259,11 @@ test("the diff endpoint's own fetch-back emits no git event", async ({
     timeout: 60_000,
   });
 
-  commitInSessionWorkClone(sessionId, { "src/app.txt": "v2\n" }, "feat: change");
+  commitInSessionWorkClone(
+    sessionId,
+    { "src/app.txt": "v2\n" },
+    "feat: change",
+  );
   await syncSession(api, sessionId);
   await expect(transcript(page).getByText("Git sync succeeded")).toBeVisible({
     timeout: 30_000,
@@ -326,7 +330,9 @@ test("the session branch list shows ahead and behind", async ({
   await expect(generic.locator("#git-merge-generic-source")).toHaveValue(
     "origin/main",
   );
-  await expect(generic.locator("#git-merge-generic-target")).toHaveValue("main");
+  await expect(generic.locator("#git-merge-generic-target")).toHaveValue(
+    "main",
+  );
   await generic.getByRole("button", { name: "Merge" }).click();
   await expect(generic.getByText(/^Merged at [0-9a-f]{7}/)).toBeVisible({
     timeout: 60_000,
@@ -542,7 +548,9 @@ test("rebasing the session branch onto main", async ({
 
   const rebased = gitRevParse(mirror, `refs/sessions/${sessionId}`);
   expect(rebased).not.toBe(original);
-  expect(gitIsAncestor(mirror, gitRevParse(mirror, "main"), rebased)).toBe(true);
+  expect(gitIsAncestor(mirror, gitRevParse(mirror, "main"), rebased)).toBe(
+    true,
+  );
   // The work clone was clean, so the orchestrator reset the checkout onto the
   // new commits (`ARCHITECTURE.md`, "Git model": the rebase reconciles it).
   expect(gitRevParse(sessionWorkPath(sessionId), "HEAD")).toBe(rebased);
@@ -645,9 +653,9 @@ test("pushing to the bare upstream, without a compare link for a file:// remote"
   // A session ref is pushed as `session/<id>` by default (`ARCHITECTURE.md`,
   // "Git model").
   const remoteBranch = `session/${sessionId}`;
-  await expect(form.locator(`#git-push-${sessionId}-remote-branch`)).toHaveValue(
-    remoteBranch,
-  );
+  await expect(
+    form.locator(`#git-push-${sessionId}-remote-branch`),
+  ).toHaveValue(remoteBranch);
   await form.getByRole("button", { name: "Push" }).click();
   await expect(
     form.getByText(`Pushed ${remoteBranch} at ${commit.slice(0, 7)}`),
@@ -674,9 +682,12 @@ test("pushing to the bare upstream, without a compare link for a file:// remote"
   expect(gitRevParse(mirror, `refs/sessions/${sessionId}`)).toBe(commit);
 
   await page.goto(`/sessions/${sessionId}`);
-  await expect(transcript(page).getByText("Git push succeeded")).toHaveCount(2, {
-    timeout: 30_000,
-  });
+  await expect(transcript(page).getByText("Git push succeeded")).toHaveCount(
+    2,
+    {
+      timeout: 30_000,
+    },
+  );
 });
 
 test("a non-fast-forward push is refused until it is forced", async ({
@@ -702,9 +713,9 @@ test("a non-fast-forward push is refused until it is forced", async ({
   const form = await openRowForm(page, sessionId, "push");
   await form.locator(`#git-push-${sessionId}-remote-branch`).fill("main");
   await form.getByRole("button", { name: "Push" }).click();
-  await expect(form.getByText(`Pushed main at ${commit.slice(0, 7)}`)).toBeVisible(
-    { timeout: 60_000 },
-  );
+  await expect(
+    form.getByText(`Pushed main at ${commit.slice(0, 7)}`),
+  ).toBeVisible({ timeout: 60_000 });
 
   // The upstream moves behind Mars's back, so the next push is no longer a
   // fast-forward (`SPEC.md`, "Git": 409, local work preserved).
@@ -729,9 +740,9 @@ test("a non-fast-forward push is refused until it is forced", async ({
     ),
   ).toBeVisible();
   await form.getByRole("button", { name: "Push" }).click();
-  await expect(form.getByText(`Pushed main at ${commit.slice(0, 7)}`)).toBeVisible(
-    { timeout: 60_000 },
-  );
+  await expect(
+    form.getByText(`Pushed main at ${commit.slice(0, 7)}`),
+  ).toBeVisible({ timeout: 60_000 });
   expect(gitRevParse(repo.path, "main")).toBe(
     gitRevParse(mirror, `refs/sessions/${sessionId}`),
   );
@@ -770,9 +781,13 @@ test("a merge conflict lists the conflicting paths and leaves main alone", async
   const form = await openRowForm(page, sessionId, "merge");
   await form.getByRole("button", { name: "Merge" }).click();
 
-  const conflicts = form.getByRole("alert").filter({ hasText: "Conflicts in:" });
+  const conflicts = form
+    .getByRole("alert")
+    .filter({ hasText: "Conflicts in:" });
   await expect(conflicts).toBeVisible({ timeout: 60_000 });
-  await expect(conflicts.getByText("src/app.txt", { exact: true })).toBeVisible();
+  await expect(
+    conflicts.getByText("src/app.txt", { exact: true }),
+  ).toBeVisible();
 
   // The 422 is a stop, not a partial write (`SPEC.md`, "Git").
   expect(gitRevParse(mirror, "main")).toBe(before);

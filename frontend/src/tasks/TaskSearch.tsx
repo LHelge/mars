@@ -48,7 +48,7 @@ export function TaskSearch({ inputRef, onClear }: TaskSearchProps) {
         onChange={(event) => {
           setQuery(event.target.value);
         }}
-        className={`${CONTROL} w-full min-w-0 max-w-72`}
+        className={`${CONTROL} w-full max-w-72 min-w-0`}
       />
 
       {query !== "" && (

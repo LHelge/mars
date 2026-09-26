@@ -8,7 +8,11 @@ import * as auth from "../services/auth";
 import * as sessions from "../services/sessions";
 import type { AgentEvent } from "../types";
 import { parseServerMessage, validateAgentEvent } from "./serverMessage";
-import { disposeSessionStore, foldEvent, getSessionStore } from "./sessionStore";
+import {
+  disposeSessionStore,
+  foldEvent,
+  getSessionStore,
+} from "./sessionStore";
 import type { SocketLike, TerminalFrame } from "./useSessionSocket";
 import { SessionSocket } from "./useSessionSocket";
 
@@ -33,8 +37,16 @@ vi.mock("../services/sessions", () => ({
 const SESSION_ID = "33333333-3333-4333-8333-333333333333";
 
 /** A minimal well-formed event, for the tests that spoil one field of it. */
-function event(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return { seq: 1, ts: "2026-09-21T10:00:00Z", kind: "text", text: "hi", ...overrides };
+function event(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    seq: 1,
+    ts: "2026-09-21T10:00:00Z",
+    kind: "text",
+    text: "hi",
+    ...overrides,
+  };
 }
 
 function frame(message: unknown): string {
@@ -52,7 +64,9 @@ describe("validateAgentEvent", () => {
     expect(validateAgentEvent(event({ seq: "4" }))).toBeNull();
     expect(validateAgentEvent(event({ seq: 1.5 }))).toBeNull();
     expect(validateAgentEvent(event({ seq: 0 }))).toBeNull();
-    expect(validateAgentEvent(event({ seq: Number.MAX_SAFE_INTEGER + 2 }))).toBeNull();
+    expect(
+      validateAgentEvent(event({ seq: Number.MAX_SAFE_INTEGER + 2 })),
+    ).toBeNull();
   });
 
   it("rejects a non-object and a null", () => {
@@ -64,14 +78,22 @@ describe("validateAgentEvent", () => {
   it("rejects a field the fold reads being of the wrong type", () => {
     expect(validateAgentEvent(event({ text: 7 }))).toBeNull();
     expect(
-      validateAgentEvent(event({ kind: "thinking", text: "t", redacted: null })),
+      validateAgentEvent(
+        event({ kind: "thinking", text: "t", redacted: null }),
+      ),
     ).toBeNull();
     expect(
       validateAgentEvent(event({ kind: "tool_call", tool_use_id: "t1" })),
     ).toBeNull();
     expect(
       validateAgentEvent(
-        event({ kind: "init", cli_session_id: "c", tools: [1], mcp_servers: [], resumed: true }),
+        event({
+          kind: "init",
+          cli_session_id: "c",
+          tools: [1],
+          mcp_servers: [],
+          resumed: true,
+        }),
       ),
     ).toBeNull();
     expect(
@@ -90,13 +112,17 @@ describe("validateAgentEvent", () => {
   it("rejects an optional field present with the wrong type", () => {
     expect(validateAgentEvent(event({ parent_tool_use_id: 3 }))).toBeNull();
     expect(
-      validateAgentEvent(event({ kind: "user_message", text: "a", client_id: 9 })),
+      validateAgentEvent(
+        event({ kind: "user_message", text: "a", client_id: 9 }),
+      ),
     ).toBeNull();
   });
 
   it("accepts a kind it has never heard of", () => {
     // Event kinds are only added, and a tab outlives an upgrade.
-    const accepted = validateAgentEvent(event({ kind: "sandbox_warning", detail: "x" }));
+    const accepted = validateAgentEvent(
+      event({ kind: "sandbox_warning", detail: "x" }),
+    );
     expect(accepted).not.toBeNull();
     expect(accepted?.seq).toBe(1);
   });
@@ -124,40 +150,56 @@ describe("parseServerMessage", () => {
 
   it("rejects a known type with a missing or null field", () => {
     expect(parseServerMessage(frame({ type: "error" })).ok).toBe(false);
-    expect(parseServerMessage(frame({ type: "error", message: null })).ok).toBe(false);
+    expect(parseServerMessage(frame({ type: "error", message: null })).ok).toBe(
+      false,
+    );
     expect(
       parseServerMessage(frame({ type: "input_accepted", client_id: "c" })).ok,
     ).toBe(false);
     expect(
-      parseServerMessage(frame({ type: "input_accepted", client_id: "c", seq: "3" })).ok,
+      parseServerMessage(
+        frame({ type: "input_accepted", client_id: "c", seq: "3" }),
+      ).ok,
     ).toBe(false);
     expect(
       parseServerMessage(frame({ type: "input_rejected", client_id: "c" })).ok,
     ).toBe(false);
-    expect(parseServerMessage(frame({ type: "terminal_closed" })).ok).toBe(false);
-    expect(parseServerMessage(frame({ type: "session", session: null })).ok).toBe(false);
+    expect(parseServerMessage(frame({ type: "terminal_closed" })).ok).toBe(
+      false,
+    );
+    expect(
+      parseServerMessage(frame({ type: "session", session: null })).ok,
+    ).toBe(false);
     expect(
       parseServerMessage(frame({ type: "session", session: { id: "s" } })).ok,
     ).toBe(false);
   });
 
   it("accepts each message of the contract", () => {
-    expect(parseServerMessage(frame({ type: "event", event: event() })).ok).toBe(true);
+    expect(
+      parseServerMessage(frame({ type: "event", event: event() })).ok,
+    ).toBe(true);
     expect(
       parseServerMessage(
         frame({ type: "session", session: { id: "s", state: "running" } }),
       ).ok,
     ).toBe(true);
     expect(
-      parseServerMessage(frame({ type: "input_accepted", client_id: "c", seq: 4 })).ok,
+      parseServerMessage(
+        frame({ type: "input_accepted", client_id: "c", seq: 4 }),
+      ).ok,
     ).toBe(true);
     expect(
-      parseServerMessage(frame({ type: "input_rejected", client_id: "c", reason: "no" })).ok,
+      parseServerMessage(
+        frame({ type: "input_rejected", client_id: "c", reason: "no" }),
+      ).ok,
     ).toBe(true);
     expect(
       parseServerMessage(frame({ type: "terminal_closed", exit_code: -1 })).ok,
     ).toBe(true);
-    expect(parseServerMessage(frame({ type: "error", message: "boom" })).ok).toBe(true);
+    expect(
+      parseServerMessage(frame({ type: "error", message: "boom" })).ok,
+    ).toBe(true);
   });
 
   it("accepts a session state this build cannot name", () => {
@@ -170,7 +212,9 @@ describe("parseServerMessage", () => {
   });
 
   it("marks an unknown message type as unknown rather than malformed", () => {
-    const outcome = parseServerMessage(frame({ type: "quota_warning", used: 3 }));
+    const outcome = parseServerMessage(
+      frame({ type: "quota_warning", used: 3 }),
+    );
     expect(outcome.ok).toBe(false);
     expect(outcome.ok === false && outcome.unknown).toBe(true);
   });
@@ -207,15 +251,21 @@ describe("foldEvent, unknown kind", () => {
     // kind arriving mid-stream does not split it.
     let state = foldEvent(
       getSessionStore(SESSION_ID).getState(),
-      validateAgentEvent(event({ seq: 1, kind: "text_delta", text: "he" })) as AgentEvent,
+      validateAgentEvent(
+        event({ seq: 1, kind: "text_delta", text: "he" }),
+      ) as AgentEvent,
     );
     state = foldEvent(
       state,
-      validateAgentEvent(event({ seq: 2, kind: "sandbox_warning" })) as AgentEvent,
+      validateAgentEvent(
+        event({ seq: 2, kind: "sandbox_warning" }),
+      ) as AgentEvent,
     );
     state = foldEvent(
       state,
-      validateAgentEvent(event({ seq: 3, kind: "text_delta", text: "llo" })) as AgentEvent,
+      validateAgentEvent(
+        event({ seq: 3, kind: "text_delta", text: "llo" }),
+      ) as AgentEvent,
     );
     const texts = state.order
       .map((id) => state.messages[id])
@@ -260,7 +310,10 @@ describe("SessionSocket frame handling", () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
-    vi.mocked(sessions.listEvents).mockResolvedValue({ events: [], has_more: false });
+    vi.mocked(sessions.listEvents).mockResolvedValue({
+      events: [],
+      has_more: false,
+    });
     warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "debug").mockImplementation(() => {});
     socket = new SessionSocket(SESSION_ID, () => new FakeSocket());
@@ -278,8 +331,15 @@ describe("SessionSocket frame handling", () => {
   it("leaves the transcript and the cursor alone for a malformed frame", () => {
     const fake = FakeSocket.last;
     fake?.deliver("{oops");
-    fake?.deliver(frame({ type: "event", event: { seq: 9, ts: 5, kind: "text" } }));
-    fake?.deliver(frame({ type: "event", event: { seq: "9", ts: "t", kind: "text", text: "x" } }));
+    fake?.deliver(
+      frame({ type: "event", event: { seq: 9, ts: 5, kind: "text" } }),
+    );
+    fake?.deliver(
+      frame({
+        type: "event",
+        event: { seq: "9", ts: "t", kind: "text", text: "x" },
+      }),
+    );
     const state = getSessionStore(SESSION_ID).getState();
     expect(state.order).toHaveLength(0);
     expect(state.lastSeq).toBe(0);
@@ -305,7 +365,10 @@ describe("SessionSocket frame handling", () => {
 
   it("applies a valid event", () => {
     FakeSocket.last?.deliver(
-      frame({ type: "event", event: event({ seq: 3, kind: "text", text: "done" }) }),
+      frame({
+        type: "event",
+        event: event({ seq: 3, kind: "text", text: "done" }),
+      }),
     );
     const state = getSessionStore(SESSION_ID).getState();
     expect(state.lastSeq).toBe(3);

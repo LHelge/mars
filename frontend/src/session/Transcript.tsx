@@ -41,8 +41,14 @@ export function Transcript({ sessionId, loadOlder }: TranscriptProps) {
   const order = useSessionStore(sessionId, (state) => state.order);
   const hasMore = useSessionStore(sessionId, (state) => state.hasMore);
   const oldestSeq = useSessionStore(sessionId, (state) => state.oldestSeq);
-  const historyStatus = useSessionStore(sessionId, (state) => state.historyStatus);
-  const historyError = useSessionStore(sessionId, (state) => state.historyError);
+  const historyStatus = useSessionStore(
+    sessionId,
+    (state) => state.historyStatus,
+  );
+  const historyError = useSessionStore(
+    sessionId,
+    (state) => state.historyError,
+  );
   // Streaming growth has to re-pin the view, and it changes no id: the length
   // of the tail message's text is what moves while a `text_delta` arrives.
   const tailLength = useSessionStore(sessionId, (state) => {

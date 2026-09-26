@@ -44,8 +44,9 @@ let scrollerContentPx = 5000;
 beforeAll(() => {
   // Store updates made outside `render` are wrapped in `act`, which React only
   // honours once the environment declares itself an act environment.
-  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-    true;
+  (
+    globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+  ).IS_REACT_ACT_ENVIRONMENT = true;
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
     configurable: true,
     get(this: HTMLElement) {
@@ -141,8 +142,8 @@ describe("Transcript", () => {
     // The nested rows are resolved from `subagents`, not from `order`.
     const nested = screen.getByTestId("subagent-children");
     expect(
-      Array.from(nested.querySelectorAll("[data-message-kind]")).map((element) =>
-        element.getAttribute("data-message-kind"),
+      Array.from(nested.querySelectorAll("[data-message-kind]")).map(
+        (element) => element.getAttribute("data-message-kind"),
       ),
     ).toEqual(["assistant_text", "tool"]);
     expect(nested.textContent).toContain("Looking at the router.");
@@ -177,12 +178,14 @@ describe("Transcript", () => {
     // its identity and only loses the cursor.
     const before = document.querySelector("[data-message-kind]");
     act(() => {
-      getSessionStore(sessionId).getState().applyEvent({
-        seq: 2,
-        ts: "2026-01-02T10:00:01Z",
-        kind: "text",
-        text: "Thinking out loud.",
-      } as unknown as AgentEvent);
+      getSessionStore(sessionId)
+        .getState()
+        .applyEvent({
+          seq: 2,
+          ts: "2026-01-02T10:00:01Z",
+          kind: "text",
+          text: "Thinking out loud.",
+        } as unknown as AgentEvent);
     });
     expect(screen.queryByTestId("streaming-cursor")).toBeNull();
     expect(document.querySelector("[data-message-kind]")).toBe(before);
@@ -338,7 +341,9 @@ describe("Transcript", () => {
     expect(screen.getByText("Loading earlier messages")).toBeDefined();
 
     act(() => {
-      store.getState().prependHistory([textEvent(5, "An earlier message")], false);
+      store
+        .getState()
+        .prependHistory([textEvent(5, "An earlier message")], false);
       store.getState().setHistoryStatus("idle");
     });
     expect(screen.queryByText(/Could not load/)).toBeNull();
@@ -366,7 +371,9 @@ describe("Transcript", () => {
     act(() => {
       // The page that arrived is a thousand pixels of rows above the reader.
       scrollerContentPx = 6000;
-      store.getState().prependHistory([textEvent(5, "An earlier message")], false);
+      store
+        .getState()
+        .prependHistory([textEvent(5, "An earlier message")], false);
       store.getState().setHistoryStatus("idle");
     });
 
@@ -393,7 +400,9 @@ describe("Transcript", () => {
     expect(loadOlder).toHaveBeenCalledTimes(1);
 
     act(() => {
-      store.getState().prependHistory([textEvent(5, "An earlier message")], true);
+      store
+        .getState()
+        .prependHistory([textEvent(5, "An earlier message")], true);
       store.getState().setHistoryStatus("idle");
     });
     // The cursor moved and the content still does not overflow: the next page,
@@ -401,7 +410,9 @@ describe("Transcript", () => {
     expect(loadOlder).toHaveBeenCalledTimes(2);
 
     act(() => {
-      store.getState().prependHistory([textEvent(1, "The first message")], false);
+      store
+        .getState()
+        .prependHistory([textEvent(1, "The first message")], false);
       store.getState().setHistoryStatus("idle");
     });
     expect(loadOlder).toHaveBeenCalledTimes(2);
@@ -412,7 +423,9 @@ describe("Transcript", () => {
     sessions.push(sessionId);
     const store = getSessionStore(sessionId);
     act(() => {
-      store.getState().addOptimisticUser("c-9", { kind: "message", text: "hi" });
+      store
+        .getState()
+        .addOptimisticUser("c-9", { kind: "message", text: "hi" });
       store.getState().inputRejected("c-9", "session is parked");
     });
     render(<Transcript sessionId={sessionId} />);

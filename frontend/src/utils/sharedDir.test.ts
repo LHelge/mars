@@ -10,7 +10,14 @@ import {
 
 describe("validateSharedDirName", () => {
   it("accepts the documented pattern", () => {
-    for (const raw of ["target", "n", "0", "node_modules", "a-b_c9", "9lives"]) {
+    for (const raw of [
+      "target",
+      "n",
+      "0",
+      "node_modules",
+      "a-b_c9",
+      "9lives",
+    ]) {
       expect(validateSharedDirName(raw)).toBeNull();
     }
     expect(validateSharedDirName("t".repeat(64))).toBeNull();

@@ -430,8 +430,7 @@ interface LockManagerLike {
  */
 function withRefreshLock<T>(rotate: () => Promise<T>): Promise<T> {
   const navigator = globalThis.navigator as unknown as
-    | { locks?: LockManagerLike }
-    | undefined;
+    { locks?: LockManagerLike } | undefined;
   const locks = navigator?.locks;
   if (locks === undefined || typeof locks.request !== "function") {
     return rotate();

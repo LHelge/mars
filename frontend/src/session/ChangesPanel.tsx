@@ -19,7 +19,11 @@
 // panel shows it as ever and says in one line why the branch is absent from
 // the Branches tab and cannot be merged or launched from by name.
 
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { Alert } from "../components/Alert";
@@ -61,7 +65,11 @@ export function ChangesPanel({ session }: SessionPanelProps) {
     }
     seenGitSeq.current = gitEventSeq;
     void queryClient.invalidateQueries({
-      queryKey: queryKeys.projects.diff(projectId, session.id, base ?? undefined),
+      queryKey: queryKeys.projects.diff(
+        projectId,
+        session.id,
+        base ?? undefined,
+      ),
     });
     // The same event may have written or dropped the session's own ref.
     void queryClient.invalidateQueries({
@@ -147,9 +155,9 @@ export function ChangesPanel({ session }: SessionPanelProps) {
       {keptNoRef && (
         <p className="text-console-muted font-mono text-xs">
           No branch of its own: this session ended with no commits that a
-          hand-off or an integration head does not already hold. The changes
-          are read from its work tree; any hand-off of them is on its task,
-          under Tasks.
+          hand-off or an integration head does not already hold. The changes are
+          read from its work tree; any hand-off of them is on its task, under
+          Tasks.
         </p>
       )}
 

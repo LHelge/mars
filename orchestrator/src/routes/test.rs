@@ -12,8 +12,9 @@
 //! suite here waits a minute. `POST /test/throttle/reset` clears the login
 //! throttle, so the Playwright suite — whose deliberate wrong-password
 //! scenarios count against one client address — can run any number of times
-//! against one stack instead of reaching the limit on its third run. They are the fixture endpoints the
-//! specification lists, and nothing else belongs here — a test that needs a
+//! against one stack instead of reaching the limit on its third run. They are
+//! the fixture endpoints the specification lists, and nothing else belongs
+//! here — a test that needs a
 //! row the API cannot produce writes it through a repository from the test
 //! process, which reaches the same database.
 //!

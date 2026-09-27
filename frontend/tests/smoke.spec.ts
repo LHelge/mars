@@ -242,8 +242,9 @@ test.describe(() => {
       `/projects/${project.id}/shared-dirs`,
       {
         name: "a-shared-build-cache-directory",
-        container_path:
-          "/session/work/target/a-long-container-path-for-a-phone",
+        // Outside the work clone: a mount point made inside it belongs to
+        // the container's root, and `test:e2e:down` cannot remove it.
+        container_path: "/opt/cache/a-long-container-path-for-a-phone",
       },
     );
     const task = await createTask(api, project.id, {

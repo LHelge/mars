@@ -33,6 +33,7 @@ import { Icon, ICON_CLASS } from "../components/icons";
 import { LoadingState } from "../components/LoadingState";
 import { LG_QUERY, useMediaQuery } from "../hooks/useMediaQuery";
 import type { Session } from "../types";
+import { SessionSheet } from "./SessionSheet";
 import { panelOpenerId, setPanelSheet, usePanelSheet } from "./sessionUi";
 import { panelsFor } from "./sidePanels";
 import type { SidePanelEntry } from "./sidePanels";
@@ -184,42 +185,19 @@ export function SidePanel({ session, panels }: SidePanelProps) {
     // Closed, the sheet takes no room: its opener is the header's `Panels`.
     if (!sheet) return null;
     return (
-      <>
-        {/* The overlay dims the transcript and takes the tap that dismisses
-            the sheet. It is a sibling of the transcript's scroller, not a
-            child, so neither the tap nor a drag on it reaches that scroller's
-            stick-to-bottom handler. */}
-        <div
-          aria-hidden="true"
-          onClick={closeSheet}
-          className="absolute inset-0 z-10 touch-none bg-black/50"
-        />
-        <div
-          ref={dialog}
-          role="dialog"
-          aria-label="Session panels"
-          onKeyDown={(event) => {
-            // A key a panel handled itself — the terminal's own Escape — is
-            // the panel's, not the sheet's.
-            if (event.key !== "Escape" || event.defaultPrevented) return;
-            event.preventDefault();
-            closeSheet();
-          }}
-          className="border-console-border bg-console-surface absolute inset-x-0 bottom-0 z-20 flex h-[85%] flex-col rounded-t-lg border-t shadow-2xl"
-        >
-          {strip(
-            <button
-              type="button"
-              aria-label="Close panels"
-              onClick={closeSheet}
-              className={CHROME_BUTTON}
-            >
-              <Icon.close aria-hidden="true" className={ICON_CLASS} />
-            </button>,
-          )}
-          {tabPanel}
-        </div>
-      </>
+      <SessionSheet ref={dialog} label="Session panels" onClose={closeSheet}>
+        {strip(
+          <button
+            type="button"
+            aria-label="Close panels"
+            onClick={closeSheet}
+            className={CHROME_BUTTON}
+          >
+            <Icon.close aria-hidden="true" className={ICON_CLASS} />
+          </button>,
+        )}
+        {tabPanel}
+      </SessionSheet>
     );
   }
 

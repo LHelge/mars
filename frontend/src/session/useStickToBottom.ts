@@ -18,8 +18,21 @@
 // distance past `NEAR_BOTTOM_PX` and a `scrollTop` lower than the last one
 // observed; anything else that moved the bottom out of reach while pinned is
 // followed back down.
+//
+// The scroller's own height moves too: on a phone the session box follows the
+// visual viewport, so the on-screen keyboard opening, or the header's details
+// unfolding, shrinks the transcript from below. Nothing scrolls when that
+// happens — no `scroll` event, no new content — so the newest line would sit
+// under the composer; a pinned view is put back on the tail whenever the
+// scroller is resized.
 
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { RefObject } from "react";
 
 /** How close to the bottom still counts as following the tail. */
@@ -168,6 +181,23 @@ export function useStickToBottom(
       setNewCount((count) => count + appended);
     }
   }, [order, tailLength, contentHeight, isOwnAppend, scrollToBottom]);
+
+  // A resize of the scroller itself, which moves the bottom without a scroll.
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      if (pinnedRef.current) {
+        scrollToBottom();
+      }
+    });
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+    };
+  }, [scrollRef, scrollToBottom]);
 
   const jumpToLatest = useCallback(() => {
     pinnedRef.current = true;

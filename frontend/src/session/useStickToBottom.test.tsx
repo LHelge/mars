@@ -2,8 +2,22 @@
 // it otherwise has none of (`scrollHeight`, `clientHeight` and `scrollTop` are
 // all 0 in a document that is never laid out).
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { useRef } from "react";
 
 import { useStickToBottom } from "./useStickToBottom";
@@ -282,5 +296,70 @@ describe("useStickToBottom", () => {
     rerender(<Harness order={["a"]} tailLength={40} />);
 
     expect(scroller.scrollTop).toBe(1000);
+  });
+
+  describe("when the scroller itself is resized", () => {
+    /** The callbacks of every `ResizeObserver` the hook made. */
+    let resized: (() => void)[] = [];
+
+    beforeAll(() => {
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(callback: () => void) {
+            resized.push(callback);
+          }
+          observe(): void {}
+          disconnect(): void {}
+        },
+      );
+    });
+
+    afterEach(() => {
+      resized = [];
+    });
+
+    afterAll(() => {
+      vi.unstubAllGlobals();
+    });
+
+    function resize(): void {
+      act(() => {
+        for (const callback of resized) callback();
+      });
+    }
+
+    // The keyboard opening on a phone shrinks the transcript from below with
+    // no scroll and no new content: a pinned view goes back to the tail.
+    it("puts a pinned view back on the tail", () => {
+      render(<Harness order={["a"]} tailLength={1} />);
+      const scroller = screen.getByTestId("scroller");
+      setGeometry(scroller, 1000, 400);
+      fireEvent.scroll(scroller);
+      expect(pinned()).toBe("true");
+
+      setGeometry(scroller, 1000, 400);
+      Object.defineProperty(scroller, "clientHeight", {
+        configurable: true,
+        value: 300,
+      });
+      resize();
+
+      expect(scroller.scrollTop).toBe(1000);
+    });
+
+    it("leaves a reader who scrolled up where they are", () => {
+      render(<Harness order={["a"]} tailLength={1} />);
+      const scroller = screen.getByTestId("scroller");
+      setGeometry(scroller, 1000, 400);
+      fireEvent.scroll(scroller);
+      setGeometry(scroller, 1000, 100);
+      fireEvent.scroll(scroller);
+      expect(pinned()).toBe("false");
+
+      resize();
+
+      expect(scroller.scrollTop).toBe(100);
+    });
   });
 });

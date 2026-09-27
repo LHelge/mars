@@ -732,9 +732,14 @@ test("the side panel opens as a sheet on a phone and the transcript keeps the wi
   // The page's own gutters and the box's border are all that is left over.
   expect(before?.width ?? 0).toBeGreaterThan(width - 48);
 
-  // The opener is one button in the header's link row.
+  // The opener is one button in the header's link row, which a phone folds
+  // under Details.
+  await header(page).getByRole("button", { name: "Details" }).click();
   const opener = header(page).getByRole("button", { name: "Panels" });
   await expect(opener).toHaveAttribute("aria-expanded", "false");
+  // Unfolded, the header is taller: the transcript's top is measured again.
+  const unfolded = await transcript(page).boundingBox();
+  expect(unfolded).not.toBeNull();
   await opener.click();
   await expect(opener).toHaveAttribute("aria-expanded", "true");
 
@@ -753,8 +758,8 @@ test("the side panel opens as a sheet on a phone and the transcript keeps the wi
   // A tap on the dimmed transcript above the sheet closes it, and the focus
   // goes back to the opener.
   await page.mouse.click(
-    (before?.x ?? 0) + (before?.width ?? 0) / 2,
-    (before?.y ?? 0) + 8,
+    (unfolded?.x ?? 0) + (unfolded?.width ?? 0) / 2,
+    (unfolded?.y ?? 0) + 8,
   );
   await expect(sheet).toHaveCount(0);
   await expect(opener).toBeFocused();
@@ -762,4 +767,64 @@ test("the side panel opens as a sheet on a phone and the transcript keeps the wi
 
   const after = await transcript(page).boundingBox();
   expect(after?.width).toBe(before?.width);
+});
+
+// --- the session header on a phone -------------------------------------------
+
+test("the session header folds on a phone and the transcript keeps its height @mobile", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}, testInfo) => {
+  expect(isMobile(testInfo)).toBe(true);
+  await loginViaToken(context, user);
+  const session = await sessions.launch(api, project.id, {
+    message: "hello stub",
+  });
+  await page.goto(`/sessions/${session.id}`);
+  await expectState(page, "running");
+
+  // One row: the state, the connection, the title and Details, closed
+  // (`SPEC.md`, "Frontend", "Session header").
+  const details = header(page).getByRole("button", { name: "Details" });
+  await expect(details).toHaveAttribute("aria-expanded", "false");
+  await expect(
+    header(page).getByRole("button", { name: "Edit title" }),
+  ).toBeVisible();
+  await expect(headerField(page, "branch")).toBeHidden();
+  await expect(header(page).getByRole("button", { name: "End" })).toBeHidden();
+
+  await details.click();
+  await expect(details).toHaveAttribute("aria-expanded", "true");
+  await expect(headerField(page, "branch")).toBeVisible();
+  await expect(header(page).getByRole("button", { name: "End" })).toBeVisible();
+  // The container id is written out whole where a phone has no hover.
+  const running = await api.get<Session>(`/sessions/${session.id}`);
+  expect(running.container_id).not.toBeNull();
+  await expect(headerField(page, "container")).toHaveText(
+    running.container_id ?? "",
+  );
+
+  // Unfolded, the header still leaves the transcript most of the box: it is
+  // capped at half of it and scrolls inside itself past that.
+  const height = page.viewportSize()?.height ?? 0;
+  expect(height).toBeGreaterThan(0);
+  const box = await transcript(page).boundingBox();
+  expect(box?.height ?? 0).toBeGreaterThanOrEqual(height * 0.4);
+
+  // The branch section is a sheet over the session box, not a band that grows
+  // the header, and closing it gives the focus back to its opener.
+  const branch = header(page).getByRole("button", {
+    name: "branch",
+    exact: true,
+  });
+  await branch.click();
+  const sheet = page.getByRole("dialog", { name: "Session branch" });
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: "Close branch" }).click();
+  await expect(sheet).toHaveCount(0);
+  await expect(branch).toBeFocused();
 });

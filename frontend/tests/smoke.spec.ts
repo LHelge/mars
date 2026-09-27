@@ -162,10 +162,8 @@ async function settled(page: Page): Promise<void> {
 // everything its tabs list, and on each one the document does not scroll
 // sideways and no box in its `main` reaches past the screen's right edge. The
 // `mobile` project is a Pixel 7, 412 px wide; the viewport is 360 × 740 here,
-// which keeps the device's touch and coarse pointer. It is the context's from
-// the start rather than a resize of the page, which Chromium's mobile
-// emulation answers with a page scale a hair off 1. Names are long on purpose,
-// since a name is what a narrow column fails on.
+// which keeps the device's touch and coarse pointer. Names are long on
+// purpose, since a name is what a narrow column fails on.
 test.describe(() => {
   test.use({ viewport: { width: 360, height: 740 } });
 

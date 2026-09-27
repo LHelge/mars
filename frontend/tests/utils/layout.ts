@@ -102,8 +102,7 @@ export async function expectNoHorizontalOverflow(
     report.scrollWidth,
     `${label}: the document is ${String(report.scrollWidth)} px wide in a ${String(limit)} px viewport`,
   ).toBeLessThanOrEqual(limit);
-  // A pixel of slack: with a page taller than the screen, Chromium's mobile
-  // emulation can report one more than the viewport at a page scale of 1.003.
+  // The same pixel of slack as the boxes: a layout viewport rounded up.
   expect(
     report.innerWidth,
     `${label}: the browser zoomed out to fit a page wider than the screen`,

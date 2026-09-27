@@ -66,10 +66,9 @@ that branches on the browser asks `isMobile(testInfo)` from
 `utils/test-helpers.ts`, and one that asserts nothing is wider than the screen
 calls `expectNoHorizontalOverflow(page)` from there, the one spelling of that
 check. The Pixel 7 is 412 px wide; a scenario about the narrowest phone the
-layout is written for sets 360 × 740 with `test.use({ viewport })`, which keeps
-the device's touch and coarse pointer — as the context's viewport rather than
-a `page.setViewportSize` resize, which Chromium's mobile emulation can answer
-with a page scale a hair off 1. The phone scenarios alone:
+layout is written for sets 360 × 740, with `test.use({ viewport })` or
+`page.setViewportSize`, either of which keeps the device's touch and coarse
+pointer. The phone scenarios alone:
 
 ```bash
 npx playwright test --project mobile

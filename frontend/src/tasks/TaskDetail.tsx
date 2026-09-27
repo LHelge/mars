@@ -26,19 +26,26 @@
 // card that opened it when it closes. What the browser does not decide is
 // where focus lands *inside* the drawer — the heading, so the task is
 // announced and Tab walks the panel from the top, including after a link to
-// another task has remounted the body under it — and when Escape may close
-// anything: `drawerEscape.ts`.
+// another task has remounted the body under it — and when Escape, `Close` or a
+// tap on the overlay may close anything: `drawerEscape.ts`.
+//
+// Unsaved text is asked about whichever way out is taken. Escape asks with a
+// line in the header and a second press is the answer; a pointer — `Close`, or
+// the overlay — asks with a `ConfirmPanel` there instead, because a tap has no
+// second press to give and its answer is the panel's own button.
 
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
+import { ConfirmPanel } from "../components/ConfirmPanel";
 import { CopyLinkButton } from "../components/CopyLinkButton";
 import { LoadingState } from "../components/LoadingState";
 import { MarkdownBody } from "../components/Markdown";
 import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { SubmitButton } from "../components/SubmitButton";
+import { SM_QUERY, useMediaQuery } from "../hooks/useMediaQuery";
 import { errorMessage, isNotFound } from "../services/errorMessage";
 import { getTask } from "../services/tasks";
 import type { Task, TaskDetail as TaskDetailData } from "../types";
@@ -49,7 +56,7 @@ import { DependencyEditor } from "./DependencyEditor";
 import {
   createEscapeRegistry,
   DrawerEscapeContext,
-  escapeAction,
+  closeAction,
   hasDraftText,
 } from "./drawerEscape";
 import { HandoffPanel } from "./HandoffPanel";
@@ -80,8 +87,13 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
   const typed = useRef(false);
   /** The task the drawer is showing, readable from an unmount cleanup. */
   const shown = useRef(number);
-  /** An Escape over unsaved text has asked; a second one discards it. */
-  const [armed, setArmed] = useState(false);
+  /**
+   * The drawer has asked about unsaved text: by Escape, whose second press
+   * discards it, or by a pointer, whose panel's own button does.
+   */
+  const [asking, setAsking] = useState<"escape" | "pointer" | null>(null);
+  /** Below `sm` the copy link lives in the action bar, not the header. */
+  const wide = useMediaQuery(SM_QUERY);
 
   useEffect(() => {
     shown.current = number;
@@ -120,6 +132,31 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
   // (`drawerEscape.ts`).
   const escapeRegistry = useMemo(() => createEscapeRegistry(), []);
 
+  /** Does the drawer hold text someone typed and has not saved? */
+  const dirty = useCallback(() => {
+    const dialog = dialogRef.current;
+    return typed.current && dialog !== null && hasDraftText(dialog);
+  }, []);
+
+  // `Close` and the overlay: the same decision Escape makes, over the same
+  // draft, answered with a panel rather than a second press.
+  const requestClose = useCallback(() => {
+    if (closeAction({ via: "button", dirty: dirty() }) === "confirm") {
+      setAsking("pointer");
+      return;
+    }
+    close();
+  }, [close, dirty]);
+
+  // The pointer's question is a confirmation like any other in the drawer:
+  // Escape withdraws it before it closes anything else ("Confirmations").
+  useEffect(() => {
+    if (asking !== "pointer") return;
+    return escapeRegistry.register(() => {
+      setAsking(null);
+    });
+  }, [asking, escapeRegistry]);
+
   // Escape is read from the document rather than from the dialog element: the
   // drawer is modal, so every key press belongs to it, including the ones that
   // arrive with nothing focused because the control that had focus — a
@@ -127,28 +164,31 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") {
-        // Any other key is the user carrying on: the question lapses.
-        if (armed) setArmed(false);
+        // Any other key is the user carrying on: Escape's question lapses.
+        // The pointer's panel stays, since Tab is how a keyboard reaches it.
+        if (asking === "escape") setAsking(null);
         return;
       }
 
-      const dialog = dialogRef.current;
-      const action = escapeAction({
+      const action = closeAction({
+        via: "escape",
         defaultPrevented: event.defaultPrevented,
         composing: event.isComposing,
-        dirty: typed.current && dialog !== null && hasDraftText(dialog),
-        armed,
+        dirty: dirty(),
+        armed: asking !== null,
       });
       if (action === "ignore") return;
 
       // Ours from here on, so the browser's own close request never fires.
       event.preventDefault();
       if (action === "confirm") {
-        setArmed(true);
+        setAsking("escape");
         return;
       }
 
-      setArmed(false);
+      // With the pointer's panel open, the innermost thing is that panel,
+      // which this press withdraws rather than closing the drawer.
+      if (asking === "escape") setAsking(null);
       const innermost = escapeRegistry.innermost();
       if (innermost === undefined) {
         close();
@@ -164,7 +204,7 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
     return () => {
       document.removeEventListener("keydown", onKey);
     };
-  }, [armed, close, escapeRegistry]);
+  }, [asking, close, dirty, escapeRegistry]);
 
   const detail = useQuery({
     // `number ?? 0` is never requested: the query is disabled without one.
@@ -191,43 +231,67 @@ export function TaskDetail({ projectId, number }: TaskDetailProps) {
       }}
       onInput={() => {
         typed.current = true;
-        if (armed) setArmed(false);
+        // Typing withdraws either question: the draft it asked about has
+        // changed, and the next way out asks again from scratch.
+        if (asking !== null) setAsking(null);
       }}
       className="fixed inset-0 z-40 m-0 flex h-full max-h-none w-full max-w-none justify-end border-0 bg-transparent p-0 text-inherit"
     >
       <div
         aria-hidden="true"
-        onClick={close}
+        onClick={requestClose}
         className="bg-console-bg/70 absolute inset-0"
       />
 
       <aside className="border-console-border bg-console-surface relative flex h-full w-full max-w-2xl flex-col overflow-y-auto border-l">
-        <header className="border-console-border bg-console-surface sticky top-0 z-10 flex flex-wrap items-baseline gap-x-3 gap-y-2 border-b px-4 py-3">
-          <span className="text-console-muted font-mono text-sm">
-            #{number === null ? "?" : number}
-          </span>
-          <h2
-            ref={headingRef}
-            tabIndex={-1}
-            className="text-console-text min-w-0 flex-1 text-base outline-none"
-          >
-            {task?.title ?? "Task"}
-          </h2>
-          <div className="flex shrink-0 items-center gap-2">
-            {task !== undefined && (
-              <CopyLinkButton
-                path={taskPath(task.project_id, task.number)}
-                label="Task link"
-              />
-            )}
-            <SubmitButton type="button" variant="ghost" onClick={close}>
-              Close
-            </SubmitButton>
+        <header className="border-console-border bg-console-surface sticky top-0 z-10 flex flex-col gap-2 border-b px-4 py-3">
+          {/* One row at any width: the number, the title — which wraps
+              within its own box rather than pushing Close onto a line of its
+              own — and Close. Below `sm` the copy link is in the action bar,
+              so a 360 px phone keeps all three together. */}
+          <div className="flex items-baseline gap-3">
+            <span className="text-console-muted shrink-0 font-mono text-sm">
+              #{number === null ? "?" : number}
+            </span>
+            <h2
+              ref={headingRef}
+              tabIndex={-1}
+              className="text-console-text min-w-0 flex-1 text-base break-words outline-none"
+            >
+              {task?.title ?? "Task"}
+            </h2>
+            <div className="flex shrink-0 items-center gap-2">
+              {wide && task !== undefined && (
+                <CopyLinkButton
+                  path={taskPath(task.project_id, task.number)}
+                  label="Task link"
+                />
+              )}
+              <SubmitButton
+                type="button"
+                variant="ghost"
+                onClick={requestClose}
+              >
+                Close
+              </SubmitButton>
+            </div>
           </div>
-          {armed && (
-            <p role="status" className="text-state-human w-full text-xs">
+          {asking === "escape" && (
+            <p role="status" className="text-state-human text-xs">
               Unsaved text here. Press Escape again to discard it.
             </p>
+          )}
+          {asking === "pointer" && (
+            <ConfirmPanel
+              tone="caution"
+              message="Discard unsaved text?"
+              confirmLabel="Discard and close"
+              cancelLabel="Keep editing"
+              onConfirm={close}
+              onCancel={() => {
+                setAsking(null);
+              }}
+            />
           )}
         </header>
 

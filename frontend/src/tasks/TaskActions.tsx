@@ -18,14 +18,16 @@ import { useNavigate, useSearchParams } from "react-router";
 
 import { Alert } from "../components/Alert";
 import { ConfirmPanel } from "../components/ConfirmPanel";
+import { CopyLinkButton } from "../components/CopyLinkButton";
 import { Icon } from "../components/icons";
 import { SubmitButton } from "../components/SubmitButton";
+import { SM_QUERY, useMediaQuery } from "../hooks/useMediaQuery";
 import { errorMessage } from "../services/errorMessage";
 import type { TaskDetail } from "../types";
 import { useDrawerEscape } from "./drawerEscape";
 import { LaunchForTask } from "./LaunchForTask";
 import { MoveToState } from "./MoveToState";
-import { boardPath } from "./taskLink";
+import { boardPath, taskPath } from "./taskLink";
 import { useDeleteTask, useReleaseTask } from "./taskWrites";
 
 export interface TaskActionsProps {
@@ -55,6 +57,10 @@ export function TaskActions({
     mutationFn: useDeleteTask(projectId, task.number),
   });
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // Below `sm` the drawer's header has room for the number, the title and
+  // Close and nothing else, so `Copy link` is here instead (`SPEC.md`,
+  // "Frontend", "Mobile layout").
+  const wide = useMediaQuery(SM_QUERY);
 
   // Escape keeps the task, as `Keep the task` does, and like it is shut while
   // the deletion is in flight (`drawerEscape.ts`).
@@ -94,6 +100,13 @@ export function TaskActions({
         >
           Release
         </SubmitButton>
+
+        {!wide && (
+          <CopyLinkButton
+            path={taskPath(task.project_id, task.number)}
+            label="Task link"
+          />
+        )}
 
         {/* The hand-off and review controls are not here: they live in the
             drawer's "Code hand-off" section, beside the commit and review

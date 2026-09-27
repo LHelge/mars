@@ -1,5 +1,5 @@
-// The drawer's Escape rule, away from the drawer: what the key means is a
-// decision over four booleans, what counts as a draft is a question about a
+// The drawer's close rule, away from the drawer: what Escape, `Close` and the
+// overlay mean is a decision over a handful of booleans, what counts as a draft is a question about a
 // DOM subtree, and which of the drawer's half-dozen sub-forms a press belongs
 // to is a stack. The browser-level half — that the key really reaches the
 // dialog, that focus is really trapped and really handed back — is
@@ -8,43 +8,58 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  closeAction,
   createEscapeRegistry,
-  escapeAction,
   hasDraftText,
 } from "./drawerEscape";
 
-describe("escapeAction", () => {
+describe("closeAction by Escape", () => {
   const clean = {
+    via: "escape",
     defaultPrevented: false,
     composing: false,
     dirty: false,
     armed: false,
-  };
+  } as const;
 
   it("closes on the first press when nothing is unsaved", () => {
-    expect(escapeAction(clean)).toBe("close");
+    expect(closeAction(clean)).toBe("close");
   });
 
   it("leaves a key another handler already took", () => {
-    expect(escapeAction({ ...clean, defaultPrevented: true })).toBe("ignore");
+    expect(closeAction({ ...clean, defaultPrevented: true })).toBe("ignore");
   });
 
   it("leaves a key that is ending a composition", () => {
     // The Escape that dismisses an IME candidate list is not a close request,
     // and neither is the one that dismisses an autocomplete popup above.
-    expect(escapeAction({ ...clean, composing: true })).toBe("ignore");
-    expect(escapeAction({ ...clean, composing: true, dirty: true })).toBe(
+    expect(closeAction({ ...clean, composing: true })).toBe("ignore");
+    expect(closeAction({ ...clean, composing: true, dirty: true })).toBe(
       "ignore",
     );
   });
 
   it("asks before discarding a draft, and closes on the second press", () => {
-    expect(escapeAction({ ...clean, dirty: true })).toBe("confirm");
-    expect(escapeAction({ ...clean, dirty: true, armed: true })).toBe("close");
+    expect(closeAction({ ...clean, dirty: true })).toBe("confirm");
+    expect(closeAction({ ...clean, dirty: true, armed: true })).toBe("close");
   });
 
   it("does not ask twice about a drawer with nothing in it", () => {
-    expect(escapeAction({ ...clean, armed: true })).toBe("close");
+    expect(closeAction({ ...clean, armed: true })).toBe("close");
+  });
+});
+
+describe("closeAction by Close or the overlay", () => {
+  it("closes at once when nothing is unsaved", () => {
+    expect(closeAction({ via: "button", dirty: false })).toBe("close");
+  });
+
+  it("asks before discarding a draft, every time it is tapped", () => {
+    // A pointer has no second press to arm: its answer is the panel's own
+    // `Discard and close`, so a second tap on Close asks again rather than
+    // discarding what the first one asked about.
+    expect(closeAction({ via: "button", dirty: true })).toBe("confirm");
+    expect(closeAction({ via: "button", dirty: true })).toBe("confirm");
   });
 });
 

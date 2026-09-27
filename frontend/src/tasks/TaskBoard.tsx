@@ -28,11 +28,13 @@ import { EmptyState } from "../components/EmptyState";
 import { LoadingState } from "../components/LoadingState";
 import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
+import { SM_QUERY, useMediaQuery } from "../hooks/useMediaQuery";
 import type { TaskState } from "../types";
 import { taskColumnTestId } from "../utils/testIds";
 import { useDelayedFlag } from "../utils/useDelayedFlag";
 import { CreateTaskForm } from "./CreateTaskForm";
 import { autoMergeMeaning } from "./autoMergeRules";
+import { ColumnPicker } from "./ColumnPicker";
 import { normalizeQuery } from "./search";
 import { CHIP } from "./taskChrome";
 import { TaskCard } from "./TaskCard";
@@ -44,6 +46,7 @@ import {
   useTaskStore,
 } from "./taskStore";
 import type { TaskColumn } from "./taskStore";
+import { COLUMN_KEY_ATTRIBUTE, useColumnInView } from "./useColumnInView";
 
 /** `SPEC.md`, "User-facing features", "Task board", in one line. */
 const BOARD_HELP =
@@ -87,6 +90,10 @@ export function TaskBoard({
 
   const [creating, setCreating] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
+  const strip = useRef<HTMLDivElement>(null);
+  // Below `sm` a column is the strip's width and a row of chips picks one
+  // (`SPEC.md`, "Frontend", "Mobile layout").
+  const narrow = !useMediaQuery(SM_QUERY);
 
   // A refresh is two REST reads and is normally over before anyone could read
   // a word about it, while a stream that is not live stays that way: only the
@@ -99,6 +106,31 @@ export function TaskBoard({
   const columns = useMemo(
     () => selectVisibleColumns({ states, tasks, query }),
     [states, tasks, query],
+  );
+
+  const columnKeys = useMemo(
+    () => columns.map((column) => column.key),
+    [columns],
+  );
+  const [inView, markInView] = useColumnInView(strip, columnKeys, narrow);
+
+  // A chip tap is the only thing that scrolls the strip for it — never a
+  // render — so a drawer opened over the board by a link moves nothing behind
+  // it. `block: "nearest"` keeps the page where it is.
+  const pickColumn = useCallback(
+    (key: string) => {
+      const column = Array.from(
+        strip.current?.querySelectorAll(`[${COLUMN_KEY_ATTRIBUTE}]`) ?? [],
+      ).find((element) => element.getAttribute(COLUMN_KEY_ATTRIBUTE) === key);
+      if (column === undefined) return;
+      markInView(key);
+      column.scrollIntoView({
+        inline: "start",
+        block: "nearest",
+        behavior: "smooth",
+      });
+    },
+    [markInView],
   );
 
   const clearSearch = useCallback(() => {
@@ -232,7 +264,20 @@ export function TaskBoard({
             // its shape while searching and the message below says why they
             // are empty.
             <>
-              <div className="flex snap-x gap-3 overflow-x-auto pb-2">
+              {narrow && (
+                <ColumnPicker
+                  columns={columns}
+                  active={inView}
+                  onPick={pickColumn}
+                />
+              )}
+
+              {/* Proximity snap beside `w-64` columns at `sm` and up; below
+                  it one column per swipe, mandatory and never skipped. */}
+              <div
+                ref={strip}
+                className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 sm:snap-proximity"
+              >
                 {columns.map((column) => (
                   <BoardColumn
                     key={column.key}
@@ -292,7 +337,11 @@ function BoardColumn({ column, openTaskNumber, maxRounds }: BoardColumnProps) {
       // The end-to-end suite addresses a column by its state's name: the
       // heading alone is ambiguous against the cards' own headings.
       data-testid={taskColumnTestId(column.name)}
-      className="flex w-64 shrink-0 snap-start flex-col gap-2"
+      // `COLUMN_KEY_ATTRIBUTE`: what the phone's chip row observes and finds.
+      data-column-key={column.key}
+      // Below `sm` one column fills the strip: the viewport less the page's
+      // 1rem gutter each side.
+      className="flex w-[calc(100vw-2rem)] shrink-0 snap-start flex-col gap-2 max-sm:snap-always sm:w-64"
     >
       <div className="border-console-border flex items-baseline gap-2 border-b pb-1.5">
         <span

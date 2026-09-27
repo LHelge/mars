@@ -48,7 +48,8 @@ export function TaskSearch({ inputRef, onClear }: TaskSearchProps) {
         onChange={(event) => {
           setQuery(event.target.value);
         }}
-        className={`${CONTROL} w-full max-w-72 min-w-0`}
+        // Full width below `sm`, beside its label; a capped field above it.
+        className={`${CONTROL} min-w-0 flex-1 sm:w-full sm:max-w-72 sm:flex-none`}
       />
 
       {query !== "" && (

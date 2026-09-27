@@ -11,7 +11,11 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 /** Tailwind's `lg` (1024 px) as a media query: the side panel's breakpoint. */
 export const LG_QUERY = "(min-width: 64rem)";
 
-/** Tailwind's `sm` (640 px) as a media query: the composer's height cap. */
+/**
+ * Tailwind's `sm` (640 px) as a media query: the composer's height cap, and
+ * below it the task board mounts its column picker and the drawer's `Copy
+ * link` moves into its action bar.
+ */
 export const SM_QUERY = "(min-width: 40rem)";
 
 /**

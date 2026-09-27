@@ -27,6 +27,7 @@ import {
   createTask,
   createTestUser,
   getTask,
+  isMobile,
   loginViaToken,
   moveTask,
   newLoggedInPage,
@@ -392,6 +393,80 @@ test("Escape asks before discarding a draft and shuts an open form first", async
 
   // Nothing typed into the form was ever sent.
   expect((await getTask(api, project.id, 1)).title).toBe("Draft the plan");
+});
+
+// `SPEC.md`, "Frontend", "Mobile layout" and "Task board": on a phone the
+// board is one column per swipe with a chip row to pick one, and a tapped
+// Close asks about a draft as Escape does.
+test("a phone swipes the board one column at a time and a tapped Close keeps a draft @mobile", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+}, testInfo) => {
+  expect(isMobile(testInfo)).toBe(true);
+  await createTask(api, project.id, { title: "Review the rollout" });
+  await loginViaToken(context, user);
+  await openBoard(page, project);
+
+  const picker = page.getByRole("navigation", { name: "Board columns" });
+  await expect(picker.getByRole("button")).toHaveCount(DEFAULT_STATES.length);
+  await expect(
+    picker.getByRole("button", { name: "backlog (1)" }),
+  ).toHaveAttribute("aria-current", "true");
+
+  // The strip is the page's width less its gutter, and a tapped chip brings
+  // its column to the gutter and marks it.
+  const review = picker.getByRole("button", { name: "review (0)" });
+  await review.tap();
+  await expect
+    .poll(async () => (await column(page, "review").boundingBox())?.x)
+    .toBeCloseTo(16, 0);
+  await expect(review).toHaveAttribute("aria-current", "true");
+  const width = page.viewportSize()?.width ?? 0;
+  expect((await column(page, "review").boundingBox())?.width).toBeCloseTo(
+    width - 32,
+    0,
+  );
+
+  // Nothing on the board is wider than the phone, the search field included.
+  const overflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
+
+  await picker.getByRole("button", { name: "backlog (1)" }).tap();
+  const panel = await openCard(page, 1);
+
+  // The header keeps the number, the title and Close on one row, and the
+  // copy link is in the action bar instead.
+  const close = panel.getByRole("button", { name: "Close", exact: true });
+  const number = panel.getByText("#1", { exact: true });
+  const closeBox = await close.boundingBox();
+  const numberBox = await number.boundingBox();
+  expect(closeBox).not.toBeNull();
+  expect(numberBox).not.toBeNull();
+  expect(Math.abs((closeBox?.y ?? 0) - (numberBox?.y ?? 0))).toBeLessThan(
+    closeBox?.height ?? 0,
+  );
+  await expect(panel.getByRole("button", { name: "Copy link" })).toBeVisible();
+
+  // A tapped Close over a draft asks rather than throwing it away, and
+  // keeping it leaves the text where it was.
+  const comment = panel.getByLabel("Add a comment");
+  await comment.fill("Check the canary first.");
+  await close.tap();
+  await expect(panel.getByText("Discard unsaved text?")).toBeVisible();
+  await panel.getByRole("button", { name: "Keep editing" }).tap();
+  await expect(panel.getByText("Discard unsaved text?")).toHaveCount(0);
+  await expect(comment).toHaveValue("Check the canary first.");
+
+  // Asked again, the confirming button is the answer.
+  await close.tap();
+  await panel.getByRole("button", { name: "Discard and close" }).tap();
+  await expect(drawer(page)).toHaveCount(0);
 });
 
 test("Escape shuts a hand-off form and a confirmation before the drawer", async ({

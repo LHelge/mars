@@ -1,6 +1,6 @@
-// What Escape means inside the task drawer, and the seam a sub-form uses to
-// claim it (`SPEC.md`, "Frontend", "Task board": the drawer's focus and
-// Escape rules).
+// What Escape, `Close` and a tap outside the panel mean inside the task drawer,
+// and the seam a sub-form uses to claim Escape (`SPEC.md`, "Frontend", "Task
+// board": the drawer's focus and close rules).
 //
 // The drawer is a native modal `<dialog>`, so focus containment, the inert
 // background and the focus restore are the browser's. What is not the
@@ -8,7 +8,8 @@
 // candidate list or an autocomplete popup must not also throw away eight lines
 // of a description, and a sub-form that is open is what Escape should shut
 // first. Both decisions are made here, in one pure function the drawer calls
-// and a unit test drives directly.
+// and a unit test drives directly — and a pointer's way out goes through the
+// same function, so unsaved text is asked about however the drawer is left.
 //
 // This module holds no components on purpose: the drawer renders the context
 // provider itself, so a module that ships a hook and a context can stay a
@@ -16,41 +17,58 @@
 
 import { createContext, useContext, useEffect, useRef } from "react";
 
-/** What the drawer should do with an Escape key press. */
-export type EscapeAction =
+/**
+ * What the drawer should do with a request to close it: an Escape key press,
+ * or a tap on `Close` or on the overlay beside the panel.
+ */
+export type CloseAction =
   /** Not ours: the key was already handled, or it is ending a composition. */
   | "ignore"
-  /** There is unsaved text: say so and wait for a second Escape. */
+  /** There is unsaved text: ask first. Escape asks with a line and waits for
+   *  a second press; a pointer asks with a confirmation panel. */
   | "confirm"
-  /** Close the innermost open thing — a sub-form if there is one, else the
-   *  drawer. */
+  /** For Escape, close the innermost open thing — a sub-form if there is one,
+   *  else the drawer; for `Close` and the overlay, close the drawer. */
   | "close";
 
-export interface EscapeInput {
+/** An Escape key press, as the drawer's document-level handler sees it. */
+export interface EscapeRequest {
+  via: "escape";
   /** Something nearer the key already called `preventDefault()`. */
   defaultPrevented: boolean;
   /** The key is ending an IME composition (`KeyboardEvent.isComposing`). */
   composing: boolean;
   /** The drawer holds text a user typed and has not saved. */
   dirty: boolean;
-  /** A previous Escape already asked, and nothing has been typed since. */
+  /**
+   * A question is already open: a previous Escape asked and nothing has been
+   * typed since, or a pointer's confirmation panel is showing.
+   */
   armed: boolean;
 }
 
+/** A tap on the header's `Close` or on the overlay beside the panel. */
+export interface ButtonRequest {
+  via: "button";
+  /** The drawer holds text a user typed and has not saved. */
+  dirty: boolean;
+}
+
+export type CloseRequest = EscapeRequest | ButtonRequest;
+
 /**
- * The whole Escape rule of the drawer, as one decision.
+ * The whole close rule of the drawer, as one decision, whichever way out the
+ * user took (`SPEC.md`, "Frontend", "Task board").
  *
- * A dirty drawer costs one extra key press, never a silent loss; a clean one
- * closes on the first Escape exactly as it always did.
+ * A dirty drawer costs one extra step, never a silent loss; a clean one closes
+ * at once, exactly as it always did. Escape's extra step is a second press; a
+ * pointer's is the `Discard and close` button of the panel that asks, which
+ * closes without asking again.
  */
-export function escapeAction({
-  defaultPrevented,
-  composing,
-  dirty,
-  armed,
-}: EscapeInput): EscapeAction {
-  if (defaultPrevented || composing) return "ignore";
-  if (dirty && !armed) return "confirm";
+export function closeAction(request: CloseRequest): CloseAction {
+  if (request.via === "button") return request.dirty ? "confirm" : "close";
+  if (request.defaultPrevented || request.composing) return "ignore";
+  if (request.dirty && !request.armed) return "confirm";
   return "close";
 }
 

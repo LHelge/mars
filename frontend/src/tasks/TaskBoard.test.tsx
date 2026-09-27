@@ -265,3 +265,159 @@ describe("the board's status marker", () => {
     expect(screen.getByRole("status").textContent).toBe("Reconnecting");
   });
 });
+
+// `SPEC.md`, "Frontend", "Mobile layout": below `sm` a row of chips above the
+// strip names every column, marks the one in view and scrolls to the one
+// tapped. jsdom has neither `IntersectionObserver` nor `scrollIntoView`, and
+// `matchMedia` absent reads as the narrow layout, so each is stubbed here.
+describe("the column picker below sm", () => {
+  interface Observed {
+    callback: IntersectionObserverCallback;
+    options: IntersectionObserverInit | undefined;
+    targets: Element[];
+  }
+  let observers: Observed[];
+  let scrolled: { element: Element; options: unknown }[];
+
+  beforeEach(() => {
+    observers = [];
+    scrolled = [];
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        private readonly observed: Observed;
+        constructor(
+          callback: IntersectionObserverCallback,
+          options?: IntersectionObserverInit,
+        ) {
+          this.observed = { callback, options, targets: [] };
+          observers.push(this.observed);
+        }
+        observe(target: Element) {
+          this.observed.targets.push(target);
+        }
+        disconnect() {
+          this.observed.targets = [];
+        }
+      },
+    );
+    Element.prototype.scrollIntoView = function (
+      this: Element,
+      options?: unknown,
+    ) {
+      scrolled.push({ element: this, options });
+    };
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    // jsdom has no `scrollIntoView` of its own to put back.
+    Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+  });
+
+  function picker(): HTMLElement {
+    return screen.getByRole("navigation", { name: "Board columns" });
+  }
+
+  function chip(name: RegExp): HTMLElement {
+    return within(picker()).getByRole("button", { name });
+  }
+
+  /** The observer reports `name`'s column as the one in view. */
+  function bringIntoView(name: string): void {
+    const observed = observers.at(-1);
+    const target = observed?.targets.find(
+      (element) => element.getAttribute("data-testid") === `column-${name}`,
+    );
+    if (observed === undefined || target === undefined) {
+      throw new Error(`column ${name} is not observed`);
+    }
+    act(() => {
+      observed.callback(
+        [
+          {
+            target,
+            isIntersecting: true,
+            intersectionRatio: 1,
+          } as IntersectionObserverEntry,
+        ],
+        {} as IntersectionObserver,
+      );
+    });
+  }
+
+  it("names every column with its count and marks the first", () => {
+    loadedBoard();
+    show();
+
+    expect(chip(/^backlog \(1\)$/).getAttribute("aria-current")).toBe("true");
+    expect(chip(/^ready \(1\)$/).getAttribute("aria-current")).toBeNull();
+  });
+
+  it("observes the columns from the strip at a 0.6 threshold", () => {
+    loadedBoard();
+    show();
+
+    const observed = observers.at(-1);
+    expect(observed?.options?.threshold).toBe(0.6);
+    expect(observed?.options?.root).toBe(
+      screen.getByTestId("column-backlog").parentElement,
+    );
+    expect(
+      observed?.targets.map((element) => element.getAttribute("data-testid")),
+    ).toEqual(["column-backlog", "column-ready"]);
+  });
+
+  it("scrolls the strip to a tapped column and marks it", () => {
+    loadedBoard();
+    show();
+
+    fireEvent.click(chip(/^ready/));
+
+    expect(scrolled).toHaveLength(1);
+    expect(scrolled[0]?.element).toBe(screen.getByTestId("column-ready"));
+    expect(scrolled[0]?.options).toMatchObject({ inline: "start" });
+    expect(chip(/^ready/).getAttribute("aria-current")).toBe("true");
+    expect(chip(/^backlog/).getAttribute("aria-current")).toBeNull();
+  });
+
+  it("follows a swipe through the observer, scrolling nothing itself", () => {
+    loadedBoard();
+    show();
+
+    bringIntoView("ready");
+
+    expect(chip(/^ready/).getAttribute("aria-current")).toBe("true");
+    expect(scrolled).toHaveLength(0);
+  });
+
+  it("is still there for a project with one column", () => {
+    useTaskStore.setState({
+      ...emptyTaskBoardState(),
+      ...taskSnapshot([state("backlog", 0)], []),
+      projectId: PROJECT_ID,
+      loaded: true,
+      stream: "live",
+    });
+    show();
+
+    expect(within(picker()).getAllByRole("button")).toHaveLength(1);
+    expect(chip(/^backlog \(0\)$/).getAttribute("aria-current")).toBe("true");
+  });
+
+  it("is not rendered at sm and wider", () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: true,
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+    loadedBoard();
+    show();
+
+    expect(
+      screen.queryByRole("navigation", { name: "Board columns" }),
+    ).toBeNull();
+    expect(screen.getByTestId("column-backlog")).toBeTruthy();
+  });
+});

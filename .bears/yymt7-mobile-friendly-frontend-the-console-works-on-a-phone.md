@@ -2,10 +2,10 @@
 id: yymt7
 title: "Mobile-friendly frontend: the console works on a phone"
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-23T15:54:35.312767689Z"
-updated: "2026-09-23T15:54:35.312767689Z"
+updated: "2026-09-27T18:30:33.618174592Z"
 tags:
   - frontend
   - mobile

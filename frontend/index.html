@@ -7,7 +7,23 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <!-- The browser chrome in the page's own background: --color-console-bg
+         of src/index.css, oklch(0.18 0.01 260) dark and oklch(0.97 0.004 260)
+         light, in hex because not every browser reads oklch here. -->
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: dark)"
+      content="#0f1216"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: light)"
+      content="#f3f5f8"
+    />
     <title>Mars</title>
   </head>
   <body>

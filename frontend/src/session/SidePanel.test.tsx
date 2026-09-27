@@ -6,7 +6,13 @@
 // a `/bin/bash -l` in the container — merely because `Changes` is not offered
 // yet.
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Session, SessionState } from "../types";
@@ -35,14 +41,33 @@ function selected(): string | null {
   return tab?.textContent ?? null;
 }
 
+/** The viewport's side of `lg`, and the `change` it fires when it crosses. */
+let wide = true;
+const listeners = new Set<() => void>();
+
+function resize(toWide: boolean): void {
+  act(() => {
+    wide = toWide;
+    for (const listener of listeners) listener();
+  });
+}
+
 beforeEach(() => {
   // A wide screen, so the panel starts open rather than as a rail.
+  wide = true;
+  listeners.clear();
   vi.stubGlobal(
     "matchMedia",
     vi.fn(() => ({
-      matches: true,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
+      get matches() {
+        return wide;
+      },
+      addEventListener: (_type: string, listener: () => void) => {
+        listeners.add(listener);
+      },
+      removeEventListener: (_type: string, listener: () => void) => {
+        listeners.delete(listener);
+      },
     })),
   );
 });
@@ -109,5 +134,40 @@ describe("SidePanel", () => {
     // One tab stop for the list: the selected tab, and no other.
     expect(tab.tabIndex).toBe(0);
     expect(screen.getByRole("tab", { name: "Tasks" }).tabIndex).toBe(-1);
+  });
+
+  it("starts as a rail where matchMedia does not exist", () => {
+    vi.stubGlobal("matchMedia", undefined);
+    render(<SidePanel session={session("running")} />);
+
+    expect(
+      screen.getByRole("button", { name: "Show side panel" }),
+    ).toBeDefined();
+    expect(screen.queryByRole("tablist")).toBeNull();
+  });
+
+  it("follows a resize across lg", () => {
+    wide = false;
+    render(<SidePanel session={session("running")} />);
+    expect(screen.queryByRole("tablist")).toBeNull();
+
+    resize(true);
+    expect(screen.getByRole("tablist")).toBeDefined();
+
+    resize(false);
+    expect(screen.queryByRole("tablist")).toBeNull();
+  });
+
+  it("keeps the operator's hide until the width crosses lg again", () => {
+    render(<SidePanel session={session("running")} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide side panel" }));
+    expect(screen.queryByRole("tablist")).toBeNull();
+
+    // Narrow, then wide again: the crossing hands the choice back to the width.
+    resize(false);
+    expect(screen.queryByRole("tablist")).toBeNull();
+    resize(true);
+    expect(screen.getByRole("tablist")).toBeDefined();
   });
 });

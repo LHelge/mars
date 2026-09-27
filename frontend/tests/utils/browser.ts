@@ -6,11 +6,20 @@
 // refresh token as the `refresh_token` cookie — so the form is exercised once
 // per suite instead of once per test (`SPEC.md`, "Authentication").
 
-import type { Browser, BrowserContext, Page } from "@playwright/test";
+import type { Browser, BrowserContext, Page, TestInfo } from "@playwright/test";
 
 import { TOKEN_STORAGE_KEY } from "../../src/services/auth.ts";
 import { REFRESH_COOKIE_NAME, type TestUser } from "./api";
 import { baseUrl } from "./env";
+
+/**
+ * Whether this scenario is running on the phone project — the one a title
+ * tagged `@mobile` selects (`playwright.config.ts`; tests/README.md, "Running
+ * it") — for a scenario whose steps differ on a phone.
+ */
+export function isMobile(testInfo: TestInfo): boolean {
+  return testInfo.project.name === "mobile";
+}
 
 /** Signs in through the login form and waits for the dashboard. */
 export async function login(

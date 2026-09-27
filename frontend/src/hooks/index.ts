@@ -3,3 +3,5 @@ export type { UseAuth } from "./useAuth";
 
 export { useFormSubmit } from "./useFormSubmit";
 export type { UseFormSubmit } from "./useFormSubmit";
+
+export { LG_QUERY, useMediaQuery } from "./useMediaQuery";

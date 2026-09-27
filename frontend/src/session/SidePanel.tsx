@@ -1,8 +1,11 @@
 // The right-hand column of the session view: one registered panel at a time.
 //
-// The transcript is the page; the panel is reference material beside it. On a
-// wide screen there is room for both, so it opens; on a narrow one it starts
-// collapsed to a rail and the transcript keeps the width.
+// The transcript is the page; the panel is reference material beside it. At
+// Tailwind's `lg` there is room for both, so it opens; below it the panel is
+// collapsed to a rail and the transcript keeps the width. Crossing the
+// breakpoint — a window resized, a tablet turned — puts the panel back where
+// that width wants it; between crossings the operator's own show or hide
+// stands.
 //
 // Which tab is shown is *derived*, not initialised: the state is the operator's
 // own choice, `null` until they click or arrow onto a tab, and the tab on
@@ -20,20 +23,10 @@ import type { KeyboardEvent } from "react";
 
 import { Icon, ICON_CLASS } from "../components/icons";
 import { LoadingState } from "../components/LoadingState";
+import { LG_QUERY, useMediaQuery } from "../hooks/useMediaQuery";
 import type { Session } from "../types";
 import { panelsFor } from "./sidePanels";
 import type { SidePanelEntry } from "./sidePanels";
-
-/** Below this the panel would leave the transcript unreadably narrow. */
-const WIDE_PX = 1024;
-
-function wideScreen(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia(`(min-width: ${String(WIDE_PX)}px)`).matches
-  );
-}
 
 export interface SidePanelProps {
   session: Session;
@@ -43,7 +36,17 @@ export interface SidePanelProps {
 
 export function SidePanel({ session, panels }: SidePanelProps) {
   const entries = panelsFor(session, panels);
-  const [open, setOpen] = useState(wideScreen);
+  // Below `lg` the panel would leave the transcript unreadably narrow.
+  const wide = useMediaQuery(LG_QUERY);
+  /** The operator's show or hide; `null` until they choose, and after a
+   *  crossing of the breakpoint, which hands the choice back to the width. */
+  const [choice, setChoice] = useState<boolean | null>(null);
+  const [seenWide, setSeenWide] = useState(wide);
+  if (seenWide !== wide) {
+    setSeenWide(wide);
+    setChoice(null);
+  }
+  const open = choice ?? wide;
   /** The tab the operator selected; `null` until they select one. */
   const [activeId, setActiveId] = useState<string | null>(null);
   const tabs = useRef(new Map<string, HTMLButtonElement>());
@@ -86,7 +89,7 @@ export function SidePanel({ session, panels }: SidePanelProps) {
           type="button"
           aria-label="Show side panel"
           onClick={() => {
-            setOpen(true);
+            setChoice(true);
           }}
           className="text-console-muted hover:text-console-text p-1"
         >
@@ -140,7 +143,7 @@ export function SidePanel({ session, panels }: SidePanelProps) {
           type="button"
           aria-label="Hide side panel"
           onClick={() => {
-            setOpen(false);
+            setChoice(false);
           }}
           className="text-console-muted hover:text-console-text p-1"
         >

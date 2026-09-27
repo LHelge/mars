@@ -63,7 +63,17 @@ export default defineConfig({
     baseURL,
     trace: "retain-on-failure",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  // Two projects over the one stack. A scenario whose title carries `@mobile`
+  // runs on the phone and only there; every other scenario runs on the
+  // desktop and only there (tests/README.md, "Running it").
+  projects: [
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"] },
+      grepInvert: /@mobile/,
+    },
+    { name: "mobile", use: { ...devices["Pixel 7"] }, grep: /@mobile/ },
+  ],
   webServer: {
     command: `npm run dev -- --port ${devPort} --strictPort`,
     url: baseURL,

@@ -55,6 +55,22 @@ A single scenario, by title:
 npx playwright test -g "interject mid-turn"
 ```
 
+**Two projects, one stack.** `playwright.config.ts` runs every scenario in one
+of two browsers, never both: `chromium` (Desktop Chrome) and `mobile` (a Pixel
+7 — its viewport, touch and coarse pointer). The tag `@mobile` in a scenario's
+title is what picks: `mobile` greps for it and `chromium` greps it out, so a
+tagged scenario runs on the phone only and an untagged one on the desktop only.
+A phone scenario is a scenario of its own, about what `SPEC.md`, "Frontend",
+Mobile layout promises a phone, rather than a desktop scenario run twice. One
+that branches on the browser asks `isMobile(testInfo)` from
+`utils/test-helpers.ts`. The phone scenarios alone:
+
+```bash
+npx playwright test --project mobile
+```
+
+The tag is part of the title, so the coverage table below quotes it too.
+
 ## Wall-clock
 
 | Run | Machine | Time |
@@ -123,7 +139,8 @@ test("…", async ({ page, context, user, api, project, sessions }) => {
 | `sessions` | the scenario's sessions. `sessions.launch(...)` launches one; `sessions.track(client, id)` registers one the UI launched; `sessions.sweep(client, projectId)` registers a whole project, whose automation is paused and whose every session is ended at teardown. All three are cleaned up when the scenario finishes, so no container outlives a run |
 
 Fixtures are lazy: a scenario that names none of them creates none, which is
-why `smoke.spec.ts` needs no stack at all.
+why `smoke.spec.ts` › `an unauthenticated visit lands on the login route`
+needs no stack at all.
 
 `sessions.sweep` exists for one reason. The dispatcher and the scheduler launch
 sessions nobody asked for (`SPEC.md`, "User-facing features" → "Automatic
@@ -263,10 +280,12 @@ of `SPEC.md`, "Frontend". `node tests/coverage-check.mjs` checks each
 | Task-board search | `tasks.spec.ts` › `board search matches titles and exact numbers, and resets on a project change` |
 | Board refresh ordering | `tasks.spec.ts` › `a second browser context follows the first without reloading` |
 | Hand-off controls | `handoffs.spec.ts` › `publishing a revision pins the commit and moves the task to review`; `handoffs.spec.ts` › `a reviewer's session starts from the hand-off commit and is told about it`; `handoffs.spec.ts` › `approving forwards the hand-off to merge and unlocks the task merge`; `handoffs.spec.ts` › `the task merge lands the pinned commit even after the branch advanced`; `handoffs.spec.ts` › `the merge control is shut without an approval and a superseded review is refused`; `handoffs.spec.ts` › `requesting changes sends the task back and a new revision resets the review`; `handoffs.spec.ts` › `the revision diff is read by hand-off id without syncing anything`; `handoffs.spec.ts` › `a commit that is not the source session's tip is refused`; `handoffs.spec.ts` › `a review of a superseded revision says the hand-off changed`; dropping the current hand-off, its required comment and the history that keeps it are `handoffs.spec.ts` › `dropping the hand-off clears it from the drawer and keeps it in the history`; the base disclosure is `task-sessions.spec.ts` › `the launch form discloses the base the session will start from` |
+| Mobile layout | `smoke.spec.ts` › `the console loads on a phone @mobile` — login and the dashboard on the `mobile` project, with nothing wider than the screen; the reactive width behind the side panel's open-or-rail is a Vitest test beside the hook (`src/hooks/useMediaQuery.test.ts`) and its resize across `lg` beside the panel (`src/session/SidePanel.test.tsx`) |
 | Composer | `sessions.spec.ts` › `interject mid-turn`; `sessions.spec.ts` › `a fresh project's launch form preselects claude and opens a conversation with a composer`; `sessions.spec.ts` › `end moves to done and disables the composer`; `session-view.spec.ts` › `ephemeral run once from the project page` |
 
-The helper layer asserts itself in `helpers.spec.ts`, and `smoke.spec.ts` is the
-one scenario that needs no stack.
+The helper layer asserts itself in `helpers.spec.ts`, and `smoke.spec.ts` ›
+`an unauthenticated visit lands on the login route` is the one scenario that
+needs no stack.
 
 ### Exclusions
 

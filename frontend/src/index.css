@@ -154,8 +154,28 @@ body,
   height: 100%;
 }
 
+/* The page shell on a phone (`SPEC.md`, "Frontend", Mobile layout). A rotated
+   phone keeps the text size the stylesheet set rather than inflating it. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* `viewport-fit=cover` in `index.html` lays the page under the notch and the
+   home indicator; the safe-area insets take it back out, so a landscape
+   phone's notch never covers the header. They are zero everywhere else. */
+#root {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
 body {
   margin: 0;
+  /* No pull-to-refresh over a live transcript, and no scroll chaining past
+     the page's end. */
+  overscroll-behavior-y: none;
+  /* Every control draws its own pressed and focus state. */
+  -webkit-tap-highlight-color: transparent;
   background-color: var(--color-console-bg);
   color: var(--color-console-text);
   font-family: var(--font-sans);

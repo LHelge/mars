@@ -555,20 +555,30 @@ test("a phone types a two-line message and sends it with the button @mobile", as
 });
 
 /**
- * The ancestors of `target`, up to the transcript's own scroller, that scroll
+ * The ancestors of every element `target` matches, up to the transcript's own
+ * scroller, that scroll
  * vertically: a box a touch scroll meant for the transcript would get caught in.
+ * A box with only `overflow-x-auto` computes `overflow-y: auto` too, so what
+ * makes one a vertical scroller is a height cap or content taller than it.
  */
 async function nestedScrollers(target: Locator): Promise<string[]> {
-  return target.evaluate((node, scrollerId: string) => {
+  return target.evaluateAll((nodes, scrollerId: string) => {
     const found: string[] = [];
-    for (
-      let element = node.parentElement;
-      element !== null && element.dataset.testid !== scrollerId;
-      element = element.parentElement
-    ) {
-      const overflow = getComputedStyle(element).overflowY;
-      if (overflow === "auto" || overflow === "scroll") {
-        found.push(element.className);
+    for (const node of nodes) {
+      for (
+        let element = node.parentElement;
+        element !== null && element.dataset.testid !== scrollerId;
+        element = element.parentElement
+      ) {
+        const style = getComputedStyle(element);
+        const scrolls =
+          style.overflowY === "auto" || style.overflowY === "scroll";
+        const capped =
+          style.maxHeight !== "none" ||
+          element.scrollHeight > element.clientHeight;
+        if (scrolls && capped) {
+          found.push(element.className);
+        }
       }
     }
     return found;
@@ -608,11 +618,16 @@ test("an edit diff is unified on a phone and the transcript scrolls as one @mobi
 
   // The subagent's report is bounded by its row's fold, not by a box that
   // scrolls inside the transcript's own scroller.
+  // The `Agent` row's body holds the report; its nested transcript, opened
+  // below it, ends with the same text as the subagent's last message, and
+  // every copy is checked.
+  await openRow(page, rows.getByRole("button", { name: "Agent", exact: true }));
   await openRow(page, rows.getByRole("button", { name: /general-purpose/ }));
-  const report = (
-    await reveal(page, rows.getByText(/Search results for the literal token/))
-  ).first();
-  await expect(report).toBeVisible();
+  const report = await reveal(
+    page,
+    rows.getByText(/Search results for the literal token/),
+  );
+  await expect(report).toHaveCount(2);
   expect(await nestedScrollers(report)).toEqual([]);
 
   const overflow = await page.evaluate(() => ({

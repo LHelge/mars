@@ -1,10 +1,10 @@
 ---
 id: na7y4
 title: "Planner template: write the plan with create_plan instead of a sequence of create_task calls"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-26T20:46:05.970625615Z"
-updated: "2026-09-27T08:31:26.128604448Z"
+updated: "2026-09-27T08:44:08.726247082Z"
 tags:
   - profiles
   - docs

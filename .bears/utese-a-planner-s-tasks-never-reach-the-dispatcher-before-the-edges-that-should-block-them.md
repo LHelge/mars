@@ -2,10 +2,10 @@
 id: utese
 title: A planner's tasks never reach the dispatcher before the edges that should block them
 type: epic
-status: open
+status: done
 priority: P1
 created: "2026-09-26T20:45:39.079911150Z"
-updated: "2026-09-26T20:45:39.079911150Z"
+updated: "2026-09-27T08:44:08.762589330Z"
 tags:
   - mcp
   - tracker

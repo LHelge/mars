@@ -210,7 +210,7 @@ impl McpServer {
 
 /// Is this tool listed and callable for a profile with these `mcp_tools`?
 ///
-/// The eight task tools always are; the four git tools only when named, exactly
+/// The nine task tools always are; the four git tools only when named, exactly
 /// and case-sensitively (`SPEC.md`, "MCP tool contracts"; `docs/data-model.md`,
 /// `agent_profiles.mcp_tools`). A task tool named in `mcp_tools` therefore
 /// changes nothing, and a name that matches no tool at all is ignored here —
@@ -239,7 +239,7 @@ impl ServerHandler for McpServer {
         server_info()
     }
 
-    /// The tools this session may call: the eight task tools always, and each
+    /// The tools this session may call: the nine task tools always, and each
     /// git tool only when the profile names it.
     ///
     /// The profile comes from the per-request [`SessionContext`], so an edit to
@@ -248,7 +248,7 @@ impl ServerHandler for McpServer {
     /// that matters is in [`McpServer::invoke`], and a call to a newly allowed
     /// tool succeeds whether or not the client has seen it listed.
     ///
-    /// One page: twelve tools need no cursor, so `next_cursor` stays absent.
+    /// One page: thirteen tools need no cursor, so `next_cursor` stays absent.
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -367,6 +367,7 @@ mod tests {
                 "comment",
                 "needs_human",
                 "create_task",
+                "create_plan",
             ],
         );
     }

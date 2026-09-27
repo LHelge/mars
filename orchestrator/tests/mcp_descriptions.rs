@@ -128,7 +128,7 @@ fn every_description_matches_the_document_byte_for_byte() {
 }
 
 #[test]
-fn the_document_defines_exactly_the_twelve_tools_the_code_knows() {
+fn the_document_defines_exactly_the_tools_the_code_knows() {
     let headings: Vec<&str> = section()
         .into_iter()
         .filter(|line| line.starts_with("### `"))

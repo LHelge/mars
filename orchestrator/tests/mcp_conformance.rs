@@ -307,7 +307,7 @@ async fn every_listed_tool_has_a_valid_name_and_object_schemas() {
         .as_array()
         .expect("a list of tools");
     // The seeded profile names no git tool, so this is the task-tracker set.
-    assert_eq!(tools.len(), 8, "{message}");
+    assert_eq!(tools.len(), 9, "{message}");
     for tool in tools {
         let name = tool["name"].as_str().expect("a tool name");
         assert!(revision::is_valid_tool_name(name), "{name}");

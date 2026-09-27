@@ -1,4 +1,4 @@
-//! The twelve tool names, in listing order, with their classification and
+//! The thirteen tool names, in listing order, with their classification and
 //! their description (`SPEC.md`, "MCP tool contracts").
 //!
 //! One enum rather than string literals scattered over the dispatcher: a tool
@@ -7,13 +7,13 @@
 //! answers `not found`. [`ToolName::parse`] is the single place a name from
 //! the wire becomes a tool, and [`ToolName::ALL`] is the single listing order.
 //!
-//! The order is the document's own: the eight task tools first, then the four
+//! The order is the document's own: the nine task tools first, then the four
 //! git tools. Task tools are always allowed; git tools are profile-gated
 //! ([`ToolName::is_git`]).
 
 use super::descriptions;
 
-/// One of the twelve tools `SPEC.md` defines.
+/// One of the thirteen tools `SPEC.md` defines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolName {
     /// `ready`: the claimable tasks in the profile's served states.
@@ -32,6 +32,8 @@ pub enum ToolName {
     NeedsHuman,
     /// `create_task`: file discovered work.
     CreateTask,
+    /// `create_plan`: file a parent, its sub-tasks and their edges at once.
+    CreatePlan,
     /// `list_session_branches`: the mirror's session branches (git).
     ListSessionBranches,
     /// `merge`: merge into an integration branch (git).
@@ -45,7 +47,7 @@ pub enum ToolName {
 impl ToolName {
     /// Every tool, in the order `SPEC.md` lists them and therefore the order
     /// `tools/list` answers with.
-    pub const ALL: [ToolName; 12] = [
+    pub const ALL: [ToolName; 13] = [
         ToolName::Ready,
         ToolName::Claim,
         ToolName::GetTask,
@@ -54,6 +56,7 @@ impl ToolName {
         ToolName::Comment,
         ToolName::NeedsHuman,
         ToolName::CreateTask,
+        ToolName::CreatePlan,
         ToolName::ListSessionBranches,
         ToolName::Merge,
         ToolName::Rebase,
@@ -71,6 +74,7 @@ impl ToolName {
             ToolName::Comment => "comment",
             ToolName::NeedsHuman => "needs_human",
             ToolName::CreateTask => "create_task",
+            ToolName::CreatePlan => "create_plan",
             ToolName::ListSessionBranches => "list_session_branches",
             ToolName::Merge => "merge",
             ToolName::Rebase => "rebase",
@@ -107,6 +111,7 @@ impl ToolName {
             ToolName::Comment => descriptions::COMMENT,
             ToolName::NeedsHuman => descriptions::NEEDS_HUMAN,
             ToolName::CreateTask => descriptions::CREATE_TASK,
+            ToolName::CreatePlan => descriptions::CREATE_PLAN,
             ToolName::ListSessionBranches => descriptions::LIST_SESSION_BRANCHES,
             ToolName::Merge => descriptions::MERGE,
             ToolName::Rebase => descriptions::REBASE,
@@ -120,7 +125,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_twelve_names_are_the_documented_ones_in_the_documented_order() {
+    fn the_thirteen_names_are_the_documented_ones_in_the_documented_order() {
         assert_eq!(
             ToolName::ALL.map(ToolName::as_str),
             [
@@ -132,6 +137,7 @@ mod tests {
                 "comment",
                 "needs_human",
                 "create_task",
+                "create_plan",
                 "list_session_branches",
                 "merge",
                 "rebase",
@@ -155,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn the_last_four_are_the_git_tools_and_the_first_eight_are_not() {
+    fn the_last_four_are_the_git_tools_and_the_first_nine_are_not() {
         let git: Vec<_> = ToolName::ALL
             .into_iter()
             .filter(|tool| tool.is_git())
@@ -179,6 +185,6 @@ mod tests {
         descriptions.sort_unstable();
         descriptions.dedup();
 
-        assert_eq!(descriptions.len(), 12);
+        assert_eq!(descriptions.len(), 13);
     }
 }

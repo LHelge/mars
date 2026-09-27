@@ -88,6 +88,7 @@ pub const KNOWN_MCP_TOOLS: &[&str] = &[
     "comment",
     "needs_human",
     "create_task",
+    "create_plan",
     "list_session_branches",
     "merge",
     "rebase",
@@ -1493,8 +1494,8 @@ mod tests {
             every_tool.resolve(&config).unwrap().mcp_tools.len(),
             KNOWN_MCP_TOOLS.len()
         );
-        // The twelve of `SPEC.md`, "MCP tool contracts", and no more.
-        assert_eq!(KNOWN_MCP_TOOLS.len(), 12);
+        // The thirteen of `SPEC.md`, "MCP tool contracts", and no more.
+        assert_eq!(KNOWN_MCP_TOOLS.len(), 13);
         for tool in ["ready", "claim", "get_task", "create_task", "merge", "push"] {
             assert!(KNOWN_MCP_TOOLS.contains(&tool), "{tool} is not known");
         }

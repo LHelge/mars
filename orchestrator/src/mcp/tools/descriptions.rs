@@ -1,4 +1,4 @@
-//! The twelve tool descriptions, copied verbatim from `SPEC.md`, "MCP tool
+//! The thirteen tool descriptions, copied verbatim from `SPEC.md`, "MCP tool
 //! contracts".
 //!
 //! "Tool descriptions are part of the contract because they steer the agent.
@@ -33,6 +33,9 @@ pub const NEEDS_HUMAN: &str = "Hand a task to a human when you are blocked on a 
 
 /// `create_task`.
 pub const CREATE_TASK: &str = "Create a task when you discover work outside what you hold: a follow-up, a bug, or a sub-task of a plan. Put it in the state that matches how ready it is (`backlog` if it still needs planning). Link it with `depends_on` if it must wait, and with `parent` if it is part of a larger task. If you hold several tasks, identify the originating task with `discovered_from`.";
+
+/// `create_plan`.
+pub const CREATE_PLAN: &str = "Create several related tasks in one step: the sub-tasks of a plan, under a new parent (`new_parent`) or an existing task (`parent`), with the dependencies between them. Give each sub-task a short `ref` and list it in another sub-task's `depends_on` to make that one wait; `depends_on` also takes existing tasks. Everything is created together or nothing is, so no sub-task can be started before its prerequisites exist. Use this instead of several `create_task` calls whenever the tasks depend on each other.";
 
 /// `list_session_branches`.
 pub const LIST_SESSION_BRANCHES: &str = "List session branches in the project mirror with how far ahead/behind they are relative to the default branch.";

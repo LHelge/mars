@@ -415,6 +415,8 @@ Constraints: `PRIMARY KEY (task_id, depends_on_task_id, kind)`, `CHECK (task_id 
 
 On MCP task creation, resolve `discovered_from` within this transaction: infer the sole held task, omit provenance when none is held, and require an explicit origin when several are held. A supplied origin must be held by the calling session in the same project. Reject ambiguous or invalid input before creating any task or edge. The parent link suffices when the origin equals the new task’s parent; otherwise insert a `discovered_from` edge, even if a `blocks` edge already connects the same pair (`SPEC.md`, `create_task`).
 
+MCP `create_plan` writes a parent, its sub-tasks and their `blocks` edges in one such transaction: every row, edge, `blocked` recomputation and event of the batch commits together or not at all, so no reader sees a dependant without the edge that blocks it. Provenance is resolved once for the plan; a new parent carries the `discovered_from` edge and its sub-tasks reach the origin through `parent_id` (`SPEC.md`, `create_plan`; ADR 0056).
+
 Index: `task_dependencies_depends_on_idx (depends_on_task_id)` for "who is waiting on me".
 
 ### `task_comments`

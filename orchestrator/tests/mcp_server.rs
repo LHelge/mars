@@ -44,7 +44,7 @@ async fn a_client_connects_and_the_server_lists_its_tools() {
     // The seeded profile names no git tool, so this is the task-tracker set.
     assert_eq!(
         client.list_tools().await.len(),
-        8,
+        9,
         "the handshake is followed by a usable listing"
     );
 }
@@ -91,7 +91,7 @@ async fn a_modern_tool_listing_carries_the_cache_fields_the_cli_requires() {
     assert_eq!(result["cacheScope"], "private", "{result}");
     assert_eq!(
         result["tools"].as_array().map(Vec::len),
-        Some(8),
+        Some(9),
         "{result}"
     );
 }

@@ -2,7 +2,7 @@
 //! design" → Tool exposure; `SPEC.md`, "MCP tool contracts").
 //!
 //! Two rules are pinned here, over a real `rmcp` client on a real listener.
-//! **Listing** answers the eight task tools to everyone and a git tool only to
+//! **Listing** answers the nine task tools to everyone and a git tool only to
 //! a profile that names it in `mcp_tools`, in the document's own order and with
 //! its verbatim descriptions. **Calling** refuses an unknown name as the
 //! caller's mistake, an unlisted git tool as a refusal, and arguments that do
@@ -47,7 +47,7 @@ async fn listed(client: &McpClient) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_profile_that_names_no_tool_is_listed_the_eight_task_tools() {
+async fn a_profile_that_names_no_tool_is_listed_the_nine_task_tools() {
     let app = TestApp::spawn().await;
     let client = client_with_tools(&app, &[]).await;
 
@@ -62,6 +62,7 @@ async fn a_profile_that_names_no_tool_is_listed_the_eight_task_tools() {
             "comment",
             "needs_human",
             "create_task",
+            "create_plan",
         ],
     );
 }
@@ -87,12 +88,12 @@ async fn two_named_git_tools_are_listed_after_the_task_tools() {
 
     let names = listed(&client).await;
 
-    assert_eq!(names.len(), 10, "{names:?}");
-    assert_eq!(&names[8..], ["merge", "push"]);
+    assert_eq!(names.len(), 11, "{names:?}");
+    assert_eq!(&names[9..], ["merge", "push"]);
 }
 
 #[tokio::test]
-async fn a_profile_that_names_every_git_tool_is_listed_all_twelve() {
+async fn a_profile_that_names_every_git_tool_is_listed_all_thirteen() {
     let app = TestApp::spawn().await;
     let client =
         client_with_tools(&app, &["list_session_branches", "merge", "rebase", "push"]).await;

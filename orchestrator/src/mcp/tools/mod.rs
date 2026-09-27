@@ -1,5 +1,5 @@
 //! The tool contract as data — names, descriptions and input/output shapes —
-//! the twelve `tools/list` entries built from it, and the dispatch table
+//! the thirteen `tools/list` entries built from it, and the dispatch table
 //! `tools/call` goes through.
 //!
 //! [`names`], [`descriptions`] and [`types`] are pure: no state, no database,
@@ -18,6 +18,7 @@ pub mod types;
 pub mod claim;
 pub mod comment;
 pub mod common;
+pub mod create_plan;
 pub mod create_task;
 pub mod get_task;
 pub mod list_session_branches;
@@ -42,16 +43,17 @@ use crate::prelude::*;
 
 pub use names::ToolName;
 pub use types::{
-    BranchesOutput, CommentInput, CommentOutput, CommitOutput, CreateTaskInput, EmptyInput,
-    McpMergeInput, NeedsHumanInput, PushInput, PushOutput, ReadyInput, ReadyOutput, RebaseInput,
-    ReleaseInput, TASK_ARG_MESSAGE, TaskArg, TaskDetailOutput, TaskOnlyInput, TaskOutput,
-    UpdateInput, non_empty, validate_handoff, validate_limit, validate_priority,
+    BranchesOutput, CommentInput, CommentOutput, CommitOutput, CreatePlanInput, CreateTaskInput,
+    EmptyInput, McpMergeInput, NeedsHumanInput, PlanOutput, PlanParentInput, PlanTaskInput,
+    PushInput, PushOutput, ReadyInput, ReadyOutput, RebaseInput, ReleaseInput, TASK_ARG_MESSAGE,
+    TaskArg, TaskDetailOutput, TaskOnlyInput, TaskOutput, UpdateInput, non_empty, validate_handoff,
+    validate_limit, validate_priority,
 };
 
-/// The twelve `tools/list` entries, in [`ToolName::ALL`] order, built once.
+/// The thirteen `tools/list` entries, in [`ToolName::ALL`] order, built once.
 ///
 /// Schema generation walks the type with `schemars` and allocates; a listing
-/// happens on every `tools/list` of every MCP session, so the twelve [`Tool`]
+/// happens on every `tools/list` of every MCP session, so the thirteen [`Tool`]
 /// values are built once and cloned afterwards — a clone is a `Cow<'static>`
 /// name, a `Cow<'static>` description and two `Arc`s.
 ///
@@ -75,6 +77,7 @@ fn tool(name: ToolName) -> Tool {
         ToolName::Comment => schemas::<CommentInput, CommentOutput>(),
         ToolName::NeedsHuman => schemas::<NeedsHumanInput, TaskOutput>(),
         ToolName::CreateTask => schemas::<CreateTaskInput, TaskOutput>(),
+        ToolName::CreatePlan => schemas::<CreatePlanInput, PlanOutput>(),
         ToolName::ListSessionBranches => schemas::<EmptyInput, BranchesOutput>(),
         ToolName::Merge => schemas::<McpMergeInput, CommitOutput>(),
         ToolName::Rebase => schemas::<RebaseInput, CommitOutput>(),
@@ -132,6 +135,7 @@ pub async fn dispatch(
         ToolName::Comment => output(comment::handle(state, ctx, input(args)?).await?),
         ToolName::NeedsHuman => output(needs_human::handle(state, ctx, input(args)?).await?),
         ToolName::CreateTask => output(create_task::handle(state, ctx, input(args)?).await?),
+        ToolName::CreatePlan => output(create_plan::handle(state, ctx, input(args)?).await?),
         ToolName::ListSessionBranches => {
             output(list_session_branches::handle(state, ctx, input(args)?).await?)
         }
@@ -189,7 +193,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_catalog_is_the_twelve_tools_in_the_documented_order() {
+    fn the_catalog_is_the_thirteen_tools_in_the_documented_order() {
         let names: Vec<_> = catalog().iter().map(|tool| tool.name.as_ref()).collect();
 
         assert_eq!(names, ToolName::ALL.map(ToolName::as_str));
@@ -223,6 +227,7 @@ mod tests {
                 schema_for_input::<CommentInput>(),
                 schema_for_input::<NeedsHumanInput>(),
                 schema_for_input::<CreateTaskInput>(),
+                schema_for_input::<CreatePlanInput>(),
                 schema_for_input::<EmptyInput>(),
                 schema_for_input::<McpMergeInput>(),
                 schema_for_input::<RebaseInput>(),
@@ -241,7 +246,7 @@ mod tests {
 
         // `list_session_branches` takes nothing, and still advertises an
         // object.
-        let branches = &catalog()[8];
+        let branches = &catalog()[9];
         assert_eq!(branches.name.as_ref(), "list_session_branches");
         assert_eq!(branches.input_schema["type"], json!("object"));
     }

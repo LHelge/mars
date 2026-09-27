@@ -41,6 +41,7 @@ pub mod handoffs;
 pub mod hooks;
 pub mod leases;
 pub mod mutation;
+pub mod plan;
 pub mod provenance;
 pub mod retry;
 pub mod rollback;
@@ -68,6 +69,10 @@ pub use leases::{
     release_by_agent, release_by_user, release_leases_for_session,
 };
 pub use mutation::{Locked, MutationOutcome, TrackerMutation};
+pub use plan::{
+    MAX_PLAN_TASKS, PlanDependency, PlanInput, PlanOutcome, PlanParent, PlanTask, PlanTaskFields,
+    create_plan,
+};
 pub use provenance::resolve_origin;
 pub use retry::retry_on_serialization_failure;
 pub use rollback::{REOPEN_STATE_NOT_OPEN, Reopen, RevertRequest, RevertResult, revert_and_reopen};

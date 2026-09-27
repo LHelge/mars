@@ -19,6 +19,12 @@
 //! or the orchestrator's change creates nothing, because the table records
 //! which *sessions* worked on a task (ADR 0030).
 //!
+//! A plan (`tracker::plan::create_plan`, ADR 0056) is the largest batch there
+//! is — several tasks, their edges and their `blocked` flips — and is asserted
+//! here as one: invisible while open, announced once, and whole by the time
+//! the announcement can be read, so the dispatcher's candidate read never
+//! sees a dependant without the edge that blocks it.
+//!
 //! Last, the lock. `begin` is the serialisation point, asserted the only way a
 //! lock can be: a second mutation on the same project must wait for the first
 //! to commit, while one on another project must not. The same seam carries the
@@ -40,8 +46,10 @@ use mars_orchestrator::events::{TaskActor, TaskEvent, TaskEventKind};
 use mars_orchestrator::models::{NewEvent, TaskRef, TaskState};
 use mars_orchestrator::prelude::*;
 use mars_orchestrator::repositories::{SessionRepository, TaskRepository};
+use mars_orchestrator::tracker::leases::ready_candidates;
 use mars_orchestrator::tracker::{
-    Escalation, TaskDto, TrackerMutation, delete_task, retry_on_serialization_failure,
+    Escalation, PlanDependency, PlanInput, PlanTask, PlanTaskFields, TaskDto, TrackerMutation,
+    create_plan, delete_task, retry_on_serialization_failure,
 };
 use serde_json::json;
 use sqlx::Postgres;
@@ -428,6 +436,150 @@ async fn no_change_rolls_back_explicitly() {
 
     assert!(events(&pool, fixture.project_id).await.is_empty());
     assert!(session_links(&pool, fixture.task_id).await.is_empty());
+    assert_silent(&mut listener).await;
+}
+
+/// A sub-task of a plan in `ready`, waiting for the named local refs.
+fn ready_sub_task(name: &str, depends_on: &[&str]) -> PlanTask {
+    PlanTask {
+        local_ref: name.into(),
+        fields: PlanTaskFields {
+            title: name.into(),
+            state: Some("ready".into()),
+            ..PlanTaskFields::default()
+        },
+        depends_on: depends_on
+            .iter()
+            .map(|name| PlanDependency::Local((*name).into()))
+            .collect(),
+    }
+}
+
+#[tokio::test]
+async fn a_plan_is_one_transaction_and_is_whole_by_the_time_it_is_announced() {
+    // A project with no tasks yet, so the plan's numbers are the counter's.
+    let (_postgres, pool) = common::db::test_pool_with(6).await;
+    let project_id = seed_project(&pool).await;
+    let profile_id = seed_profile(&pool, project_id).await;
+    let session_id = seed_session(&pool, project_id, profile_id).await;
+    seed_default_states(&pool, project_id).await;
+    let ready = state_id(&pool, project_id, "ready").await;
+
+    let mut listener = PgListener::connect_with(&pool).await.unwrap();
+    listener.listen("task_events").await.unwrap();
+
+    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::Session { session_id })
+        .await
+        .expect("the mutation opens");
+    let plan = create_plan(
+        &mut mutation,
+        PlanInput {
+            parent: None,
+            // The dependant is listed first; the plan creates it second.
+            tasks: vec![
+                ready_sub_task("after", &["first"]),
+                ready_sub_task("first", &[]),
+            ],
+            discovered_from: None,
+            session_id,
+        },
+    )
+    .await
+    .expect("the plan is filed");
+    let [after, first] = <[TaskDto; 2]>::try_from(plan.tasks.clone()).expect("two tasks");
+    assert!(after.blocked);
+
+    // While the mutation is open no other reader — the dispatcher's candidate
+    // read included — sees any of it, and nothing has been announced.
+    assert!(
+        ready_candidates(&pool, project_id, &[ready], 100)
+            .await
+            .expect("the candidates read")
+            .is_empty()
+    );
+    assert!(events(&pool, project_id).await.is_empty());
+    assert_silent(&mut listener).await;
+
+    let outcome = mutation.commit().await.expect("the plan commits");
+    let batch = i64::try_from(outcome.seqs.len()).expect("a small batch");
+    // created, created, dependency_added, blocked
+    assert_eq!(outcome.seqs, (1..=batch).collect::<Vec<_>>());
+    assert_eq!(batch, 4);
+
+    // One notification for the whole plan; once it can be read, so can every
+    // row and event of the batch, and the dependant is already blocked.
+    let notification = timeout(UNBLOCKED_WITHIN, listener.recv())
+        .await
+        .expect("a committed plan notifies")
+        .unwrap();
+    assert_eq!(notification.payload(), format!("{project_id}:{batch}"));
+    assert_silent(&mut listener).await;
+
+    let offered: Vec<Uuid> = ready_candidates(&pool, project_id, &[ready], 100)
+        .await
+        .expect("the candidates read")
+        .into_iter()
+        .map(|candidate| candidate.summary.id)
+        .collect();
+    assert_eq!(offered, [first.id], "only the prerequisite is startable");
+
+    let stored = events(&pool, project_id).await;
+    assert_eq!(
+        stored
+            .iter()
+            .map(|event| (event.kind, event.task_id))
+            .collect::<Vec<_>>(),
+        [
+            (TaskEventKind::Created, Some(first.id)),
+            (TaskEventKind::Created, Some(after.id)),
+            (TaskEventKind::DependencyAdded, Some(after.id)),
+            (TaskEventKind::Blocked, Some(after.id)),
+        ],
+    );
+    assert_eq!(session_links(&pool, after.id).await.len(), 1);
+    assert_eq!(session_links(&pool, first.id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_failed_plan_rolls_back_the_tasks_it_had_already_created() {
+    let (_postgres, pool) = common::db::test_pool_with(6).await;
+    let project_id = seed_project(&pool).await;
+    let profile_id = seed_profile(&pool, project_id).await;
+    let session_id = seed_session(&pool, project_id, profile_id).await;
+    seed_default_states(&pool, project_id).await;
+
+    let mut listener = PgListener::connect_with(&pool).await.unwrap();
+    listener.listen("task_events").await.unwrap();
+
+    let mut broken = ready_sub_task("second", &["first"]);
+    broken.fields.state = Some("triage".into());
+
+    let mut mutation = TrackerMutation::begin(&pool, project_id, TaskActor::Session { session_id })
+        .await
+        .expect("the mutation opens");
+    let err = create_plan(
+        &mut mutation,
+        PlanInput {
+            parent: None,
+            tasks: vec![ready_sub_task("first", &[]), broken],
+            discovered_from: None,
+            session_id,
+        },
+    )
+    .await
+    .expect_err("the second task's state does not exist");
+    assert!(matches!(err, Error::BadRequest(_)), "{err:?}");
+    mutation.no_change().await.expect("the mutation rolls back");
+
+    assert!(events(&pool, project_id).await.is_empty());
+    // No interface lists the tasks of a project by count; the row count is
+    // the fact asserted.
+    let tasks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks WHERE project_id = $1")
+        .bind(project_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tasks, 0);
     assert_silent(&mut listener).await;
 }
 

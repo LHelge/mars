@@ -1,4 +1,4 @@
-//! The input and output shapes of the twelve tools, and the small validations
+//! The input and output shapes of the thirteen tools, and the small validations
 //! that need neither the database nor the git repository.
 //!
 //! `SPEC.md`, "MCP tool contracts" gives every tool an `Input` and an `Output`
@@ -17,6 +17,8 @@
 //! model that adds a plausible-looking extra argument gets its call executed
 //! rather than a schema lecture, which is the same leniency the REST API
 //! offers.
+
+use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -227,6 +229,72 @@ pub struct CreateTaskInput {
     pub discovered_from: Option<TaskArg>,
 }
 
+/// `create_plan`: a parent, its sub-tasks and the edges between them, filed
+/// as one change (`SPEC.md`, "MCP tool contracts" → `create_plan`).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct CreatePlanInput {
+    /// An existing top-level task to file the sub-tasks under, such as the
+    /// task you were launched for. Not together with `new_parent`.
+    #[serde(default)]
+    pub parent: Option<TaskArg>,
+    /// A new task to create first and file the sub-tasks under. Not together
+    /// with `parent`.
+    #[serde(default)]
+    pub new_parent: Option<PlanParentInput>,
+    /// The sub-tasks, 1 to 50.
+    pub tasks: Vec<PlanTaskInput>,
+    /// The held task this plan was discovered from; required only when the
+    /// caller holds more than one.
+    #[serde(default)]
+    pub discovered_from: Option<TaskArg>,
+}
+
+/// `create_plan`'s `new_parent`: `create_task`'s fields but `parent` and
+/// `discovered_from`, which the plan gives.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PlanParentInput {
+    /// 1 to 200 characters.
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The project's default state when absent.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// 0 (critical) to 3 (low); 2 when absent.
+    #[serde(default)]
+    pub priority: Option<i16>,
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
+    /// `blocks` dependencies on existing tasks.
+    #[serde(default)]
+    pub depends_on: Option<Vec<TaskArg>>,
+}
+
+/// One sub-task of `create_plan`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PlanTaskInput {
+    /// This sub-task's name within the plan, for other sub-tasks'
+    /// `depends_on`: 1-64 letters, digits, `.`, `_` or `-`, not all digits.
+    /// `ref` is a Rust keyword and a field name on the wire.
+    pub r#ref: String,
+    /// 1 to 200 characters.
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The project's default state when absent.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// 0 (critical) to 3 (low); 2 when absent.
+    #[serde(default)]
+    pub priority: Option<i16>,
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
+    /// `blocks` dependencies: the `ref` of another sub-task of this plan, or
+    /// an existing task.
+    #[serde(default)]
+    pub depends_on: Option<Vec<TaskArg>>,
+}
+
 /// `list_session_branches`: `{}`.
 ///
 /// A struct rather than nothing, so the tool still advertises an object schema
@@ -297,6 +365,18 @@ pub struct ReadyOutput {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TaskOutput {
     pub task: TaskDto,
+}
+
+/// `create_plan` → `{ parent: Task | null, tasks: Task[], refs }`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PlanOutput {
+    /// The new parent, or the existing one as the plan left it; `null` for a
+    /// plan without one.
+    pub parent: Option<TaskDto>,
+    /// The sub-tasks, in input order.
+    pub tasks: Vec<TaskDto>,
+    /// Each sub-task's `ref` and the id of the task it became.
+    pub refs: BTreeMap<String, Uuid>,
 }
 
 /// `get_task` → `{ task: TaskDetail }`.
@@ -669,6 +749,7 @@ mod tests {
             serde_json::to_value(schema_for!(CommentInput)).unwrap(),
             serde_json::to_value(schema_for!(NeedsHumanInput)).unwrap(),
             serde_json::to_value(schema_for!(CreateTaskInput)).unwrap(),
+            serde_json::to_value(schema_for!(CreatePlanInput)).unwrap(),
             serde_json::to_value(schema_for!(EmptyInput)).unwrap(),
             serde_json::to_value(schema_for!(McpMergeInput)).unwrap(),
             serde_json::to_value(schema_for!(RebaseInput)).unwrap(),
@@ -702,6 +783,7 @@ mod tests {
         for schema in [
             serde_json::to_value(schema_for!(ReadyOutput)).unwrap(),
             serde_json::to_value(schema_for!(TaskOutput)).unwrap(),
+            serde_json::to_value(schema_for!(PlanOutput)).unwrap(),
             serde_json::to_value(schema_for!(TaskDetailOutput)).unwrap(),
             serde_json::to_value(schema_for!(CommentOutput)).unwrap(),
             serde_json::to_value(schema_for!(BranchesOutput)).unwrap(),
@@ -728,6 +810,32 @@ mod tests {
         .unwrap();
         assert_eq!(task.task_id.unwrap().parse(), Ok(TaskRef::Number(12)));
         assert_eq!(task.handoff_id, Some(handoff_id));
+    }
+
+    #[test]
+    fn a_plan_reads_its_sub_tasks_by_their_wire_ref() {
+        let input: CreatePlanInput = serde_json::from_value(json!({
+            "new_parent": { "title": "the epic" },
+            "tasks": [
+                { "ref": "schema", "title": "the schema" },
+                { "ref": "api", "title": "the api", "depends_on": ["schema", 12] },
+            ],
+        }))
+        .unwrap();
+
+        assert_eq!(
+            input.new_parent.map(|parent| parent.title),
+            Some("the epic".into())
+        );
+        assert_eq!(input.tasks[1].r#ref, "api");
+        assert_eq!(
+            input.tasks[1].depends_on,
+            Some(vec![TaskArg::Text("schema".into()), TaskArg::Number(12)]),
+        );
+
+        let schema = serde_json::to_value(schema_for!(CreatePlanInput)).unwrap();
+        assert_eq!(schema["required"], json!(["tasks"]));
+        assert!(accepts_number_and_string(&schema, "parent"), "{schema}");
     }
 
     #[test]

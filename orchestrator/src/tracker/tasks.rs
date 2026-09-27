@@ -41,6 +41,10 @@
 //! Each one's own doc comment gives its order; what they share is that the
 //! caller supplies the row read under the lock and gets back a description of
 //! what moved, never a transaction of their own.
+//!
+//! A whole plan — a parent, its sub-tasks and the edges between them — is
+//! [`create_plan`](crate::tracker::plan::create_plan), which is this creation
+//! repeated inside one mutation.
 
 use chrono::Utc;
 use uuid::Uuid;
@@ -155,6 +159,29 @@ pub struct CreateTaskInput {
 /// `depends_on` are what the caller's 201 body should show. Any failure leaves
 /// the mutation to roll back: no task, no edges, no events.
 pub async fn create_task(m: &mut TrackerMutation<'_>, input: CreateTaskInput) -> Result<TaskDto> {
+    create_task_with(m, input, Provenance::Resolve).await
+}
+
+/// Where a creation's `discovered_from` edge comes from.
+///
+/// [`create_task`] always resolves it from the input; a plan
+/// ([`create_plan`](crate::tracker::plan::create_plan)) resolves it once for
+/// the whole batch and hands each task the edge it owes, because a sub-task
+/// of a new parent records its provenance through that parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Provenance {
+    /// [`resolve_origin`] for a session's creation, nothing for a user's.
+    Resolve,
+    /// Already resolved under this lock: the edge to insert, or none.
+    Resolved(Option<Uuid>),
+}
+
+/// [`create_task`], with the provenance decided by the caller.
+pub(crate) async fn create_task_with(
+    m: &mut TrackerMutation<'_>,
+    input: CreateTaskInput,
+    provenance: Provenance,
+) -> Result<TaskDto> {
     let project_id = m.project_id();
 
     let state = match input.state.as_deref() {
@@ -164,11 +191,12 @@ pub async fn create_task(m: &mut TrackerMutation<'_>, input: CreateTaskInput) ->
 
     // Under the lock and before the row: an ambiguous or unfounded origin
     // fails the creation whole.
-    let origin = match input.created_by {
-        CreatedBy::Session(session_id) => {
+    let origin = match (provenance, input.created_by) {
+        (Provenance::Resolved(origin), _) => origin,
+        (Provenance::Resolve, CreatedBy::Session(session_id)) => {
             resolve_origin(m, session_id, input.discovered_from, input.parent).await?
         }
-        CreatedBy::User(_) => None,
+        (Provenance::Resolve, CreatedBy::User(_)) => None,
     };
 
     let mut new_task = NewTask::new(project_id, &input.title)?;

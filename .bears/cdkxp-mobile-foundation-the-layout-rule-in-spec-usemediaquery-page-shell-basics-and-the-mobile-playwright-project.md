@@ -1,16 +1,17 @@
 ---
 id: cdkxp
 title: "Mobile foundation: the layout rule in SPEC, useMediaQuery, page-shell basics and the mobile Playwright project"
-status: open
+status: done
 priority: P1
 created: "2026-09-23T15:55:11.397650604Z"
-updated: "2026-09-23T15:55:11.397650604Z"
+updated: "2026-09-27T15:13:47.164495414Z"
 tags:
   - frontend
   - mobile
   - docs
   - tests
 parent: yymt7
+attempts: 1
 ---
 
 ## Summary

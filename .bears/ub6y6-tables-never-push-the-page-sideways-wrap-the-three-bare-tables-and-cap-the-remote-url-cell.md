@@ -1,10 +1,10 @@
 ---
 id: ub6y6
 title: "Tables never push the page sideways: wrap the three bare tables and cap the remote-URL cell"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-23T15:58:18.093143543Z"
-updated: "2026-09-23T15:58:57.212039079Z"
+updated: "2026-09-27T15:47:28.070203458Z"
 tags:
   - frontend
   - mobile
@@ -12,6 +12,7 @@ depends_on:
   - cdkxp
   - a48hj
 parent: yymt7
+attempts: 1
 ---
 
 ## Summary

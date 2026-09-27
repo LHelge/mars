@@ -1,10 +1,10 @@
 ---
 id: yaxpf
 title: Session side panel as a bottom sheet below lg
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-23T15:58:18.017855776Z"
-updated: "2026-09-23T15:58:57.161690168Z"
+updated: "2026-09-27T15:47:28.038702643Z"
 tags:
   - frontend
   - mobile
@@ -13,6 +13,7 @@ depends_on:
   - cdkxp
   - a48hj
 parent: yymt7
+attempts: 1
 ---
 
 ## Summary

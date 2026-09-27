@@ -1,10 +1,10 @@
 ---
 id: a48hj
 title: "Touch controls: 16 px text inputs and 44 px hit areas on a coarse pointer"
-status: in_progress
+status: done
 priority: P1
 created: "2026-09-23T15:58:17.983116687Z"
-updated: "2026-09-27T15:13:47.193624831Z"
+updated: "2026-09-27T15:47:28.009684979Z"
 tags:
   - frontend
   - mobile

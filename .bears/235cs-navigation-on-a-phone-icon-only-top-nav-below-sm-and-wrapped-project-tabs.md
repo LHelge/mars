@@ -1,10 +1,10 @@
 ---
 id: "235cs"
 title: "Navigation on a phone: icon-only top nav below sm and wrapped project tabs"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-23T15:58:18.139418140Z"
-updated: "2026-09-23T15:58:57.261813195Z"
+updated: "2026-09-27T15:47:28.123357910Z"
 tags:
   - frontend
   - mobile
@@ -12,6 +12,7 @@ depends_on:
   - cdkxp
   - a48hj
 parent: yymt7
+attempts: 1
 ---
 
 ## Summary

@@ -1,10 +1,10 @@
 ---
 id: x7agt
 title: "Composer on a touch keyboard: Enter makes a newline and the button sends"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-23T15:58:18.068594929Z"
-updated: "2026-09-23T15:58:57.185377344Z"
+updated: "2026-09-27T15:47:28.097100493Z"
 tags:
   - frontend
   - mobile
@@ -13,6 +13,7 @@ depends_on:
   - cdkxp
   - a48hj
 parent: yymt7
+attempts: 1
 ---
 
 ## Summary

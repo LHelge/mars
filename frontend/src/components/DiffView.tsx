@@ -9,6 +9,7 @@
 import { useState } from "react";
 
 import type { DiffLine } from "../utils/diff";
+import { TAP_INLINE } from "./fieldStyles";
 
 const TINT: Record<DiffLine["type"], string> = {
   add: "bg-state-running/10",
@@ -158,7 +159,7 @@ export function DiffView({ lines, path, notice }: DiffViewProps) {
           type="button"
           onClick={() => setSplit((value) => !value)}
           aria-pressed={split}
-          className="text-console-accent ml-auto text-xs underline underline-offset-2"
+          className={`text-console-accent ml-auto text-xs underline underline-offset-2 ${TAP_INLINE}`}
         >
           {split ? "Unified" : "Side by side"}
         </button>

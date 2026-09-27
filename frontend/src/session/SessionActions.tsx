@@ -37,6 +37,7 @@ import { sessionActions } from "./sessionActionRules";
 import { disposeSessionStore, getSessionStore } from "./sessionStore";
 import { useStopSession } from "./useStopSession";
 import { useSyncSession } from "./useSyncSession";
+import { TOUCH_TEXT } from "../components/fieldStyles";
 
 export interface SessionActionsProps {
   session: Session;
@@ -295,7 +296,7 @@ export function SessionActions({
               onChange={(event) => {
                 setRetryMessage(event.target.value);
               }}
-              className="bg-console-surface border-console-border text-console-text placeholder:text-console-muted min-w-0 flex-1 rounded border px-2 py-1 font-mono text-xs"
+              className={`bg-console-surface border-console-border text-console-text placeholder:text-console-muted min-w-0 flex-1 rounded border px-2 py-1 font-mono text-xs ${TOUCH_TEXT}`}
             />
             <SubmitButton loading={retry.isPending} icon={Icon.launch}>
               Relaunch

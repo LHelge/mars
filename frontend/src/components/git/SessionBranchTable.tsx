@@ -17,6 +17,7 @@ import { Icon, ICON_CLASS } from "../icons";
 import type { IconComponent } from "../icons";
 import { TableHead } from "../TableHead";
 import { CELL, ROW, TABLE, type TableColumn } from "../tableStyles";
+import { TAP_INLINE } from "../fieldStyles";
 
 /** Which form a row has open. */
 export type RowAction = "merge" | "rebase" | "push";
@@ -133,7 +134,7 @@ function BranchRows({
               href={compareUrl}
               target="_blank"
               rel="noreferrer noopener"
-              className="text-console-accent ml-2 font-mono text-xs underline"
+              className={`text-console-accent ml-2 font-mono text-xs underline ${TAP_INLINE}`}
             >
               compare
             </a>
@@ -181,7 +182,7 @@ function BranchRows({
               onClick={() => {
                 onToggle(row.session_id, entry.action);
               }}
-              className={`ml-2 inline-flex items-center gap-1.5 font-mono text-xs disabled:opacity-50 ${
+              className={`ml-2 inline-flex items-center gap-1.5 font-mono text-xs disabled:opacity-50 ${TAP_INLINE} ${
                 opened === entry.action
                   ? "text-console-accent"
                   : "text-console-muted hover:text-console-text"

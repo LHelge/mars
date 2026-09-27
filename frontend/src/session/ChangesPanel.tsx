@@ -36,6 +36,7 @@ import { projectQueries } from "../services/queryOptions";
 import { formatRelative, shortSha } from "../utils/format";
 import { useSessionStore } from "./sessionStore";
 import type { SessionPanelProps } from "./sidePanels";
+import { TAP_INLINE, TOUCH_TEXT } from "../components/fieldStyles";
 
 export function ChangesPanel({ session }: SessionPanelProps) {
   const queryClient = useQueryClient();
@@ -104,7 +105,7 @@ export function ChangesPanel({ session }: SessionPanelProps) {
             onChange={(event) => {
               setBase(event.target.value === "" ? null : event.target.value);
             }}
-            className="border-console-border bg-console-bg text-console-text max-w-40 truncate rounded border px-1 py-0.5 font-mono text-xs"
+            className={`border-console-border bg-console-bg text-console-text max-w-40 truncate rounded border px-1 py-0.5 font-mono text-xs ${TOUCH_TEXT}`}
           >
             <option value="">
               {defaultBranch === undefined
@@ -136,7 +137,7 @@ export function ChangesPanel({ session }: SessionPanelProps) {
                 ),
               });
             }}
-            className="text-console-accent ml-auto flex items-center gap-1"
+            className={`text-console-accent ml-auto flex items-center gap-1 ${TAP_INLINE}`}
           >
             <Icon.refresh
               aria-hidden="true"
@@ -167,7 +168,7 @@ export function ChangesPanel({ session }: SessionPanelProps) {
           <button
             type="button"
             onClick={() => void diff.refetch()}
-            className="text-console-accent pt-1 text-xs underline underline-offset-2"
+            className={`text-console-accent pt-1 text-xs underline underline-offset-2 ${TAP_INLINE}`}
           >
             Retry
           </button>

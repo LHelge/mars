@@ -35,6 +35,7 @@ import {
   ORCHESTRATOR_ONLY_BADGE,
   secretErrorMessage,
 } from "./messages";
+import { CHECK, CHECK_LABEL } from "../fieldStyles";
 
 /** The project credential of `SPEC.md`, "Projects". */
 const GIT_CREDENTIAL = "GIT_CREDENTIAL";
@@ -150,7 +151,9 @@ export function SecretRow({
         </td>
 
         <td className={CELL}>
-          <label className="text-console-muted inline-flex items-center gap-1.5 text-xs">
+          <label
+            className={`text-console-muted inline-flex items-center gap-1.5 text-xs ${CHECK_LABEL}`}
+          >
             <input
               type="checkbox"
               checked={secret.orchestrator_only}
@@ -160,7 +163,7 @@ export function SecretRow({
                 setError(null);
                 flag.mutate(event.target.checked);
               }}
-              className="accent-console-accent size-3.5"
+              className={CHECK}
             />
             {/* Said in words, not left to a tooltip: this is the one fact
                 about the row that decides whether a session ever sees it. */}

@@ -21,6 +21,7 @@ import { errorMessage } from "../services/errorMessage";
 import { queryKeys } from "../services/queryKeys";
 import type { Handoff } from "../types";
 import { shortSha } from "../utils/format";
+import { TAP_INLINE } from "../components/fieldStyles";
 
 export interface HandoffDiffProps {
   projectId: string;
@@ -58,7 +59,7 @@ export function HandoffDiff({ projectId, handoff, onClose }: HandoffDiffProps) {
         <button
           type="button"
           onClick={onClose}
-          className="text-console-accent ml-auto text-xs underline underline-offset-2"
+          className={`text-console-accent ml-auto text-xs underline underline-offset-2 ${TAP_INLINE}`}
         >
           Close
         </button>

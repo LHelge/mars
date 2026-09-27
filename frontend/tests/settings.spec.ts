@@ -9,7 +9,7 @@
 
 import type { User } from "../src/types";
 import { expect, test } from "./utils/fixtures";
-import { currentUser, loginViaToken } from "./utils/test-helpers";
+import { currentUser, isMobile, loginViaToken } from "./utils/test-helpers";
 
 /** The opt-out checkbox, found by the sentence beside it. */
 const NOTIFY_LABEL = /Email me when a task I am assigned to/;
@@ -75,4 +75,44 @@ test("the settings page carries the password form and no administration", async 
       name: "Admin",
     }),
   ).toHaveCount(0);
+});
+
+// `SPEC.md`, "Frontend", "Mobile layout": on a coarse pointer a text control
+// is 16 px, so the phone does not zoom into the field it focuses, and every
+// button is a 44 px target. The Pixel 7 of the `mobile` project is a coarse
+// pointer, which is what `pointer-coarse:` answers to.
+test("the password form is usable on a phone @mobile", async ({
+  page,
+  context,
+  user,
+}, testInfo) => {
+  expect(isMobile(testInfo)).toBe(true);
+  await loginViaToken(context, user);
+
+  await page.goto("/settings");
+  await expect(page.getByRole("heading", { name: "Password" })).toBeVisible();
+
+  const current = page.getByLabel("Current password");
+  await current.focus();
+  await expect(current).toBeFocused();
+  expect(
+    await current.evaluate((node) => getComputedStyle(node).fontSize),
+  ).toBe("16px");
+
+  const buttons = page.getByRole("button");
+  await expect(buttons.filter({ hasText: "Change password" })).toBeVisible();
+  let measured = 0;
+  for (const button of await buttons.all()) {
+    if (!(await button.isVisible())) continue;
+    const box = await button.boundingBox();
+    const name = (await button.textContent()) ?? "";
+    expect(box, `${name} has a box`).not.toBeNull();
+    expect(
+      box?.height ?? 0,
+      `${name} is at least 44 px tall`,
+    ).toBeGreaterThanOrEqual(44);
+    measured += 1;
+  }
+  // The form's own button and the header's `Log out` at the least.
+  expect(measured).toBeGreaterThanOrEqual(2);
 });

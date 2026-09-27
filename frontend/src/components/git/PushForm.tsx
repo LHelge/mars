@@ -23,6 +23,7 @@ import {
 import type { ReportBusy } from "./formState";
 import { GitFormShell, GitResultNote } from "./GitFormShell";
 import { ReadOnlyField } from "./ReadOnlyField";
+import { CHECK_LABEL, CHECK_TOUCH, TAP_INLINE } from "../fieldStyles";
 
 export interface PushFormProps {
   projectId: string;
@@ -115,7 +116,9 @@ export function PushForm({
         />
       </div>
 
-      <label className="text-console-muted flex items-center gap-2 text-xs">
+      <label
+        className={`text-console-muted flex items-center gap-2 text-xs ${CHECK_LABEL}`}
+      >
         <input
           type="checkbox"
           name={`${formId}-force`}
@@ -124,7 +127,7 @@ export function PushForm({
           onChange={(event) => {
             setForce(event.target.checked);
           }}
-          className="accent-state-failed"
+          className={`accent-state-failed ${CHECK_TOUCH}`}
         />
         Force push
       </label>
@@ -155,7 +158,7 @@ export function PushForm({
             href={action.result.compare}
             target="_blank"
             rel="noreferrer noopener"
-            className="text-console-accent font-mono text-xs underline"
+            className={`text-console-accent font-mono text-xs underline ${TAP_INLINE}`}
           >
             Open compare on GitHub
           </a>

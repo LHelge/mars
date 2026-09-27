@@ -21,7 +21,12 @@ import type { FormEvent } from "react";
 import { Alert } from "../components/Alert";
 import { ConfirmPanel } from "../components/ConfirmPanel";
 import { FieldShell } from "../components/FieldShell";
-import { CONTROL } from "../components/fieldStyles";
+import {
+  CHECK,
+  CHECK_LABEL,
+  CONTROL,
+  TOUCH_TEXT,
+} from "../components/fieldStyles";
 import { SubmitButton } from "../components/SubmitButton";
 import { CELL, ROW, SPAN_CELL } from "../components/tableStyles";
 import { useFormSubmit } from "../hooks/useFormSubmit";
@@ -220,7 +225,7 @@ export function StateRow({
                 aria-invalid={draftError !== null ? true : undefined}
                 autoComplete="off"
                 autoFocus
-                className="border-console-border bg-console-bg text-console-text aria-invalid:border-state-failed w-40 rounded border px-2 py-1 font-mono text-xs"
+                className={`border-console-border bg-console-bg text-console-text aria-invalid:border-state-failed w-40 rounded border px-2 py-1 font-mono text-xs ${TOUCH_TEXT}`}
               />
               <SubmitButton loading={rename.loading}>Save</SubmitButton>
               <SubmitButton
@@ -263,7 +268,7 @@ export function StateRow({
               className="flex flex-wrap items-end gap-2"
             >
               <label
-                className="text-console-text flex items-center gap-1.5 self-center font-mono text-xs"
+                className={`text-console-text flex items-center gap-1.5 self-center font-mono text-xs ${CHECK_LABEL}`}
                 title={mergeRefusal ?? autoMergeMeaning(state.conflict_state)}
               >
                 <input
@@ -281,7 +286,7 @@ export function StateRow({
                     );
                   }}
                   disabled={busy || mergeRefusal !== null}
-                  className="accent-console-accent size-3.5"
+                  className={CHECK}
                 />
                 Auto-merge
               </label>

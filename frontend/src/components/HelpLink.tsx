@@ -14,6 +14,7 @@ import { Link } from "react-router";
 
 import { HELP_TOPIC_TITLES, helpPath } from "../help/topics";
 import type { HelpTopic } from "../help/topics";
+import { TAP_INLINE } from "./fieldStyles";
 
 export interface HelpLinkProps {
   topic: HelpTopic;
@@ -25,7 +26,7 @@ export function HelpLink({ topic, children }: HelpLinkProps) {
   return (
     <Link
       to={helpPath(topic)}
-      className="text-console-accent underline-offset-2 hover:underline focus-visible:underline"
+      className={`text-console-accent underline-offset-2 hover:underline focus-visible:underline ${TAP_INLINE}`}
     >
       {children ?? (
         <>

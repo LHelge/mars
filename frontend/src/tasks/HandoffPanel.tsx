@@ -60,6 +60,7 @@ import { ReviewForm } from "./ReviewForm";
 import { RevisionForm } from "./RevisionForm";
 import { useUsername } from "./useUsername";
 import { ViewDiffButton } from "./ViewDiffButton";
+import { TAP_INLINE, TOUCH_TEXT } from "../components/fieldStyles";
 
 /**
  * What a hand-off is, in the one line the section opens with (`SPEC.md`,
@@ -243,7 +244,7 @@ function CurrentHandoff({
           <Link
             to={`/sessions/${handoff.source_session_id}`}
             title={handoff.source_session_id}
-            className="text-console-accent font-mono text-xs hover:underline"
+            className={`text-console-accent font-mono text-xs hover:underline ${TAP_INLINE}`}
           >
             {shortId(handoff.source_session_id, 8)}
           </Link>
@@ -326,7 +327,7 @@ function CopyCommit({ commit }: { commit: string }) {
         type="button"
         aria-label="Copy commit id"
         onClick={copy}
-        className="text-console-muted hover:text-console-text border-console-border hover:bg-console-raised inline-flex items-center gap-1.5 rounded border px-1.5 py-px font-mono text-[0.6875rem]"
+        className={`text-console-muted hover:text-console-text border-console-border hover:bg-console-raised inline-flex items-center gap-1.5 rounded border px-1.5 py-px font-mono text-[0.6875rem] ${TAP_INLINE}`}
       >
         {copied ? (
           <Icon.copied aria-hidden="true" className={ICON_CLASS} />
@@ -344,7 +345,7 @@ function CopyCommit({ commit }: { commit: string }) {
           onFocus={(event) => {
             event.target.select();
           }}
-          className="bg-console-surface border-console-border text-console-muted w-72 max-w-full rounded border px-2 py-0.5 font-mono text-xs"
+          className={`bg-console-surface border-console-border text-console-muted w-72 max-w-full rounded border px-2 py-0.5 font-mono text-xs ${TOUCH_TEXT}`}
         />
       )}
     </span>

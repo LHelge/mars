@@ -25,6 +25,7 @@ import { createSharedDir } from "../../services/projects";
 import type { SharedDir } from "../../types";
 import { SHARED_DIR_PRESETS, validateSharedDir } from "../../utils/sharedDir";
 import { sharedDirErrorField } from "./sharedDirMessages";
+import { TAP_INLINE } from "../../components/fieldStyles";
 
 export interface SharedDirFormProps {
   projectId: string;
@@ -134,7 +135,7 @@ export function SharedDirForm({ projectId }: SharedDirFormProps) {
               applyPreset(preset);
             }}
             title={`${preset.ecosystem}: ${preset.container_path}`}
-            className="border-console-border text-console-muted hover:text-console-text hover:border-console-accent rounded border px-2 py-0.5 font-mono text-xs"
+            className={`border-console-border text-console-muted hover:text-console-text hover:border-console-accent rounded border px-2 py-0.5 font-mono text-xs ${TAP_INLINE}`}
           >
             {preset.name}
           </button>

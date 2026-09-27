@@ -32,7 +32,7 @@ import {
 import { Alert } from "../Alert";
 import { EmptyState } from "../EmptyState";
 import { FieldShell } from "../FieldShell";
-import { CONTROL } from "../fieldStyles";
+import { CONTROL, TAP_INLINE } from "../fieldStyles";
 import { Icon, ICON_CLASS } from "../icons";
 import { LoadingState } from "../LoadingState";
 import { QueryErrorAlert } from "../QueryErrorAlert";
@@ -341,7 +341,7 @@ function EntryRows({
                 event.preventDefault();
                 onShowRow(mark.by);
               }}
-              className="text-console-muted hover:text-console-text font-mono text-xs hover:underline"
+              className={`text-console-muted hover:text-console-text font-mono text-xs hover:underline ${TAP_INLINE}`}
             >
               undone by {shortSha(mark.by)}
             </a>

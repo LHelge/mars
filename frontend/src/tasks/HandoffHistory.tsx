@@ -19,6 +19,7 @@ import { commentExcerpt, handoffComment, reviewLabel } from "./handoffRules";
 import { CHIP } from "./taskChrome";
 import { useUsername } from "./useUsername";
 import { ViewDiffButton } from "./ViewDiffButton";
+import { TAP_INLINE } from "../components/fieldStyles";
 
 export interface HandoffHistoryProps {
   task: TaskDetail;
@@ -76,7 +77,7 @@ function HistoryRow({
           <Link
             to={`/sessions/${handoff.created_by_session_id}`}
             title={handoff.created_by_session_id}
-            className="text-console-accent font-mono text-[0.6875rem] hover:underline"
+            className={`text-console-accent font-mono text-[0.6875rem] hover:underline ${TAP_INLINE}`}
           >
             {shortId(handoff.created_by_session_id, 8)}
           </Link>

@@ -10,6 +10,7 @@
 // of each one click away (`SPEC.md`, "Frontend", "Transcript rendering").
 
 import { useState } from "react";
+import { TAP_INLINE } from "./fieldStyles";
 
 /** Depth beyond which nodes start collapsed. */
 const OPEN_DEPTH = 2;
@@ -43,7 +44,7 @@ function StringValue({ text }: { text: string }) {
       <button
         type="button"
         onClick={() => setExpanded(true)}
-        className="text-console-accent underline underline-offset-2"
+        className={`text-console-accent underline underline-offset-2 ${TAP_INLINE}`}
       >
         {text.length - STRING_LIMIT} more characters
       </button>
@@ -107,7 +108,7 @@ function Branch({
         type="button"
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
-        className="flex items-start gap-1 text-left"
+        className={`flex items-start gap-1 text-left ${TAP_INLINE}`}
       >
         <span aria-hidden="true" className="text-console-muted">
           {open ? "▾" : "▸"}
@@ -128,7 +129,7 @@ function Branch({
                 <button
                   type="button"
                   onClick={() => setShowAll(true)}
-                  className="text-console-accent underline underline-offset-2"
+                  className={`text-console-accent underline underline-offset-2 ${TAP_INLINE}`}
                 >
                   {held} more {held === 1 ? "entry" : "entries"}
                 </button>

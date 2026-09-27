@@ -25,7 +25,7 @@ import { FormField } from "../../components/FormField";
 import { HelpLink } from "../../components/HelpLink";
 import { SectionHeader } from "../../components/SectionHeader";
 import { SubmitButton } from "../../components/SubmitButton";
-import { FIELD } from "../../components/fieldStyles";
+import { CHECK, CHECK_LABEL, FIELD } from "../../components/fieldStyles";
 import { useFormSubmit } from "../../hooks/useFormSubmit";
 import { updateProject } from "../../services/projects";
 import { queryKeys } from "../../services/queryKeys";
@@ -241,7 +241,9 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
             )}
           </FieldShell>
 
-          <label className="text-console-text flex items-start gap-2 self-center text-sm">
+          <label
+            className={`text-console-text flex items-start gap-2 self-center text-sm ${CHECK_LABEL}`}
+          >
             <input
               type="checkbox"
               checked={form.automation_paused}
@@ -249,7 +251,7 @@ export function ProjectSettingsForm({ project }: ProjectSettingsFormProps) {
                 patch({ automation_paused: event.target.checked });
               }}
               disabled={save.loading}
-              className="accent-console-accent mt-1 size-3.5"
+              className={`${CHECK} mt-1`}
             />
             <span>
               Pause automation

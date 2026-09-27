@@ -14,6 +14,7 @@ import type { TaskComment } from "../types";
 import { formatDateTime, formatRelative, shortId } from "../utils/format";
 import { CHIP } from "./taskChrome";
 import { useUsername } from "./useUsername";
+import { TAP_INLINE } from "../components/fieldStyles";
 
 export interface CommentListProps {
   comments: TaskComment[];
@@ -94,7 +95,7 @@ function Author({ comment }: { comment: TaskComment }) {
       <Link
         to={`/sessions/${comment.author_session_id}`}
         title={`Session ${comment.author_session_id}`}
-        className="text-console-accent font-mono text-xs hover:underline"
+        className={`text-console-accent font-mono text-xs hover:underline ${TAP_INLINE}`}
       >
         {shortId(comment.author_session_id, 8)}
       </Link>

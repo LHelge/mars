@@ -27,6 +27,7 @@ import { LG_QUERY, useMediaQuery } from "../hooks/useMediaQuery";
 import type { Session } from "../types";
 import { panelsFor } from "./sidePanels";
 import type { SidePanelEntry } from "./sidePanels";
+import { TAP } from "../components/fieldStyles";
 
 export interface SidePanelProps {
   session: Session;
@@ -91,7 +92,7 @@ export function SidePanel({ session, panels }: SidePanelProps) {
           onClick={() => {
             setChoice(true);
           }}
-          className="text-console-muted hover:text-console-text p-1"
+          className={`text-console-muted hover:text-console-text p-1 ${TAP}`}
         >
           <Icon.panelOpen aria-hidden="true" className={ICON_CLASS} />
         </button>
@@ -129,7 +130,7 @@ export function SidePanel({ session, panels }: SidePanelProps) {
               onClick={() => {
                 setActiveId(entry.id);
               }}
-              className={`border-b-2 px-3 py-2 font-mono text-xs ${
+              className={`border-b-2 px-3 py-2 font-mono text-xs ${TAP} ${
                 entry.id === active.id
                   ? "border-console-accent text-console-text"
                   : "text-console-muted hover:text-console-text border-transparent"
@@ -145,7 +146,7 @@ export function SidePanel({ session, panels }: SidePanelProps) {
           onClick={() => {
             setChoice(false);
           }}
-          className="text-console-muted hover:text-console-text p-1"
+          className={`text-console-muted hover:text-console-text p-1 ${TAP}`}
         >
           <Icon.panelClose aria-hidden="true" className={ICON_CLASS} />
         </button>

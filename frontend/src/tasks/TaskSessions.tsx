@@ -10,6 +10,7 @@ import { Link } from "react-router";
 import type { TaskDetail as TaskDetailData } from "../types";
 import { formatDateTime, formatRelative, shortId } from "../utils/format";
 import { CHIP } from "./taskChrome";
+import { TAP_INLINE } from "../components/fieldStyles";
 
 export interface TaskSessionsProps {
   task: TaskDetailData;
@@ -36,7 +37,7 @@ export function TaskSessions({ task }: TaskSessionsProps) {
             <Link
               to={`/sessions/${touch.session_id}`}
               title={touch.session_id}
-              className="text-console-accent font-mono text-xs hover:underline"
+              className={`text-console-accent font-mono text-xs hover:underline ${TAP_INLINE}`}
             >
               {shortId(touch.session_id, 8)}
             </Link>

@@ -22,6 +22,7 @@ import type { Task, TaskDependency, TaskDependencyKind } from "../types";
 import { CHIP } from "./taskChrome";
 import { taskPath } from "./taskLink";
 import { selectTaskById, useTaskStore } from "./taskStore";
+import { TAP_INLINE } from "../components/fieldStyles";
 
 /** The heading each kind gets, read from this task's side of the edge. */
 const KIND_HEADING: Record<TaskDependencyKind, string> = {
@@ -172,7 +173,7 @@ function TaskRefLink({
     <li className="flex min-w-0 items-baseline gap-2">
       <Link
         to={taskPath(projectId, task.number)}
-        className="hover:bg-console-raised flex min-w-0 flex-1 items-baseline gap-2 rounded px-1 py-0.5"
+        className={`hover:bg-console-raised flex min-w-0 flex-1 items-baseline gap-2 rounded px-1 py-0.5 ${TAP_INLINE}`}
       >
         <span className="text-console-muted shrink-0 font-mono text-xs">
           #{task.number}

@@ -21,6 +21,7 @@ import { LoadingState } from "../LoadingState";
 import { QueryErrorAlert } from "../QueryErrorAlert";
 import { SubmitButton } from "../SubmitButton";
 import { secretErrorMessage } from "./messages";
+import { TAP_INLINE } from "../fieldStyles";
 
 /** The first page, and the step the button doubles from. */
 export const USES_INITIAL_LIMIT = 20;
@@ -38,7 +39,7 @@ function actor(use: SecretUse, usernames: Map<string, string>) {
     return (
       <Link
         to={`/sessions/${use.session_id}`}
-        className="text-console-accent font-mono text-xs hover:underline"
+        className={`text-console-accent font-mono text-xs hover:underline ${TAP_INLINE}`}
       >
         {use.session_id.slice(0, 8)}
       </Link>

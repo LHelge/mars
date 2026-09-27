@@ -10,6 +10,7 @@ import { NavLink } from "react-router";
 import { useAuth } from "../hooks/useAuth";
 import { Icon, ICON_CLASS } from "./icons";
 import type { IconComponent } from "./icons";
+import { TAP } from "./fieldStyles";
 
 export interface PageLayoutProps {
   title?: string;
@@ -36,7 +37,7 @@ const NAV: NavEntry[] = [
 
 function navClass({ isActive }: { isActive: boolean }): string {
   return [
-    "inline-flex shrink-0 items-center gap-1.5 border-b-2 px-1 py-2 text-sm whitespace-nowrap",
+    `inline-flex shrink-0 items-center gap-1.5 border-b-2 px-1 py-2 text-sm whitespace-nowrap ${TAP}`,
     isActive
       ? "border-console-accent text-console-text"
       : "border-transparent text-console-muted hover:text-console-text",
@@ -78,7 +79,7 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
               to="/help"
               className={({ isActive }) =>
                 [
-                  "inline-flex items-center gap-1 py-2 text-xs",
+                  `inline-flex items-center gap-1 py-2 text-xs ${TAP}`,
                   isActive
                     ? "text-console-text"
                     : "text-console-muted hover:text-console-text",
@@ -98,7 +99,7 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
               onClick={() => {
                 void logout();
               }}
-              className="text-console-muted hover:text-console-text inline-flex items-center gap-1 py-2 text-xs"
+              className={`text-console-muted hover:text-console-text inline-flex items-center gap-1 py-2 text-xs ${TAP}`}
             >
               <Icon.logout aria-hidden="true" className={ICON_CLASS} />
               Log out

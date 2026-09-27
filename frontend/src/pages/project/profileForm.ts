@@ -51,9 +51,6 @@ export const PROFILE_PERMISSION_MODE: PermissionMode = "bypass";
 export const READ_ONLY_CLASS =
   "border-console-border bg-console-raised text-console-muted rounded border px-2.5 py-1.5 font-mono text-sm";
 
-/** Every checkbox in the editor, wherever it is rendered. */
-export const CHECK_CLASS = "accent-console-accent size-3.5";
-
 /**
  * The kind's `partial_messages` default: on for a conversation the user
  * watches token by token, off for a one-shot run nobody is reading live.

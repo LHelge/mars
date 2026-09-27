@@ -16,6 +16,7 @@ import { useSessionSocketApi } from "./SessionSocketContext";
 import { getSessionStore, optimisticId, useSessionStore } from "./sessionStore";
 import { useResendRequest } from "./sessionUi";
 import { useStopSession } from "./useStopSession";
+import { TOUCH_TEXT } from "../components/fieldStyles";
 
 /** The text area grows to this many lines and then scrolls. */
 const MAX_LINES = 8;
@@ -182,7 +183,7 @@ export function Composer({ sessionId }: ComposerProps) {
           event.preventDefault();
           send();
         }}
-        className="bg-console-surface border-console-border text-console-text placeholder:text-console-muted block w-full resize-none rounded border px-3 py-2 font-mono text-sm disabled:opacity-60"
+        className={`bg-console-surface border-console-border text-console-text placeholder:text-console-muted block w-full resize-none rounded border px-3 py-2 font-mono text-sm disabled:opacity-60 ${TOUCH_TEXT}`}
       />
 
       <div className="mt-2 flex items-center gap-3">

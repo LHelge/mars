@@ -5,6 +5,7 @@
 // closes it again — so the button only names its hand-off.
 
 import type { Handoff } from "../types";
+import { CHIP_BUTTON } from "./taskChrome";
 
 export interface ViewDiffButtonProps {
   handoff: Handoff;
@@ -18,7 +19,7 @@ export function ViewDiffButton({ handoff, onViewDiff }: ViewDiffButtonProps) {
       onClick={() => {
         onViewDiff(handoff);
       }}
-      className="border-console-border hover:bg-console-raised hover:text-console-text rounded border px-1.5 py-px font-mono text-[0.6875rem]"
+      className={CHIP_BUTTON}
     >
       View diff
     </button>

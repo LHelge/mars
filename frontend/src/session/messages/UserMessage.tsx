@@ -12,6 +12,7 @@
 import type { UserMessage as UserMessageData } from "../sessionStore";
 import { isInFlight } from "../sessionStore";
 import { requestResend } from "../sessionUi";
+import { TAP_INLINE } from "../../components/fieldStyles";
 
 export interface UserMessageProps {
   sessionId: string;
@@ -43,7 +44,7 @@ export function UserMessage({ sessionId, message }: UserMessageProps) {
               onClick={() => {
                 requestResend(sessionId, message.text);
               }}
-              className="text-console-accent text-xs underline underline-offset-2"
+              className={`text-console-accent text-xs underline underline-offset-2 ${TAP_INLINE}`}
             >
               Resend
             </button>

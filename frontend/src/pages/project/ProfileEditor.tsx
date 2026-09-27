@@ -33,7 +33,7 @@ import { FieldShell } from "../../components/FieldShell";
 import { FormField } from "../../components/FormField";
 import { SectionHeader } from "../../components/SectionHeader";
 import { SubmitButton } from "../../components/SubmitButton";
-import { FIELD } from "../../components/fieldStyles";
+import { CHECK, CHECK_LABEL, FIELD } from "../../components/fieldStyles";
 import { useFormSubmit } from "../../hooks";
 import { useAgentCredential } from "../../secrets/useAgentCredential";
 import { ApiError } from "../../services/apiClient";
@@ -50,7 +50,6 @@ import { CheckboxList, Fieldset } from "./profileFields";
 import { formatDateTime, formatUtc, PLACEHOLDER } from "../../utils/format";
 import {
   BLANK_TEMPLATE,
-  CHECK_CLASS,
   CRON_EXAMPLES,
   defaultInputForKind,
   GIT_TOOL_NOTES,
@@ -568,7 +567,9 @@ export function ProfileEditor({
             )}
           </FieldShell>
 
-          <label className="text-console-text flex items-start gap-2 text-sm">
+          <label
+            className={`text-console-text flex items-start gap-2 text-sm ${CHECK_LABEL}`}
+          >
             <input
               type="checkbox"
               checked={form.partial_messages}
@@ -577,7 +578,7 @@ export function ProfileEditor({
                 patch({ partial_messages: event.target.checked });
               }}
               disabled={save.loading}
-              className={`${CHECK_CLASS} mt-1`}
+              className={`${CHECK} mt-1`}
             />
             <span>
               Stream partial messages
@@ -599,7 +600,9 @@ export function ProfileEditor({
                 description="The dispatcher picks up tasks in this profile's served states and runs this profile on them without anyone asking. The cap holds it back only: your own launches are never refused by it. Project settings can pause this or cap the whole project."
                 help="automation"
               >
-                <label className="text-console-text flex items-start gap-2 text-sm">
+                <label
+                  className={`text-console-text flex items-start gap-2 text-sm ${CHECK_LABEL}`}
+                >
                   <input
                     type="checkbox"
                     checked={form.auto_launch}
@@ -608,7 +611,7 @@ export function ProfileEditor({
                       patch({ auto_launch: event.target.checked });
                     }}
                     disabled={save.loading}
-                    className={`${CHECK_CLASS} mt-1`}
+                    className={`${CHECK} mt-1`}
                   />
                   <span>
                     Let the dispatcher launch this profile
@@ -671,7 +674,9 @@ export function ProfileEditor({
                 {/* The checkbox owns the fieldset: off, the two fields keep
                   what was typed but are disabled and nothing is sent, so
                   turning a schedule off is a tick and not an emptied box. */}
-                <label className="text-console-text flex items-start gap-2 pb-3 text-sm">
+                <label
+                  className={`text-console-text flex items-start gap-2 pb-3 text-sm ${CHECK_LABEL}`}
+                >
                   <input
                     type="checkbox"
                     checked={form.scheduled}
@@ -679,7 +684,7 @@ export function ProfileEditor({
                       patchSchedule({ scheduled: event.target.checked });
                     }}
                     disabled={save.loading}
-                    className={`${CHECK_CLASS} mt-1`}
+                    className={`${CHECK} mt-1`}
                   />
                   <span>
                     Run this profile on a schedule

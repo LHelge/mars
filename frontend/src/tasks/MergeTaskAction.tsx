@@ -53,6 +53,7 @@ import {
   mergedMessage,
 } from "./mergeRules";
 import { useDrawerEscape } from "./drawerEscape";
+import { CHIP_BUTTON } from "./taskChrome";
 import { useRefetchTask, useSettleTask } from "./taskWrites";
 
 export interface MergeTaskActionProps {
@@ -77,7 +78,7 @@ export function MergeTaskAction({ projectId, task }: MergeTaskActionProps) {
           onClick={() => {
             setOpened(handoff);
           }}
-          className="border-console-border hover:bg-console-raised hover:text-console-text rounded border px-1.5 py-px font-mono text-[0.6875rem] disabled:opacity-50 disabled:hover:bg-transparent"
+          className={`${CHIP_BUTTON} disabled:opacity-50 disabled:hover:bg-transparent`}
         >
           {MERGE_ACTION}
         </button>

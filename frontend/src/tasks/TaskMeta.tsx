@@ -22,6 +22,7 @@ import { CHIP, PRIORITY_COLOUR, PRIORITY_MEANING } from "./taskChrome";
 import { taskPath } from "./taskLink";
 import { selectTaskById, useTaskStore } from "./taskStore";
 import { useUsername } from "./useUsername";
+import { TAP_INLINE } from "../components/fieldStyles";
 
 export interface TaskMetaProps {
   projectId: string;
@@ -70,7 +71,7 @@ export function TaskMeta({ projectId, task }: TaskMetaProps) {
             <Link
               to={`/sessions/${task.lease_holder_session_id}`}
               title={task.lease_holder_session_id}
-              className="text-console-accent font-mono text-xs hover:underline"
+              className={`text-console-accent font-mono text-xs hover:underline ${TAP_INLINE}`}
             >
               {shortId(task.lease_holder_session_id, 8)}
             </Link>
@@ -131,7 +132,7 @@ export function TaskMeta({ projectId, task }: TaskMetaProps) {
             ) : (
               <Link
                 to={taskPath(projectId, parent.number)}
-                className="text-console-accent font-mono text-xs hover:underline"
+                className={`text-console-accent font-mono text-xs hover:underline ${TAP_INLINE}`}
               >
                 part of #{parent.number}
               </Link>

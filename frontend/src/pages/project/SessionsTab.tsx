@@ -53,6 +53,7 @@ import {
 } from "../../utils/format";
 import { LaunchSessionForm } from "./LaunchSessionForm";
 import type { ProjectTabPanelProps } from "./tabs";
+import { TAP_INLINE } from "../../components/fieldStyles";
 
 /** While a session is still starting or working, its row changes on its own. */
 const BUSY_POLL_MS = 10_000;
@@ -177,7 +178,7 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
                 onClick={() => {
                   setFilter(entry.value);
                 }}
-                className={`rounded border px-2 py-0.5 font-mono text-xs ${
+                className={`rounded border px-2 py-0.5 font-mono text-xs ${TAP_INLINE} ${
                   filter === entry.value
                     ? "border-console-accent text-console-text"
                     : "border-console-border text-console-muted hover:text-console-text"

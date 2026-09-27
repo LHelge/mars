@@ -14,6 +14,7 @@
 // name.
 
 import type { ComponentProps, ReactNode } from "react";
+import { TAP } from "./fieldStyles";
 import { ICON_CLASS } from "./icons";
 import type { IconComponent } from "./icons";
 import { Spinner } from "./Spinner";
@@ -56,7 +57,7 @@ export function SubmitButton({
       type={type}
       disabled={loading || disabled}
       aria-busy={loading || undefined}
-      className={`relative inline-flex items-center justify-center rounded border px-3 py-1.5 text-sm transition-opacity disabled:opacity-60 ${VARIANTS[variant]}`}
+      className={`relative inline-flex items-center justify-center rounded border px-3 py-1.5 text-sm transition-opacity disabled:opacity-60 ${TAP} ${VARIANTS[variant]}`}
     >
       {/* The label stays in flow while loading, so the width never changes. */}
       <span

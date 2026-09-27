@@ -13,8 +13,7 @@ import type { ReactNode } from "react";
 
 import { HelpLink } from "../../components/HelpLink";
 import type { HelpTopic } from "../../help/topics";
-
-import { CHECK_CLASS } from "./profileForm";
+import { CHECK, CHECK_LABEL } from "../../components/fieldStyles";
 
 export interface FieldsetProps {
   legend: string;
@@ -102,7 +101,10 @@ export function CheckboxList<Name extends string>({
             ? undefined
             : `${listId}-${item.name}-description`;
         const label = (
-          <label key={item.name} className={item.className ?? LABEL}>
+          <label
+            key={item.name}
+            className={`${item.className ?? LABEL} ${CHECK_LABEL}`}
+          >
             <input
               type="checkbox"
               checked={checked}
@@ -111,7 +113,7 @@ export function CheckboxList<Name extends string>({
               }}
               disabled={disabled || (item.locked === true && !checked)}
               aria-describedby={descriptionId}
-              className={CHECK_CLASS}
+              className={CHECK}
             />
             {item.name}
             {item.note}

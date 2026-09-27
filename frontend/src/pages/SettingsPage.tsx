@@ -31,6 +31,7 @@ import { queryKeys } from "../services/queryKeys";
 import { updateMe } from "../services/users";
 import type { User } from "../types";
 import { formatDateTime } from "../utils/format";
+import { CHECK_LABEL, CHECK_TOUCH } from "../components/fieldStyles";
 
 /** How long a "saved" banner stays on screen before it fades out again. */
 const CONFIRMATION_MS = 4_000;
@@ -157,12 +158,14 @@ export function SettingsPage() {
             <Alert kind="success">Preferences saved</Alert>
           )}
 
-          <label className="flex max-w-prose items-start gap-2 text-sm">
+          <label
+            className={`flex max-w-prose items-start gap-2 text-sm ${CHECK_LABEL}`}
+          >
             {/* Disabled while the PATCH is in flight: two overlapping writes
                 would be settled by whichever answered last. */}
             <input
               type="checkbox"
-              className="accent-console-accent mt-0.5 size-4 shrink-0"
+              className={`accent-console-accent mt-0.5 size-4 shrink-0 ${CHECK_TOUCH}`}
               checked={user?.notify_email ?? false}
               disabled={user === null || preference.isPending}
               onChange={(event) => {

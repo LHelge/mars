@@ -5,6 +5,7 @@
 // only a critical or high priority is set in a state colour, because
 // "ordinary" is the default and should not compete for the eye.
 
+import { TAP_INLINE } from "../components/fieldStyles";
 import { TASK_PRIORITIES } from "../types";
 import type { TaskPriority } from "../types";
 
@@ -34,6 +35,14 @@ export const PRIORITIES: readonly TaskPriority[] = TASK_PRIORITIES;
 /** One piece of task metadata: a bordered, monospace micro-tag. */
 export const CHIP =
   "border-console-border inline-flex items-center rounded border px-1 py-px font-mono text-[0.6875rem] leading-4";
+
+/**
+ * A chip-sized button — `View diff`, `Merge` — for a row of mono metadata that
+ * a form-sized button would break. Its hit area on a coarse pointer is
+ * `TAP_INLINE`'s, so the row keeps its line height on a phone too (`SPEC.md`,
+ * "Frontend", "Mobile layout").
+ */
+export const CHIP_BUTTON = `border-console-border hover:bg-console-raised hover:text-console-text rounded border px-1.5 py-px font-mono text-[0.6875rem] ${TAP_INLINE}`;
 
 /**
  * The card's round marker (`SPEC.md`, "Frontend", "Task board"): nothing until

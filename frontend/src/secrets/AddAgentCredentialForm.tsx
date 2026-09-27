@@ -25,9 +25,9 @@ import {
   type AppliesTo,
 } from "./agentCredentials";
 import { invalidateSecretQueries } from "./invalidate";
+import { CHECK, CHECK_LABEL, TOUCH_TEXT } from "../components/fieldStyles";
 
-const SELECT_CLASS =
-  "border-console-border bg-console-bg text-console-text rounded border px-2 py-1 font-mono text-xs disabled:opacity-50";
+const SELECT_CLASS = `border-console-border bg-console-bg text-console-text rounded border px-2 py-1 font-mono text-xs disabled:opacity-50 ${TOUCH_TEXT}`;
 
 /**
  * What `Applies to` decides (`ARCHITECTURE.md`, "Secrets", Agent credentials,
@@ -99,7 +99,7 @@ export function AddAgentCredentialForm({
           {ALL_AGENT_CREDENTIALS.map((entry) => (
             <label
               key={entry.name}
-              className="text-console-text flex items-center gap-1.5 text-sm"
+              className={`text-console-text flex items-center gap-1.5 text-sm ${CHECK_LABEL}`}
             >
               <input
                 type="radio"
@@ -109,7 +109,7 @@ export function AddAgentCredentialForm({
                 onChange={() => {
                   setName(entry.name);
                 }}
-                className="accent-console-accent size-3.5"
+                className={CHECK}
               />
               {entry.label}
             </label>
@@ -133,7 +133,7 @@ export function AddAgentCredentialForm({
             return (
               <label
                 key={entry.value}
-                className={`flex items-center gap-1.5 text-sm ${
+                className={`flex items-center gap-1.5 text-sm ${CHECK_LABEL} ${
                   disabled ? "text-console-muted" : "text-console-text"
                 }`}
               >
@@ -146,7 +146,7 @@ export function AddAgentCredentialForm({
                   onChange={() => {
                     setAppliesTo(entry.value);
                   }}
-                  className="accent-console-accent size-3.5"
+                  className={CHECK}
                 />
                 {entry.label}
               </label>

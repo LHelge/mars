@@ -25,6 +25,7 @@ import { MessageRow } from "./messages/MessageRow";
 import { isOptimisticId, useSessionStore } from "./sessionStore";
 import { SessionUiContext } from "./sessionUi";
 import { useStickToBottom } from "./useStickToBottom";
+import { TAP, TAP_INLINE } from "../components/fieldStyles";
 
 /** How close to the top asks for the next page of history. */
 const NEAR_TOP_PX = 200;
@@ -233,7 +234,7 @@ export function Transcript({ sessionId, loadOlder }: TranscriptProps) {
             <button
               type="button"
               onClick={retry}
-              className="border-console-border text-console-text rounded border px-2 py-0.5"
+              className={`border-console-border text-console-text rounded border px-2 py-0.5 ${TAP_INLINE}`}
             >
               Retry
             </button>
@@ -278,7 +279,7 @@ export function Transcript({ sessionId, loadOlder }: TranscriptProps) {
           <button
             type="button"
             onClick={stick.jumpToLatest}
-            className="border-console-border bg-console-raised text-console-text absolute inset-x-0 bottom-3 mx-auto w-fit rounded-full border px-3 py-1 text-xs shadow"
+            className={`border-console-border bg-console-raised text-console-text absolute inset-x-0 bottom-3 mx-auto w-fit rounded-full border px-3 py-1 text-xs shadow ${TAP}`}
           >
             Jump to latest
             {stick.newCount > 0 && (

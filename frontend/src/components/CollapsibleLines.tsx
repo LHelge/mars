@@ -11,6 +11,7 @@
 import { useState } from "react";
 
 import { splitLines } from "../utils/lines";
+import { TAP_INLINE } from "./fieldStyles";
 
 // A module that renders a component may export nothing else, so the limit is
 // a constant here rather than a shared export.
@@ -75,7 +76,7 @@ export function CollapsibleLines({
               ? `Show all ${total} lines of ${label}`
               : `Collapse ${label}`
           }
-          className="text-console-accent pt-1 text-xs underline underline-offset-2"
+          className={`text-console-accent pt-1 text-xs underline underline-offset-2 ${TAP_INLINE}`}
         >
           {collapsed ? `Show all ${total} lines` : "Collapse"}
         </button>

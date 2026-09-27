@@ -31,6 +31,7 @@ import { ConfirmPanel } from "../ConfirmPanel";
 import { SubmitButton } from "../SubmitButton";
 import { CELL, ROW, SPAN_CELL_BARE } from "../tableStyles";
 import { USER_COLUMNS } from "./columns";
+import { CHECK_TOUCH } from "../fieldStyles";
 
 const SELF_DELETE_HINT = "You cannot delete your own account";
 
@@ -128,7 +129,7 @@ export function UserRow({ user, isSelf }: UserRowProps) {
             disabled={busy}
             aria-label={`Administrator: ${user.username}`}
             onChange={onToggle}
-            className="accent-console-accent size-4 align-middle disabled:opacity-50"
+            className={`accent-console-accent size-4 align-middle disabled:opacity-50 ${CHECK_TOUCH}`}
           />
         </td>
         <td className={`${CELL} hidden sm:table-cell`}>

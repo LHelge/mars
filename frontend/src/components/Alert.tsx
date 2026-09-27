@@ -3,6 +3,7 @@
 
 import type { ReactNode } from "react";
 
+import { TAP } from "./fieldStyles";
 import { Icon, ICON_CLASS } from "./icons";
 
 export type AlertKind = "error" | "success" | "info" | "warning";
@@ -32,7 +33,7 @@ export function Alert({ kind, children, onDismiss }: AlertProps) {
           type="button"
           onClick={onDismiss}
           aria-label="Dismiss"
-          className="text-console-muted hover:text-console-text -m-1 shrink-0 p-1"
+          className={`text-console-muted hover:text-console-text -m-1 shrink-0 p-1 ${TAP}`}
         >
           <Icon.close aria-hidden="true" className={ICON_CLASS} />
         </button>

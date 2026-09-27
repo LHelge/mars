@@ -34,7 +34,7 @@ import type { HistoryEntry, RevertResult } from "../../types";
 import { shortSha } from "../../utils/format";
 import { ConfirmPanel } from "../ConfirmPanel";
 import { FieldShell } from "../FieldShell";
-import { FIELD } from "../fieldStyles";
+import { CHECK_LABEL, CHECK_TOUCH, FIELD } from "../fieldStyles";
 import { QueryErrorAlert } from "../QueryErrorAlert";
 import { rangeTasks, reopenStates } from "./history";
 import { useReportBusy, type ReportBusy } from "./formState";
@@ -194,10 +194,13 @@ export function RevertConfirm({
 
       {tasks.length > 0 && (
         <div className="space-y-2">
-          <label className="text-console-text flex items-center gap-2 text-sm">
+          <label
+            className={`text-console-text flex items-center gap-2 text-sm ${CHECK_LABEL}`}
+          >
             <input
               type="checkbox"
               name={`${formId}-reopen`}
+              className={CHECK_TOUCH}
               checked={reopen}
               disabled={run.loading}
               onChange={(event) => {

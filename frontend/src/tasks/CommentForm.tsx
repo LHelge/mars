@@ -15,11 +15,11 @@ import { SubmitButton } from "../components/SubmitButton";
 import { useFormSubmit } from "../hooks/useFormSubmit";
 import { addComment } from "../services/tasks";
 import { useSettleTask } from "./taskWrites";
+import { TOUCH_TEXT } from "../components/fieldStyles";
 
 // A comment is prose, not code, so this one control is deliberately not the
 // monospace `CONTROL` of `components/fieldStyles`.
-const COMMENT_CONTROL =
-  "border-console-border bg-console-bg text-console-text rounded border px-2.5 py-1.5 text-sm disabled:opacity-50";
+const COMMENT_CONTROL = `border-console-border bg-console-bg text-console-text rounded border px-2.5 py-1.5 text-sm disabled:opacity-50 ${TOUCH_TEXT}`;
 
 export interface CommentFormProps {
   projectId: string;

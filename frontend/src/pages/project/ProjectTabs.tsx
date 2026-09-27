@@ -3,6 +3,7 @@
 // `?tab=` value, the current one marked as the current page.
 
 import { Link } from "react-router";
+import { TAP } from "../../components/fieldStyles";
 import { PROJECT_TABS } from "./tabs";
 import type { ProjectTab } from "./tabs";
 
@@ -13,7 +14,8 @@ export interface ProjectTabsProps {
 
 function tabClass(isActive: boolean): string {
   return [
-    "shrink-0 border-b-2 px-1 py-2 text-sm whitespace-nowrap",
+    // A flex box on touch, so the 44 px tab keeps its label centred.
+    `shrink-0 border-b-2 px-1 py-2 text-sm whitespace-nowrap pointer-coarse:inline-flex pointer-coarse:items-center ${TAP}`,
     isActive
       ? "border-console-accent text-console-text"
       : "border-transparent text-console-muted hover:text-console-text",

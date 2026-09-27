@@ -22,6 +22,7 @@ import {
   parseHelpTopic,
 } from "../help/topics";
 import type { HelpTopic } from "../help/topics";
+import { TAP_INLINE } from "../components/fieldStyles";
 
 function headingId(topic: HelpTopic): string {
   return `${topic}-heading`;
@@ -57,7 +58,7 @@ export function HelpPage() {
                     to={helpPath(topic)}
                     aria-current={active ? "location" : undefined}
                     className={[
-                      "-ml-px block py-0.5 lg:border-l-2 lg:pl-3",
+                      `-ml-px block py-0.5 lg:border-l-2 lg:pl-3 ${TAP_INLINE}`,
                       active
                         ? "border-console-accent text-console-text"
                         : "text-console-muted hover:text-console-text border-transparent",

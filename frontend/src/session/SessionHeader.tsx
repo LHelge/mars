@@ -38,6 +38,7 @@ import { SessionActions } from "./SessionActions";
 import type { ConnectionStatus, SessionStore } from "./sessionStore";
 import { getSessionStore, useSessionStore } from "./sessionStore";
 import { useSyncSession } from "./useSyncSession";
+import { TAP_INLINE, TOUCH_TEXT } from "../components/fieldStyles";
 
 /** A session's spend is often a fraction of a cent. */
 
@@ -99,7 +100,7 @@ export function SessionHeader({ session, status, onStop }: SessionHeaderProps) {
               onClick={() => {
                 setBranchOpen((open) => !open);
               }}
-              className={`font-mono text-xs ${
+              className={`font-mono text-xs ${TAP_INLINE} ${
                 branchOpen
                   ? "text-console-accent"
                   : "text-console-muted hover:text-console-text"
@@ -109,7 +110,7 @@ export function SessionHeader({ session, status, onStop }: SessionHeaderProps) {
             </button>
             <Link
               to={`/projects/${session.project_id}`}
-              className="text-console-muted hover:text-console-accent font-mono text-xs"
+              className={`text-console-muted hover:text-console-accent font-mono text-xs ${TAP_INLINE}`}
             >
               project
             </Link>
@@ -366,7 +367,7 @@ function SessionTitle({ session }: { session: Session }) {
           setEditing(false);
         }
       }}
-      className="bg-console-bg border-console-border text-console-text w-64 max-w-full rounded border px-2 py-0.5 text-sm"
+      className={`bg-console-bg border-console-border text-console-text w-64 max-w-full rounded border px-2 py-0.5 text-sm ${TOUCH_TEXT}`}
     />
   );
 }

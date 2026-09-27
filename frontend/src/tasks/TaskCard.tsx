@@ -36,6 +36,7 @@ import {
 import { useTaskStore } from "./taskStore";
 import { selectTaskById } from "./taskStore";
 import { useUsername } from "./useUsername";
+import { TAP_INLINE } from "../components/fieldStyles";
 
 export interface TaskCardProps {
   task: Task;
@@ -163,7 +164,7 @@ function TaskCardView({ task, selected, maxRounds }: TaskCardProps) {
           <Link
             to={`/sessions/${task.lease_holder_session_id}`}
             title="The session holding this task"
-            className={`${CHIP} border-console-accent/60 text-console-accent hover:bg-console-accent/10`}
+            className={`${CHIP} border-console-accent/60 text-console-accent hover:bg-console-accent/10 ${TAP_INLINE}`}
           >
             held
           </Link>

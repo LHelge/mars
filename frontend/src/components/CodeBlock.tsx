@@ -24,6 +24,7 @@ import type { ReactNode } from "react";
 
 import { Icon, ICON_CLASS } from "./icons";
 import { useClipboardCopy } from "./useClipboardCopy";
+import { TAP } from "./fieldStyles";
 
 /** How long the code must hold still before the highlighter is asked. */
 const SETTLE_MS = 120;
@@ -129,7 +130,7 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
           onClick={() => {
             void copy(code);
           }}
-          className="text-console-muted hover:text-console-text hover:bg-console-raised inline-flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-[0.7rem]"
+          className={`text-console-muted hover:text-console-text hover:bg-console-raised inline-flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-[0.7rem] ${TAP}`}
         >
           {copied ? (
             <Icon.copied aria-hidden="true" className={ICON_CLASS} />

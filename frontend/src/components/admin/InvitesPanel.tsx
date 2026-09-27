@@ -37,6 +37,7 @@ import { SCROLLER, TABLE } from "../tableStyles";
 import { INVITE_COLUMNS } from "./columns";
 import { INVITE_DELIVERY } from "./inviteDelivery";
 import { InviteRow } from "./InviteRow";
+import { CHECK_LABEL, CHECK_TOUCH } from "../fieldStyles";
 
 const DUPLICATE = "That email already has an account or an open invitation.";
 
@@ -139,7 +140,9 @@ export function InvitesPanel() {
           />
         </div>
 
-        <label className="text-console-muted flex items-center gap-2 py-2 text-xs">
+        <label
+          className={`text-console-muted flex items-center gap-2 py-2 text-xs ${CHECK_LABEL}`}
+        >
           <input
             type="checkbox"
             checked={admin}
@@ -147,7 +150,7 @@ export function InvitesPanel() {
             onChange={(event) => {
               setAdmin(event.target.checked);
             }}
-            className="accent-console-accent size-4"
+            className={`accent-console-accent size-4 ${CHECK_TOUCH}`}
           />
           Administrator
         </label>

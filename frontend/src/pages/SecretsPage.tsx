@@ -25,6 +25,7 @@ import { listProjects } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
 import { listUsers } from "../services/users";
 import type { SecretScope } from "../types";
+import { CHECK, CHECK_LABEL, TOUCH_TEXT } from "../components/fieldStyles";
 
 /** What the radio group offers; three of the four map onto one API scope. */
 type Choice = "global" | "project" | "mine" | "user";
@@ -45,8 +46,7 @@ const CHOICES: { value: Choice; label: string; adminOnly?: boolean }[] = [
 const SCOPE_HINT =
   "Global secrets can reach every project's sessions, project secrets only that project's, and user secrets only the sessions their owner launches.";
 
-const SELECT_CLASS =
-  "border-console-border bg-console-bg text-console-text rounded border px-2 py-1 font-mono text-xs";
+const SELECT_CLASS = `border-console-border bg-console-bg text-console-text rounded border px-2 py-1 font-mono text-xs ${TOUCH_TEXT}`;
 
 export function SecretsPage() {
   const { user, isAdmin } = useAuth();
@@ -174,7 +174,7 @@ export function SecretsPage() {
               (entry) => (
                 <label
                   key={entry.value}
-                  className="text-console-text flex items-center gap-1.5 text-sm"
+                  className={`text-console-text flex items-center gap-1.5 text-sm ${CHECK_LABEL}`}
                 >
                   <input
                     type="radio"
@@ -184,7 +184,7 @@ export function SecretsPage() {
                     onChange={() => {
                       select(entry.value);
                     }}
-                    className="accent-console-accent size-3.5"
+                    className={CHECK}
                   />
                   {entry.label}
                 </label>

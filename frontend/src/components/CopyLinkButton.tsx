@@ -11,6 +11,7 @@
 
 import { Icon, ICON_CLASS } from "./icons";
 import { useCopyToClipboard } from "./useClipboardCopy";
+import { TAP_INLINE, TOUCH_TEXT } from "./fieldStyles";
 
 export interface CopyLinkButtonProps {
   /** An application path, already absolute within the origin: `/sessions/{id}`. */
@@ -30,7 +31,7 @@ export function CopyLinkButton({ path, label = "Link" }: CopyLinkButtonProps) {
       <button
         type="button"
         onClick={copy}
-        className="text-console-muted hover:text-console-text border-console-border hover:bg-console-raised inline-flex items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-xs"
+        className={`text-console-muted hover:text-console-text border-console-border hover:bg-console-raised inline-flex items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-xs ${TAP_INLINE}`}
       >
         <Glyph aria-hidden="true" className={ICON_CLASS} />
         {copied ? "Link copied" : "Copy link"}
@@ -44,7 +45,7 @@ export function CopyLinkButton({ path, label = "Link" }: CopyLinkButtonProps) {
           onFocus={(event) => {
             event.target.select();
           }}
-          className="bg-console-surface border-console-border text-console-muted w-64 max-w-full rounded border px-2 py-0.5 font-mono text-xs"
+          className={`bg-console-surface border-console-border text-console-muted w-64 max-w-full rounded border px-2 py-0.5 font-mono text-xs ${TOUCH_TEXT}`}
         />
       )}
     </span>

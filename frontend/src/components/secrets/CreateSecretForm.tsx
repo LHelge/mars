@@ -15,7 +15,7 @@ import type { CreateSecretRequest, SecretMeta, SecretScope } from "../../types";
 import { validateSecretName } from "../../utils/secretName";
 import { Alert } from "../Alert";
 import { FieldShell } from "../FieldShell";
-import { CONTROL } from "../fieldStyles";
+import { CHECK, CHECK_LABEL, CONTROL } from "../fieldStyles";
 import { FormField } from "../FormField";
 import { SubmitButton } from "../SubmitButton";
 import {
@@ -109,7 +109,9 @@ export function CreateSecretForm({ scope, scopeId }: CreateSecretFormProps) {
         />
 
         <div className="flex flex-col gap-1">
-          <label className="text-console-muted flex items-center gap-2 text-xs">
+          <label
+            className={`text-console-muted flex items-center gap-2 text-xs ${CHECK_LABEL}`}
+          >
             <input
               type="checkbox"
               checked={orchestratorOnly}
@@ -117,7 +119,7 @@ export function CreateSecretForm({ scope, scopeId }: CreateSecretFormProps) {
                 setOrchestratorOnly(event.target.checked);
               }}
               aria-describedby="secret-orchestrator-only-hint"
-              className="accent-console-accent size-3.5"
+              className={CHECK}
             />
             Orchestrator only
           </label>

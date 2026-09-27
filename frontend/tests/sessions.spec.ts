@@ -33,6 +33,7 @@ import {
   commitInSessionWorkClone,
   defaultProfile,
   gitRevParse,
+  isMobile,
   loginViaToken,
   mirrorPath,
   openRow,
@@ -501,6 +502,55 @@ test("interject mid-turn", async ({
   await reveal(page, rows.getByRole("button", { name: "Agent" }));
   await reveal(page, rows.getByText("wait for me", { exact: true }));
   await expect(rows.getByText("wait for me", { exact: true })).toHaveCount(1);
+});
+
+test("a phone types a two-line message and sends it with the button @mobile", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}, testInfo) => {
+  expect(isMobile(testInfo)).toBe(true);
+  await loginViaToken(context, user);
+  const session = await sessions.launch(api, project.id, {
+    message: "hello stub",
+  });
+  await page.goto(`/sessions/${session.id}`);
+  await waitForTurn(api, session.id, 0);
+
+  // On a coarse pointer Enter is the newline a phone keyboard has no
+  // Shift+Enter for, and the placeholder does not claim otherwise
+  // (`SPEC.md`, "Frontend", "Composer").
+  const form = composer(page);
+  const box = form.getByLabel("Message", { exact: true });
+  await expect(box).not.toHaveAttribute("placeholder", /Enter/);
+  await box.click();
+  await page.keyboard.type("first line");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("second line");
+  await expect(box).toHaveValue("first line\nsecond line");
+
+  const send = form.getByRole("button", { name: /^(Send|Interject)$/ });
+  const sendBox = await send.boundingBox();
+  expect(sendBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await send.click();
+  await expect(box).toHaveValue("");
+
+  // The stub received it as one message: the fixture's second turn plays.
+  await waitForTurn(api, session.id, 1);
+  const message = await reveal(
+    page,
+    transcript(page).locator("p").filter({ hasText: "first line" }),
+  );
+  expect(await message.innerText()).toBe("first line\nsecond line");
+  // Two rendered lines, not one line with a space where the newline was.
+  const lineHeight = await message.evaluate((node) =>
+    Number.parseFloat(getComputedStyle(node).lineHeight),
+  );
+  const rendered = await message.boundingBox();
+  expect(rendered?.height ?? 0).toBeGreaterThanOrEqual(lineHeight * 2 - 1);
 });
 
 test("stop parks the session and shows stopped", async ({

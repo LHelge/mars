@@ -3,6 +3,10 @@
 // turn is in progress, offers a stop button, is absent for ephemeral sessions
 // and is disabled once the session is `done` or `failed`.
 //
+// Enter sends on a fine pointer only. On a coarse one it is a newline and the
+// button sends, because a phone keyboard has no Shift+Enter (`SPEC.md`,
+// "Frontend", "Mobile layout").
+//
 // There is no answer mode: the pinned CLI never asks the host a question, so
 // `SessionInput` has the single kind `message` (ADR 0033). A message sent
 // mid-turn is queued by the CLI as the next turn.
@@ -17,9 +21,17 @@ import { getSessionStore, optimisticId, useSessionStore } from "./sessionStore";
 import { useResendRequest } from "./sessionUi";
 import { useStopSession } from "./useStopSession";
 import { TOUCH_TEXT } from "../components/fieldStyles";
+import { COARSE_QUERY, SM_QUERY, useMediaQuery } from "../hooks/useMediaQuery";
 
 /** The text area grows to this many lines and then scrolls. */
 const MAX_LINES = 8;
+/**
+ * Below `sm` the cap is lower, so the composer never takes more than about a
+ * third of a phone screen.
+ */
+const MAX_LINES_NARROW = 5;
+/** What a keyboard user is told, on a fine pointer only. */
+const KEYBOARD_HINT = "Enter sends, Shift+Enter for a newline";
 /** Past this length a message is worth a word of warning, never a refusal. */
 const LARGE_TEXT = 100 * 1024;
 /**
@@ -39,8 +51,8 @@ function number(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-/** Grows the text area with its content, up to `MAX_LINES`, then scrolls. */
-function autoGrow(area: HTMLTextAreaElement): void {
+/** Grows the text area with its content, up to `maxLines`, then scrolls. */
+function autoGrow(area: HTMLTextAreaElement, maxLines: number): void {
   area.style.height = "auto";
   const style = getComputedStyle(area);
   const lineHeight = number(style.lineHeight) || 20;
@@ -49,7 +61,7 @@ function autoGrow(area: HTMLTextAreaElement): void {
     number(style.paddingBottom) +
     number(style.borderTopWidth) +
     number(style.borderBottomWidth);
-  const max = lineHeight * MAX_LINES + extra;
+  const max = lineHeight * maxLines + extra;
   const wanted = area.scrollHeight;
   area.style.height = `${String(Math.min(wanted, max))}px`;
   area.style.overflowY = wanted > max ? "auto" : "hidden";
@@ -72,6 +84,10 @@ export function Composer({ sessionId }: ComposerProps) {
   // request is outstanding.
   const stop = useStopSession(sessionId, socket.stop);
   const areaRef = useRef<HTMLTextAreaElement>(null);
+  // Touch is read from the pointer, the height cap from the width (ADR 0057).
+  const coarse = useMediaQuery(COARSE_QUERY);
+  const wide = useMediaQuery(SM_QUERY);
+  const maxLines = wide ? MAX_LINES : MAX_LINES_NARROW;
 
   const state = session?.state;
   const ended = state === "done" || state === "failed";
@@ -88,8 +104,8 @@ export function Composer({ sessionId }: ComposerProps) {
 
   useEffect(() => {
     const area = areaRef.current;
-    if (area !== null) autoGrow(area);
-  }, [text]);
+    if (area !== null) autoGrow(area, maxLines);
+  }, [text, maxLines]);
 
   useEffect(() => {
     // The one thing adopting the text cannot do during render: put the cursor
@@ -170,7 +186,14 @@ export function Composer({ sessionId }: ComposerProps) {
         rows={2}
         disabled={ended}
         value={text}
-        placeholder={ended ? "" : "Message the session"}
+        placeholder={
+          ended
+            ? ""
+            : coarse
+              ? "Message the session"
+              : `Message the session — ${KEYBOARD_HINT}`
+        }
+        enterKeyHint="enter"
         onChange={(event) => {
           setText(event.target.value);
         }}
@@ -179,6 +202,9 @@ export function Composer({ sessionId }: ComposerProps) {
           // IME composition ends on an Enter that must not submit.
           if (event.nativeEvent.isComposing) return;
           if (event.nativeEvent.keyCode === IME_KEY_CODE) return;
+          // A phone keyboard has no Shift+Enter: there Enter is the newline
+          // and the button is the one way to send.
+          if (coarse) return;
           if (event.shiftKey && !(event.metaKey || event.ctrlKey)) return;
           event.preventDefault();
           send();

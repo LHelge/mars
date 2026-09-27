@@ -13,6 +13,7 @@ import type {
   SessionKind,
   SessionState,
 } from "../types";
+import { TAP } from "../components/fieldStyles";
 import { Composer } from "./Composer";
 import { SessionSocketContext } from "./SessionSocketContext";
 import {
@@ -132,7 +133,28 @@ afterEach(() => {
   cleanup();
   disposeSessionStore(SESSION_ID);
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
+
+/**
+ * A `matchMedia` answering the pointer and width queries the composer asks:
+ * `coarse` is `(pointer: coarse)`, `wide` is Tailwind's `sm`.
+ */
+function stubMedia({ coarse, wide }: { coarse: boolean; wide: boolean }) {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) => ({
+      matches:
+        query === "(pointer: coarse)"
+          ? coarse
+          : query === "(min-width: 40rem)"
+            ? wide
+            : false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  );
+}
 
 describe("Composer visibility", () => {
   it("renders nothing for an ephemeral session", () => {
@@ -472,4 +494,92 @@ describe("Composer extras", () => {
 
     expect(screen.getByText(/Offline, sending over HTTP/)).toBeTruthy();
   });
+});
+
+describe("Composer pointer", () => {
+  beforeEach(() => {
+    act(() => {
+      store().setSession(session("running"));
+    });
+  });
+
+  it("sends on Enter and hints at Shift+Enter on a fine pointer", () => {
+    stubMedia({ coarse: false, wide: true });
+    const socket = fakeSocket();
+    mount(socket);
+
+    expect(area().placeholder).toContain(
+      "Enter sends, Shift+Enter for a newline",
+    );
+    type("from a keyboard");
+    const notPrevented = fireEvent.keyDown(area(), { key: "Enter" });
+
+    expect(notPrevented).toBe(false);
+    expect(socket.send).toHaveBeenCalledWith({
+      kind: "message",
+      text: "from a keyboard",
+    });
+  });
+
+  it("leaves Enter to the text area on a coarse pointer and sends from the button", () => {
+    stubMedia({ coarse: true, wide: false });
+    const socket = fakeSocket();
+    mount(socket);
+
+    expect(area().placeholder).not.toContain("Enter");
+    expect(area().getAttribute("enterkeyhint")).toBe("enter");
+    type("first line");
+    // Not intercepted: the default action, a newline, is left to the browser.
+    const notPrevented = fireEvent.keyDown(area(), { key: "Enter" });
+    expect(notPrevented).toBe(true);
+    expect(socket.send).not.toHaveBeenCalled();
+
+    type("first line\nsecond line");
+    fireEvent.click(button("Send"));
+    expect(socket.send).toHaveBeenCalledWith({
+      kind: "message",
+      text: "first line\nsecond line",
+    });
+  });
+
+  it("keeps the IME rule on a coarse pointer", () => {
+    stubMedia({ coarse: true, wide: true });
+    const socket = fakeSocket();
+    mount(socket);
+
+    type("にほん");
+    fireEvent.keyDown(area(), { key: "Enter", keyCode: 229 });
+
+    expect(socket.send).not.toHaveBeenCalled();
+    expect(area().value).toBe("にほん");
+  });
+
+  it("gives the send and stop buttons the touch hit area", () => {
+    stubMedia({ coarse: true, wide: false });
+    mount(fakeSocket());
+
+    expect(button("Send").className).toContain(TAP);
+    expect(button("Stop").className).toContain(TAP);
+  });
+
+  it.each([
+    { wide: true, lines: 8 },
+    { wide: false, lines: 5 },
+  ])(
+    "caps the text area at $lines lines (from sm: $wide)",
+    ({ wide, lines }) => {
+      stubMedia({ coarse: false, wide });
+      mount(fakeSocket());
+      // jsdom lays nothing out: the line height falls back to 20 px and the
+      // content is taller than either cap, so the height is the cap itself.
+      Object.defineProperty(area(), "scrollHeight", {
+        configurable: true,
+        value: 10_000,
+      });
+      type("line\n".repeat(20));
+
+      expect(area().style.height).toBe(`${String(lines * 20)}px`);
+      expect(area().style.overflowY).toBe("auto");
+    },
+  );
 });

@@ -1,6 +1,7 @@
 // The session *view* and its streams: what a reader sees when they arrive
 // late, reload, watch from a second browser, lose the network, open a terminal
-// into the container, copy the link or run an ephemeral profile once.
+// into the container, copy the link or run an ephemeral profile once — and, on
+// a phone, open the side panel as a sheet over the transcript.
 //
 // The lifecycle itself — launch, stop, resume, end, retry, the idle reaper —
 // belongs to `sessions.spec.ts`; nothing here asserts a transition for its own
@@ -32,6 +33,7 @@ import {
   createTestUser,
   defaultProfile,
   dropConnection,
+  isMobile,
   loginViaToken,
   newLoggedInPage,
   pinToLatest,
@@ -697,4 +699,67 @@ test("metadata header", async ({
   // the header's strip does not name them.
   const session = await api.get<Session>(`/sessions/${sessionId}`);
   expect(session.created_by).not.toBeNull();
+});
+
+// --- the side panel on a phone ------------------------------------------------
+
+test("the side panel opens as a sheet on a phone and the transcript keeps the width @mobile", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}, testInfo) => {
+  expect(isMobile(testInfo)).toBe(true);
+  await loginViaToken(context, user);
+  const session = await sessions.launch(api, project.id, {
+    message: "hello stub",
+  });
+  await page.goto(`/sessions/${session.id}`);
+  await expectState(page, "running");
+
+  // Closed, the panel costs the transcript nothing: no rail beside it, and the
+  // transcript spans the session box (`SPEC.md`, "Frontend", "Session side
+  // panel").
+  await expect(
+    page.getByRole("button", { name: "Show side panel" }),
+  ).toHaveCount(0);
+  const width = page.viewportSize()?.width ?? 0;
+  expect(width).toBeGreaterThan(0);
+  const before = await transcript(page).boundingBox();
+  expect(before).not.toBeNull();
+  // The page's own gutters and the box's border are all that is left over.
+  expect(before?.width ?? 0).toBeGreaterThan(width - 48);
+
+  // The opener is one button in the header's link row.
+  const opener = header(page).getByRole("button", { name: "Panels" });
+  await expect(opener).toHaveAttribute("aria-expanded", "false");
+  await opener.click();
+  await expect(opener).toHaveAttribute("aria-expanded", "true");
+
+  const sheet = page.getByRole("dialog", { name: "Session panels" });
+  await expect(sheet).toBeVisible();
+  await expect(
+    sheet.getByRole("tab", { name: "Changes", selected: true }),
+  ).toBeVisible();
+  await sheet.getByRole("tab", { name: "Tasks" }).click();
+  await expect(
+    sheet.getByRole("tab", { name: "Tasks", selected: true }),
+  ).toBeVisible();
+  const sheetBox = await sheet.boundingBox();
+  expect(sheetBox?.width ?? 0).toBeGreaterThan(width - 48);
+
+  // A tap on the dimmed transcript above the sheet closes it, and the focus
+  // goes back to the opener.
+  await page.mouse.click(
+    (before?.x ?? 0) + (before?.width ?? 0) / 2,
+    (before?.y ?? 0) + 8,
+  );
+  await expect(sheet).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  await expect(opener).toHaveAttribute("aria-expanded", "false");
+
+  const after = await transcript(page).boundingBox();
+  expect(after?.width).toBe(before?.width);
 });

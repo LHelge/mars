@@ -16,6 +16,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Session, SessionState } from "../types";
+import { panelOpenerId, setPanelSheet } from "./sessionUi";
 import { SidePanel } from "./SidePanel";
 
 vi.mock("./ChangesPanel", () => ({
@@ -136,13 +137,14 @@ describe("SidePanel", () => {
     expect(screen.getByRole("tab", { name: "Tasks" }).tabIndex).toBe(-1);
   });
 
-  it("starts as a rail where matchMedia does not exist", () => {
+  it("offers no rail where matchMedia does not exist", () => {
     vi.stubGlobal("matchMedia", undefined);
     render(<SidePanel session={session("running")} />);
 
+    // The narrow layout: a closed sheet, opened from the session header.
     expect(
-      screen.getByRole("button", { name: "Show side panel" }),
-    ).toBeDefined();
+      screen.queryByRole("button", { name: "Show side panel" }),
+    ).toBeNull();
     expect(screen.queryByRole("tablist")).toBeNull();
   });
 
@@ -150,6 +152,10 @@ describe("SidePanel", () => {
     wide = false;
     render(<SidePanel session={session("running")} />);
     expect(screen.queryByRole("tablist")).toBeNull();
+    // Below lg there is no rail: the opener is the header's.
+    expect(
+      screen.queryByRole("button", { name: "Show side panel" }),
+    ).toBeNull();
 
     resize(true);
     expect(screen.getByRole("tablist")).toBeDefined();
@@ -169,5 +175,85 @@ describe("SidePanel", () => {
     expect(screen.queryByRole("tablist")).toBeNull();
     resize(true);
     expect(screen.getByRole("tablist")).toBeDefined();
+  });
+
+  describe("below lg, as a sheet", () => {
+    beforeEach(() => {
+      wide = false;
+    });
+
+    /** The header's opener, which the sheet hands the focus back to. */
+    function renderWithOpener(state: SessionState = "running"): void {
+      render(
+        <>
+          <button type="button" id={panelOpenerId(SESSION_ID)}>
+            Panels
+          </button>
+          <SidePanel session={session(state)} />
+        </>,
+      );
+    }
+
+    function openSheet(): void {
+      act(() => {
+        setPanelSheet(SESSION_ID, true);
+      });
+    }
+
+    it("opens as a dialog holding the tab list, focused on the selected tab", () => {
+      renderWithOpener("creating");
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      openSheet();
+      const dialog = screen.getByRole("dialog", { name: "Session panels" });
+      expect(dialog.querySelector('[role="tablist"]')).not.toBeNull();
+      // The derived-tab rule holds in the sheet too.
+      expect(selected()).toBe("Tasks");
+      expect(screen.queryByText("terminal panel")).toBeNull();
+      expect(document.activeElement).toBe(
+        screen.getByRole("tab", { name: "Tasks" }),
+      );
+    });
+
+    it("closes on Escape and hands the focus back to the opener", () => {
+      renderWithOpener();
+      openSheet();
+
+      fireEvent.keyDown(screen.getByRole("tab", { name: "Changes" }), {
+        key: "Escape",
+      });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Panels" }),
+      );
+    });
+
+    it("closes on its close button and on a tap on the overlay", () => {
+      renderWithOpener();
+      openSheet();
+      fireEvent.click(screen.getByRole("button", { name: "Close panels" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      openSheet();
+      const overlay = screen.getByRole("dialog").previousElementSibling;
+      expect(overlay).not.toBeNull();
+      if (overlay !== null) fireEvent.click(overlay);
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("is closed by a crossing of lg, in either direction", () => {
+      renderWithOpener();
+      openSheet();
+
+      // Wide: the column the width wants, and no sheet left behind.
+      resize(true);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByRole("tablist")).toBeDefined();
+
+      // Narrow again: the sheet stays closed until it is asked for.
+      resize(false);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.queryByRole("tablist")).toBeNull();
+    });
   });
 });

@@ -1,10 +1,11 @@
 // The session view: header, transcript, composer, side panel.
 //
 // The transcript is the page and everything else frames it — the header is one
-// band above, the composer one band below, and the panel a column beside. The
-// whole view is one screen-height box that never scrolls itself: only the
-// transcript and the open panel scroll, so the composer stays where the hands
-// are and the header stays readable while a long run streams past.
+// band above, the composer one band below, and the panel a column beside (a
+// sheet over the transcript below `lg`). The whole view is one screen-height
+// box that never scrolls itself: only the transcript and the open panel scroll,
+// so the composer stays where the hands are and the header stays readable
+// while a long run streams past.
 
 import { useCallback } from "react";
 
@@ -56,7 +57,9 @@ export function SessionView({ session, socket }: SessionViewProps) {
           </div>
         )}
 
-        <div className="flex min-h-0 flex-1">
+        {/* `relative`: below `lg` the side panel is a sheet positioned inside
+            this row, over the transcript and the composer. */}
+        <div className="relative flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
             <Transcript sessionId={session.id} loadOlder={older} />
             <Composer sessionId={session.id} />

@@ -37,7 +37,9 @@ import { LaunchSourceTag } from "./LaunchSourceTag";
 import { SessionActions } from "./SessionActions";
 import type { ConnectionStatus, SessionStore } from "./sessionStore";
 import { getSessionStore, useSessionStore } from "./sessionStore";
+import { panelOpenerId, setPanelSheet, usePanelSheet } from "./sessionUi";
 import { useSyncSession } from "./useSyncSession";
+import { Icon, ICON_CLASS } from "../components/icons";
 import { TAP_INLINE, TOUCH_TEXT } from "../components/fieldStyles";
 
 /** A session's spend is often a fraction of a cent. */
@@ -118,6 +120,7 @@ export function SessionHeader({ session, status, onStop }: SessionHeaderProps) {
               path={`/sessions/${session.id}`}
               label="Session link"
             />
+            <PanelsButton sessionId={session.id} />
           </div>
           <SessionActions
             session={session}
@@ -137,6 +140,33 @@ export function SessionHeader({ session, status, onStop }: SessionHeaderProps) {
 
       {branchOpen && <BranchSection session={session} />}
     </header>
+  );
+}
+
+/**
+ * The side panel's opener below `lg`, where the panel is a sheet over the
+ * transcript rather than a column with a rail of its own (`SidePanel`). At
+ * `lg` the rail is the opener and this button is not shown.
+ */
+function PanelsButton({ sessionId }: { sessionId: string }) {
+  const open = usePanelSheet(sessionId);
+  return (
+    <button
+      type="button"
+      id={panelOpenerId(sessionId)}
+      aria-expanded={open}
+      onClick={() => {
+        setPanelSheet(sessionId, !open);
+      }}
+      className={`flex items-center gap-1 font-mono text-xs lg:hidden ${TAP_INLINE} ${
+        open
+          ? "text-console-accent"
+          : "text-console-muted hover:text-console-text"
+      }`}
+    >
+      <Icon.panelOpen aria-hidden="true" className={ICON_CLASS} />
+      Panels
+    </button>
   );
 }
 

@@ -1,7 +1,7 @@
 // The UI state a session has beside its transcript: which rows the reader has
-// opened, and the message a `Resend` handed to the composer
-// (`SPEC.md`, "Frontend", "Transcript rendering" and "Session store
-// lifecycle").
+// opened, the message a `Resend` handed to the composer, and whether the side
+// panel's sheet is open below `lg` (`SPEC.md`, "Frontend", "Transcript
+// rendering", "Session store lifecycle" and "Session side panel").
 //
 // It is here rather than inside the rows because the transcript is virtualised.
 // A row a few screens out of view is unmounted, and a `useState` inside it goes
@@ -39,13 +39,19 @@ interface SessionUi {
    */
   expanded: Record<string, boolean>;
   resend: ResendRequest | null;
+  /**
+   * Whether the side panel is open as a sheet over the transcript. Only a
+   * narrow screen has a sheet; its opener is in the session header and the
+   * sheet in `SidePanel`, so the one flag both read lives here.
+   */
+  panelSheet: boolean;
 }
 
 interface SessionUiState {
   sessions: Record<string, SessionUi>;
 }
 
-const EMPTY: SessionUi = { expanded: {}, resend: null };
+const EMPTY: SessionUi = { expanded: {}, resend: null, panelSheet: false };
 
 const uiStore = createStore<SessionUiState>()(() => ({ sessions: {} }));
 
@@ -130,6 +136,31 @@ export function useResendRequest(sessionId: string): ResendRequest | null {
     uiStore,
     (state) => state.sessions[sessionId]?.resend ?? null,
   );
+}
+
+/** Opens or closes the side panel's sheet; a no-op when it already is. */
+export function setPanelSheet(sessionId: string, open: boolean): void {
+  if ((uiStore.getState().sessions[sessionId]?.panelSheet ?? false) === open) {
+    return;
+  }
+  update(sessionId, (ui) => ({ ...ui, panelSheet: open }));
+}
+
+/** Whether this session's side panel sheet is open. */
+export function usePanelSheet(sessionId: string): boolean {
+  return useStore(
+    uiStore,
+    (state) => state.sessions[sessionId]?.panelSheet ?? false,
+  );
+}
+
+/**
+ * The DOM id of the header's `Panels` button, where focus goes back when the
+ * sheet closes. One session view per page, but keyed anyway so the id says
+ * whose opener it is.
+ */
+export function panelOpenerId(sessionId: string): string {
+  return `panels-opener-${sessionId}`;
 }
 
 /** Test-only: what is held for one session, if anything. */

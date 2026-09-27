@@ -1,11 +1,18 @@
 // The right-hand column of the session view: one registered panel at a time.
 //
 // The transcript is the page; the panel is reference material beside it. At
-// Tailwind's `lg` there is room for both, so it opens; below it the panel is
-// collapsed to a rail and the transcript keeps the width. Crossing the
-// breakpoint — a window resized, a tablet turned — puts the panel back where
-// that width wants it; between crossings the operator's own show or hide
-// stands.
+// Tailwind's `lg` there is room for both, so it opens as a column and collapses
+// to a rail. Below `lg` a column would squeeze the transcript and the composer
+// to nothing, so the panel is a sheet instead: closed, it takes no width at all
+// — its opener is the `Panels` button in the session header — and open, it
+// covers the lower part of the session box over a dimming overlay, as a dialog
+// that Escape, its close button or a tap on the overlay dismisses. One tab
+// strip and one tab panel in either chrome; only the frame around them differs.
+//
+// Crossing the breakpoint — a window resized, a tablet turned — puts the panel
+// back where that width wants it: the column's show or hide goes back to the
+// width, and a sheet is closed. Between crossings the operator's own show or
+// hide stands.
 //
 // Which tab is shown is *derived*, not initialised: the state is the operator's
 // own choice, `null` until they click or arrow onto a tab, and the tab on
@@ -18,16 +25,17 @@
 // the session is being created and `Changes` from the moment there is one
 // (`SPEC.md`, "Frontend", "Session side panel").
 
-import { Suspense, useId, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import { Suspense, useEffect, useId, useRef, useState } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 
+import { TAP } from "../components/fieldStyles";
 import { Icon, ICON_CLASS } from "../components/icons";
 import { LoadingState } from "../components/LoadingState";
 import { LG_QUERY, useMediaQuery } from "../hooks/useMediaQuery";
 import type { Session } from "../types";
+import { panelOpenerId, setPanelSheet, usePanelSheet } from "./sessionUi";
 import { panelsFor } from "./sidePanels";
 import type { SidePanelEntry } from "./sidePanels";
-import { TAP } from "../components/fieldStyles";
 
 export interface SidePanelProps {
   session: Session;
@@ -35,12 +43,16 @@ export interface SidePanelProps {
   panels?: SidePanelEntry[];
 }
 
+const CHROME_BUTTON = `text-console-muted hover:text-console-text p-1 ${TAP}`;
+
 export function SidePanel({ session, panels }: SidePanelProps) {
   const entries = panelsFor(session, panels);
-  // Below `lg` the panel would leave the transcript unreadably narrow.
+  // Below `lg` a column would leave the transcript unreadably narrow, so the
+  // panel is a sheet over it instead.
   const wide = useMediaQuery(LG_QUERY);
-  /** The operator's show or hide; `null` until they choose, and after a
-   *  crossing of the breakpoint, which hands the choice back to the width. */
+  /** The operator's show or hide of the column; `null` until they choose, and
+   *  after a crossing of the breakpoint, which hands the choice back to the
+   *  width. */
   const [choice, setChoice] = useState<boolean | null>(null);
   const [seenWide, setSeenWide] = useState(wide);
   if (seenWide !== wide) {
@@ -48,10 +60,29 @@ export function SidePanel({ session, panels }: SidePanelProps) {
     setChoice(null);
   }
   const open = choice ?? wide;
+  // The sheet's flag is shared with the header's opener, so it lives in the
+  // per-session UI store. A crossing of `lg`, and a fresh mount, closes it:
+  // nothing opened on one side of the breakpoint shows up on the other.
+  const sheetFlag = usePanelSheet(session.id);
+  useEffect(() => {
+    setPanelSheet(session.id, false);
+  }, [wide, session.id]);
+  const sheet = !wide && sheetFlag;
+
   /** The tab the operator selected; `null` until they select one. */
   const [activeId, setActiveId] = useState<string | null>(null);
   const tabs = useRef(new Map<string, HTMLButtonElement>());
+  const dialog = useRef<HTMLDivElement>(null);
   const uid = useId();
+
+  // A dialog takes the focus when it opens: onto the selected tab, the strip's
+  // one tab stop.
+  useEffect(() => {
+    if (!sheet) return;
+    dialog.current
+      ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      ?.focus();
+  }, [sheet]);
 
   // The selected tab, or the first one. `undefined` is the empty case — this
   // session offers no panel at all — and renders nothing, as it always did.
@@ -83,6 +114,115 @@ export function SidePanel({ session, panels }: SidePanelProps) {
     tabs.current.get(next.id)?.focus();
   };
 
+  /** Closes the sheet and hands the focus back to the button that opened it. */
+  const closeSheet = (): void => {
+    setPanelSheet(session.id, false);
+    document.getElementById(panelOpenerId(session.id))?.focus();
+  };
+
+  /** The strip: the tablist, then the chrome's own close control. */
+  const strip = (close: ReactNode): ReactNode => (
+    <div className="border-console-border flex items-center gap-1 border-b px-1">
+      {/* One tab stop for the whole list, moved between tabs with the arrow
+          keys: the roving `tabIndex` of the ARIA tabs pattern. */}
+      <div
+        role="tablist"
+        aria-label="Session panels"
+        className="flex min-w-0 flex-1"
+        onKeyDown={onTabKeyDown}
+      >
+        {entries.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            role="tab"
+            id={tabId(entry.id)}
+            aria-selected={entry.id === active.id}
+            aria-controls={panelId}
+            tabIndex={entry.id === active.id ? 0 : -1}
+            ref={(node) => {
+              if (node === null) {
+                tabs.current.delete(entry.id);
+              } else {
+                tabs.current.set(entry.id, node);
+              }
+            }}
+            onClick={() => {
+              setActiveId(entry.id);
+            }}
+            className={`border-b-2 px-3 py-2 font-mono text-xs ${TAP} ${
+              entry.id === active.id
+                ? "border-console-accent text-console-text"
+                : "text-console-muted hover:text-console-text border-transparent"
+            }`}
+          >
+            {entry.label}
+          </button>
+        ))}
+      </div>
+      {close}
+    </div>
+  );
+
+  // Only the active entry is rendered, so a panel loaded on demand (the
+  // Terminal, whose xterm chunk is fetched when its tab is first opened)
+  // suspends here and nowhere else.
+  const tabPanel = (
+    <div
+      role="tabpanel"
+      id={panelId}
+      aria-labelledby={tabId(active.id)}
+      className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+    >
+      <Suspense fallback={<LoadingState label="Loading panel" />}>
+        <Panel session={session} />
+      </Suspense>
+    </div>
+  );
+
+  if (!wide) {
+    // Closed, the sheet takes no room: its opener is the header's `Panels`.
+    if (!sheet) return null;
+    return (
+      <>
+        {/* The overlay dims the transcript and takes the tap that dismisses
+            the sheet. It is a sibling of the transcript's scroller, not a
+            child, so neither the tap nor a drag on it reaches that scroller's
+            stick-to-bottom handler. */}
+        <div
+          aria-hidden="true"
+          onClick={closeSheet}
+          className="absolute inset-0 z-10 touch-none bg-black/50"
+        />
+        <div
+          ref={dialog}
+          role="dialog"
+          aria-label="Session panels"
+          onKeyDown={(event) => {
+            // A key a panel handled itself — the terminal's own Escape — is
+            // the panel's, not the sheet's.
+            if (event.key !== "Escape" || event.defaultPrevented) return;
+            event.preventDefault();
+            closeSheet();
+          }}
+          className="border-console-border bg-console-surface absolute inset-x-0 bottom-0 z-20 flex h-[85%] flex-col rounded-t-lg border-t shadow-2xl"
+        >
+          {strip(
+            <button
+              type="button"
+              aria-label="Close panels"
+              onClick={closeSheet}
+              className={CHROME_BUTTON}
+            >
+              <Icon.close aria-hidden="true" className={ICON_CLASS} />
+            </button>,
+          )}
+          {tabPanel}
+        </div>
+      </>
+    );
+  }
+
   if (!open) {
     return (
       <aside className="border-console-border flex shrink-0 flex-col items-center gap-2 border-l px-1 py-2">
@@ -92,7 +232,7 @@ export function SidePanel({ session, panels }: SidePanelProps) {
           onClick={() => {
             setChoice(true);
           }}
-          className={`text-console-muted hover:text-console-text p-1 ${TAP}`}
+          className={CHROME_BUTTON}
         >
           <Icon.panelOpen aria-hidden="true" className={ICON_CLASS} />
         </button>
@@ -102,69 +242,19 @@ export function SidePanel({ session, panels }: SidePanelProps) {
 
   return (
     <aside className="border-console-border flex w-96 max-w-full shrink-0 flex-col border-l">
-      <div className="border-console-border flex items-center gap-1 border-b px-1">
-        {/* One tab stop for the whole list, moved between tabs with the arrow
-            keys: the roving `tabIndex` of the ARIA tabs pattern. */}
-        <div
-          role="tablist"
-          aria-label="Session panels"
-          className="flex min-w-0 flex-1"
-          onKeyDown={onTabKeyDown}
-        >
-          {entries.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              role="tab"
-              id={tabId(entry.id)}
-              aria-selected={entry.id === active.id}
-              aria-controls={panelId}
-              tabIndex={entry.id === active.id ? 0 : -1}
-              ref={(node) => {
-                if (node === null) {
-                  tabs.current.delete(entry.id);
-                } else {
-                  tabs.current.set(entry.id, node);
-                }
-              }}
-              onClick={() => {
-                setActiveId(entry.id);
-              }}
-              className={`border-b-2 px-3 py-2 font-mono text-xs ${TAP} ${
-                entry.id === active.id
-                  ? "border-console-accent text-console-text"
-                  : "text-console-muted hover:text-console-text border-transparent"
-              }`}
-            >
-              {entry.label}
-            </button>
-          ))}
-        </div>
+      {strip(
         <button
           type="button"
           aria-label="Hide side panel"
           onClick={() => {
             setChoice(false);
           }}
-          className={`text-console-muted hover:text-console-text p-1 ${TAP}`}
+          className={CHROME_BUTTON}
         >
           <Icon.panelClose aria-hidden="true" className={ICON_CLASS} />
-        </button>
-      </div>
-
-      {/* Only the active entry is rendered, so a panel loaded on demand (the
-          Terminal, whose xterm chunk is fetched when its tab is first opened)
-          suspends here and nowhere else. */}
-      <div
-        role="tabpanel"
-        id={panelId}
-        aria-labelledby={tabId(active.id)}
-        className="min-h-0 flex-1 overflow-y-auto"
-      >
-        <Suspense fallback={<LoadingState label="Loading panel" />}>
-          <Panel session={session} />
-        </Suspense>
-      </div>
+        </button>,
+      )}
+      {tabPanel}
     </aside>
   );
 }

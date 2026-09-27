@@ -48,6 +48,7 @@ import {
   uniqueName,
   waitFor,
   waitForSessionState,
+  expectNoHorizontalOverflow,
 } from "./utils/test-helpers";
 
 // The upstream the `repo` fixture builds for this file.
@@ -726,14 +727,6 @@ test("a project is deleted once its running session has ended", async ({
   expect(gone.status).toBe(404);
 });
 
-/** Whether anything on the page is wider than the viewport. */
-async function pageOverflow(page: Page) {
-  return page.evaluate(() => ({
-    scrollWidth: document.documentElement.scrollWidth,
-    innerWidth: window.innerWidth,
-  }));
-}
-
 // `SPEC.md`, "Frontend", Mobile layout: no route scrolls sideways, and a table
 // is what used to make one. The remote URL is the widest thing either table
 // shows, so the project is cloned from a path far longer than a phone.
@@ -769,20 +762,18 @@ test("the projects and sessions tables fit a phone @mobile", async ({
   // The remote rides under the name below `md` (the first of its two copies;
   // the `Remote` column's is hidden), truncated inside the row.
   await expect(row.getByText(project.remote_url).first()).toBeVisible();
-  let overflow = await pageOverflow(page);
-  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
+  await expectNoHorizontalOverflow(page);
   // Truncated rather than scrolled: the row itself fits, so the table's
   // scroller is the safety net and not what holds the URL.
   const box = await row.boundingBox();
   expect(box).not.toBeNull();
   expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
-    overflow.innerWidth,
+    page.viewportSize()?.width ?? 0,
   );
 
   await page.goto(`/projects/${project.id}`);
   await expect(
     page.getByRole("link", { name: title, exact: true }),
   ).toBeVisible();
-  overflow = await pageOverflow(page);
-  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
+  await expectNoHorizontalOverflow(page);
 });

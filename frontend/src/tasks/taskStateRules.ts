@@ -21,7 +21,8 @@ import type { Task, TaskState, TaskStateKind } from "../types";
 export const STATE_COLUMNS: readonly TableColumn[] = [
   { label: "#", className: "hidden w-8 sm:table-cell" },
   { label: "Name" },
-  { label: "Kind" },
+  // Under the name below `sm` (`StateRow`).
+  { label: "Kind", className: "hidden sm:table-cell" },
   { label: "Auto-merge" },
   { label: "Tasks", className: "hidden text-right sm:table-cell" },
   { label: "Actions", className: "pr-0 text-right" },

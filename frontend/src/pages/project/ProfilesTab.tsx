@@ -388,7 +388,7 @@ function ScheduleText({
 }) {
   return (
     <span
-      className={`text-console-muted block font-mono text-xs whitespace-nowrap ${className ?? ""}`}
+      className={`text-console-muted block font-mono text-xs sm:whitespace-nowrap ${className ?? ""}`}
     >
       <span className="text-console-text">{cron}</span> UTC
       <span className="block">next {formatUtc(next)}</span>

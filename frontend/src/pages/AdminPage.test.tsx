@@ -153,7 +153,9 @@ describe("AdminPage", () => {
 
     const users = await sectionTable("Users");
     expect(within(users).getByText("operator")).toBeDefined();
-    expect(within(users).getByText("admin@example.invalid")).toBeDefined();
+    // In its column from `sm`, and under the name below it, where the column
+    // is hidden and the row keeps its action on screen.
+    expect(within(users).getAllByText("admin@example.invalid")).toHaveLength(2);
     // The signed-in administrator's own row is marked.
     expect(within(users).getByText("(you)")).toBeDefined();
     expect(within(users).getByText("required")).toBeDefined();

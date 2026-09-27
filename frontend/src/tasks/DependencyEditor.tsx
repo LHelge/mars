@@ -107,7 +107,10 @@ export function DependencyEditor({ projectId, task }: DependencyEditorProps) {
         aria-label="Add dependency"
         className="border-console-border bg-console-bg flex flex-col gap-2 rounded border p-2"
       >
-        <div className="grid gap-2 sm:grid-cols-2">
+        {/* `grid-cols-1` rather than the implicit column: an implicit track
+            is as wide as its widest field, and a select is as wide as its
+            longest option, which pushed both fields past a phone's drawer. */}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <label
               htmlFor={`${fieldId}-search`}

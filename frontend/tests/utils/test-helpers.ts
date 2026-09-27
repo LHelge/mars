@@ -64,6 +64,8 @@ export { isMobile, login, loginViaToken, newLoggedInPage } from "./browser";
 
 export { armSocketDrop, dropConnection } from "./browser";
 
+export { expectNoHorizontalOverflow } from "./layout";
+
 export { closeSockets } from "./browser";
 
 export {

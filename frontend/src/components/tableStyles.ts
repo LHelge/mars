@@ -12,7 +12,10 @@
 //
 // - A table is always inside a scroller: `X_SCROLLER`, or `SCROLLER` for a
 //   long one under a sticky header. A table the viewport cannot hold scrolls
-//   inside its own box and never pushes the page sideways.
+//   inside its own box and never pushes the page sideways. The scroller is
+//   `relative`, because it clips an absolutely placed box only when it holds
+//   that box's containing block: a column's `sr-only` label is one, and
+//   without a positioned scroller it escaped the box and widened the page.
 // - A cell that truncates is capped by its column. Automatic table layout
 //   ignores a `max-w` on a `<td>`, so a `truncate` inside an uncapped cell
 //   widens the column to the whole string. Either the truncating block carries
@@ -42,10 +45,10 @@ export const THEAD_STICKY = "bg-console-bg sticky top-0 z-10";
  * finger that meant to scroll the page, so there the table runs the page's
  * length. It scrolls sideways too, explicitly, like `X_SCROLLER`.
  */
-export const SCROLLER = "overflow-x-auto overflow-y-auto sm:max-h-96";
+export const SCROLLER = "relative overflow-x-auto overflow-y-auto sm:max-h-96";
 
 /** The box a wide table scrolls sideways in on a narrow screen. */
-export const X_SCROLLER = "overflow-x-auto";
+export const X_SCROLLER = "relative overflow-x-auto";
 
 /** A header cell. */
 export const HEAD =

@@ -97,7 +97,7 @@ function HeadRows({
           {shortSha(head.commit)}
         </td>
         <td
-          className={`${CELL} text-console-muted font-mono text-xs whitespace-nowrap`}
+          className={`${CELL} text-console-muted font-mono text-xs sm:whitespace-nowrap`}
         >
           {head.upstream === null ? (
             <span title={`The remote had no ${head.name} at the last fetch`}>

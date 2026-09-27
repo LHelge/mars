@@ -7,7 +7,8 @@ import type { TableColumn } from "../tableStyles";
 
 export const USER_COLUMNS: readonly TableColumn[] = [
   { label: "Username" },
-  { label: "Email" },
+  // Under the username below `sm` (`UserRow`).
+  { label: "Email", className: "hidden sm:table-cell" },
   { label: "Admin" },
   { label: "Must change password", className: "hidden sm:table-cell" },
   { label: "Email notices", className: "hidden sm:table-cell" },

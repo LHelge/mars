@@ -166,6 +166,7 @@ export function StateRow({
       ? COUNTS_UNKNOWN
       : deletionReason(state, states, counts);
   const refusalId = `task-state-${state.id}-refusal`;
+  const mergeRefusalId = `task-state-${state.id}-merge-refusal`;
 
   function startRename() {
     setDraft(state.name);
@@ -200,6 +201,15 @@ export function StateRow({
     setConfirmingRemove(false);
     run({ kind: "remove" });
   }
+
+  const kindChip = (
+    <span
+      title={KIND_MEANING[state.kind]}
+      className={`border-console-border bg-console-surface inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-xs ${KIND_COLOUR[state.kind]}`}
+    >
+      {state.kind}
+    </span>
+  );
 
   return (
     <>
@@ -246,16 +256,12 @@ export function StateRow({
               {state.name}
             </span>
           )}
+          {/* Below `sm` the kind rides under the name, so the row keeps its
+              actions on a 360 px screen (`components/tableStyles.ts`). */}
+          <div className="pt-1 sm:hidden">{kindChip}</div>
         </td>
 
-        <td className={CELL}>
-          <span
-            title={KIND_MEANING[state.kind]}
-            className={`border-console-border bg-console-surface inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-xs ${KIND_COLOUR[state.kind]}`}
-          >
-            {state.kind}
-          </span>
-        </td>
+        <td className={`${CELL} hidden sm:table-cell`}>{kindChip}</td>
 
         <td className={CELL}>
           {state.kind !== "queue" ? (
@@ -273,7 +279,7 @@ export function StateRow({
             >
               <label
                 className={`text-console-text flex items-center gap-1.5 self-center font-mono text-xs ${CHECK_LABEL}`}
-                title={mergeRefusal ?? autoMergeMeaning(state.conflict_state)}
+                title={autoMergeMeaning(state.conflict_state)}
               >
                 <input
                   type="checkbox"
@@ -290,10 +296,22 @@ export function StateRow({
                     );
                   }}
                   disabled={busy || mergeRefusal !== null}
+                  aria-describedby={
+                    mergeRefusal === null ? undefined : mergeRefusalId
+                  }
                   className={CHECK}
                 />
                 Auto-merge
               </label>
+
+              {/* Why the toggle is shut, as text beside it rather than only
+                  in a tooltip a touch screen cannot show (`SPEC.md`,
+                  "Frontend", "Mobile layout"). */}
+              {mergeRefusal !== null && (
+                <ControlNote id={mergeRefusalId} className="basis-full">
+                  {mergeRefusal}
+                </ControlNote>
+              )}
 
               {shownMerge.autoMerge && (
                 <FieldShell

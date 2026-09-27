@@ -32,6 +32,7 @@ import type { SessionTracker } from "./utils/fixtures";
 import {
   commitInSessionWorkClone,
   defaultProfile,
+  expectNoHorizontalOverflow,
   gitRevParse,
   isMobile,
   loginViaToken,
@@ -630,11 +631,7 @@ test("an edit diff is unified on a phone and the transcript scrolls as one @mobi
   await expect(report).toHaveCount(2);
   expect(await nestedScrollers(report)).toEqual([]);
 
-  const overflow = await page.evaluate(() => ({
-    scrollWidth: document.documentElement.scrollWidth,
-    innerWidth: window.innerWidth,
-  }));
-  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
+  await expectNoHorizontalOverflow(page);
 });
 
 test("stop parks the session and shows stopped", async ({

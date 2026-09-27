@@ -141,7 +141,7 @@ export function SecretRow({
   return (
     <>
       <tr className={ROW}>
-        <td className={`${CELL} font-mono text-xs`}>
+        <td className={`${CELL} font-mono text-xs wrap-anywhere`}>
           <span className="text-console-text">{secret.name}</span>
           {isGitCredential && (
             <span className="text-console-muted block max-w-xs font-sans text-xs">

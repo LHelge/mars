@@ -120,10 +120,19 @@ export function UserRow({ user, isSelf }: UserRowProps) {
     <>
       <tr className={ROW}>
         <td className={`${CELL} text-console-text font-mono`}>
-          {user.username}
+          <span>{user.username}</span>
           {isSelf && <span className="text-console-muted"> (you)</span>}
+          {/* Below `sm` the address rides under the name, so the row keeps
+              its one action on screen (`components/tableStyles.ts`). */}
+          <span className="text-console-muted block font-sans text-xs break-all sm:hidden">
+            {user.email}
+          </span>
         </td>
-        <td className={`${CELL} text-console-muted min-w-0`}>{user.email}</td>
+        <td
+          className={`${CELL} text-console-muted hidden min-w-0 sm:table-cell`}
+        >
+          {user.email}
+        </td>
         <td className={CELL}>
           <input
             type="checkbox"

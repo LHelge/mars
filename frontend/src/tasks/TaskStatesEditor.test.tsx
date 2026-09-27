@@ -129,9 +129,12 @@ describe("TaskStatesEditor", () => {
       "done",
     ]);
 
-    expect(within(await row("ready")).getByText("queue")).toBeTruthy();
+    // In its column from `sm`, and under the name below it.
+    expect(within(await row("ready")).getAllByText("queue")).toHaveLength(2);
     expect(within(await row("ready")).getByText("2")).toBeTruthy();
-    expect(within(await row("needs_human")).getByText("human")).toBeTruthy();
+    expect(within(await row("needs_human")).getAllByText("human")).toHaveLength(
+      2,
+    );
   });
 
   it("disables removal with the reason for each of the four refusals", async () => {
@@ -357,6 +360,25 @@ describe("TaskStatesEditor", () => {
       auto_merge: true,
       conflict_state: "ready",
     });
+  });
+
+  it("says beside a shut auto-merge toggle why it is shut", async () => {
+    // One queue state: nowhere to send a conflict.
+    vi.mocked(listTaskStates).mockResolvedValue([
+      READY,
+      state("needs_human", "human", 1),
+      state("done", "terminal", 2),
+    ]);
+    renderEditor();
+
+    const ready = await row("ready");
+    const toggle = within(ready).getByRole("checkbox", { name: "Auto-merge" });
+    expect(toggle.hasAttribute("disabled")).toBe(true);
+    // Text on screen, read with the toggle, and not only a tooltip.
+    const reason = within(ready).getByText(
+      "Auto-merge needs another queue state to send conflicts to",
+    );
+    expect(toggle.getAttribute("aria-describedby")).toBe(reason.id);
   });
 
   it("shows an auto-merge refusal in the row's words", async () => {

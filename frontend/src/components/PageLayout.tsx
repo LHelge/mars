@@ -59,8 +59,12 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
     <div className="flex min-h-full flex-col">
       <header className="border-console-border bg-console-surface border-b">
         {/* The row scrolls only as a safety net, for a screen narrower than
-            the phones `SPEC.md`, "Frontend", Mobile layout, is written for. */}
-        <div className="mx-auto flex max-w-7xl items-center gap-4 overflow-x-auto px-4 max-sm:gap-2">
+            the phones `SPEC.md`, "Frontend", Mobile layout, is written for —
+            an administrator's seven touch boxes below about 400 px. It is
+            `relative` so that it clips what it scrolls: the labels' `sr-only`
+            spans are absolutely placed, and without a positioned ancestor
+            inside the row one past its edge widened the whole page. */}
+        <div className="relative mx-auto flex max-w-7xl items-center gap-4 overflow-x-auto px-4 max-sm:gap-2">
           <span className="text-console-text shrink-0 font-mono text-sm tracking-[0.2em] lowercase max-sm:tracking-normal">
             mars
             <span className="text-console-accent">.</span>

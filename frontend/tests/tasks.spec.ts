@@ -35,6 +35,7 @@ import {
   taskCardTestId,
   taskColumnTestId,
   uniqueName,
+  expectNoHorizontalOverflow,
 } from "./utils/test-helpers";
 
 /** `docs/data-model.md`, `task_states`: what every project is created with. */
@@ -431,11 +432,7 @@ test("a phone swipes the board one column at a time and a tapped Close keeps a d
   );
 
   // Nothing on the board is wider than the phone, the search field included.
-  const overflow = await page.evaluate(() => ({
-    scrollWidth: document.documentElement.scrollWidth,
-    innerWidth: window.innerWidth,
-  }));
-  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
+  await expectNoHorizontalOverflow(page);
 
   await picker.getByRole("button", { name: "backlog (1)" }).tap();
   const panel = await openCard(page, 1);

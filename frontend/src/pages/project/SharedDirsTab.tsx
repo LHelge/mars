@@ -200,7 +200,9 @@ function SharedDirRow({ projectId, dir, live }: SharedDirRowProps) {
           {dir.name}
         </td>
 
-        <td className={`${CELL} text-console-text font-mono text-xs`}>
+        <td
+          className={`${CELL} text-console-text font-mono text-xs wrap-anywhere`}
+        >
           {dir.container_path}
         </td>
 

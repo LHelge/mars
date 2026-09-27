@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { TableHead } from "./TableHead";
-import { SCROLLER, type TableColumn } from "./tableStyles";
+import { SCROLLER, X_SCROLLER, type TableColumn } from "./tableStyles";
 
 afterEach(cleanup);
 
@@ -53,5 +53,12 @@ describe("SCROLLER", () => {
     expect(classes).toContain("overflow-x-auto");
     expect(classes).toContain("sm:max-h-96");
     expect(classes).not.toContain("max-h-96");
+  });
+
+  // What it scrolls it also clips: an `sr-only` header label is absolutely
+  // placed, and escapes a scroller that is not its containing block.
+  it("is the containing block of what it scrolls, as X_SCROLLER is", () => {
+    expect(SCROLLER.split(" ")).toContain("relative");
+    expect(X_SCROLLER.split(" ")).toContain("relative");
   });
 });

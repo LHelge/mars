@@ -1,10 +1,10 @@
 ---
 id: b9n9c
 title: "Task board and drawer on a phone: one column per swipe, a column picker, and a draft guard on Close"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-23T15:58:18.162517672Z"
-updated: "2026-09-27T15:47:28.151492639Z"
+updated: "2026-09-27T16:47:53.645371605Z"
 tags:
   - frontend
   - mobile

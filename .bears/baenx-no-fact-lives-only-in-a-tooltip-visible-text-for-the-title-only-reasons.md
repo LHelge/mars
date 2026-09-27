@@ -1,10 +1,10 @@
 ---
 id: baenx
 title: "No fact lives only in a tooltip: visible text for the title-only reasons"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-23T15:58:18.116439679Z"
-updated: "2026-09-23T15:58:57.238789654Z"
+updated: "2026-09-27T16:47:53.710098312Z"
 tags:
   - frontend
   - mobile
@@ -13,6 +13,7 @@ depends_on:
   - cdkxp
   - a48hj
 parent: yymt7
+attempts: 1
 ---
 
 ## Summary

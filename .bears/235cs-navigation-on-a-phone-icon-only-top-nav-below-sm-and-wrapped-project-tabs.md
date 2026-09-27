@@ -1,10 +1,10 @@
 ---
 id: "235cs"
 title: "Navigation on a phone: icon-only top nav below sm and wrapped project tabs"
-status: in_progress
+status: done
 priority: P2
 created: "2026-09-23T15:58:18.139418140Z"
-updated: "2026-09-27T15:47:28.123357910Z"
+updated: "2026-09-27T16:47:53.599273098Z"
 tags:
   - frontend
   - mobile

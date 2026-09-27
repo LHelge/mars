@@ -1,10 +1,10 @@
 ---
 id: zzrt4
 title: Session header folds on a phone and the session box fits the visual viewport
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-23T15:58:18.044207558Z"
-updated: "2026-09-23T15:58:57.136335835Z"
+updated: "2026-09-27T16:47:53.674406704Z"
 tags:
   - frontend
   - mobile
@@ -13,6 +13,7 @@ depends_on:
   - cdkxp
   - yaxpf
 parent: yymt7
+attempts: 1
 ---
 
 ## Summary

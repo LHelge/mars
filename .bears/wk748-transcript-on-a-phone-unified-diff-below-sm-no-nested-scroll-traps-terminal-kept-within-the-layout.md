@@ -1,10 +1,10 @@
 ---
 id: wk748
 title: "Transcript on a phone: unified diff below sm, no nested scroll traps, terminal kept within the layout"
-status: open
+status: in_progress
 priority: P3
 created: "2026-09-23T15:58:18.185824361Z"
-updated: "2026-09-23T15:58:57.307408582Z"
+updated: "2026-09-27T16:47:53.753789560Z"
 tags:
   - frontend
   - mobile
@@ -13,6 +13,7 @@ depends_on:
   - cdkxp
   - a48hj
 parent: yymt7
+attempts: 1
 ---
 
 ## Summary

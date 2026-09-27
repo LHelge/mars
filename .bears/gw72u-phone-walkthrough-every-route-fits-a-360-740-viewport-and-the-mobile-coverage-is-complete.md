@@ -1,10 +1,10 @@
 ---
 id: gw72u
 title: "Phone walkthrough: every route fits a 360×740 viewport, and the mobile coverage is complete"
-status: open
+status: in_progress
 priority: P1
 created: "2026-09-23T15:58:57.112402674Z"
-updated: "2026-09-23T15:58:57.112402674Z"
+updated: "2026-09-27T17:37:10.884460624Z"
 tags:
   - frontend
   - mobile
@@ -22,6 +22,7 @@ depends_on:
   - b9n9c
   - wk748
 parent: yymt7
+attempts: 1
 ---
 
 ## Summary

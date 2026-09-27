@@ -17,7 +17,7 @@ export const PRIORITY_COLOUR: Record<TaskPriority, string> = {
   3: "text-console-muted",
 };
 
-/** What `P0`..`P3` mean, as a tooltip; the board writes the number only. */
+/** What `P0`..`P3` mean; the board writes the number only. */
 export const PRIORITY_MEANING: Record<TaskPriority, string> = {
   0: "P0 — critical",
   1: "P1 — high",
@@ -31,6 +31,41 @@ export const PRIORITY_MEANING: Record<TaskPriority, string> = {
  * priority are the same list (`parseTaskPriority` reads the same one back).
  */
 export const PRIORITIES: readonly TaskPriority[] = TASK_PRIORITIES;
+
+/**
+ * What each of a card's chips means, as its accessible name (`TaskCard`,
+ * `role="img"` over the short text) and as the board's legend reads it
+ * (`BoardLegend`). A chip's text is terse — `↑2`, `P1`, `round 2/5` — and a
+ * tooltip is no place for the rest (`SPEC.md`, "Frontend", "Mobile layout").
+ */
+export const chipMeaning = {
+  priority: (priority: TaskPriority): string =>
+    `Priority ${PRIORITY_MEANING[priority]}`,
+  child: (parentNumber: number | undefined): string =>
+    parentNumber === undefined
+      ? "Child of another task"
+      : `Child of task #${String(parentNumber)}`,
+  blocked: "Blocked: waiting on open children or unsatisfied dependencies",
+  dependencies: (blockedBy: number, blocking: number): string => {
+    const parts: string[] = [];
+    if (blockedBy > 0) parts.push(`Blocked by ${count(blockedBy, "task")}`);
+    if (blocking > 0) parts.push(`blocks ${count(blocking, "task")}`);
+    const sentence = parts.join("; ");
+    return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+  },
+  attempts: (attempts: number): string =>
+    `${count(attempts, "session")} picked this task up`,
+  round: (rounds: number, maxRounds: number | undefined): string =>
+    maxRounds === undefined
+      ? `Revision round ${String(rounds)}`
+      : `Revision round ${String(rounds)} of ${String(maxRounds)}`,
+  assignee: (username: string): string => `Assigned to ${username}`,
+  label: (label: string): string => `Label ${label}`,
+} as const;
+
+function count(n: number, noun: string): string {
+  return `${String(n)} ${noun}${n === 1 ? "" : "s"}`;
+}
 
 /** One piece of task metadata: a bordered, monospace micro-tag. */
 export const CHIP =

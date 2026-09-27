@@ -142,11 +142,12 @@ describe("TaskStatesEditor", () => {
       name: "Remove",
     });
     expect(human.hasAttribute("disabled")).toBe(true);
-    expect(
-      within(await row("needs_human")).getByText(
-        "The human state cannot be deleted",
-      ),
-    ).toBeTruthy();
+    // Said as text at every width, and read with the button it shuts.
+    const humanReason = within(await row("needs_human")).getByText(
+      "The human state cannot be deleted",
+    );
+    expect(humanReason.className).not.toContain("hidden");
+    expect(human.getAttribute("aria-describedby")).toBe(humanReason.id);
 
     // `done` is the only terminal state.
     expect(

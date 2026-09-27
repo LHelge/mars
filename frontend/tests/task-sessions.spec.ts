@@ -48,6 +48,8 @@ import {
   loginViaToken,
   logOffset,
   reveal,
+  setProfileSecrets,
+  setProjectSecret,
   sleep,
   taskCardTestId,
   transcript,
@@ -671,4 +673,42 @@ test("the dashboard lists running and parked sessions across projects", async ({
       name: runningTitle,
     }),
   ).toHaveCount(0, { timeout: LIVE_TIMEOUT });
+});
+
+// --- no fact only in a tooltip ----------------------------------------------
+
+test("a failed session's reason is visible on a phone without a tooltip @mobile", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}) => {
+  await loginViaToken(context, user);
+  // The stub's failing run: one turn, then exit 1, which the orchestrator
+  // records as `failed` with the reason in `error` (`ARCHITECTURE.md`,
+  // "Session lifecycle").
+  await setProjectSecret(api, project.id, "MARS_STUB_EXIT_AFTER_TURNS", "1");
+  await setProjectSecret(api, project.id, "MARS_STUB_EXIT_CODE", "1");
+  await setProfileSecrets(api, project.id, [
+    "MARS_STUB_EXIT_AFTER_TURNS",
+    "MARS_STUB_EXIT_CODE",
+  ]);
+  const session = await sessions.launch(api, project.id, {
+    message: "fail please",
+  });
+  const failed = await waitForSessionState(api, session.id, "failed", 90_000);
+  const reason = String(failed.error);
+  expect(failed.error).not.toBeNull();
+
+  await page.goto(`/projects/${project.id}?tab=sessions`);
+  const row = page.getByRole("row").filter({
+    has: page.getByRole("link", { name: String(failed.title) }),
+  });
+  // Text on the row, on a phone, with nothing to hover (`SPEC.md`,
+  // "Frontend", "Mobile layout").
+  const text = row.getByText(reason);
+  await expect(text).toBeVisible();
+  await expect(text).not.toHaveAttribute("title");
 });

@@ -15,6 +15,11 @@
 // and P3 are set in the muted tone, because "ordinary" is the default and
 // should not compete for the eye.
 //
+// Every chip is named by what it means (`chipMeaning` in `taskChrome.ts`),
+// as `role="img"` with an `aria-label`, and keeps its short text for the eye;
+// the board's legend line says the same once for a sighted reader, so no
+// meaning lives only in a tooltip (`SPEC.md`, "Frontend", "Mobile layout").
+//
 // The card is memoised on task identity. The store installs a fresh snapshot
 // on every refresh, so this only pays off for the renders a sibling causes —
 // the search field, the drawer opening — but those are the frequent ones.
@@ -29,6 +34,7 @@ import { AuthorBranchLine } from "./AuthorBranchLine";
 import { taskPath } from "./taskLink";
 import {
   CHIP,
+  chipMeaning,
   PRIORITY_COLOUR,
   PRIORITY_MEANING,
   roundLabel,
@@ -75,6 +81,8 @@ function TaskCardView({ task, selected, maxRounds }: TaskCardProps) {
             #{task.number}
           </span>
           <span
+            role="img"
+            aria-label={chipMeaning.priority(task.priority)}
             title={PRIORITY_MEANING[task.priority]}
             className={`shrink-0 font-mono text-xs ${PRIORITY_COLOUR[task.priority]}`}
           >
@@ -97,6 +105,8 @@ function TaskCardView({ task, selected, maxRounds }: TaskCardProps) {
         <div className="mt-1.5 flex flex-wrap items-center gap-1">
           {task.parent_id !== null && (
             <span
+              role="img"
+              aria-label={chipMeaning.child(parent?.number)}
               className={`${CHIP} text-console-muted`}
               title="This task is a child of another task"
             >
@@ -106,6 +116,8 @@ function TaskCardView({ task, selected, maxRounds }: TaskCardProps) {
 
           {task.blocked && (
             <span
+              role="img"
+              aria-label={chipMeaning.blocked}
               className={`${CHIP} border-state-failed/60 text-state-failed`}
               title="Waiting on open children or unsatisfied dependencies"
             >
@@ -115,8 +127,10 @@ function TaskCardView({ task, selected, maxRounds }: TaskCardProps) {
 
           {(blockedBy > 0 || blocking > 0) && (
             <span
+              role="img"
+              aria-label={chipMeaning.dependencies(blockedBy, blocking)}
               className={`${CHIP} text-console-muted`}
-              title={dependencyTitle(blockedBy, blocking)}
+              title={chipMeaning.dependencies(blockedBy, blocking)}
             >
               {blockedBy > 0 && <span>↑{blockedBy}</span>}
               {blockedBy > 0 && blocking > 0 && <span>&nbsp;</span>}
@@ -126,6 +140,8 @@ function TaskCardView({ task, selected, maxRounds }: TaskCardProps) {
 
           {task.attempts > 1 && (
             <span
+              role="img"
+              aria-label={chipMeaning.attempts(task.attempts)}
               className={`${CHIP} text-console-muted`}
               title="Sessions that have picked this task up"
             >
@@ -135,6 +151,8 @@ function TaskCardView({ task, selected, maxRounds }: TaskCardProps) {
 
           {round !== null && (
             <span
+              role="img"
+              aria-label={chipMeaning.round(task.rounds, maxRounds)}
               className={`${CHIP} text-console-muted`}
               title="Revision rounds since the task last left the human state; at the limit a send-back escalates it instead"
             >
@@ -145,7 +163,12 @@ function TaskCardView({ task, selected, maxRounds }: TaskCardProps) {
           <Assignee id={task.assignee_user_id} />
 
           {task.labels.map((label) => (
-            <span key={label} className={`${CHIP} text-console-muted`}>
+            <span
+              key={label}
+              role="img"
+              aria-label={chipMeaning.label(label)}
+              className={`${CHIP} text-console-muted`}
+            >
               {label}
             </span>
           ))}
@@ -181,13 +204,6 @@ function selectNothing(): undefined {
   return undefined;
 }
 
-function dependencyTitle(blockedBy: number, blocking: number): string {
-  const parts: string[] = [];
-  if (blockedBy > 0) parts.push(`Blocked by ${String(blockedBy)}`);
-  if (blocking > 0) parts.push(`Blocks ${String(blocking)}`);
-  return parts.join("; ");
-}
-
 /** The assignee's username, shared with the drawer (`useUsername`). */
 function Assignee({ id }: { id: string | null }) {
   const username = useUsername(id);
@@ -195,7 +211,12 @@ function Assignee({ id }: { id: string | null }) {
   if (username === null) return null;
 
   return (
-    <span className={`${CHIP} text-console-muted`} title="Assignee">
+    <span
+      role="img"
+      aria-label={chipMeaning.assignee(username)}
+      className={`${CHIP} text-console-muted`}
+      title="Assignee"
+    >
       @{username}
     </span>
   );

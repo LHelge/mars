@@ -1,9 +1,10 @@
 // The project's identity and its project-level actions, in one dense row
 // (`SPEC.md`, "User-facing features", Projects; "Projects" table).
 //
-// `Fetch now` says on its title what a fetch moves: the upstream-tracking
-// `origin/*` refs and tags, never an integration head (`ARCHITECTURE.md`, "Git
-// model", Ref ownership).
+// `Fetch now` says what a fetch moves — the upstream-tracking `origin/*` refs
+// and tags, never an integration head (`ARCHITECTURE.md`, "Git model", Ref
+// ownership) — as `into origin/* only` beside the `fetched` time the button
+// changes, and in full as its title and its screen-reader description.
 //
 // `Fetch now` and `Retry clone` both answer the updated `Project`, so they
 // write it straight into the page's query cache instead of asking for it
@@ -99,6 +100,8 @@ export function ProjectHeader({
   });
 
   const busy = fetchNow.isPending || retry.isPending || remove.isPending;
+  const fetchNoteId = `project-${project.id}-fetch-note`;
+  const fetchMeaning = `Fetch the remote into origin/*; never moves ${project.default_branch ?? "the default branch"} or any other Mars branch.`;
 
   return (
     <section className="space-y-2">
@@ -136,6 +139,16 @@ export function ProjectHeader({
           <span className={VALUE}>
             {formatRelative(project.last_fetched_at)}
           </span>
+          {/* What a fetch moves, said where its time is: only the
+              upstream-tracking refs. The full sentence is the button's
+              description. */}
+          <span aria-hidden="true" className={LABEL}>
+            {" "}
+            into origin/* only
+          </span>
+          <span id={fetchNoteId} className="sr-only">
+            {fetchMeaning}
+          </span>
         </span>
 
         <span>
@@ -157,7 +170,8 @@ export function ProjectHeader({
             loading={fetchNow.isPending}
             icon={Icon.fetch}
             disabled={busy}
-            title={`Fetch the remote into origin/*; never moves ${project.default_branch ?? "the default branch"} or any other Mars branch.`}
+            title={fetchMeaning}
+            aria-describedby={fetchNoteId}
             onClick={() => {
               setError(null);
               fetchNow.mutate();

@@ -153,22 +153,33 @@ function BranchRows({
           {shortSha(row.commit)}
         </td>
         <td className={`${CELL} font-mono text-xs whitespace-nowrap`}>
-          <span
-            className={
-              row.ahead > 0 ? "text-state-running" : "text-console-muted"
-            }
-            title={`${String(row.ahead)} ahead of ${row.base}`}
-          >
-            +{row.ahead}
+          {/* The counts are for the eye, each titled; a screen reader gets
+              one sentence, and the base they count against is text under
+              them, since no other column shows it. */}
+          <span aria-hidden="true">
+            <span
+              className={
+                row.ahead > 0 ? "text-state-running" : "text-console-muted"
+              }
+              title={`${String(row.ahead)} ahead of ${row.base}`}
+            >
+              +{row.ahead}
+            </span>
+            <span className="text-console-muted"> / </span>
+            <span
+              className={
+                row.behind > 0 ? "text-state-parked" : "text-console-muted"
+              }
+              title={`${String(row.behind)} behind ${row.base}`}
+            >
+              −{row.behind}
+            </span>
+            <span className="text-console-muted block text-[0.6875rem]">
+              vs {row.base}
+            </span>
           </span>
-          <span className="text-console-muted"> / </span>
-          <span
-            className={
-              row.behind > 0 ? "text-state-parked" : "text-console-muted"
-            }
-            title={`${String(row.behind)} behind ${row.base}`}
-          >
-            −{row.behind}
+          <span className="sr-only">
+            {row.ahead} ahead of {row.base}, {row.behind} behind
           </span>
         </td>
         <td

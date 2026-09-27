@@ -28,6 +28,7 @@ import type { User } from "../../types";
 import { formatRelative } from "../../utils/format";
 import { Alert } from "../Alert";
 import { ConfirmPanel } from "../ConfirmPanel";
+import { ControlNote } from "../ControlNote";
 import { SubmitButton } from "../SubmitButton";
 import { CELL, ROW, SPAN_CELL_BARE } from "../tableStyles";
 import { USER_COLUMNS } from "./columns";
@@ -90,6 +91,7 @@ export function UserRow({ user, isSelf }: UserRowProps) {
   });
 
   const busy = toggleAdmin.isPending || remove.isPending;
+  const selfNoteId = `user-${user.id}-self-delete`;
   const failure = toggleAdmin.error ?? remove.error;
 
   /** Stepping down is the only toggle worth asking about. */
@@ -150,12 +152,19 @@ export function UserRow({ user, isSelf }: UserRowProps) {
             loading={remove.isPending}
             disabled={isSelf || busy}
             title={isSelf ? SELF_DELETE_HINT : undefined}
+            aria-describedby={isSelf ? selfNoteId : undefined}
             onClick={() => {
               setConfirming("delete");
             }}
           >
             Delete
           </SubmitButton>
+          {/* Why the button is shut, as text: a phone has no tooltip. */}
+          {isSelf && (
+            <ControlNote id={selfNoteId} className="pt-1">
+              {SELF_DELETE_HINT}
+            </ControlNote>
+          )}
         </td>
       </tr>
 

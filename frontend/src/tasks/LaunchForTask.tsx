@@ -26,11 +26,12 @@
 // without navigating (`launch/useLaunchSession.ts`).
 
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { Alert } from "../components/Alert";
+import { ControlNote } from "../components/ControlNote";
 import { FieldShell } from "../components/FieldShell";
 import { FIELD } from "../components/fieldStyles";
 import { Icon } from "../components/icons";
@@ -105,6 +106,11 @@ export function LaunchForTask({ projectId, task }: LaunchForTaskProps) {
   });
 
   const reason = launchDisabledReason(task, stateKind, project.data?.status);
+  const reasonId = useId();
+  // Until the project has been read the toggles are shut for a reason that is
+  // not yet known, and "Project is not ready" would flash on every drawer
+  // opened: the line waits for the read, the disabled buttons do not.
+  const reasonShown = reason !== null && !project.isPending;
   const open = reason === null && kind !== null;
 
   const rows =
@@ -177,6 +183,7 @@ export function LaunchForTask({ projectId, task }: LaunchForTaskProps) {
               // answer describing a form that is no longer there.
               disabled={reason !== null || launch.loading}
               title={reason ?? undefined}
+              aria-describedby={reasonShown ? reasonId : undefined}
               aria-expanded={kind === candidate}
               onClick={() => {
                 toggle(candidate);
@@ -188,6 +195,9 @@ export function LaunchForTask({ projectId, task }: LaunchForTaskProps) {
           </span>
         ))}
       </div>
+      {/* The reason is read, not hovered: a phone has no tooltip (`SPEC.md`,
+          "Frontend", "Mobile layout"). */}
+      {reasonShown && <ControlNote id={reasonId}>{reason}</ControlNote>}
 
       {open && kind !== null && (
         <form

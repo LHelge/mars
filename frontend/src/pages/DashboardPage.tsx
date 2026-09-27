@@ -234,10 +234,9 @@ function TaskRows({
                 P{task.priority}
               </td>
               <td className={`${CELL} text-console-muted hidden lg:table-cell`}>
-                <span
-                  className="block max-w-[28ch] truncate"
-                  title={task.needs_human_reason ?? undefined}
-                >
+                {/* Two lines of the reason rather than one truncated behind a
+                    tooltip; the whole of it is on the task, one tap away. */}
+                <span className="line-clamp-2 block max-w-[40ch]">
                   {task.needs_human_reason ?? PLACEHOLDER}
                 </span>
               </td>

@@ -284,6 +284,24 @@ afterEach(() => {
 });
 
 describe("LaunchForTask", () => {
+  it("says why the launch is shut, as text under the buttons", async () => {
+    vi.mocked(getProject).mockResolvedValue({
+      ...project(),
+      status: "cloning",
+    });
+    mount();
+
+    // Text, not only a tooltip (`SPEC.md`, "Frontend", "Mobile layout"), and
+    // read with each button it shuts.
+    const note = await screen.findByText("Project is not ready");
+    expect(note.tagName).toBe("P");
+    for (const name of ["Open in session", "Run once"]) {
+      const toggle = screen.getByRole<HTMLButtonElement>("button", { name });
+      expect(toggle.disabled).toBe(true);
+      expect(toggle.getAttribute("aria-describedby")).toBe(note.id);
+    }
+  });
+
   it("offers the seeded set a sensible launch for a task in ready", async () => {
     // A new project's profiles, in the order the API returns them.
     vi.mocked(listProfiles).mockResolvedValue([

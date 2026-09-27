@@ -28,6 +28,7 @@ import { Link } from "react-router";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingState } from "../../components/LoadingState";
 import { QueryErrorAlert } from "../../components/QueryErrorAlert";
+import { SessionFailureReason } from "../../components/SessionFailureReason";
 import { SessionStatePill } from "../../components/SessionStatePill";
 import { TableHead } from "../../components/TableHead";
 import {
@@ -232,10 +233,9 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
                     <Fragment key={session.id}>
                       <tr className={ROW}>
                         <td className={CELL}>
-                          <SessionStatePill
-                            state={session.state}
-                            error={session.error}
-                          />
+                          {/* The pill carries no error here: the reason is
+                              text in the session's cell beside it. */}
+                          <SessionStatePill state={session.state} />
                         </td>
                         <td className={`${CELL} min-w-0`}>
                           {/* Who launched it, where its name is: a row with no
@@ -254,6 +254,13 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
                             </Link>
                             <LaunchSourceTag source={session.launch_source} />
                           </span>
+                          {/* Why it failed, as text on the row, at every
+                              width (`SPEC.md`, "Frontend", "Mobile layout"). */}
+                          {session.state === "failed" &&
+                            session.error !== null &&
+                            session.error !== "" && (
+                              <SessionFailureReason error={session.error} />
+                            )}
                           {error !== null && (
                             <p className="text-state-failed text-xs">{error}</p>
                           )}

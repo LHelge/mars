@@ -20,6 +20,7 @@ import type { FormEvent } from "react";
 
 import { Alert } from "../components/Alert";
 import { ConfirmPanel } from "../components/ConfirmPanel";
+import { ControlNote } from "../components/ControlNote";
 import { FieldShell } from "../components/FieldShell";
 import {
   CHECK,
@@ -164,6 +165,7 @@ export function StateRow({
     counts === undefined
       ? COUNTS_UNKNOWN
       : deletionReason(state, states, counts);
+  const refusalId = `task-state-${state.id}-refusal`;
 
   function startRename() {
     setDraft(state.name);
@@ -384,15 +386,22 @@ export function StateRow({
               </SubmitButton>
             )}
 
+            {/* Why `Remove` is shut, at every width: on a narrow row it takes
+                a line of its own above the buttons rather than hiding
+                (`SPEC.md`, "Frontend", "Mobile layout"). */}
             {refusal !== null && (
-              <span className="text-console-muted hidden text-xs md:inline">
+              <ControlNote
+                id={refusalId}
+                className="basis-full text-right md:basis-auto"
+              >
                 {refusal}
-              </span>
+              </ControlNote>
             )}
             <span title={refusal ?? undefined}>
               <SubmitButton
                 type="button"
                 variant="danger"
+                aria-describedby={refusal === null ? undefined : refusalId}
                 loading={act.loading && acting === "remove"}
                 disabled={busy || refusal !== null || confirmingRemove}
                 onClick={() => {

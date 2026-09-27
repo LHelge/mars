@@ -100,10 +100,7 @@ export function ProjectRow({ project }: ProjectRowProps) {
         </div>
         {/* Below `md` the remote rides under the name rather than disappearing
             with its column. */}
-        <span
-          className="text-console-muted block truncate font-mono text-xs md:hidden"
-          title={project.remote_url}
-        >
+        <span className="text-console-muted block font-mono text-xs break-all md:hidden">
           {project.remote_url}
         </span>
       </td>
@@ -111,12 +108,10 @@ export function ProjectRow({ project }: ProjectRowProps) {
       <td
         className={`${CELL} text-console-muted hidden font-mono text-xs md:table-cell`}
       >
-        {/* The cap is on the block that truncates: a `max-w` on the `<td>`
-            is ignored by automatic table layout. */}
-        <span
-          className="block max-w-[44ch] truncate"
-          title={project.remote_url}
-        >
+        {/* The cap is on the block that wraps: a `max-w` on the `<td>` is
+            ignored by automatic table layout. The whole URL is shown, broken
+            anywhere, rather than truncated behind a tooltip. */}
+        <span className="block max-w-[44ch] break-all">
           {project.remote_url}
         </span>
       </td>

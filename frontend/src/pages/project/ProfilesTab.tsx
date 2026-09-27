@@ -31,7 +31,7 @@ import { projectQueries } from "../../services/queryOptions";
 import type { Profile } from "../../types";
 import { ProfileEditor } from "./ProfileEditor";
 import { errorMessage } from "../../services/errorMessage";
-import { formatUtc } from "../../utils/format";
+import { formatUtc, PLACEHOLDER } from "../../utils/format";
 import { PROFILE_AUTOMATION } from "../../utils/testIds";
 import type { ProjectTabPanelProps } from "./tabs";
 
@@ -42,6 +42,7 @@ const COLUMNS: readonly TableColumn[] = [
   { label: "Image", className: "hidden lg:table-cell" },
   { label: "Serves", className: "hidden sm:table-cell" },
   { label: "Automation" },
+  { label: "Schedule", className: "hidden lg:table-cell" },
   { label: "Idle timeout", className: "hidden md:table-cell" },
   { label: "Actions", className: "pr-0 text-right" },
 ];
@@ -284,17 +285,33 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
               </span>
             )}
             {profile.schedule_cron !== null && (
-              <span
-                className={AUTOMATION_TAG}
-                title={`Scheduled: ${profile.schedule_cron} (UTC); next run ${formatUtc(profile.next_scheduled_at)}`}
-              >
-                schedule
-              </span>
+              <span className={AUTOMATION_TAG}>schedule</span>
             )}
             {!profile.auto_launch && profile.schedule_cron === null && (
               <span className="text-console-muted text-xs">manual</span>
             )}
           </div>
+          {/* Below `lg` the schedule rides under its chip; from `lg` up it is
+              a column of its own. Either way it is text, never a tooltip
+              (`SPEC.md`, "Frontend", "Scheduled profiles"). */}
+          {profile.schedule_cron !== null && (
+            <ScheduleText
+              cron={profile.schedule_cron}
+              next={profile.next_scheduled_at}
+              className="pt-1 lg:hidden"
+            />
+          )}
+        </td>
+
+        <td className={`${CELL_TOP} hidden lg:table-cell`}>
+          {profile.schedule_cron === null ? (
+            <span className="text-console-muted text-xs">{PLACEHOLDER}</span>
+          ) : (
+            <ScheduleText
+              cron={profile.schedule_cron}
+              next={profile.next_scheduled_at}
+            />
+          )}
         </td>
 
         <td
@@ -356,5 +373,25 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
         </tr>
       )}
     </>
+  );
+}
+
+/** A schedule as the list reads it: the UTC expression and the next run. */
+function ScheduleText({
+  cron,
+  next,
+  className,
+}: {
+  cron: string;
+  next: string | null;
+  className?: string;
+}) {
+  return (
+    <span
+      className={`text-console-muted block font-mono text-xs whitespace-nowrap ${className ?? ""}`}
+    >
+      <span className="text-console-text">{cron}</span> UTC
+      <span className="block">next {formatUtc(next)}</span>
+    </span>
   );
 }

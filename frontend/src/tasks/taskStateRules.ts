@@ -126,3 +126,16 @@ export const KIND_COLOUR: Record<TaskStateKind, string> = {
   human: "text-state-human",
   terminal: "text-console-muted",
 };
+
+/**
+ * The kind marker of a board column: a queue state is work waiting to be
+ * claimed, the human state is where escalations land, and a terminal state is
+ * spent. One glyph in the kind's colour, named by `KIND_MEANING` and in the
+ * board's legend — a second word in every heading would say the same thing
+ * six times over.
+ */
+export const KIND_MARK: Record<TaskStateKind, string> = {
+  queue: "▸",
+  human: "!",
+  terminal: "■",
+};

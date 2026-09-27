@@ -129,6 +129,29 @@ describe("SessionsTab", () => {
     }
   });
 
+  it("prints a failed session's reason on its row, clamped with a Show all", async () => {
+    const reason = `container exited with status 1:${" stderr".repeat(20)}`;
+    vi.mocked(listProjectSessions).mockResolvedValue([
+      {
+        ...session("00000000-0000-4000-8000-0000000000d5", "failed", "gave up"),
+        error: reason,
+      },
+    ]);
+    renderTab();
+
+    // Text on the row, never a tooltip (`SPEC.md`, "Frontend", "Mobile
+    // layout").
+    const text = await screen.findByText(reason);
+    expect(text.className).toContain("line-clamp-2");
+    expect(document.querySelector(`[title="${reason}"]`)).toBeNull();
+
+    const toggle = screen.getByRole("button", { name: "Show all" });
+    expect(toggle.getAttribute("aria-controls")).toBe(text.id);
+    fireEvent.click(toggle);
+    expect(text.className).not.toContain("line-clamp-2");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("leaves the git panel to the Branches tab", async () => {
     renderTab();
 

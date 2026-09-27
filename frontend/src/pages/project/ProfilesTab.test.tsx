@@ -189,10 +189,17 @@ describe("ProfilesTab", () => {
     expect(cells[0]?.textContent).toBe("manual");
     expect(cells[1]?.textContent).toContain("auto-launch");
     expect(cells[1]?.textContent).toContain("schedule");
-    // The expression itself is a hover away, so the column stays narrow.
     expect(cells[1]?.querySelector("[title]")?.getAttribute("title")).toContain(
       "The dispatcher may launch this profile",
     );
+    // The expression and the next run are text, never a tooltip: under the
+    // chip below `lg`, and in the `Schedule` column from `lg` up.
+    expect(cells[1]?.textContent).toContain("0 6 * * * UTC");
+    expect(cells[1]?.textContent).toContain(
+      `next ${formatUtc("2026-02-02T06:00:00Z")}`,
+    );
+    expect(screen.getAllByText("0 6 * * *")).toHaveLength(2);
+    expect(cells[1]?.querySelector("[title*='0 6']")).toBeNull();
   });
 
   it("says what the default marker means, and ties it to the disabled delete", async () => {

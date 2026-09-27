@@ -29,17 +29,17 @@ import { LoadingState } from "../components/LoadingState";
 import { SectionHeader } from "../components/SectionHeader";
 import { SubmitButton } from "../components/SubmitButton";
 import { SM_QUERY, useMediaQuery } from "../hooks/useMediaQuery";
-import type { TaskState } from "../types";
 import { taskColumnTestId } from "../utils/testIds";
 import { useDelayedFlag } from "../utils/useDelayedFlag";
 import { CreateTaskForm } from "./CreateTaskForm";
 import { autoMergeMeaning } from "./autoMergeRules";
+import { BoardLegend } from "./BoardLegend";
 import { ColumnPicker } from "./ColumnPicker";
 import { normalizeQuery } from "./search";
 import { CHIP } from "./taskChrome";
 import { TaskCard } from "./TaskCard";
 import { TaskSearch } from "./TaskSearch";
-import { KIND_COLOUR, KIND_MEANING } from "./taskStateRules";
+import { KIND_COLOUR, KIND_MARK, KIND_MEANING } from "./taskStateRules";
 import {
   selectVisibleColumns,
   UNKNOWN_COLUMN,
@@ -240,6 +240,10 @@ export function TaskBoard({
 
       <TaskSearch inputRef={searchInput} onClear={clearSearch} />
 
+      {/* Under the search and above the phone's column chips, so the two
+          rows never share a line. */}
+      {loaded && columns.length > 0 && <BoardLegend />}
+
       {!loaded ? (
         // Before the first successful load there is no board to show. An
         // error has already been reported above; this is the other half.
@@ -311,18 +315,6 @@ export function TaskBoard({
   );
 }
 
-/**
- * The kind marker: a queue state is work waiting to be claimed, the human
- * state is where escalations land, and a terminal state is spent. Each is one
- * glyph, carrying the kind's colour, with the meaning as its tooltip — a
- * second word in every heading would say the same thing six times over.
- */
-const KIND_MARK: Record<TaskState["kind"], string> = {
-  queue: "▸",
-  human: "!",
-  terminal: "■",
-};
-
 interface BoardColumnProps {
   column: TaskColumn;
   openTaskNumber: number | undefined;
@@ -344,8 +336,15 @@ function BoardColumn({ column, openTaskNumber, maxRounds }: BoardColumnProps) {
       className="flex w-[calc(100vw-2rem)] shrink-0 snap-start flex-col gap-2 max-sm:snap-always sm:w-64"
     >
       <div className="border-console-border flex items-baseline gap-2 border-b pb-1.5">
+        {/* The glyph is named by its kind and what the kind means; the legend
+            above the board says the same for the eye. */}
         <span
-          aria-hidden="true"
+          role="img"
+          aria-label={
+            kind === undefined
+              ? UNKNOWN_HELP
+              : `${kind} state: ${KIND_MEANING[kind]}`
+          }
           title={kind === undefined ? UNKNOWN_HELP : KIND_MEANING[kind]}
           className={`font-mono text-xs ${kind === undefined ? "text-console-muted" : KIND_COLOUR[kind]}`}
         >
@@ -359,6 +358,8 @@ function BoardColumn({ column, openTaskNumber, maxRounds }: BoardColumnProps) {
         </h3>
         {column.state?.auto_merge === true && (
           <span
+            role="img"
+            aria-label={autoMergeMeaning(column.state.conflict_state)}
             className={`${CHIP} text-console-muted`}
             title={autoMergeMeaning(column.state.conflict_state)}
           >

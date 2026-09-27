@@ -5,8 +5,18 @@
 // Unified is the default because it is the form a reviewer reads in a narrow
 // column; side by side is one click away for a rewrite, where the two versions
 // are easier to compare than to interleave.
+//
+// Below `sm` there is no side by side at all (`SPEC.md`, "Mobile layout"): two
+// panes of a 360 px screen are too narrow to read either. The toggle is hidden
+// there by its class, and what is mounted reads `SM_QUERY` rather than drawing
+// both bodies and hiding one, because a patch is drawn synchronously and the
+// Changes panel's render budget (`git/DiffBody.tsx`) counts one body, not two.
+// The choice itself is kept: a phone rotated to landscape past `sm` finds the
+// panes as they were left.
 
 import { useState } from "react";
+
+import { SM_QUERY, useMediaQuery } from "../hooks/useMediaQuery";
 
 import type { DiffLine } from "../utils/diff";
 import { TAP_INLINE } from "./fieldStyles";
@@ -140,6 +150,7 @@ export interface DiffViewProps {
 
 export function DiffView({ lines, path, notice }: DiffViewProps) {
   const [split, setSplit] = useState(false);
+  const wide = useMediaQuery(SM_QUERY);
   const added = lines.filter((line) => line.type === "add").length;
   const removed = lines.filter((line) => line.type === "del").length;
 
@@ -147,7 +158,7 @@ export function DiffView({ lines, path, notice }: DiffViewProps) {
     <div className="border-console-border bg-console-bg overflow-hidden rounded border">
       <div className="border-console-border flex items-center gap-3 border-b px-3 py-1">
         {path !== undefined && (
-          <span className="text-console-text truncate font-mono text-xs">
+          <span className="text-console-text min-w-0 truncate font-mono text-xs">
             {path}
           </span>
         )}
@@ -159,7 +170,7 @@ export function DiffView({ lines, path, notice }: DiffViewProps) {
           type="button"
           onClick={() => setSplit((value) => !value)}
           aria-pressed={split}
-          className={`text-console-accent ml-auto text-xs underline underline-offset-2 ${TAP_INLINE}`}
+          className={`text-console-accent ml-auto text-xs underline underline-offset-2 max-sm:hidden ${TAP_INLINE}`}
         >
           {split ? "Unified" : "Side by side"}
         </button>
@@ -169,7 +180,7 @@ export function DiffView({ lines, path, notice }: DiffViewProps) {
           {notice}
         </p>
       )}
-      {split ? (
+      {split && wide ? (
         // One scrollbar per pane, not one per row: the overflow belongs to
         // the two columns, so a long line scrolls its whole side and the row
         // numbers of the two versions stay level.

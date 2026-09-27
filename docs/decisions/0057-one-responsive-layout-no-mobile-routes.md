@@ -16,6 +16,8 @@ Rejected: **a PWA with its own shell** (a service worker, an app-shell cache and
 
 Rejected: **a user-agent check instead of media queries.** The user agent names a device, not a viewport: a tablet in landscape is wide, a desktop window can be narrow, a phone browser can ask for the desktop site, and user-agent strings are being frozen and reduced. It is also read once, so it cannot follow a resize or a rotation, and it cannot tell a finger from a mouse, which `pointer: coarse` can.
 
+Rejected: **a key bar above the phone keyboard for the terminal** (Ctrl, Tab, Esc, the arrows, as mobile SSH clients draw one). A phone keyboard has none of those keys, so without one the terminal on a phone is limited to typing plain commands; but the terminal is an inspection escape hatch, not a place work is done, and a key bar is a second input model with its own sticky-modifier state, focus handling against xterm's hidden textarea and layout against the keyboard, all to serve a use nobody has asked of a phone. The terminal is kept within the layout on a phone and is otherwise desktop-first.
+
 ## Consequences
 
 - The non-goal "Mobile layouts beyond 'does not break'" is gone from `SPEC.md`; "Frontend", Mobile layout is the rule, with one sentence per view for what a phone gets, and each view's task implements its sentence.

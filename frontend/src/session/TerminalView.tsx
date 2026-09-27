@@ -140,6 +140,15 @@ export function TerminalView({ session }: SessionPanelProps) {
       resize.run();
     });
     observer.observe(host);
+    // A phone's keyboard shrinks the visual viewport and not the layout one,
+    // so the host's own box may not move when it opens or closes; the fit
+    // follows the visual viewport too, and the terminal never runs under the
+    // keyboard or past its frame.
+    const viewport = window.visualViewport;
+    const onViewport = (): void => {
+      resize.run();
+    };
+    viewport?.addEventListener("resize", onViewport);
 
     const scheme = window.matchMedia("(prefers-color-scheme: light)");
     const onScheme = (): void => {
@@ -162,6 +171,7 @@ export function TerminalView({ session }: SessionPanelProps) {
       disposed = true;
       scheme.removeEventListener("change", onScheme);
       observer.disconnect();
+      viewport?.removeEventListener("resize", onViewport);
       resize.cancel();
       onData.dispose();
       onBinary.dispose();

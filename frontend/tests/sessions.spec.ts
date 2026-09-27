@@ -44,6 +44,7 @@ import {
   setProfileSecrets,
   setProjectSecret,
   transcript,
+  TRANSCRIPT_SCROLL,
   waitFor,
   waitForContainerRemoved,
   waitForSessionState,
@@ -551,6 +552,74 @@ test("a phone types a two-line message and sends it with the button @mobile", as
   );
   const rendered = await message.boundingBox();
   expect(rendered?.height ?? 0).toBeGreaterThanOrEqual(lineHeight * 2 - 1);
+});
+
+/**
+ * The ancestors of `target`, up to the transcript's own scroller, that scroll
+ * vertically: a box a touch scroll meant for the transcript would get caught in.
+ */
+async function nestedScrollers(target: Locator): Promise<string[]> {
+  return target.evaluate((node, scrollerId: string) => {
+    const found: string[] = [];
+    for (
+      let element = node.parentElement;
+      element !== null && element.dataset.testid !== scrollerId;
+      element = element.parentElement
+    ) {
+      const overflow = getComputedStyle(element).overflowY;
+      if (overflow === "auto" || overflow === "scroll") {
+        found.push(element.className);
+      }
+    }
+    return found;
+  }, TRANSCRIPT_SCROLL);
+}
+
+test("an edit diff is unified on a phone and the transcript scrolls as one @mobile", async ({
+  page,
+  context,
+  user,
+  api,
+  project,
+  sessions,
+}, testInfo) => {
+  expect(isMobile(testInfo)).toBe(true);
+  await loginViaToken(context, user);
+  const session = await sessions.launch(api, project.id, {
+    message: "hello stub",
+  });
+  await page.goto(`/sessions/${session.id}`);
+  await waitForTurn(api, session.id, 0);
+  await compose(page, "next");
+  await waitForTurn(api, session.id, 1);
+  const rows = transcript(page);
+
+  // Below `sm` the diff is unified and offers no side by side
+  // (`SPEC.md`, "Frontend", "Transcript rendering").
+  await openRow(
+    page,
+    rows.getByRole("button", { name: "Edit /session/work/src/app.py" }),
+  );
+  const added = rows.getByText('print("hello, world")').first();
+  await expect(added).toBeVisible();
+  await expect(rows.getByText('print("hello")').first()).toBeVisible();
+  await expect(rows.getByRole("button", { name: "Side by side" })).toBeHidden();
+  expect(await nestedScrollers(added)).toEqual([]);
+
+  // The subagent's report is bounded by its row's fold, not by a box that
+  // scrolls inside the transcript's own scroller.
+  await openRow(page, rows.getByRole("button", { name: /general-purpose/ }));
+  const report = (
+    await reveal(page, rows.getByText(/Search results for the literal token/))
+  ).first();
+  await expect(report).toBeVisible();
+  expect(await nestedScrollers(report)).toEqual([]);
+
+  const overflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
 });
 
 test("stop parks the session and shows stopped", async ({

@@ -8,9 +8,13 @@
 // gets. A result that is not text at all keeps the JSON tree.
 //
 // The 40-line collapse of `ToolResult` does not apply: a line count over
-// rendered markdown would cut a table or a fence in half. A tall report scrolls
-// inside its own box instead. Both are only reached once the row is opened, so
-// a report of tens of kilobytes is parsed when the reader asks for it.
+// rendered markdown would cut a table or a fence in half. From `sm` up a tall
+// report scrolls inside its own box instead; below `sm` it does not, because a
+// box that scrolls inside the transcript's own scroller catches a touch scroll
+// meant for the transcript (`SPEC.md`, "Mobile layout"), so on a phone the
+// row's own fold is what bounds it. Both are only reached once the row is
+// opened, so a report of tens of kilobytes is parsed when the reader asks for
+// it.
 
 import { MarkdownBody } from "../../components/Markdown";
 import { JsonTree } from "../../components/JsonTree";
@@ -36,7 +40,7 @@ export function SubagentToolRenderer({ message }: SubagentToolRendererProps) {
       ) : (
         report.trim() !== "" && (
           <div
-            className={`max-h-96 overflow-y-auto ${
+            className={`sm:max-h-96 sm:overflow-y-auto ${
               message.is_error === true ? "text-state-failed" : ""
             }`}
           >

@@ -172,7 +172,9 @@ export function RevertConfirm({
       }}
       onCancel={onCancel}
     >
-      <ul className="border-console-border max-h-48 space-y-0.5 overflow-y-auto border-l-2 pl-2 text-xs">
+      {/* Capped from `sm` up; below it the list scrolls with the sheet, since a
+          box scrolling inside the panel's own scroller catches a touch scroll. */}
+      <ul className="border-console-border space-y-0.5 border-l-2 pl-2 text-xs sm:max-h-48 sm:overflow-y-auto">
         {range.map((entry) => (
           <li key={entry.commit} className="flex flex-wrap gap-x-2">
             <span className="text-console-muted font-mono">

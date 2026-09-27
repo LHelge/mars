@@ -1,16 +1,17 @@
 ---
 id: egnkb
 title: "MCP create_plan: file a parent, its sub-tasks and their edges as one TrackerMutation (ADR)"
-status: open
+status: done
 priority: P1
 created: "2026-09-26T20:45:58.896842248Z"
-updated: "2026-09-26T20:45:58.896842248Z"
+updated: "2026-09-27T08:31:22.082586262Z"
 tags:
   - mcp
   - tracker
   - orchestrator
   - docs
 parent: utese
+attempts: 1
 ---
 
 The real fix of epic `utese`. Cites `SPEC.md`, "MCP tool contracts" (`create_task`, which this mirrors), and `ARCHITECTURE.md`, "Task tracker" (one project row lock per mutation, events broadcast only after commit, ADR 0021/0028) and "Dispatcher".

@@ -1,15 +1,16 @@
 ---
 id: qgw4z
 title: "Planner template: file prerequisites first with depends_on at creation, never add a blocking edge to a ready task"
-status: open
+status: done
 priority: P1
 created: "2026-09-26T20:45:58.877451660Z"
-updated: "2026-09-26T20:45:58.877451660Z"
+updated: "2026-09-27T08:31:22.045902885Z"
 tags:
   - profiles
   - docs
   - orchestrator
 parent: utese
+attempts: 1
 ---
 
 Implements the stopgap of epic `utese`. Cites `SPEC.md`, "Role profile templates" → `planner`, and `ARCHITECTURE.md`, "Dispatcher".

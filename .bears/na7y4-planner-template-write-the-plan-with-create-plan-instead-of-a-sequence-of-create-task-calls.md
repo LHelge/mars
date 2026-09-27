@@ -1,10 +1,10 @@
 ---
 id: na7y4
 title: "Planner template: write the plan with create_plan instead of a sequence of create_task calls"
-status: open
+status: in_progress
 priority: P2
 created: "2026-09-26T20:46:05.970625615Z"
-updated: "2026-09-26T20:46:05.970625615Z"
+updated: "2026-09-27T08:31:26.128604448Z"
 tags:
   - profiles
   - docs
@@ -13,6 +13,7 @@ depends_on:
   - qgw4z
   - egnkb
 parent: utese
+attempts: 1
 ---
 
 The closing step of epic `utese`. Cites `SPEC.md`, "Role profile templates" → `planner`, and the `create_plan` section added by `egnkb`.

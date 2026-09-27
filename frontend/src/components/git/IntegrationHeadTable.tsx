@@ -12,7 +12,7 @@ import type { ReactNode } from "react";
 import { PLACEHOLDER, shortSha } from "../../utils/format";
 import { Icon, ICON_CLASS } from "../icons";
 import { TableHead } from "../TableHead";
-import { CELL, ROW, TABLE, type TableColumn } from "../tableStyles";
+import { CELL, ROW, TABLE, X_SCROLLER, type TableColumn } from "../tableStyles";
 import type { IntegrationHead } from "./integrationHeads";
 
 const COLUMNS: readonly TableColumn[] = [
@@ -40,21 +40,23 @@ export function IntegrationHeadTable({
   disabled,
 }: IntegrationHeadTableProps) {
   return (
-    <table className={TABLE}>
-      <TableHead columns={COLUMNS} />
-      <tbody>
-        {heads.map((head) => (
-          <HeadRows
-            key={head.name}
-            head={head}
-            opened={open === head.name}
-            onToggle={onToggle}
-            renderForm={renderForm}
-            disabled={disabled}
-          />
-        ))}
-      </tbody>
-    </table>
+    <div className={X_SCROLLER}>
+      <table className={TABLE}>
+        <TableHead columns={COLUMNS} />
+        <tbody>
+          {heads.map((head) => (
+            <HeadRows
+              key={head.name}
+              head={head}
+              opened={open === head.name}
+              onToggle={onToggle}
+              renderForm={renderForm}
+              disabled={disabled}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

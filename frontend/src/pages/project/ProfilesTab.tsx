@@ -37,10 +37,10 @@ import type { ProjectTabPanelProps } from "./tabs";
 
 const COLUMNS: readonly TableColumn[] = [
   { label: "Name" },
-  { label: "Kind" },
-  { label: "Model" },
+  { label: "Kind", className: "hidden sm:table-cell" },
+  { label: "Model", className: "hidden sm:table-cell" },
   { label: "Image", className: "hidden lg:table-cell" },
-  { label: "Serves" },
+  { label: "Serves", className: "hidden sm:table-cell" },
   { label: "Automation" },
   { label: "Idle timeout", className: "hidden md:table-cell" },
   { label: "Actions", className: "pr-0 text-right" },
@@ -236,11 +236,15 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
           )}
         </td>
 
-        <td className={`${CELL_TOP} text-console-muted font-mono text-xs`}>
+        <td
+          className={`${CELL_TOP} text-console-muted hidden font-mono text-xs sm:table-cell`}
+        >
           {profile.kind}
         </td>
 
-        <td className={`${CELL_TOP} text-console-muted font-mono text-xs`}>
+        <td
+          className={`${CELL_TOP} text-console-muted hidden font-mono text-xs sm:table-cell`}
+        >
           {profile.model ?? "CLI default"}
         </td>
 
@@ -250,7 +254,7 @@ function ProfileRow({ projectId, profile, onEdit }: ProfileRowProps) {
           {profile.image}
         </td>
 
-        <td className={CELL_TOP}>
+        <td className={`${CELL_TOP} hidden sm:table-cell`}>
           <div className="flex flex-wrap gap-1">
             {profile.serves_states.length === 0 ? (
               <span className="text-console-muted text-xs">nothing</span>

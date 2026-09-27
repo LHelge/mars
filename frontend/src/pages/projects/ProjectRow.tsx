@@ -78,11 +78,15 @@ export function ProjectRow({ project }: ProjectRowProps) {
         </div>
       </td>
 
-      <td className={`${CELL} min-w-0`}>
+      {/* Below `md` this cell carries the remote and takes the rest of the
+          row: `w-full max-w-0` is what holds a `<td>` to a width, so the
+          remote under the name truncates instead of widening the column to
+          the whole URL (`components/tableStyles.ts`). */}
+      <td className={`${CELL} max-md:w-full max-md:max-w-0`}>
         <div className="flex items-center gap-1.5">
           <Link
             to={`/projects/${project.id}`}
-            className="text-console-text hover:text-console-accent"
+            className="text-console-text hover:text-console-accent min-w-0 wrap-anywhere"
           >
             {project.name}
           </Link>
@@ -96,15 +100,23 @@ export function ProjectRow({ project }: ProjectRowProps) {
         </div>
         {/* Below `md` the remote rides under the name rather than disappearing
             with its column. */}
-        <span className="text-console-muted block truncate font-mono text-xs md:hidden">
+        <span
+          className="text-console-muted block truncate font-mono text-xs md:hidden"
+          title={project.remote_url}
+        >
           {project.remote_url}
         </span>
       </td>
 
       <td
-        className={`${CELL} text-console-muted hidden max-w-[44ch] font-mono text-xs md:table-cell`}
+        className={`${CELL} text-console-muted hidden font-mono text-xs md:table-cell`}
       >
-        <span className="block truncate" title={project.remote_url}>
+        {/* The cap is on the block that truncates: a `max-w` on the `<td>`
+            is ignored by automatic table layout. */}
+        <span
+          className="block max-w-[44ch] truncate"
+          title={project.remote_url}
+        >
           {project.remote_url}
         </span>
       </td>

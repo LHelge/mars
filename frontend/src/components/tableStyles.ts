@@ -7,6 +7,24 @@
 // next. There is one row height here and two vertical alignments, and a table
 // that wants something else says so in the extra classes it appends.
 //
+// Three rules every table follows, and they live here rather than in the
+// tables (`SPEC.md`, "Frontend", "Mobile layout": no route scrolls sideways):
+//
+// - A table is always inside a scroller: `X_SCROLLER`, or `SCROLLER` for a
+//   long one under a sticky header. A table the viewport cannot hold scrolls
+//   inside its own box and never pushes the page sideways.
+// - A cell that truncates is capped by its column. Automatic table layout
+//   ignores a `max-w` on a `<td>`, so a `truncate` inside an uncapped cell
+//   widens the column to the whole string. Either the truncating block carries
+//   the width cap itself (`block max-w-[44ch] truncate`), or the cell takes the
+//   rest of the row as `w-full max-w-0`, which is the only width a `<td>` is
+//   held to.
+// - The phone column set is what identifies the row, plus its state and its
+//   one action. Everything else is hidden below a breakpoint with the
+//   column's responsive `hidden` class, on the `TableColumn` and on the row's
+//   cell alike; hiding is CSS only, so `columns.length` — what a spanning row
+//   reads — never changes with the viewport.
+//
 // Kept to class constants and a type on purpose: `DashboardPage` and
 // `ProjectsPage` are on the first-paint path (`ARCHITECTURE.md`, "Frontend
 // architecture", Barrels and the first-paint path), so whatever they import
@@ -18,8 +36,13 @@ export const TABLE = "w-full border-collapse text-sm";
 /** A `<thead>` that stays put while a long table scrolls under it. */
 export const THEAD_STICKY = "bg-console-bg sticky top-0 z-10";
 
-/** The box a long table scrolls inside, under a sticky header. */
-export const SCROLLER = "max-h-96 overflow-y-auto";
+/**
+ * The box a long table scrolls inside, under a sticky header. The 384 px cap
+ * is `sm` and up only: on a phone a nested vertical scroll area catches the
+ * finger that meant to scroll the page, so there the table runs the page's
+ * length. It scrolls sideways too, explicitly, like `X_SCROLLER`.
+ */
+export const SCROLLER = "overflow-x-auto overflow-y-auto sm:max-h-96";
 
 /** The box a wide table scrolls sideways in on a narrow screen. */
 export const X_SCROLLER = "overflow-x-auto";
@@ -69,4 +92,9 @@ export interface TableColumn {
   className?: string;
   /** The label is for screen readers only — an actions column, typically. */
   srOnly?: boolean;
+  /**
+   * A shorter header shown below `sm`, where a long label would set the
+   * column's width. `label` stays the accessible name at every width.
+   */
+  short?: string;
 }

@@ -7,8 +7,8 @@ import type { TableColumn } from "../tableStyles";
 
 export const SECRET_COLUMNS: readonly TableColumn[] = [
   { label: "Name" },
-  { label: "Orchestrator only" },
-  { label: "Key" },
+  { label: "Orchestrator only", short: "Orch. only" },
+  { label: "Key", className: "hidden sm:table-cell" },
   { label: "Created by", className: "hidden lg:table-cell" },
   { label: "Created", className: "hidden md:table-cell" },
   { label: "Updated", className: "hidden md:table-cell" },

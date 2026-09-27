@@ -25,8 +25,17 @@ export function TableHead({ columns, sticky = false }: TableHeadProps) {
           >
             {column.srOnly ? (
               <span className="sr-only">{column.label}</span>
-            ) : (
+            ) : column.short === undefined ? (
               column.label
+            ) : (
+              // The short text is what a phone shows; the full label stays
+              // the name a screen reader hears, at every width.
+              <>
+                <span aria-hidden="true" className="sm:hidden">
+                  {column.short}
+                </span>
+                <span className="max-sm:sr-only">{column.label}</span>
+              </>
             )}
           </th>
         ))}

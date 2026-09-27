@@ -176,7 +176,9 @@ export function SecretRow({
           </label>
         </td>
 
-        <td className={`${CELL} text-console-muted font-mono text-xs`}>
+        <td
+          className={`${CELL} text-console-muted hidden font-mono text-xs sm:table-cell`}
+        >
           v{secret.key_version}
         </td>
 

@@ -16,7 +16,7 @@ import { formatRelative, shortSha } from "../../utils/format";
 import { Icon, ICON_CLASS } from "../icons";
 import type { IconComponent } from "../icons";
 import { TableHead } from "../TableHead";
-import { CELL, ROW, TABLE, type TableColumn } from "../tableStyles";
+import { CELL, ROW, TABLE, X_SCROLLER, type TableColumn } from "../tableStyles";
 import { TAP_INLINE } from "../fieldStyles";
 
 /** Which form a row has open. */
@@ -43,7 +43,7 @@ export interface SessionBranchTableProps {
 const COLUMNS: readonly TableColumn[] = [
   { label: "Session" },
   { label: "Ref", className: "hidden lg:table-cell" },
-  { label: "Commit" },
+  { label: "Commit", className: "hidden sm:table-cell" },
   { label: "Ahead / behind" },
   { label: "Updated", className: "hidden sm:table-cell" },
   { label: "Actions", className: "pr-0 text-right", srOnly: true },
@@ -65,34 +65,36 @@ export function SessionBranchTable({
   disabled,
 }: SessionBranchTableProps) {
   return (
-    <table className={TABLE}>
-      <TableHead columns={COLUMNS} />
-      <tbody>
-        {rows.map((row) => {
-          const compare = compareLinks[row.session_id];
-          const title = titles.get(row.session_id);
-          const opened =
-            open?.sessionId === row.session_id ? open.action : null;
+    <div className={X_SCROLLER}>
+      <table className={TABLE}>
+        <TableHead columns={COLUMNS} />
+        <tbody>
+          {rows.map((row) => {
+            const compare = compareLinks[row.session_id];
+            const title = titles.get(row.session_id);
+            const opened =
+              open?.sessionId === row.session_id ? open.action : null;
 
-          return (
-            <BranchRows
-              key={row.session_id}
-              row={row}
-              title={title}
-              compareUrl={
-                compare !== undefined && compare.commit === row.commit
-                  ? compare.url
-                  : null
-              }
-              opened={opened}
-              onToggle={onToggle}
-              renderForm={renderForm}
-              disabled={disabled}
-            />
-          );
-        })}
-      </tbody>
-    </table>
+            return (
+              <BranchRows
+                key={row.session_id}
+                row={row}
+                title={title}
+                compareUrl={
+                  compare !== undefined && compare.commit === row.commit
+                    ? compare.url
+                    : null
+                }
+                opened={opened}
+                onToggle={onToggle}
+                renderForm={renderForm}
+                disabled={disabled}
+              />
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -145,7 +147,9 @@ function BranchRows({
         >
           {row.ref}
         </td>
-        <td className={`${CELL} text-console-muted font-mono text-xs`}>
+        <td
+          className={`${CELL} text-console-muted hidden font-mono text-xs sm:table-cell`}
+        >
           {shortSha(row.commit)}
         </td>
         <td className={`${CELL} font-mono text-xs whitespace-nowrap`}>
@@ -172,26 +176,30 @@ function BranchRows({
         >
           {formatRelative(row.updated_at)}
         </td>
-        <td className={`${CELL} pr-0 text-right whitespace-nowrap`}>
-          {ACTIONS.map((entry) => (
-            <button
-              key={entry.action}
-              type="button"
-              aria-expanded={opened === entry.action}
-              disabled={disabled}
-              onClick={() => {
-                onToggle(row.session_id, entry.action);
-              }}
-              className={`ml-2 inline-flex items-center gap-1.5 font-mono text-xs disabled:opacity-50 ${TAP_INLINE} ${
-                opened === entry.action
-                  ? "text-console-accent"
-                  : "text-console-muted hover:text-console-text"
-              }`}
-            >
-              <entry.icon aria-hidden="true" className={ICON_CLASS} />
-              {entry.label}
-            </button>
-          ))}
+        <td className={`${CELL} pr-0`}>
+          {/* Three text buttons do not fit a phone's row on one line: they
+              wrap, right-aligned, rather than set the table's width. */}
+          <div className="flex flex-wrap justify-end gap-x-2 gap-y-1">
+            {ACTIONS.map((entry) => (
+              <button
+                key={entry.action}
+                type="button"
+                aria-expanded={opened === entry.action}
+                disabled={disabled}
+                onClick={() => {
+                  onToggle(row.session_id, entry.action);
+                }}
+                className={`inline-flex items-center gap-1.5 font-mono text-xs whitespace-nowrap disabled:opacity-50 ${TAP_INLINE} ${
+                  opened === entry.action
+                    ? "text-console-accent"
+                    : "text-console-muted hover:text-console-text"
+                }`}
+              >
+                <entry.icon aria-hidden="true" className={ICON_CLASS} />
+                {entry.label}
+              </button>
+            ))}
+          </div>
         </td>
       </tr>
 

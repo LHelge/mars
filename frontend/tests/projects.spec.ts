@@ -35,9 +35,11 @@ import { expect, test } from "./utils/fixtures";
 import {
   commitToBareRepo,
   createBareRepoAt,
+  createProject,
   dataDir,
   defaultProfile,
   gitRevParse,
+  isMobile,
   listBranches,
   loginViaToken,
   PROFILE_AUTOMATION,
@@ -722,4 +724,65 @@ test("a project is deleted once its running session has ended", async ({
     allow: [404],
   });
   expect(gone.status).toBe(404);
+});
+
+/** Whether anything on the page is wider than the viewport. */
+async function pageOverflow(page: Page) {
+  return page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+}
+
+// `SPEC.md`, "Frontend", Mobile layout: no route scrolls sideways, and a table
+// is what used to make one. The remote URL is the widest thing either table
+// shows, so the project is cloned from a path far longer than a phone.
+test("the projects and sessions tables fit a phone @mobile", async ({
+  page,
+  context,
+  user,
+  api,
+  sessions,
+}, testInfo) => {
+  expect(isMobile(testInfo)).toBe(true);
+  // The narrowest phone the layout promises, rather than the device's own.
+  await page.setViewportSize({ width: 360, height: 780 });
+
+  const path = join(
+    reposDir(),
+    `a-remote-url-long-enough-to-push-any-phone-sideways-${"x".repeat(80)}-${randomSuffix()}.git`,
+  );
+  createBareRepoAt(path);
+  const project = await createProject(api, {
+    name: uniqueName("e2e-phone"),
+    remote_url: `file://${path}`,
+  });
+  const title = "a session whose title is long enough to wrap on a phone";
+  const session = await sessions.launch(api, project.id, { title });
+  await waitForSessionState(api, session.id, "running");
+
+  await loginViaToken(context, user);
+
+  await page.goto("/projects");
+  const row = projectRow(page, project.name);
+  await expect(row).toBeVisible();
+  // The remote rides under the name below `md` (the first of its two copies;
+  // the `Remote` column's is hidden), truncated inside the row.
+  await expect(row.getByText(project.remote_url).first()).toBeVisible();
+  let overflow = await pageOverflow(page);
+  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
+  // Truncated rather than scrolled: the row itself fits, so the table's
+  // scroller is the safety net and not what holds the URL.
+  const box = await row.boundingBox();
+  expect(box).not.toBeNull();
+  expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
+    overflow.innerWidth,
+  );
+
+  await page.goto(`/projects/${project.id}`);
+  await expect(
+    page.getByRole("link", { name: title, exact: true }),
+  ).toBeVisible();
+  overflow = await pageOverflow(page);
+  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.innerWidth);
 });

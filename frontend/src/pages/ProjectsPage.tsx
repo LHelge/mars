@@ -20,7 +20,7 @@ import { PageLayout } from "../components/PageLayout";
 import { QueryErrorAlert } from "../components/QueryErrorAlert";
 import { SubmitButton } from "../components/SubmitButton";
 import { TableHead } from "../components/TableHead";
-import { TABLE, type TableColumn } from "../components/tableStyles";
+import { TABLE, X_SCROLLER, type TableColumn } from "../components/tableStyles";
 import { errorMessage } from "../services/errorMessage";
 import { listProjects } from "../services/projects";
 import { queryKeys } from "../services/queryKeys";
@@ -113,14 +113,16 @@ export function ProjectsPage() {
             />
           )
         ) : (
-          <table className={TABLE}>
-            <TableHead columns={COLUMNS} />
-            <tbody>
-              {rows.map((project) => (
-                <ProjectRow key={project.id} project={project} />
-              ))}
-            </tbody>
-          </table>
+          <div className={X_SCROLLER}>
+            <table className={TABLE}>
+              <TableHead columns={COLUMNS} />
+              <tbody>
+                {rows.map((project) => (
+                  <ProjectRow key={project.id} project={project} />
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </PageLayout>

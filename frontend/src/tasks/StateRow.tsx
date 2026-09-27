@@ -202,7 +202,9 @@ export function StateRow({
   return (
     <>
       <tr className={ROW}>
-        <td className={`${CELL} text-console-muted font-mono text-xs`}>
+        <td
+          className={`${CELL} text-console-muted hidden font-mono text-xs sm:table-cell`}
+        >
           {index}
         </td>
 
@@ -225,7 +227,7 @@ export function StateRow({
                 aria-invalid={draftError !== null ? true : undefined}
                 autoComplete="off"
                 autoFocus
-                className={`border-console-border bg-console-bg text-console-text aria-invalid:border-state-failed w-40 rounded border px-2 py-1 font-mono text-xs ${TOUCH_TEXT}`}
+                className={`border-console-border bg-console-bg text-console-text aria-invalid:border-state-failed w-full min-w-32 rounded border px-2 py-1 font-mono text-xs ${TOUCH_TEXT}`}
               />
               <SubmitButton loading={rename.loading}>Save</SubmitButton>
               <SubmitButton
@@ -339,7 +341,7 @@ export function StateRow({
         </td>
 
         <td
-          className={`${CELL} text-console-muted text-right font-mono text-xs`}
+          className={`${CELL} text-console-muted hidden text-right font-mono text-xs sm:table-cell`}
           title={counts === undefined ? COUNTS_UNKNOWN : undefined}
         >
           {counts === undefined ? "—" : count}

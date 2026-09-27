@@ -19,11 +19,11 @@ import type { Task, TaskState, TaskStateKind } from "../types";
 
 /** The editor's table, shared with the row that spans it for its answers. */
 export const STATE_COLUMNS: readonly TableColumn[] = [
-  { label: "#", className: "w-8" },
+  { label: "#", className: "hidden w-8 sm:table-cell" },
   { label: "Name" },
   { label: "Kind" },
   { label: "Auto-merge" },
-  { label: "Tasks", className: "text-right" },
+  { label: "Tasks", className: "hidden text-right sm:table-cell" },
   { label: "Actions", className: "pr-0 text-right" },
 ];
 

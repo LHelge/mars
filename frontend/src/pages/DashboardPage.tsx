@@ -233,11 +233,9 @@ function TaskRows({
               >
                 P{task.priority}
               </td>
-              <td
-                className={`${CELL} text-console-muted hidden max-w-[28ch] lg:table-cell`}
-              >
+              <td className={`${CELL} text-console-muted hidden lg:table-cell`}>
                 <span
-                  className="block truncate"
+                  className="block max-w-[28ch] truncate"
                   title={task.needs_human_reason ?? undefined}
                 >
                   {task.needs_human_reason ?? PLACEHOLDER}

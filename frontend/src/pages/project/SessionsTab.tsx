@@ -35,6 +35,7 @@ import {
   ROW,
   SPAN_CELL,
   TABLE,
+  X_SCROLLER,
   type TableColumn,
 } from "../../components/tableStyles";
 import { errorMessage, logUnexpected } from "../../services/errorMessage";
@@ -217,113 +218,115 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
             />
           )
         ) : (
-          <table className={TABLE}>
-            <TableHead columns={COLUMNS} />
-            <tbody>
-              {rows.map((session) => {
-                const finished =
-                  session.state === "done" || session.state === "failed";
-                const error =
-                  rowError?.id === session.id ? rowError.message : null;
+          <div className={X_SCROLLER}>
+            <table className={TABLE}>
+              <TableHead columns={COLUMNS} />
+              <tbody>
+                {rows.map((session) => {
+                  const finished =
+                    session.state === "done" || session.state === "failed";
+                  const error =
+                    rowError?.id === session.id ? rowError.message : null;
 
-                return (
-                  <Fragment key={session.id}>
-                    <tr className={ROW}>
-                      <td className={CELL}>
-                        <SessionStatePill
-                          state={session.state}
-                          error={session.error}
-                        />
-                      </td>
-                      <td className={`${CELL} min-w-0`}>
-                        {/* Who launched it, where its name is: a row with no
-                            tag was launched by a person (`SPEC.md`,
-                            "Sessions"). */}
-                        <span className="flex flex-wrap items-center gap-2">
-                          <Link
-                            to={`/sessions/${session.id}`}
-                            className="text-console-text hover:text-console-accent"
-                          >
-                            {session.title ?? (
-                              <span className="text-console-muted">
-                                untitled
-                              </span>
-                            )}
-                          </Link>
-                          <LaunchSourceTag source={session.launch_source} />
-                        </span>
-                        {error !== null && (
-                          <p className="text-state-failed text-xs">{error}</p>
-                        )}
-                      </td>
-                      <td
-                        className={`${CELL} text-console-muted hidden sm:table-cell`}
-                      >
-                        {session.kind}
-                      </td>
-                      <td
-                        className={`${CELL} text-console-muted hidden md:table-cell`}
-                      >
-                        {profileNames.get(session.profile_id) ?? PLACEHOLDER}
-                      </td>
-                      <td
-                        className={`${CELL} text-console-muted hidden font-mono text-xs lg:table-cell`}
-                      >
-                        {session.branch ?? PLACEHOLDER}
-                      </td>
-                      <td
-                        className={`${CELL} text-console-muted hidden font-mono text-xs whitespace-nowrap sm:table-cell`}
-                      >
-                        {formatRelative(session.last_activity_at)}
-                      </td>
-                      <td
-                        className={`${CELL} text-console-muted text-right font-mono text-xs`}
-                      >
-                        {formatUsd(session.cost_usd, COST_DECIMALS)}
-                      </td>
-                      <td className={`${CELL} pr-0 text-right`}>
-                        {finished && (
-                          <button
-                            type="button"
-                            aria-label={`Delete ${sessionLabel(session)}`}
-                            disabled={
-                              remove.isPending || confirming === session.id
-                            }
-                            onClick={() => {
-                              setRowError(null);
-                              setConfirming(session.id);
-                            }}
-                            className="text-console-muted hover:text-state-failed font-mono text-xs disabled:opacity-50"
-                          >
-                            Delete
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-
-                    {confirming === session.id && (
+                  return (
+                    <Fragment key={session.id}>
                       <tr className={ROW}>
-                        <td colSpan={COLUMNS.length} className={SPAN_CELL}>
-                          <SessionDeleteConfirm
-                            session={session}
-                            label={sessionLabel(session)}
-                            confirmLabel={`Delete ${sessionLabel(session)}`}
-                            pending={remove.isPending}
-                            onConfirm={() => {
-                              remove.mutate(session.id);
-                            }}
-                            onCancel={() => {
-                              setConfirming(null);
-                            }}
+                        <td className={CELL}>
+                          <SessionStatePill
+                            state={session.state}
+                            error={session.error}
                           />
                         </td>
+                        <td className={`${CELL} min-w-0`}>
+                          {/* Who launched it, where its name is: a row with no
+                              tag was launched by a person (`SPEC.md`,
+                              "Sessions"). */}
+                          <span className="flex flex-wrap items-center gap-2">
+                            <Link
+                              to={`/sessions/${session.id}`}
+                              className="text-console-text hover:text-console-accent"
+                            >
+                              {session.title ?? (
+                                <span className="text-console-muted">
+                                  untitled
+                                </span>
+                              )}
+                            </Link>
+                            <LaunchSourceTag source={session.launch_source} />
+                          </span>
+                          {error !== null && (
+                            <p className="text-state-failed text-xs">{error}</p>
+                          )}
+                        </td>
+                        <td
+                          className={`${CELL} text-console-muted hidden sm:table-cell`}
+                        >
+                          {session.kind}
+                        </td>
+                        <td
+                          className={`${CELL} text-console-muted hidden md:table-cell`}
+                        >
+                          {profileNames.get(session.profile_id) ?? PLACEHOLDER}
+                        </td>
+                        <td
+                          className={`${CELL} text-console-muted hidden font-mono text-xs lg:table-cell`}
+                        >
+                          {session.branch ?? PLACEHOLDER}
+                        </td>
+                        <td
+                          className={`${CELL} text-console-muted hidden font-mono text-xs whitespace-nowrap sm:table-cell`}
+                        >
+                          {formatRelative(session.last_activity_at)}
+                        </td>
+                        <td
+                          className={`${CELL} text-console-muted text-right font-mono text-xs`}
+                        >
+                          {formatUsd(session.cost_usd, COST_DECIMALS)}
+                        </td>
+                        <td className={`${CELL} pr-0 text-right`}>
+                          {finished && (
+                            <button
+                              type="button"
+                              aria-label={`Delete ${sessionLabel(session)}`}
+                              disabled={
+                                remove.isPending || confirming === session.id
+                              }
+                              onClick={() => {
+                                setRowError(null);
+                                setConfirming(session.id);
+                              }}
+                              className="text-console-muted hover:text-state-failed font-mono text-xs disabled:opacity-50"
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </td>
                       </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+
+                      {confirming === session.id && (
+                        <tr className={ROW}>
+                          <td colSpan={COLUMNS.length} className={SPAN_CELL}>
+                            <SessionDeleteConfirm
+                              session={session}
+                              label={sessionLabel(session)}
+                              confirmLabel={`Delete ${sessionLabel(session)}`}
+                              pending={remove.isPending}
+                              onConfirm={() => {
+                                remove.mutate(session.id);
+                              }}
+                              onCancel={() => {
+                                setConfirming(null);
+                              }}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>

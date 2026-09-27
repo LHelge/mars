@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { clearAuth, installSession } from "../services/auth";
@@ -63,6 +63,37 @@ describe("PageLayout", () => {
 
     expect(screen.getByRole("link", { name: "Admin" })).toBeDefined();
     expect(screen.getByText("root-operator")).toBeDefined();
+  });
+
+  // Below `sm` the labels are `max-sm:sr-only` and the links icons; the DOM
+  // is the same at both widths, so the name is the label text in both, and
+  // never an `aria-label` on top of it, which would name each link twice.
+  it("names every nav link and the account controls by their label text", () => {
+    installSession({
+      user: user({ admin: true }),
+      access_token: "test-access-token",
+    });
+    renderLayout();
+
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    const names = within(nav)
+      .getAllByRole("link")
+      .map((link) => {
+        expect(link.hasAttribute("aria-label")).toBe(false);
+        return link.textContent;
+      });
+    expect(names).toEqual([
+      "Dashboard",
+      "Projects",
+      "Secrets",
+      "Settings",
+      "Admin",
+    ]);
+    for (const name of names) {
+      expect(within(nav).getByRole("link", { name })).toBeDefined();
+    }
+    expect(screen.getByRole("link", { name: "Help" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Log out" })).toBeDefined();
   });
 
   it("renders before GET /users/me has resolved", () => {

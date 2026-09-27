@@ -4,6 +4,11 @@
 // authorisation regardless — the flag here is a UI hint. `/help` is not a place
 // work happens, so it sits in the right-hand cluster beside the account rather
 // than among the work areas.
+//
+// Below `sm` the same entries stay, smaller: every link is its icon with the
+// label kept as its accessible name (`max-sm:sr-only`), the account cluster is
+// two icons, and nothing hides behind a menu (`SPEC.md`, "Frontend", Mobile
+// layout).
 
 import type { ReactNode } from "react";
 import { NavLink } from "react-router";
@@ -37,7 +42,10 @@ const NAV: NavEntry[] = [
 
 function navClass({ isActive }: { isActive: boolean }): string {
   return [
-    `inline-flex shrink-0 items-center gap-1.5 border-b-2 px-1 py-2 text-sm whitespace-nowrap ${TAP}`,
+    // Icon-only below `sm`: centred in its 44 px touch box, and 3 px more
+    // padding each way so the 14 px icon stands where the 20 px line of text
+    // did and a narrow window's header keeps its height.
+    `inline-flex shrink-0 items-center justify-center gap-1.5 border-b-2 px-1 py-2 text-sm whitespace-nowrap max-sm:py-[0.6875rem] ${TAP}`,
     isActive
       ? "border-console-accent text-console-text"
       : "border-transparent text-console-muted hover:text-console-text",
@@ -50,16 +58,22 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
   return (
     <div className="flex min-h-full flex-col">
       <header className="border-console-border bg-console-surface border-b">
-        <div className="mx-auto flex max-w-7xl items-center gap-4 px-4">
-          <span className="text-console-text shrink-0 font-mono text-sm tracking-[0.2em] lowercase">
+        {/* The row scrolls only as a safety net, for a screen narrower than
+            the phones `SPEC.md`, "Frontend", Mobile layout, is written for. */}
+        <div className="mx-auto flex max-w-7xl items-center gap-4 overflow-x-auto px-4 max-sm:gap-2">
+          <span className="text-console-text shrink-0 font-mono text-sm tracking-[0.2em] lowercase max-sm:tracking-normal">
             mars
             <span className="text-console-accent">.</span>
           </span>
 
-          {/* Below `md` the entries scroll sideways instead of wrapping. */}
+          {/* From `sm` the labelled entries scroll sideways when the row is
+              short of room. Below `sm` they are icons whose 44 px touch boxes
+              sit edge to edge and share the spare width, and the nav is never
+              narrower than they are: a phone sees all of them, and only a
+              screen too narrow for the row scrolls it as a whole. */}
           <nav
             aria-label="Main"
-            className="flex min-w-0 flex-1 items-center gap-4 overflow-x-auto"
+            className="flex min-w-0 flex-1 items-center gap-4 overflow-x-auto max-sm:min-w-fit max-sm:justify-between max-sm:gap-0"
           >
             {NAV.filter((entry) => !entry.adminOnly || isAdmin).map((entry) => (
               <NavLink
@@ -69,17 +83,18 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
                 className={navClass}
               >
                 <entry.icon aria-hidden="true" className={ICON_CLASS} />
-                {entry.label}
+                {/* The accessible name at every width, visible from `sm`. */}
+                <span className="max-sm:sr-only">{entry.label}</span>
               </NavLink>
             ))}
           </nav>
 
-          <div className="flex shrink-0 items-center gap-3">
+          <div className="flex shrink-0 items-center gap-3 max-sm:gap-0">
             <NavLink
               to="/help"
               className={({ isActive }) =>
                 [
-                  `inline-flex items-center gap-1 py-2 text-xs ${TAP}`,
+                  `inline-flex items-center justify-center gap-1 py-2 text-xs ${TAP}`,
                   isActive
                     ? "text-console-text"
                     : "text-console-muted hover:text-console-text",
@@ -99,10 +114,11 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
               onClick={() => {
                 void logout();
               }}
-              className={`text-console-muted hover:text-console-text inline-flex items-center gap-1 py-2 text-xs ${TAP}`}
+              className={`text-console-muted hover:text-console-text inline-flex items-center justify-center gap-1 py-2 text-xs ${TAP}`}
             >
               <Icon.logout aria-hidden="true" className={ICON_CLASS} />
-              Log out
+              {/* Icon-only below `sm`; the text stays its accessible name. */}
+              <span className="max-sm:sr-only">Log out</span>
             </button>
           </div>
         </div>
@@ -116,7 +132,11 @@ export function PageLayout({ title, actions, children }: PageLayoutProps) {
         className="mx-auto w-full max-w-7xl flex-1 px-4 py-5 outline-none"
       >
         {(title !== undefined || actions !== undefined) && (
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          // With actions the row stacks below `sm`, the actions under the title
+          // rather than squeezed beside it.
+          <div
+            className={`mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 ${actions ? "max-sm:flex-col max-sm:items-start" : ""}`}
+          >
             {title && (
               <h1 className="text-console-text min-w-0 text-base font-semibold tracking-tight">
                 {title}

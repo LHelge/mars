@@ -1,6 +1,8 @@
 // The tab strip of `/projects/:id`. The entries themselves are in `./tabs`;
 // this is only their presentation: one row of links, each carrying its own
-// `?tab=` value, the current one marked as the current page.
+// `?tab=` value, the current one marked as the current page. Below `sm` the row
+// wraps, so a phone sees every tab in two rows rather than a strip that
+// scrolls with no cue; from `sm` it is one row, scrolling only as a safety net.
 
 import { Link } from "react-router";
 import { TAP } from "../../components/fieldStyles";
@@ -26,7 +28,7 @@ export function ProjectTabs({ projectId, active }: ProjectTabsProps) {
   return (
     <nav
       aria-label="Project sections"
-      className="border-console-border flex min-w-0 items-center gap-4 overflow-x-auto border-b"
+      className="border-console-border flex min-w-0 items-center gap-x-4 gap-y-0 overflow-x-auto border-b max-sm:flex-wrap"
     >
       {PROJECT_TABS.map((entry) => (
         <Link

@@ -640,4 +640,4 @@ An agent that turns GitHub issues into backlog tasks, with the GitHub App creden
 
 ## License
 
-MIT.
+MIT, see `LICENSE`.

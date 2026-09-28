@@ -54,6 +54,7 @@ import {
   getTask,
   listProjectSessions,
   loginViaToken,
+  openAllSessions,
   setProjectSecret,
   turnOffAutoLaunch,
   waitFor,
@@ -313,7 +314,7 @@ test("the dispatcher picks up a task moved into a served state, and a pause stop
 
   // In the session list: the row carries the `dispatcher` tag where a person's
   // name would be (`SPEC.md`, "Frontend" → "Launch source").
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await openAllSessions(page, project.id);
   const row = page
     .getByRole("row")
     .filter({ has: page.getByRole("link", { name: first.title }) });

@@ -113,7 +113,17 @@ describe("SessionsTab", () => {
   it("filters the one list it has, never showing another state's rows", async () => {
     renderTab();
 
+    // It opens on `Running`.
     expect(await screen.findByText("still going")).not.toBeNull();
+    expect(screen.queryByText("gave up")).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "Running" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    expect(screen.getByText("still going")).not.toBeNull();
     expect(screen.getByText("gave up")).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Failed" }));
@@ -138,6 +148,7 @@ describe("SessionsTab", () => {
       },
     ]);
     renderTab();
+    fireEvent.click(screen.getByRole("button", { name: "Failed" }));
 
     // Text on the row, never a tooltip (`SPEC.md`, "Frontend", "Mobile
     // layout").
@@ -150,6 +161,21 @@ describe("SessionsTab", () => {
     fireEvent.click(toggle);
     expect(text.className).not.toContain("line-clamp-2");
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("tells a project with no sessions from one with none running", async () => {
+    vi.mocked(listProjectSessions).mockResolvedValue([]);
+    renderTab();
+    expect(await screen.findByText("No sessions yet")).not.toBeNull();
+    cleanup();
+
+    vi.mocked(listProjectSessions).mockResolvedValue([
+      session("00000000-0000-4000-8000-0000000000d5", "failed", "gave up"),
+    ]);
+    renderTab();
+    expect(
+      await screen.findByText("No running sessions right now"),
+    ).not.toBeNull();
   });
 
   it("leaves the git panel to the Branches tab", async () => {
@@ -173,6 +199,7 @@ describe("SessionsTab", () => {
       },
     ]);
     renderTab();
+    fireEvent.click(screen.getByRole("button", { name: "Failed" }));
 
     fireEvent.click(
       await screen.findByRole("button", { name: "Delete gave up" }),

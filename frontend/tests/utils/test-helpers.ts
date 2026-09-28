@@ -60,7 +60,13 @@ export { sessionContainers } from "./engine";
 
 export { logOffset, readLoggedLink, type LoggedLinkKind } from "./log";
 
-export { isMobile, login, loginViaToken, newLoggedInPage } from "./browser";
+export {
+  isMobile,
+  login,
+  loginViaToken,
+  newLoggedInPage,
+  openAllSessions,
+} from "./browser";
 
 export { armSocketDrop, dropConnection } from "./browser";
 

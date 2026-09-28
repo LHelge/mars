@@ -98,7 +98,8 @@ function sessionLabel(session: Session): string {
 
 export function SessionsTab({ project }: ProjectTabPanelProps) {
   const queryClient = useQueryClient();
-  const [filter, setFilter] = useState<Filter>("all");
+  // Opens on what is live now; the rest is one click away.
+  const [filter, setFilter] = useState<Filter>("running");
   // The row whose `Delete` has been pressed once; pressing again confirms.
   const [confirming, setConfirming] = useState<string | null>(null);
   const [rowError, setRowError] = useState<{
@@ -207,12 +208,12 @@ export function SessionsTab({ project }: ProjectTabPanelProps) {
           sessions.isSuccess && (
             <EmptyState
               title={
-                filter === "all"
+                sessions.data.length === 0
                   ? "No sessions yet"
                   : `No ${filter} sessions right now`
               }
               description={
-                filter === "all"
+                sessions.data.length === 0
                   ? "Launch one above to put an agent on this project."
                   : "Choose another state to see the rest."
               }

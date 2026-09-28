@@ -37,6 +37,7 @@ import {
   isMobile,
   loginViaToken,
   mirrorPath,
+  openAllSessions,
   openRow,
   reveal,
   sendInput,
@@ -998,7 +999,7 @@ test("ending and deleting a session warn of its unmerged commits, and the delete
     /^[0-9a-f]{40}$/,
   );
 
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await openAllSessions(page, project.id);
   const label = session.title ?? `session ${session.id.slice(0, 8)}`;
   await page.getByRole("button", { name: `Delete ${label}` }).click();
 

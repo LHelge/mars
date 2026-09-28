@@ -199,3 +199,19 @@ export async function closeSockets(page: Page): Promise<number> {
     return (drop as () => number)();
   }, DROP_HOOK);
 }
+
+/**
+ * Opens a project's sessions tab with every state shown. The tab opens on
+ * `Running` (`SPEC.md`, "Frontend", Project page), so a scenario about a row
+ * that has already finished, parked or failed widens the filter first.
+ */
+export async function openAllSessions(
+  page: Page,
+  projectId: string,
+): Promise<void> {
+  await page.goto(`/projects/${projectId}?tab=sessions`);
+  await page
+    .getByRole("group", { name: "Filter by state" })
+    .getByRole("button", { name: "All" })
+    .click();
+}

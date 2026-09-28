@@ -63,6 +63,7 @@ import {
   loginViaToken,
   mirrorPath,
   moveUpstreamInto,
+  openAllSessions,
   publishRevision,
   RESOLVE_WITH_AGENT,
   reveal,
@@ -357,7 +358,7 @@ test("the branches tab holds the git panel and the sessions tab does not", async
   await syncSession(api, sessionId);
 
   // The Sessions tab lists the session and nothing of git.
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await openAllSessions(page, project.id);
   await expect(
     page.getByRole("heading", { name: "Sessions", exact: true }),
   ).toBeVisible();

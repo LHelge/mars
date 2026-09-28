@@ -47,6 +47,7 @@ import {
   loggedEmail,
   loginViaToken,
   logOffset,
+  openAllSessions,
   reveal,
   setProfileSecrets,
   setProjectSecret,
@@ -702,7 +703,7 @@ test("a failed session's reason is visible on a phone without a tooltip @mobile"
   const reason = String(failed.error);
   expect(failed.error).not.toBeNull();
 
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await openAllSessions(page, project.id);
   const row = page.getByRole("row").filter({
     has: page.getByRole("link", { name: String(failed.title) }),
   });

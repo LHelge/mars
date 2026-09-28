@@ -46,6 +46,7 @@ import { expect, test } from "./utils/fixtures";
 import {
   FAKE_AGENT_CREDENTIAL,
   LAUNCH_SOURCE,
+  openAllSessions,
   PROFILE_AUTOMATION,
   listProjectSessions,
   loginViaToken,
@@ -270,7 +271,7 @@ test("a due schedule launches a session nobody asked for, and a pause stops the 
 
   // In the session list: the row carries the `schedule` tag where a person's
   // name would be (`SPEC.md`, "Frontend" → "Launch source").
-  await page.goto(`/projects/${project.id}?tab=sessions`);
+  await openAllSessions(page, project.id);
   const sessionRow = page.getByRole("row").filter({
     has: page.getByRole("link", { name: scheduled.title ?? "" }),
   });
